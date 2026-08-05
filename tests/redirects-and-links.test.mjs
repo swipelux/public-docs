@@ -4,7 +4,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { generateOpenApiPages } from "@mintlify/common";
+import { generateOpenApiPages, slugify } from "@mintlify/common";
 
 import {
   APPROVED_REDIRECT_DESTINATIONS,
@@ -54,6 +54,22 @@ const STRUCTURE_REDIRECTS = {
     "/integration/onboarding/capabilities-and-requirements#upload-documents",
 };
 
+const STAGE_A_RETARGETED_LEGACY_REDIRECTS = Object.freeze({
+  "/get-started/api-reference": "/api-reference",
+  "/individual-onboarding/api-reference":
+    "/integration/onboarding/customers#individual-customers",
+  "/onboarding": "/integration/onboarding/customers#individual-customers",
+  "/onboarding/businesses":
+    "/integration/onboarding/customers#business-customers",
+  "/onboarding/individuals":
+    "/integration/onboarding/customers#individual-customers",
+  "/onboarding/shareholders-and-documents":
+    "/integration/onboarding/capabilities-and-requirements#upload-documents",
+  "/reference/endpoint-map": "/api-reference",
+  "/reference/v3-reason-codes":
+    "/integration/api-reliability#handle-errors",
+});
+
 function publishedRoute(page) {
   return page === "index" ? "/" : `/${page}`;
 }
@@ -77,6 +93,105 @@ function markdownFiles(directory = projectRoot, prefix = "") {
   }
 
   return files;
+}
+
+function markdownRoute(path) {
+  const route = path.replace(/\.mdx?$/i, "");
+  if (route === "index") return "/";
+  if (route.endsWith("/index")) return `/${route.slice(0, -6)}`;
+  return `/${route}`;
+}
+
+function markdownLinesOutsideCodeFences(text) {
+  const lines = [];
+  let openFence;
+
+  for (const line of text.split("\n")) {
+    const fenceMatch = line.match(/^\s{0,3}(`{3,}|~{3,})/);
+    if (fenceMatch) {
+      const marker = fenceMatch[1];
+      if (!openFence) {
+        openFence = { character: marker[0], length: marker.length };
+      } else if (
+        marker[0] === openFence.character &&
+        marker.length >= openFence.length
+      ) {
+        openFence = undefined;
+      }
+      continue;
+    }
+    if (!openFence) lines.push(line);
+  }
+
+  return lines;
+}
+
+function markdownAnchors(text) {
+  const lines = markdownLinesOutsideCodeFences(text);
+  const anchors = new Set();
+  const seenSlugs = new Map();
+  const addHeading = (title) => {
+    const baseSlug = slugify(title.replace(/\s+#+\s*$/, ""));
+    const count = seenSlugs.get(baseSlug) ?? 0;
+    seenSlugs.set(baseSlug, count + 1);
+    if (count === 0) {
+      anchors.add(baseSlug);
+      return;
+    }
+
+    let suffix = count + 1;
+    let candidate = `${baseSlug}-${suffix}`;
+    while (seenSlugs.has(candidate)) {
+      suffix += 1;
+      candidate = `${baseSlug}-${suffix}`;
+    }
+    seenSlugs.set(candidate, 1);
+    anchors.add(candidate);
+  };
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const heading = lines[index].match(/^\s{0,3}#{1,6}[ \t]+(.+?)\s*$/);
+    if (heading) {
+      addHeading(heading[1]);
+      continue;
+    }
+
+    if (
+      lines[index].trim() &&
+      /^\s{0,3}(?:=+|-+)\s*$/.test(lines[index + 1] ?? "")
+    ) {
+      addHeading(lines[index].trim());
+      index += 1;
+    }
+  }
+
+  const explicitIdPattern =
+    /\bid\s*=\s*(?:"([^"\n]+)"|'([^'\n]+)'|\{\s*"([^"\n]+)"\s*\}|\{\s*'([^'\n]+)'\s*\})/g;
+  for (const match of lines.join("\n").matchAll(explicitIdPattern)) {
+    anchors.add(match.slice(1).find(Boolean));
+  }
+
+  return anchors;
+}
+
+function assertStageARetargetedLegacyRedirects(redirects) {
+  for (const [source, expectedDestination] of Object.entries(
+    STAGE_A_RETARGETED_LEGACY_REDIRECTS,
+  )) {
+    const matchingRedirects = redirects.filter(
+      (redirect) => redirect.source === source,
+    );
+    assert.equal(
+      matchingRedirects.length,
+      1,
+      `${source} must have exactly one independently pinned redirect`,
+    );
+    assert.equal(
+      matchingRedirects[0].destination,
+      expectedDestination,
+      `${source} must remain pinned to ${expectedDestination}`,
+    );
+  }
 }
 
 function generatedPageKey(page) {
@@ -187,6 +302,38 @@ test("retired Integration routes and legacy sources resolve without redirect cha
       false,
       `${source} must redirect directly instead of chaining through ${destinationPath}`,
     );
+  }
+});
+
+test("Stage A retargeted legacy redirects retain independent destinations", () => {
+  assert.equal(Object.keys(STAGE_A_RETARGETED_LEGACY_REDIRECTS).length, 8);
+  assertStageARetargetedLegacyRedirects(inventory);
+});
+
+test("each Stage A legacy redirect pin rejects a wrong destination", async (t) => {
+  for (const [source, expectedDestination] of Object.entries(
+    STAGE_A_RETARGETED_LEGACY_REDIRECTS,
+  )) {
+    await t.test(source, () => {
+      const wrongDestination =
+        expectedDestination === "/api-reference"
+          ? "/integration/overview"
+          : "/api-reference";
+      const mutatedInventory = inventory.map((redirect) =>
+        redirect.source === source
+          ? { ...redirect, destination: wrongDestination }
+          : redirect,
+      );
+
+      assert.throws(
+        () => assertStageARetargetedLegacyRedirects(mutatedInventory),
+        (error) => {
+          assert.ok(error.message.includes(source));
+          assert.ok(error.message.includes(expectedDestination));
+          return true;
+        },
+      );
+    });
   }
 });
 
@@ -333,6 +480,43 @@ test("every redirect destination resolves to a published or generated page", () 
         generatedRoutes.has(destinationPath) ||
         implicitRoutes.has(destinationPath),
       `${source} redirects to unresolved destination ${destination}`,
+    );
+  }
+});
+
+test("Markdown anchors include Mintlify heading slugs and explicit ids", () => {
+  const anchors = markdownAnchors(`
+## Sandbox and production
+
+<div id="html-anchor" />
+<Example id={'mdx-anchor'} />
+`);
+
+  assert.deepEqual(
+    [...anchors].sort(),
+    ["html-anchor", "mdx-anchor", "sandbox-and-production"],
+  );
+});
+
+test("every fragment-bearing redirect resolves to a Markdown/MDX anchor", () => {
+  const markdownByRoute = new Map(
+    markdownFiles().map((path) => [markdownRoute(path), path]),
+  );
+  const fragmentRedirects = inventory.filter(({ destination }) =>
+    destination.includes("#"),
+  );
+  assert.ok(fragmentRedirects.length > 0, "expected fragment-bearing redirects");
+
+  for (const { source, destination } of fragmentRedirects) {
+    const [destinationPath, fragment] = destination.split("#", 2);
+    const projectPath = markdownByRoute.get(destinationPath);
+    assert.ok(
+      projectPath,
+      `${source} redirects to ${destination}, but ${destinationPath} has no Markdown/MDX source`,
+    );
+    assert.ok(
+      markdownAnchors(readProjectFile(projectPath)).has(fragment),
+      `${source} redirects to ${destinationPath} with missing fragment #${fragment}`,
     );
   }
 });
