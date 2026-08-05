@@ -1,18 +1,62 @@
 ---
 title: "API reliability"
-description: "Use idempotency, safe retries, errors, and correlation IDs in production."
+description: "Make writes idempotent, recover uncertain responses, handle errors, and retain correlation context."
 ---
 
-Make each write safe to retry and keep enough context to investigate uncertain outcomes.
+Make each intended write safe to repeat, and preserve enough request context to resolve uncertain outcomes.
 
-## Retry writes safely
+## Make writes idempotent
 
-Use an idempotency key for one intended effect. If a response is uncertain, retry with the same key and identical request body.
+Use one `Idempotency-Key` for one intended effect. This complete example creates one customer with [`POST /v3/customers`](/api-reference/customers/post-v3-customers):
+
+```bash
+export API_BASE='https://platform.swipelux.com'
+export SWIPELUX_API_KEY='replace-with-your-api-key'
+export CUSTOMER_CREATE_KEY='customer-create-reliability-example-001'
+
+curl --request POST \
+  "${API_BASE}/v3/customers" \
+  --header "X-API-Key: ${SWIPELUX_API_KEY}" \
+  --header "Idempotency-Key: ${CUSTOMER_CREATE_KEY}" \
+  --header "Content-Type: application/json" \
+  --data @- <<'JSON'
+{
+  "type": "individual",
+  "externalId": "reliability-example-001"
+}
+JSON
+```
+
+Keep the key with your local command or job record. A separate customer creation, transfer execution, or other intended effect gets a new key.
+
+## Retry after an uncertain response
+
+A timeout or lost connection can leave you unsure whether the API accepted the write. Retry the same operation with the same key only when you can send the identical request and body. This asks the API to resolve the original intended effect rather than create another one.
+
+If the intended effect changes, use a new key. Do not reuse the old key with edited fields, a different resource, or a different amount.
 
 ## Handle errors
 
-Use the returned problem details and `retryable` value to choose the next action. Log the `correlationId` with your request context so you can trace failures.
+Error responses use problem details. One representative response from the API contract is:
+
+```json
+{
+  "type": "https://docs.swipelux.com/errors/idempotency-request-in-progress",
+  "title": "Idempotency Request In Progress",
+  "status": 409,
+  "code": "idempotency_request_in_progress",
+  "detail": "A request with this Idempotency-Key is still in progress.",
+  "correlationId": "01JERRORIDEMPOTENCY",
+  "retryable": true
+}
+```
+
+Use `status` and `code` to select the handling path, and show `detail` only where it helps a legitimate caller. When `retryable` is `true`, an unchanged retry may succeed. A missing or false value does not make every error retryable; change the request or resource state only when the error calls for it.
+
+## Log correlation IDs
+
+Log `correlationId` with your local request ID, customer ID, resource IDs, operation, and idempotency key. This joins an API failure to the command that produced it without placing credentials or sensitive request bodies in logs.
 
 ## Next step
 
-Add these controls to your write path, then review [Sync and reconciliation](/integration/sync-and-reconciliation) for recovery after missed updates.
+Apply these rules to your write path, then add [Sync and reconciliation](/integration/sync-and-reconciliation) for changes that must be recovered after the request completes.

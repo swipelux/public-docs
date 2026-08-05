@@ -13,6 +13,8 @@ const PAGES = [
   "integration/sandbox",
 ];
 
+const STARTER_PAGE = "integration/starter-kit";
+
 const PATH_VARIABLES = new Map([
   ["CUSTOMER_ID", "customerId"],
   ["CAPABILITY_ID", "capabilityId"],
@@ -335,6 +337,38 @@ test("publishes the four Get started pages in the intended order", () => {
   assert.ok(integration, "Missing Integration Docs tab");
   const getStarted = integration.groups.find((group) => group.group === "Get started");
   assert.deepEqual(getStarted?.pages, PAGES);
+});
+
+test("publishes Starter kit as a focused resource outside Get started", () => {
+  assertPages([STARTER_PAGE]);
+  const integration = config.navigation.tabs.find((tab) => tab.tab === "Integration Docs");
+  assert.ok(integration, "Missing Integration Docs tab");
+  const getStarted = integration.groups.find((group) => group.group === "Get started");
+  const resources = integration.groups.find((group) => group.group === "Resources");
+  assert.equal(getStarted?.pages.includes(STARTER_PAGE), false);
+  assert.deepEqual(resources?.pages, [STARTER_PAGE]);
+
+  const text = readPage(STARTER_PAGE);
+  assert.match(text, /(?:public )?(?:neobank )?starter[\s\S]{0,80}(?:shows|demonstrates)/i);
+  assert.match(
+    text,
+    /git clone https:\/\/github\.com\/swipelux\/neobank-starter[\s\S]{0,120}cd neobank-starter[\s\S]{0,120}npm install[\s\S]{0,120}npm run dev/,
+  );
+  assert.match(text, /built-in demo data/i);
+  assert.match(text, /connected sandbox data/i);
+  assert.match(text, /never enter[\s\S]{0,100}API key[\s\S]{0,100}hosted demo/i);
+  assert.match(text, /browser[\s\S]{0,120}demo-only/i);
+  assert.match(text, /production credentials[\s\S]{0,120}backend[\s\S]{0,120}secret manager/i);
+  assert.match(text, /\]\(\/integration\/quickstart\)/);
+  assert.match(text, /\]\(\/integration\/authentication\)/);
+  assert.doesNotMatch(
+    text,
+    /sandbox key (?:authorizes|enables|permits)[^.]{0,80}(?:real-money|production) use/i,
+  );
+  assert.ok((text.match(/\S+/g) ?? []).length <= 500);
+
+  const tail = text.slice(-1200);
+  assert.match(tail, /\/(?:integration\/quickstart|integration\/authentication)/);
 });
 
 test("every linked operation and representative curl remains OpenAPI-backed", () => {
