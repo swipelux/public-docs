@@ -40,25 +40,53 @@ test("keeps Codex and Claude repository instructions synchronized", () => {
 });
 
 test("excludes repository internals while publishing the OpenAPI contract", () => {
-  const entries = new Set(
-    read(".mintignore")
-      .split("\n")
-      .map((line) => line.trim())
-      .filter((line) => line && !line.startsWith("#")),
-  );
+  const rules = read(".mintignore")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith("#"));
 
-  for (const entry of [
+  assert.deepEqual(rules, [
     "docs/",
     "scripts/",
     "tests/",
     ".github/",
-    ".agents/",
     "openapi-provenance.json",
     "openapi-coverage.json",
-  ]) {
-    assert.ok(entries.has(entry), `missing ${entry}`);
-  }
-  assert.ok(!entries.has("openapi.json"), "openapi.json must remain publishable");
+    ".agents/",
+    ".mintlify/",
+    "skills-lock.json",
+    "node_modules/",
+    ".DS_Store",
+    "AGENTS.md",
+    "CLAUDE.md",
+    ".gitignore",
+    ".nvmrc",
+    "package.json",
+    "package-lock.json",
+    "README.md",
+    "drafts/",
+    "*.draft.mdx",
+  ]);
+
+  const matchesRule = (path, rule) => {
+    if (rule.endsWith("/")) return path.startsWith(rule);
+    if (rule.startsWith("*.")) return path.endsWith(rule.slice(1));
+    return path === rule;
+  };
+  const assertPublishable = (path) => {
+    const matchingRule = rules.find((rule) => matchesRule(path, rule));
+    assert.equal(
+      matchingRule,
+      undefined,
+      `${path} must remain publishable; matched ${matchingRule}`,
+    );
+  };
+
+  assertPublishable("openapi.json");
+  assertPublishable("docs.json");
+  assertPublishable("index.mdx");
+  assertPublishable("integration/overview.mdx");
+  assertPublishable("knowledge-base/compliance/overview.mdx");
 });
 
 test("ignores local agent and build artifacts", () => {
