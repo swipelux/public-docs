@@ -473,6 +473,45 @@ test("accepts language-tagged code fences", () => {
   assert.deepEqual(errors, []);
 });
 
+test("accepts literal list-item fences inside tagged Markdown examples", () => {
+  const errors = validatePublishedText(
+    "integration/example.mdx",
+    validPage("```md\n- ```\n```"),
+  );
+
+  assert.deepEqual(errors, []);
+});
+
+test("accepts literal list-item fences inside nested tagged MDX examples", () => {
+  const errors = validatePublishedText(
+    "integration/example.mdx",
+    validPage("- 1. ```mdx\n     - ```\n     ```"),
+  );
+
+  assert.deepEqual(errors, []);
+});
+
+test("does not use a new list item fence to close an existing fence", () => {
+  const errors = validatePublishedText(
+    "integration/example.mdx",
+    validPage("- ```js\n- ```"),
+  );
+
+  assertHasError(
+    errors,
+    /integration\/example\.mdx:7: code fence.*language tag/i,
+  );
+});
+
+test("accepts backticks indented beyond an ordinary closing fence", () => {
+  const errors = validatePublishedText(
+    "integration/example.mdx",
+    validPage("```md\n    ```\n```"),
+  );
+
+  assert.deepEqual(errors, []);
+});
+
 test("accepts language-tagged code fences nested in Markdown list items", () => {
   const errors = validatePublishedText(
     "integration/example.mdx",

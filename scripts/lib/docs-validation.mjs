@@ -713,8 +713,41 @@ function validateCodeFences(path, text) {
   let openFence;
 
   for (let index = 0; index < lines.length; index += 1) {
-    let candidate = lines[index];
+    const line = lines[index];
+
+    if (openFence) {
+      const indentation = /^ */.exec(line)?.[0].length ?? 0;
+      const relativeIndent = indentation - openFence.containerIndent;
+      const candidate = line.slice(indentation);
+      const match =
+        relativeIndent >= 0 && relativeIndent <= 3
+          ? /^(`{3,}|~{3,})(.*)$/.exec(candidate)
+          : undefined;
+
+      if (match) {
+        const [, marker, remainder] = match;
+        if (
+          marker[0] === openFence.character &&
+          marker.length >= openFence.length &&
+          remainder.trim() === ""
+        ) {
+          openFence = undefined;
+        }
+        continue;
+      }
+
+      const startsNewContainer =
+        openFence.containerIndent > 0 &&
+        indentation < openFence.containerIndent &&
+        /^(?:>\s*|(?:[-+*]|\d+[.)])\s+)/.test(candidate);
+      if (!startsNewContainer) continue;
+
+      openFence = undefined;
+    }
+
+    let candidate = line;
     let blockquoted = false;
+    let listContainer = false;
     while (true) {
       candidate = candidate.trimStart();
       const blockquoteMatch = /^>\s*/.exec(candidate)?.[0];
@@ -725,23 +758,13 @@ function validateCodeFences(path, text) {
       }
       const listMatch = /^(?:[-+*]|\d+[.)])\s+/.exec(candidate)?.[0];
       if (!listMatch) break;
+      listContainer = true;
       candidate = candidate.slice(listMatch.length);
     }
     const match = /^(`{3,}|~{3,})(.*)$/.exec(candidate);
     if (!match) continue;
 
     const [, marker, remainder] = match;
-    if (openFence) {
-      if (
-        marker[0] === openFence.character &&
-        marker.length >= openFence.length &&
-        remainder.trim() === ""
-      ) {
-        openFence = undefined;
-      }
-      continue;
-    }
-
     if (blockquoted) {
       errors.push(`${path}:${index + 1}: code fence must not be blockquoted`);
     }
@@ -752,7 +775,12 @@ function validateCodeFences(path, text) {
         `${path}:${index + 1}: code fence is missing a language tag`,
       );
     }
-    openFence = { character: marker[0], length: marker.length };
+    openFence = {
+      character: marker[0],
+      containerIndent:
+        listContainer && !blockquoted ? line.length - candidate.length : 0,
+      length: marker.length,
+    };
   }
 
   return errors;
