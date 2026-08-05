@@ -2,18 +2,27 @@
 
 This repository contains the Mintlify source for Swipelux Integration Docs, the generated API v3 reference, and the compliance and onboarding Knowledge Base.
 
-## Requirements
+## Prerequisites
 
+- nvm
 - Node.js 24.15.0
-- npm
+- npm 11.12.1
 
-The repository pins Mintlify CLI 4.2.775 as a development dependency.
+This repository requires nvm so `.nvmrc` can select the supported Node.js release. Run `nvm use` whenever you open a new shell in the repository. The repository also pins npm 11.12.1 and Mintlify CLI 4.2.775.
 
 ## Set up the repository
 
 ```bash
+nvm install
 nvm use
+npm --version
 npm install
+```
+
+`nvm install` installs Node.js 24.15.0 when needed, and `nvm use` activates it in your current shell. If `npm --version` does not print `11.12.1`, install the pinned npm release before installing dependencies:
+
+```bash
+npm install --global npm@11.12.1
 ```
 
 ## Prepare the OpenAPI reference
@@ -46,7 +55,7 @@ Run the complete documentation verification suite before handoff:
 npm run check
 ```
 
-The complete check prepares no source data. Generate `openapi.json` first when the source contract changes.
+The complete check prepares no source data. Generate `openapi.json` first when the source contract changes. During the staged rebuild, Tasks 2 and 3 add the `verify:openapi` and `verify:docs` implementations. Until then, use `npm test` for the runnable Task 1 checks.
 
 ## Deploy
 
