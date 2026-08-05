@@ -50,6 +50,33 @@ const NORMAL_GUIDE_IDEMPOTENT_OPERATIONS = [
   ["post", "/v3/webhooks"],
 ];
 
+const QUICKSTART_CURL_OPERATIONS = [
+  ["post", "/v3/webhooks"],
+  ["post", "/v3/customers"],
+  ["get", "/v3/customers/{customerId}/capabilities/supported"],
+  ["post", "/v3/customers/{customerId}/capabilities/{capabilityId}"],
+  ["get", "/v3/customers/{customerId}/tasks"],
+  ["post", "/v3/customers/{customerId}/tasks/{taskId}/submissions"],
+  ["get", "/v3/customers/{customerId}/capabilities/{capabilityId}"],
+  ["post", "/v3/customers/{customerId}/accounts"],
+  ["post", "/v3/customers/{customerId}/recipients"],
+  [
+    "post",
+    "/v3/customers/{customerId}/recipients/{recipientId}/destinations",
+  ],
+  ["post", "/v3/quotes"],
+  ["post", "/v3/transfers"],
+  ["get", "/v3/transfers/{transferId}"],
+];
+
+const QUICKSTART_PATH_VARIABLES = new Map([
+  ["CUSTOMER_ID", "customerId"],
+  ["CAPABILITY_ID", "capabilityId"],
+  ["TASK_ID", "taskId"],
+  ["RECIPIENT_ID", "recipientId"],
+  ["TRANSFER_ID", "transferId"],
+]);
+
 const config = JSON.parse(readFileSync("docs.json", "utf8"));
 const coverage = JSON.parse(readFileSync("openapi-coverage.json", "utf8"));
 const openapi = JSON.parse(readFileSync("openapi.json", "utf8"));
@@ -125,13 +152,59 @@ function documentsResponseHeader(method, path, headerName) {
   });
 }
 
+function responseSchema(method, path, status = "200") {
+  const { operationObject } = openApiOperation(method, path);
+  const response = resolveOpenApiReference(operationObject.responses?.[status]);
+  assert.ok(response, `Missing ${status} response for ${method.toUpperCase()} ${path}`);
+  const schema = response.content?.["application/json"]?.schema;
+  assert.ok(
+    schema,
+    `Missing application/json schema for ${method.toUpperCase()} ${path} ${status}`,
+  );
+  return resolveOpenApiReference(schema);
+}
+
+function requestBodySchema(method, path) {
+  const { operationObject } = openApiOperation(method, path);
+  const requestBody = resolveOpenApiReference(operationObject.requestBody);
+  assert.ok(requestBody, `Missing request body for ${method.toUpperCase()} ${path}`);
+  const schema = requestBody.content?.["application/json"]?.schema;
+  assert.ok(
+    schema,
+    `Missing application/json request schema for ${method.toUpperCase()} ${path}`,
+  );
+  return resolveOpenApiReference(schema);
+}
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function assertOperationLinksInText(label, text, operations) {
+  for (const [method, path] of operations) {
+    const { href } = operation(method, path);
+    const operationLabel = `\`${method.toUpperCase()} ${path}\``;
+    assert.match(
+      text,
+      new RegExp(
+        `\\[${escapeRegExp(operationLabel)}\\]\\(${escapeRegExp(href)}\\)`,
+      ),
+      `${label} must bind ${operationLabel} to ${href}`,
+    );
+  }
+}
+
 function assertOperationLinks(page, operations) {
+  assertOperationLinksInText(`${page}.mdx`, readPage(page), operations);
+}
+
+function assertOperationHrefs(page, operations) {
   const text = readPage(page);
   for (const [method, path] of operations) {
     const { href } = operation(method, path);
     assert.ok(
       text.includes(href),
-      `${page}.mdx must link ${method.toUpperCase()} ${path} through ${href}`,
+      `${page}.mdx must include ${method.toUpperCase()} ${path} href ${href}`,
     );
   }
 }
@@ -139,6 +212,164 @@ function assertOperationLinks(page, operations) {
 function shellBlocks(text) {
   return [...text.matchAll(/```(?:bash|sh|shell)\n([\s\S]*?)```/g)].map(
     (match) => match[1],
+  );
+}
+
+function normalizeQuickstartPath(path) {
+  let normalized = path.split(/[?#]/, 1)[0];
+  for (const [variable, parameter] of QUICKSTART_PATH_VARIABLES) {
+    normalized = normalized.replaceAll(`\${${variable}}`, `{${parameter}}`);
+  }
+  assert.doesNotMatch(
+    normalized,
+    /\$\{[A-Z0-9_]+\}/,
+    `Unrecognized shell path variable in ${path}`,
+  );
+  return normalized;
+}
+
+function curlOperation(block, label) {
+  const methodMatches = [
+    ...block.matchAll(/(?:--request|-X)\s+([A-Za-z]+)/g),
+  ];
+  assert.equal(methodMatches.length, 1, `${label} must declare exactly one method`);
+  const method = methodMatches[0][1].toLowerCase();
+
+  const pathMatches = [
+    ...block.matchAll(/\$\{API_BASE\}(\/v3\/[^\s"'\\]+)/g),
+  ];
+  assert.equal(
+    pathMatches.length,
+    1,
+    `${label} must contain exactly one API_BASE path`,
+  );
+  const path = normalizeQuickstartPath(pathMatches[0][1]);
+
+  const matches = Object.entries(openapi.paths).filter(
+    ([candidatePath, pathItem]) =>
+      candidatePath === path && pathItem[method] !== undefined,
+  );
+  assert.equal(
+    matches.length,
+    1,
+    `${label} must resolve exactly one OpenAPI operation, received ${method.toUpperCase()} ${path}`,
+  );
+
+  return { method, path };
+}
+
+function curlHasHeader(block, headerName) {
+  return new RegExp(
+    `(?:--header|-H)\\s+["'][^"']*${escapeRegExp(headerName)}\\s*:`,
+    "i",
+  ).test(block);
+}
+
+function assertCurlMatchesOpenApi(block, label) {
+  const { method, path } = curlOperation(block, label);
+  assert.equal(
+    curlHasHeader(block, "X-API-Key"),
+    true,
+    `${label} must include X-API-Key`,
+  );
+
+  const parameter = idempotencyParameter(method, path);
+  const requiresIdempotency = parameter?.required === true;
+  assert.equal(
+    curlHasHeader(block, "Idempotency-Key"),
+    requiresIdempotency,
+    `${method.toUpperCase()} ${path} ${
+      requiresIdempotency ? "requires" : "does not require"
+    } Idempotency-Key`,
+  );
+
+  return { method, path };
+}
+
+function capabilitySelectionFacts() {
+  const supportedPath = "/v3/customers/{customerId}/capabilities/supported";
+  const supported = responseSchema("get", supportedPath);
+  assert.ok(supported.required?.includes("data"));
+  assert.equal(supported.properties?.data?.type, "array");
+
+  const variant = resolveOpenApiReference(supported.properties.data.items);
+  for (const field of ["availability", "eligibility", "institutions"]) {
+    assert.ok(
+      variant.required?.includes(field),
+      `supported capability variants must require ${field}`,
+    );
+  }
+
+  const availability = variant.properties.availability;
+  assert.deepEqual(availability.enum, ["available", "beta", "disabled"]);
+
+  const eligibility = resolveOpenApiReference(variant.properties.eligibility);
+  assert.ok(
+    eligibility.required?.includes("eligible"),
+    "capability eligibility must require eligible",
+  );
+  assert.equal(eligibility.properties.eligible.type, "boolean");
+  assert.match(
+    eligibility.properties.eligible.description,
+    /requires availability `available` or `beta`/i,
+  );
+
+  const capabilityPath =
+    "/v3/customers/{customerId}/capabilities/{capabilityId}";
+  const { operationObject } = openApiOperation("post", capabilityPath);
+  assert.match(operationObject.description, /known ineligible variants fail/i);
+
+  const capabilityRequest = requestBodySchema("post", capabilityPath);
+  const institutions = capabilityRequest.properties?.institutions;
+  assert.equal(institutions?.type, "array");
+  assert.equal(institutions.items?.type, "string");
+  assert.match(institutions.items.description, /opaque public institution id/i);
+  assert.match(
+    institutions.description,
+    /omitted or empty[\s\S]*registry defaults[\s\S]*non-empty[\s\S]*overrides defaults/i,
+  );
+  assert.match(
+    institutions.description,
+    /returned by `GET \/v3\/customers\/\{customerId\}\/capabilities\/supported`/,
+  );
+
+  return {
+    availability: availability.enum,
+    eligibilityField: "eligibility.eligible",
+  };
+}
+
+function assertCapabilitySelectionProse(text) {
+  const facts = capabilitySelectionFacts();
+  assert.match(
+    text,
+    new RegExp(
+      `known variants[\\s\\S]{0,160}\`${facts.availability[2]}\`[\\s\\S]{0,120}ineligible`,
+      "i",
+    ),
+  );
+  assert.match(
+    text,
+    new RegExp(
+      `\`availability\`[\\s\\S]{0,80}\`${facts.availability[0]}\`[\\s\\S]{0,40}\`${facts.availability[1]}\``,
+      "i",
+    ),
+  );
+  assert.match(
+    text,
+    new RegExp(
+      `\`${escapeRegExp(facts.eligibilityField)}\`[\\s\\S]{0,60}\`true\``,
+      "i",
+    ),
+  );
+  assert.match(text, /known ineligible variant[\s\S]{0,40}fail/i);
+  assert.match(
+    text,
+    /omitted or empty[\s\S]{0,100}registry defaults[\s\S]{0,100}non-empty[\s\S]{0,100}overrides defaults/i,
+  );
+  assert.match(
+    text,
+    /public institution ids[\s\S]{0,120}supported-capability response/i,
   );
 }
 
@@ -189,14 +420,31 @@ test("keeps public authentication and external-doc boundaries narrow", () => {
   assert.doesNotMatch(published, /https?:\/\/demo\.swipelux\.com/i);
 });
 
+test("operation links bind the expected label to the generated href", () => {
+  const expected = operation("post", "/v3/customers");
+  const wrong = operation("post", "/v3/transfers");
+  const mismatchedFixture = [
+    `[\`POST /v3/customers\`](${wrong.href})`,
+    `Unrelated href: ${expected.href}`,
+  ].join("\n");
+
+  assert.throws(
+    () =>
+      assertOperationLinksInText("mismatched fixture", mismatchedFixture, [
+        ["post", "/v3/customers"],
+      ]),
+    /must bind `POST \/v3\/customers`/,
+  );
+});
+
 test("overview maps the contract lifecycle and availability boundaries", () => {
   const text = readPage("integration/overview");
+  assertCapabilitySelectionProse(text);
 
   assert.match(
     text,
     /customer[\s\S]*supported capabilities[\s\S]*requested capability[\s\S]*application[\s\S]*tasks[\s\S]*submissions[\s\S]*account[\s\S]*recipient[\s\S]*quote[\s\S]*transfer/i,
   );
-  assert.match(text, /availability[\s\S]*supported capabilities/i);
   assert.match(text, /resource status/i);
   assert.match(text, /do not assume/i);
 
@@ -218,10 +466,13 @@ test("overview maps the contract lifecycle and availability boundaries", () => {
   ]);
 });
 
-test("quickstart follows the sandbox sequence and protects every curl mutation", () => {
+test("quickstart follows the common lifecycle and preserves destination alternatives", () => {
   const text = readPage("integration/quickstart");
+  assertCapabilitySelectionProse(text);
   assert.match(text, /export SWIPELUX_API_KEY='YOUR_SANDBOX_API_KEY'/);
-  const orderedEndpoints = [
+  assert.match(text, /export RUN_ID="\$\(date \+%s\)-\$\{RANDOM\}"/);
+
+  const commonLifecycle = [
     "POST /v3/webhooks",
     "POST /v3/customers",
     "GET /v3/customers/{customerId}/capabilities/supported",
@@ -229,36 +480,90 @@ test("quickstart follows the sandbox sequence and protects every curl mutation",
     "GET /v3/customers/{customerId}/tasks",
     "POST /v3/customers/{customerId}/tasks/{taskId}/submissions",
     "GET /v3/customers/{customerId}/capabilities/{capabilityId}",
-    "POST /v3/customers/{customerId}/accounts",
-    "POST /v3/customers/{customerId}/recipients",
-    "POST /v3/customers/{customerId}/recipients/{recipientId}/destinations",
-    "POST /v3/quotes",
-    "POST /v3/transfers",
-    "GET /v3/transfers/{transferId}",
   ];
 
   let previousIndex = -1;
-  for (const endpoint of orderedEndpoints) {
+  for (const endpoint of commonLifecycle) {
     const index = text.indexOf(endpoint);
     assert.ok(index > previousIndex, `${endpoint} must appear in sequence`);
     previousIndex = index;
   }
 
+  const accountIndex = text.indexOf("POST /v3/customers/{customerId}/accounts");
+  const recipientIndex = text.indexOf(
+    "POST /v3/customers/{customerId}/recipients",
+  );
+  const destinationIndex = text.indexOf(
+    "POST /v3/customers/{customerId}/recipients/{recipientId}/destinations",
+  );
+  const quoteIndex = text.indexOf("POST /v3/quotes");
+  const transferIndex = text.indexOf("POST /v3/transfers");
+  const transferReadIndex = text.indexOf("GET /v3/transfers/{transferId}");
+
+  assert.ok(accountIndex > previousIndex, "account alternative follows readiness");
+  assert.ok(recipientIndex > previousIndex, "recipient alternative follows readiness");
+  assert.ok(destinationIndex > recipientIndex, "recipient destination follows recipient");
+  assert.ok(quoteIndex > accountIndex, "quote follows the account alternative");
+  assert.ok(
+    quoteIndex > destinationIndex,
+    "quote follows the recipient-destination alternative",
+  );
+  assert.ok(transferIndex > quoteIndex, "transfer follows quote");
+  assert.ok(transferReadIndex > transferIndex, "transfer read follows transfer");
+  assert.match(
+    text,
+    /account branch or the recipient-destination branch[\s\S]{0,160}does not prescribe one/i,
+  );
+
   const curlBlocks = shellBlocks(text).filter((block) => /\bcurl\b/.test(block));
-  assert.ok(curlBlocks.length >= 3, "quickstart must include focused curl examples");
-  for (const block of curlBlocks) {
-    assert.match(block, /X-API-Key:/, "every curl example needs X-API-Key");
-    const mutates =
-      /(?:--request|-X)\s+(?:POST|PATCH|PUT|DELETE)\b/i.test(block) ||
-      /(?:--data|-d)(?:\s|=)/.test(block);
-    if (mutates) {
-      assert.match(
-        block,
-        /Idempotency-Key:/,
-        "every effectful curl example needs Idempotency-Key",
-      );
-    }
+  assert.ok(
+    curlBlocks.length >= QUICKSTART_CURL_OPERATIONS.length,
+    "quickstart must retain the full operation walkthrough",
+  );
+  const resolvedOperations = curlBlocks.map((block, index) =>
+    assertCurlMatchesOpenApi(block, `quickstart curl block ${index + 1}`),
+  );
+  for (const [method, path] of QUICKSTART_CURL_OPERATIONS) {
+    assert.equal(
+      resolvedOperations.filter(
+        (candidate) => candidate.method === method && candidate.path === path,
+      ).length,
+      1,
+      `quickstart must include one curl for ${method.toUpperCase()} ${path}`,
+    );
   }
+
+  const expectedIdempotencyKeys = QUICKSTART_CURL_OPERATIONS.filter(
+    ([method, path]) => idempotencyParameter(method, path)?.required === true,
+  ).length;
+  const idempotencyHeaders = [
+    ...text.matchAll(/--header "Idempotency-Key: ([^"]+)"/g),
+  ];
+  assert.equal(idempotencyHeaders.length, expectedIdempotencyKeys);
+  for (const [, value] of idempotencyHeaders) {
+    assert.match(value, /\$\{RUN_ID\}/, `${value} must reference RUN_ID`);
+  }
+  assert.doesNotMatch(text, /Idempotency-Key:[^"\n]*-001\b/i);
+  assert.match(
+    text,
+    /retrying one intended effect[\s\S]{0,120}same generated key and body/i,
+  );
+  assert.match(text, /new run[\s\S]{0,80}new `RUN_ID`/i);
+
+  const sandboxHelperProbe = [
+    "curl --request POST \\",
+    '  "${API_BASE}/v3/sandbox/tasks/${TASK_ID}/review" \\',
+    '  --header "X-API-Key: ${SWIPELUX_API_KEY}" \\',
+    '  --header "Content-Type: application/json" \\',
+    "  --data '{\"outcome\":\"accepted\"}'",
+  ].join("\n");
+  assert.doesNotMatch(sandboxHelperProbe, /Idempotency-Key:/);
+  assert.deepEqual(
+    assertCurlMatchesOpenApi(sandboxHelperProbe, "sandbox helper probe"),
+    { method: "post", path: "/v3/sandbox/tasks/{taskId}/review" },
+  );
+
+  assert.doesNotMatch(text, /requires an institution choice/i);
 
   assert.match(text, /optional[\s\S]{0,120}recommended/i);
   assert.match(text, /depends on[\s\S]{0,120}capability/i);
@@ -302,11 +607,22 @@ test("starter kit uses current links and separates local, sandbox, and productio
 
   assert.match(text, /https:\/\/github\.com\/swipelux\/neobank-starter/);
   assert.match(text, /https:\/\/neobank-starter\.vercel\.app/);
+  assert.match(
+    text,
+    /public hosted demo[\s\S]{0,100}do not enter any API key[\s\S]{0,100}built-in demo data/i,
+  );
   assert.match(text, /git clone https:\/\/github\.com\/swipelux\/neobank-starter/);
   assert.match(text, /local demo data/i);
   assert.match(text, /connected sandbox data/i);
-  assert.match(text, /in-app sandbox connection[\s\S]{0,140}demo-only sandbox behavior/i);
-  assert.match(text, /not[\s\S]{0,80}production credential architecture/i);
+  assert.match(
+    text,
+    /cloned starter[\s\S]{0,120}in-app connected-sandbox mode[\s\S]{0,120}sandbox key[\s\S]{0,120}browser runtime/i,
+  );
+  assert.match(
+    text,
+    /demo-only[\s\S]{0,100}outside[\s\S]{0,80}production credential architecture/i,
+  );
+  assert.match(text, /never use a production key[\s\S]{0,80}(?:mode|there)/i);
   assert.match(text, /sandbox key[\s\S]*not[\s\S]*production credential/i);
   assert.match(text, /does not authorize[\s\S]*production|does not authorize[\s\S]*real-money/i);
   assert.match(
@@ -319,12 +635,32 @@ test("starter kit uses current links and separates local, sandbox, and productio
 
 test("authentication documents only the public apiKey header flow", () => {
   const text = readPage("integration/authentication");
+  const apiKeySchemes = Object.entries(openapi.components?.securitySchemes ?? {}).filter(
+    ([, scheme]) => resolveOpenApiReference(scheme).type === "apiKey",
+  );
+  assert.equal(apiKeySchemes.length, 1, "OpenAPI must define one apiKey scheme");
+  const [schemeName, unresolvedScheme] = apiKeySchemes[0];
+  const scheme = resolveOpenApiReference(unresolvedScheme);
+  assert.equal(schemeName, "apiKey");
+  assert.equal(scheme.type, "apiKey");
+  assert.equal(scheme.in, "header");
+  assert.equal(scheme.name, "X-API-Key");
 
-  assert.match(text, /\bapiKey\b/);
-  assert.match(text, /X-API-Key/);
-  assert.match(text, /https:\/\/platform\.swipelux\.com/);
+  assert.equal(openapi.servers.length, 1, "OpenAPI must define one public server");
+  const [server] = openapi.servers;
+  assert.equal(server.url, "https://platform.swipelux.com");
+  assert.equal(
+    server.description,
+    "Production and sandbox; environment selected by API key",
+  );
+
+  assert.match(text, new RegExp(`\\b${escapeRegExp(schemeName)}\\b`));
+  assert.match(text, new RegExp(escapeRegExp(scheme.name)));
+  assert.match(text, new RegExp(escapeRegExp(server.url)));
   assert.match(text, /same base URL/i);
-  assert.match(text, /key[\s\S]{0,100}determines[\s\S]{0,100}environment/i);
+  assert.match(text, /production and sandbox/i);
+  assert.match(text, /environment[\s\S]{0,100}selected[\s\S]{0,100}API key/i);
+  assert.match(text, /in your integration/i);
   assert.match(text, /backend|server-side/i);
   assert.match(text, /secret manager/i);
   assert.ok(
@@ -378,7 +714,7 @@ test("API reference guide explains generated exact fields and stable links", () 
   assert.match(text, /`x-mint\.href`/);
   assert.match(text, /guides[\s\S]{0,120}concept/i);
 
-  assertOperationLinks("integration/using-the-api-reference", [
+  assertOperationHrefs("integration/using-the-api-reference", [
     ["post", "/v3/customers"],
     ["get", "/v3/customers/{customerId}/capabilities/supported"],
     ["post", "/v3/transfers"],
@@ -487,7 +823,7 @@ test("request safety preserves the documented idempotency and retry boundary", (
   );
   assert.doesNotMatch(text, /\bTTL\b|time[- ]to[- ]live|concurren(?:cy|t) guarantee/i);
 
-  assertOperationLinks("integration/request-safety", [
+  assertOperationHrefs("integration/request-safety", [
     ["post", "/v3/quotes"],
     ["post", "/v3/transfers"],
   ]);
@@ -495,18 +831,33 @@ test("request safety preserves the documented idempotency and retry boundary", (
 
 test("errors documents the shared Problem contract and safe diagnostics", () => {
   const text = readPage("integration/errors");
-
-  for (const field of [
+  const problem = resolveOpenApiReference(openapi.components?.schemas?.Problem);
+  assert.ok(problem, "OpenAPI must define components.schemas.Problem");
+  assert.deepEqual(problem.required, [
     "type",
     "title",
     "status",
     "code",
     "detail",
     "correlationId",
-  ]) {
+  ]);
+
+  const fieldErrors = resolveOpenApiReference(problem.properties?.errors);
+  assert.equal(fieldErrors.type, "array");
+  const fieldError = resolveOpenApiReference(fieldErrors.items);
+  assert.deepEqual(fieldError.required, ["pointer", "code", "message"]);
+
+  assert.match(
+    problem.properties.correlationId.description,
+    /mirrors `X-Request-Id`/i,
+  );
+  assert.equal(problem.properties.retryable.type, "boolean");
+  assert.equal(problem.properties.statusReason.type, "object");
+
+  for (const field of problem.required) {
     assert.match(text, new RegExp(`\\b${field}\\b`), `missing ${field}`);
   }
-  for (const field of ["pointer", "code", "message"]) {
+  for (const field of fieldError.required) {
     assert.match(text, new RegExp(`\\b${field}\\b`), `missing field error ${field}`);
   }
   assert.match(text, /X-Request-Id/);
@@ -516,7 +867,7 @@ test("errors documents the shared Problem contract and safe diagnostics", () => 
   assert.match(text, /PII/);
   assert.match(text, /```json\n[\s\S]*"correlationId"[\s\S]*```/);
 
-  assertOperationLinks("integration/errors", [
+  assertOperationHrefs("integration/errors", [
     ["post", "/v3/customers"],
     ["post", "/v3/transfers"],
   ]);
@@ -524,10 +875,42 @@ test("errors documents the shared Problem contract and safe diagnostics", () => 
 
 test("pagination scopes ordering and explains cursor recovery", () => {
   const text = readPage("integration/pagination-and-sync");
+  const page = resolveOpenApiReference(openapi.components?.schemas?.Page);
+  assert.ok(page, "OpenAPI must define components.schemas.Page");
+  assert.deepEqual(page.required, ["data", "nextCursor", "hasMore"]);
+  assert.equal(page.properties.data.type, "array");
+  assert.equal(page.properties.nextCursor.type, "string");
+  assert.equal(page.properties.nextCursor.nullable, true);
+  assert.equal(page.properties.hasMore.type, "boolean");
+
+  const customerParameters = operationParameters("get", "/v3/customers");
+  const cursor = customerParameters.find((parameter) => parameter.name === "cursor");
+  assert.ok(cursor, "GET /v3/customers must declare cursor");
+  assert.equal(cursor.in, "query");
+  assert.equal(cursor.schema.type, "string");
+
+  const updatedAfter = customerParameters.find(
+    (parameter) => parameter.name === "updatedAfter",
+  );
+  assert.ok(updatedAfter, "GET /v3/customers must declare updatedAfter");
+  assert.equal(updatedAfter.in, "query");
+  assert.equal(updatedAfter.required, false);
+  assert.equal(updatedAfter.schema.format, "date-time");
+  assert.match(updatedAfter.description, /at or after[\s\S]*RFC 3339/i);
+  assert.match(updatedAfter.description, /missed webhooks/i);
+
+  const { operationObject: listCustomers } = openApiOperation(
+    "get",
+    "/v3/customers",
+  );
+  assert.match(
+    listCustomers.description,
+    /deterministic createdAt DESC, id DESC order/,
+  );
 
   assert.match(text, /paginated list operations[\s\S]{0,80}cursor envelope/i);
   assert.doesNotMatch(text, /^List operations use\b/im);
-  for (const field of ["data", "nextCursor", "hasMore"]) {
+  for (const field of page.required) {
     assert.match(text, new RegExp(`\\b${field}\\b`), `missing ${field}`);
   }
   assert.match(text, /opaque cursor/i);
@@ -540,6 +923,24 @@ test("pagination scopes ordering and explains cursor recovery", () => {
   assert.match(text, /deduplicat[\s\S]{0,80}resource id/i);
   assert.match(text, /refetch[\s\S]{0,80}(?:changed|resource)/i);
   assert.match(text, /does not[\s\S]{0,80}(?:promise|imply)[\s\S]{0,80}delivery guarantee/i);
+
+  const javascriptBlocks = [
+    ...text.matchAll(/```js\n([\s\S]*?)```/g),
+  ].map((match) => match[1]);
+  const paginationExample = javascriptBlocks.find((block) => /fetch\(/.test(block));
+  assert.ok(paginationExample, "pagination page must include a fetch example");
+  const responseCheckIndex = paginationExample.indexOf("if (!response.ok)");
+  const pageParseIndex = paginationExample.indexOf("const page");
+  assert.ok(responseCheckIndex >= 0, "pagination example must check response.ok");
+  assert.ok(
+    pageParseIndex > responseCheckIndex,
+    "pagination example must check response.ok before treating JSON as a page",
+  );
+  assert.match(
+    paginationExample,
+    /if \(!response\.ok\) \{[\s\S]*const problem = await response\.json\(\);[\s\S]*throw new Error\(`\$\{problem\.code\}: \$\{problem\.detail\}`\);[\s\S]*\}/,
+  );
+  assert.doesNotMatch(paginationExample, /console\.(?:log|error|warn)/);
 
   assertOperationLinks("integration/pagination-and-sync", [
     ["get", "/v3/customers"],
