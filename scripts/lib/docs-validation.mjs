@@ -51,67 +51,355 @@ export const REQUIRED_PUBLISHED_PAGES = Object.freeze([
   ...REQUIRED_NAVIGATION_PAGES,
 ]);
 
-export const FROZEN_SOURCE_PAGES = Object.freeze([
-  "content/business-onboarding/documents.mdx",
-  "content/business-onboarding/entity-types.mdx",
-  "content/business-onboarding/faq.mdx",
-  "content/business-onboarding/index.mdx",
-  "content/business-onboarding/shareholders.mdx",
-  "content/business-onboarding/workflow.mdx",
-  "content/compliance/general-information.mdx",
-  "content/compliance/governance.mdx",
-  "content/compliance/index.mdx",
-  "content/compliance/jurisdiction-framework.mdx",
-  "content/compliance/limits.mdx",
-  "content/compliance/merchant-onboarding.mdx",
-  "content/compliance/payment-methods.mdx",
-  "content/compliance/screening-monitoring.mdx",
-  "content/compliance/supported-verticals.mdx",
-  "content/compliance/travel-rule.mdx",
-  "content/compliance/wallet-architecture.mdx",
-  "content/concepts/accounts.mdx",
-  "content/concepts/customers.mdx",
-  "content/concepts/index.mdx",
-  "content/concepts/quotes.mdx",
-  "content/concepts/rails.mdx",
-  "content/concepts/recipients.mdx",
-  "content/concepts/wallets.mdx",
-  "content/concepts/webhooks.mdx",
-  "content/get-started/api-reference.mdx",
-  "content/get-started/authentication.mdx",
-  "content/get-started/index.mdx",
-  "content/get-started/sandbox.mdx",
-  "content/get-started/starter-kit.mdx",
-  "content/index.mdx",
-  "content/individual-onboarding/api-reference.mdx",
-  "content/individual-onboarding/index.mdx",
-  "content/individual-onboarding/status-workflow.mdx",
-  "content/individual-onboarding/verification-levels.mdx",
-  "content/onboarding/businesses.mdx",
-  "content/onboarding/index.mdx",
-  "content/onboarding/individuals.mdx",
-  "content/onboarding/shareholders-and-documents.mdx",
-  "content/receive/index.mdx",
-  "content/receive/pooled-payins.mdx",
-  "content/receive/virtual-accounts.mdx",
-  "content/reference/endpoint-map.mdx",
-  "content/reference/rates.mdx",
-  "content/reference/supported-rails.mdx",
-  "content/reference/v3-blockchain-networks.mdx",
-  "content/reference/v3-fee-schedule.mdx",
-  "content/reference/v3-method-coverage.mdx",
-  "content/reference/v3-reason-codes.mdx",
-  "content/reference/webhooks.mdx",
-  "content/send/first-party-payouts.mdx",
-  "content/send/index.mdx",
-  "content/send/recipient-payouts.mdx",
-  "content/t-c/creating-customer.mdx",
-  "content/t-c/implementation.mdx",
-  "content/t-c/incorporating-terms.mdx",
-  "content/t-c/index.mdx",
-  "content/t-c/updates.mdx",
-  "content/transfers/index.mdx",
+// Independent oracle for the approved ledger's release decisions. Source-page
+// and expected redirect-source inventories derive from this data, never from
+// the ledger file under validation.
+const FROZEN_MIGRATION_DECISION_ROWS = Object.freeze([
+  [
+    "content/business-onboarding/documents.mdx",
+    "/knowledge-base/business-onboarding/document-requirements",
+    "preserved-policy",
+    "review-required",
+  ],
+  [
+    "content/business-onboarding/entity-types.mdx",
+    "/knowledge-base/business-onboarding/entity-and-business-types",
+    "preserved-policy",
+    "review-required",
+  ],
+  [
+    "content/business-onboarding/faq.mdx",
+    "/knowledge-base/business-onboarding/faq",
+    "preserved-policy",
+    "review-required",
+  ],
+  [
+    "content/business-onboarding/index.mdx",
+    "/knowledge-base/business-onboarding/overview",
+    "preserved-policy",
+    "review-required",
+  ],
+  [
+    "content/business-onboarding/shareholders.mdx",
+    "/knowledge-base/business-onboarding/shareholders-ubos-and-control-persons",
+    "preserved-policy",
+    "review-required",
+  ],
+  [
+    "content/business-onboarding/workflow.mdx",
+    "/knowledge-base/business-onboarding/kyb-workflow",
+    "preserved-policy",
+    "review-required",
+  ],
+  [
+    "content/compliance/general-information.mdx",
+    "/knowledge-base/compliance/regulatory-perimeter",
+    "preserved-policy",
+    "review-required",
+  ],
+  [
+    "content/compliance/governance.mdx",
+    "/knowledge-base/compliance/governance-retention-and-privacy",
+    "preserved-policy",
+    "review-required",
+  ],
+  [
+    "content/compliance/index.mdx",
+    "/knowledge-base/compliance/overview",
+    "preserved-policy",
+    "review-required",
+  ],
+  [
+    "content/compliance/jurisdiction-framework.mdx",
+    "/knowledge-base/compliance/jurisdictions-and-availability",
+    "preserved-policy",
+    "review-required",
+  ],
+  [
+    "content/compliance/limits.mdx",
+    "/knowledge-base/compliance/transaction-limits",
+    "preserved-policy",
+    "review-required",
+  ],
+  [
+    "content/compliance/merchant-onboarding.mdx",
+    "/knowledge-base/business-onboarding/overview",
+    "redirect-only",
+    "not-applicable",
+  ],
+  [
+    "content/compliance/payment-methods.mdx",
+    "/knowledge-base/compliance/payment-methods",
+    "preserved-policy",
+    "review-required",
+  ],
+  [
+    "content/compliance/screening-monitoring.mdx",
+    "/knowledge-base/compliance/screening-and-monitoring",
+    "preserved-policy",
+    "review-required",
+  ],
+  [
+    "content/compliance/supported-verticals.mdx",
+    "/knowledge-base/compliance/supported-business-models",
+    "preserved-policy",
+    "review-required",
+  ],
+  [
+    "content/compliance/travel-rule.mdx",
+    "/knowledge-base/compliance/travel-rule",
+    "preserved-policy",
+    "review-required",
+  ],
+  [
+    "content/compliance/wallet-architecture.mdx",
+    "/knowledge-base/compliance/custody-and-wallet-controls",
+    "preserved-policy",
+    "review-required",
+  ],
+  [
+    "content/concepts/accounts.mdx",
+    "/integration/accounts",
+    "contract-rewrite",
+    "not-applicable",
+  ],
+  [
+    "content/concepts/customers.mdx",
+    "/integration/overview",
+    "contract-rewrite",
+    "not-applicable",
+  ],
+  [
+    "content/concepts/index.mdx",
+    "/integration/overview",
+    "contract-rewrite",
+    "not-applicable",
+  ],
+  [
+    "content/concepts/quotes.mdx",
+    "/integration/quotes-and-transfers",
+    "contract-rewrite",
+    "not-applicable",
+  ],
+  [
+    "content/concepts/rails.mdx",
+    "/integration/overview",
+    "contract-rewrite",
+    "not-applicable",
+  ],
+  [
+    "content/concepts/recipients.mdx",
+    "/integration/recipients",
+    "contract-rewrite",
+    "not-applicable",
+  ],
+  [
+    "content/concepts/wallets.mdx",
+    "/integration/accounts",
+    "contract-rewrite",
+    "not-applicable",
+  ],
+  [
+    "content/concepts/webhooks.mdx",
+    "/integration/webhooks",
+    "contract-rewrite",
+    "not-applicable",
+  ],
+  [
+    "content/get-started/api-reference.mdx",
+    "/integration/using-the-api-reference",
+    "contract-rewrite",
+    "not-applicable",
+  ],
+  [
+    "content/get-started/authentication.mdx",
+    "/integration/authentication",
+    "contract-rewrite",
+    "not-applicable",
+  ],
+  [
+    "content/get-started/index.mdx",
+    "/integration/overview",
+    "contract-rewrite",
+    "not-applicable",
+  ],
+  [
+    "content/get-started/sandbox.mdx",
+    "/integration/sandbox",
+    "contract-rewrite",
+    "not-applicable",
+  ],
+  [
+    "content/get-started/starter-kit.mdx",
+    "/integration/starter-kit",
+    "contract-rewrite",
+    "not-applicable",
+  ],
+  ["content/index.mdx", "/", "contract-rewrite", "not-applicable"],
+  [
+    "content/individual-onboarding/api-reference.mdx",
+    "/knowledge-base/individual-onboarding/api-workflow",
+    "contract-rewrite",
+    "not-applicable",
+  ],
+  [
+    "content/individual-onboarding/index.mdx",
+    "/knowledge-base/individual-onboarding/overview",
+    "preserved-policy",
+    "review-required",
+  ],
+  [
+    "content/individual-onboarding/status-workflow.mdx",
+    "/knowledge-base/individual-onboarding/status-and-workflow",
+    "preserved-policy",
+    "review-required",
+  ],
+  [
+    "content/individual-onboarding/verification-levels.mdx",
+    "/knowledge-base/individual-onboarding/verification-levels",
+    "preserved-policy",
+    "review-required",
+  ],
+  [
+    "content/onboarding/businesses.mdx",
+    "/integration/onboarding/businesses",
+    "contract-rewrite",
+    "not-applicable",
+  ],
+  [
+    "content/onboarding/index.mdx",
+    "/integration/onboarding/individuals",
+    "contract-rewrite",
+    "not-applicable",
+  ],
+  [
+    "content/onboarding/individuals.mdx",
+    "/integration/onboarding/individuals",
+    "contract-rewrite",
+    "not-applicable",
+  ],
+  [
+    "content/onboarding/shareholders-and-documents.mdx",
+    "/integration/onboarding/documents",
+    "contract-rewrite",
+    "not-applicable",
+  ],
+  [
+    "content/receive/index.mdx",
+    "/integration/receive-funds",
+    "contract-rewrite",
+    "not-applicable",
+  ],
+  [
+    "content/receive/pooled-payins.mdx",
+    "/integration/receive-funds",
+    "contract-rewrite",
+    "not-applicable",
+  ],
+  [
+    "content/receive/virtual-accounts.mdx",
+    "/integration/receive-funds",
+    "contract-rewrite",
+    "not-applicable",
+  ],
+  [
+    "content/reference/endpoint-map.mdx",
+    "/integration/using-the-api-reference",
+    "contract-rewrite",
+    "not-applicable",
+  ],
+  [
+    "content/reference/rates.mdx",
+    "/api-reference/money-movement/get-v3-rates",
+    "contract-rewrite",
+    "not-applicable",
+  ],
+  [
+    "content/reference/supported-rails.mdx",
+    "/integration/overview",
+    "contract-rewrite",
+    "not-applicable",
+  ],
+  [
+    "content/reference/v3-blockchain-networks.mdx",
+    "/integration/accounts",
+    "contract-rewrite",
+    "not-applicable",
+  ],
+  [
+    "content/reference/v3-fee-schedule.mdx",
+    "/integration/quotes-and-transfers",
+    "contract-rewrite",
+    "not-applicable",
+  ],
+  [
+    "content/reference/v3-method-coverage.mdx",
+    "/integration/overview",
+    "contract-rewrite",
+    "not-applicable",
+  ],
+  [
+    "content/reference/v3-reason-codes.mdx",
+    "/integration/errors",
+    "contract-rewrite",
+    "not-applicable",
+  ],
+  [
+    "content/reference/webhooks.mdx",
+    "/integration/webhooks",
+    "contract-rewrite",
+    "not-applicable",
+  ],
+  [
+    "content/send/first-party-payouts.mdx",
+    "/integration/send-funds",
+    "contract-rewrite",
+    "not-applicable",
+  ],
+  [
+    "content/send/index.mdx",
+    "/integration/send-funds",
+    "contract-rewrite",
+    "not-applicable",
+  ],
+  [
+    "content/send/recipient-payouts.mdx",
+    "/integration/send-funds",
+    "contract-rewrite",
+    "not-applicable",
+  ],
+  ["content/t-c/creating-customer.mdx", "—", "omitted", "not-applicable"],
+  ["content/t-c/implementation.mdx", "—", "omitted", "not-applicable"],
+  [
+    "content/t-c/incorporating-terms.mdx",
+    "—",
+    "omitted",
+    "not-applicable",
+  ],
+  ["content/t-c/index.mdx", "—", "omitted", "not-applicable"],
+  ["content/t-c/updates.mdx", "—", "omitted", "not-applicable"],
+  [
+    "content/transfers/index.mdx",
+    "/integration/quotes-and-transfers",
+    "contract-rewrite",
+    "not-applicable",
+  ],
 ]);
+
+export const FROZEN_MIGRATION_DECISIONS = Object.freeze(
+  Object.fromEntries(
+    FROZEN_MIGRATION_DECISION_ROWS.map(
+      ([sourcePath, destination, disposition, reviewState]) => [
+        sourcePath,
+        Object.freeze({ destination, disposition, reviewState }),
+      ],
+    ),
+  ),
+);
+
+export const FROZEN_SOURCE_PAGES = Object.freeze(
+  Object.keys(FROZEN_MIGRATION_DECISIONS).sort(compareStrings),
+);
 
 const REDIRECT_SOURCE_ROOTS = new Set([
   "business-onboarding",
@@ -236,22 +524,113 @@ function sortedErrors(errors) {
 }
 
 function normalizePath(path) {
-  return String(path).replaceAll("\\", "/").replace(/^\.\//, "");
+  return String(path).replaceAll("\\", "/").replace(/^\.\/+/, "");
+}
+
+function pageFile(page) {
+  return page === "index" ? "index.mdx" : `${page}.mdx`;
+}
+
+function matchesMintIgnoreRule(path, rule) {
+  const normalizedPath = normalizePath(path);
+  const normalizedRule = normalizePath(rule).replace(/^\//, "");
+  if (normalizedRule.endsWith("/")) {
+    return normalizedPath.startsWith(normalizedRule);
+  }
+  if (normalizedRule.startsWith("*.")) {
+    return normalizedPath.endsWith(normalizedRule.slice(1));
+  }
+  return normalizedPath === normalizedRule;
+}
+
+export function isMintlifyIgnoredPath(path, rules = []) {
+  let ignored = false;
+  for (const rawRule of rules) {
+    const trimmed = String(rawRule).trim();
+    if (trimmed === "" || trimmed.startsWith("#")) continue;
+    const negated = trimmed.startsWith("!");
+    const rule = negated ? trimmed.slice(1) : trimmed;
+    if (rule && matchesMintIgnoreRule(path, rule)) ignored = !negated;
+  }
+  return ignored;
+}
+
+export function selectPublishableMdxPaths(paths, ignoreRules = []) {
+  return [...new Set(paths.map(normalizePath))]
+    .filter((path) => path.endsWith(".mdx"))
+    .filter((path) => !isMintlifyIgnoredPath(path, ignoreRules))
+    .sort(compareStrings);
+}
+
+export function validatePublishedMdxInventory(paths, options = {}) {
+  const requiredPages = options.requiredPages ?? REQUIRED_PUBLISHED_PAGES;
+  const requiredFiles = requiredPages.map(pageFile);
+  const requiredSet = new Set(requiredFiles);
+  const publishedFiles = [...new Set(paths.map(normalizePath))].sort(
+    compareStrings,
+  );
+  const publishedSet = new Set(publishedFiles);
+  const errors = [];
+
+  for (const path of requiredFiles) {
+    if (!publishedSet.has(path)) {
+      errors.push(`${path}: missing required published page`);
+    }
+  }
+  for (const path of publishedFiles) {
+    if (!requiredSet.has(path)) {
+      errors.push(`${path}: unexpected publishable MDX page`);
+    }
+  }
+
+  return sortedErrors(errors);
 }
 
 export function isPublishedPath(path) {
   const normalized = normalizePath(path).split("#", 1)[0];
   return (
-    normalized === "index.mdx" ||
+    normalized.endsWith(".mdx") ||
     normalized === "docs.json" ||
-    normalized === "openapi.json" ||
-    /^integration\/.+\.mdx$/.test(normalized) ||
-    /^knowledge-base\/.+\.mdx$/.test(normalized)
+    normalized === "openapi.json"
   );
 }
 
+function stripYamlInlineComment(value) {
+  const text = String(value);
+  let quote;
+
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index];
+    if (quote) {
+      if (quote === '"' && character === "\\") {
+        index += 1;
+      } else if (
+        quote === "'" &&
+        character === "'" &&
+        text[index + 1] === "'"
+      ) {
+        index += 1;
+      } else if (character === quote) {
+        quote = undefined;
+      }
+      continue;
+    }
+
+    if (character === '"' || character === "'") {
+      quote = character;
+    } else if (
+      character === "#" &&
+      (index === 0 || /\s/.test(text[index - 1]))
+    ) {
+      return text.slice(0, index).trimEnd();
+    }
+  }
+
+  return text.trimEnd();
+}
+
 function unquote(value) {
-  const trimmed = value.trim();
+  const trimmed = stripYamlInlineComment(value).trim();
   if (
     trimmed.length >= 2 &&
     ((trimmed.startsWith('"') && trimmed.endsWith('"')) ||
@@ -295,7 +674,8 @@ export function parseFrontmatter(text) {
     if (!match) continue;
 
     const [, key, rawValue = ""] = match;
-    if (["|", ">", "|-", ">-", "|+", ">+"].includes(rawValue.trim())) {
+    const scalar = stripYamlInlineComment(rawValue).trim();
+    if (["|", ">", "|-", ">-", "|+", ">+"].includes(scalar)) {
       const block = [];
       while (
         index + 1 < frontmatterLines.length &&
@@ -356,7 +736,8 @@ function validateCodeFences(path, text) {
   let openFence;
 
   for (let index = 0; index < lines.length; index += 1) {
-    const match = /^\s*(`{3,}|~{3,})(.*)$/.exec(lines[index]);
+    const line = lines[index].replace(/^\s*(?:>\s*)+/, "");
+    const match = /^\s*(`{3,}|~{3,})(.*)$/.exec(line);
     if (!match) continue;
 
     const [, marker, remainder] = match;
@@ -371,7 +752,9 @@ function validateCodeFences(path, text) {
       continue;
     }
 
-    if (remainder.trim() === "") {
+    const info = remainder.trim();
+    const language = info.split(/\s+/, 1)[0] ?? "";
+    if (!/^[A-Za-z0-9][A-Za-z0-9_+#.-]*$/.test(language)) {
       errors.push(
         `${path}:${index + 1}: code fence is missing a language tag`,
       );
@@ -516,17 +899,45 @@ export function validateNavigation(config, options = {}) {
     }
   }
 
-  const apiTabs = findObjects(
-    navigation,
-    (value) => value.tab === "API Reference",
+  const topLevelTabs = Array.isArray(navigation.tabs) ? navigation.tabs : [];
+  const apiTabs = topLevelTabs.filter(
+    (value) =>
+      value && typeof value === "object" && value.tab === "API Reference",
   );
-  if (apiTabs.length !== 1 || apiTabs[0]?.openapi !== "openapi.json") {
+  const openapiOwners = findObjects(
+    navigation,
+    (value) => Object.hasOwn(value, "openapi"),
+  );
+  if (
+    apiTabs.length !== 1 ||
+    apiTabs[0]?.openapi !== "openapi.json" ||
+    openapiOwners.length !== 1 ||
+    openapiOwners[0] !== apiTabs[0]
+  ) {
     errors.push(
-      "docs.json: API Reference navigation must use openapi.json exactly once",
+      "docs.json: top-level API Reference tab must use openapi.json; navigation must contain exactly one openapi reference",
     );
   }
 
   return sortedErrors(errors);
+}
+
+export function parseRedirectVerificationPhase(args = []) {
+  const prefix = "--redirect-phase=";
+  const phaseArguments = args.filter((argument) =>
+    String(argument).startsWith(prefix),
+  );
+  if (phaseArguments.length > 1) {
+    throw new Error("Redirect phase may be specified only once");
+  }
+
+  const phase = phaseArguments[0]?.slice(prefix.length) || "current";
+  if (phase !== "current" && phase !== "final") {
+    throw new Error(
+      `Redirect phase must be current or final, received ${phase}`,
+    );
+  }
+  return phase;
 }
 
 export function validateRedirectInventory(inventory, options = {}) {
@@ -538,8 +949,43 @@ export function validateRedirectInventory(inventory, options = {}) {
   const expectedSources = options.expectedSources ?? EXPECTED_REDIRECT_SOURCES;
   const knownDestinations = options.knownDestinations;
   const expectedDestinations = options.expectedDestinations;
+  const verificationPhase = options.verificationPhase ?? "current";
   const sourceCounts = new Map();
   const allowedKeys = ["destination", "reason", "source", "verified"];
+
+  if (verificationPhase !== "current" && verificationPhase !== "final") {
+    errors.push(
+      `docs/redirect-inventory.json: invalid redirect verification phase ${verificationPhase}`,
+    );
+  }
+
+  if (expectedDestinations !== undefined) {
+    if (
+      !expectedDestinations ||
+      typeof expectedDestinations !== "object" ||
+      Array.isArray(expectedDestinations)
+    ) {
+      errors.push(
+        "docs/redirect-inventory.json: expected destinations must be an object",
+      );
+    } else {
+      const expectedSourceSet = new Set(expectedSources);
+      for (const source of expectedSources) {
+        if (!Object.hasOwn(expectedDestinations, source)) {
+          errors.push(`expected destinations are missing source ${source}`);
+        }
+      }
+      for (const source of Object.keys(expectedDestinations).sort(
+        compareStrings,
+      )) {
+        if (!expectedSourceSet.has(source)) {
+          errors.push(
+            `expected destinations contain unexpected source ${source}`,
+          );
+        }
+      }
+    }
+  }
 
   inventory.forEach((entry, index) => {
     const location = `docs/redirect-inventory.json[${index}]`;
@@ -572,8 +1018,11 @@ export function validateRedirectInventory(inventory, options = {}) {
     if (typeof reason !== "string" || reason.trim() === "") {
       errors.push(`${location}: reason must be a non-empty string`);
     }
-    if (verified !== false) {
-      errors.push(`${location}: verified must be false before preview checks`);
+    const expectedVerified = verificationPhase === "final";
+    if (verified !== expectedVerified) {
+      errors.push(
+        `${location}: verified must be ${expectedVerified} in ${verificationPhase} phase`,
+      );
     }
 
     if (
@@ -615,6 +1064,29 @@ function stripCode(value) {
   return trimmed;
 }
 
+function splitMarkdownTableRow(line) {
+  const trimmed = String(line).trim();
+  if (!trimmed.startsWith("|") || !trimmed.endsWith("|")) return undefined;
+
+  const cells = [];
+  let cell = "";
+  const content = trimmed.slice(1, -1);
+  for (let index = 0; index < content.length; index += 1) {
+    const character = content[index];
+    if (character === "\\" && content[index + 1] === "|") {
+      cell += "|";
+      index += 1;
+    } else if (character === "|") {
+      cells.push(cell.trim());
+      cell = "";
+    } else {
+      cell += character;
+    }
+  }
+  cells.push(cell.trim());
+  return cells;
+}
+
 export function parseMigrationLedger(markdown) {
   const lines = String(markdown).replaceAll("\r\n", "\n").split("\n");
   const headerIndex = lines.findIndex(
@@ -626,15 +1098,19 @@ export function parseMigrationLedger(markdown) {
     throw new Error("Migration ledger table header is missing or malformed");
   }
 
+  const separator = splitMarkdownTableRow(lines[headerIndex + 1]);
+  if (
+    separator?.length !== 6 ||
+    separator.some((cell) => !/^:?-{3,}:?$/.test(cell))
+  ) {
+    throw new Error("Migration ledger table separator is missing or malformed");
+  }
+
   const rows = [];
   for (const line of lines.slice(headerIndex + 2)) {
     if (!line.trim().startsWith("|")) break;
-    const cells = line
-      .trim()
-      .slice(1, -1)
-      .split("|")
-      .map(stripCode);
-    if (cells.length !== 6) {
+    const cells = splitMarkdownTableRow(line)?.map(stripCode);
+    if (cells?.length !== 6) {
       throw new Error(`Malformed migration ledger row: ${line}`);
     }
     const [
@@ -670,6 +1146,8 @@ export function validateMigrationCoverage(sourcePages, ledgerRows, options = {})
     "omitted",
   ]);
   const allowedReviewStates = new Set(["review-required", "not-applicable"]);
+  const expectedDecisions =
+    options.expectedDecisions ?? FROZEN_MIGRATION_DECISIONS;
   const sourceSet = new Set(sourcePages);
   const rowCounts = new Map();
 
@@ -693,6 +1171,26 @@ export function validateMigrationCoverage(sourcePages, ledgerRows, options = {})
     if (!allowedReviewStates.has(row.reviewState)) {
       errors.push(`${sourcePath}: invalid review state ${row.reviewState}`);
     }
+
+    const expectedDecision = expectedDecisions?.[sourcePath];
+    if (expectedDecision) {
+      if (row.destination !== expectedDecision.destination) {
+        errors.push(
+          `${sourcePath}: destination must remain ${expectedDecision.destination}`,
+        );
+      }
+      if (row.disposition !== expectedDecision.disposition) {
+        errors.push(
+          `${sourcePath}: disposition must remain ${expectedDecision.disposition}`,
+        );
+      }
+      if (row.reviewState !== expectedDecision.reviewState) {
+        errors.push(
+          `${sourcePath}: review state must remain ${expectedDecision.reviewState}`,
+        );
+      }
+    }
+
     if (
       row.disposition === "preserved-policy" &&
       row.reviewState !== "review-required"
@@ -791,4 +1289,16 @@ export function collectJsonStrings(value, pointer = "", output = []) {
     );
   }
   return output;
+}
+
+export function validatePublishedJsonStrings(path, value) {
+  const errors = [];
+  for (const { pointer, value: stringValue } of collectJsonStrings(value)) {
+    errors.push(
+      ...validatePublishedText(`${path}#${pointer}`, stringValue, {
+        checkCodeFences: false,
+      }),
+    );
+  }
+  return sortedErrors(errors);
 }

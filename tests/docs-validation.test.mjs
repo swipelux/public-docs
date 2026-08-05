@@ -1,17 +1,34 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import {
+  APPROVED_REDIRECT_DESTINATIONS,
   EXPECTED_REDIRECT_SOURCES,
+  FROZEN_MIGRATION_DECISIONS,
   FROZEN_SOURCE_PAGES,
   REQUIRED_NAVIGATION_PAGES,
+  REQUIRED_PUBLISHED_PAGES,
   SOURCE_COMMIT,
   parseMigrationLedger,
+  parseRedirectVerificationPhase,
+  selectPublishableMdxPaths,
   sourcePathToRoute,
   validateFrontmatter,
   validateMigrationCoverage,
   validateNavigation,
+  validatePublishedJsonStrings,
+  validatePublishedMdxInventory,
   validatePublishedText,
   validateRedirectInventory,
 } from "../scripts/lib/docs-validation.mjs";
@@ -41,13 +58,23 @@ function navigationFixture(pages = ["integration/overview"]) {
   };
 }
 
-function redirect(source = "/old", destination = "/integration/overview") {
+function redirect(
+  source = "/old",
+  destination = "/integration/overview",
+  verified = false,
+) {
   return {
     source,
     destination,
     reason: "Legacy route moved",
-    verified: false,
+    verified,
   };
+}
+
+function committedLedger() {
+  return parseMigrationLedger(
+    readFileSync("docs/content-migration-ledger.md", "utf8"),
+  );
 }
 
 test("requires title frontmatter", () => {
@@ -73,6 +100,40 @@ test("accepts non-empty title and description frontmatter", () => {
     validateFrontmatter("integration/example.mdx", validPage()),
     [],
   );
+});
+
+test("rejects YAML-null and comment-only frontmatter values", () => {
+  for (const [field, value] of [
+    ["title", "# TODO"],
+    ["title", "null # TODO"],
+    ["title", "~"],
+    ["description", '\"\" # TODO'],
+    ["description", "'' # TODO"],
+  ]) {
+    const frontmatter = {
+      title: "Example",
+      description: "Example description.",
+      [field]: value,
+    };
+    const errors = validateFrontmatter(
+      "integration/example.mdx",
+      `---\ntitle: ${frontmatter.title}\ndescription: ${frontmatter.description}\n---\n`,
+    );
+
+    assertHasError(errors, new RegExp(`missing ${field} frontmatter`, "i"));
+  }
+});
+
+test("accepts quoted frontmatter values containing hash characters", () => {
+  const text = [
+    "---",
+    'title: "C# and API # reference" # navigation title',
+    "description: 'Use # fragments safely' # SEO description",
+    "---",
+    "",
+  ].join("\n");
+
+  assert.deepEqual(validateFrontmatter("integration/example.mdx", text), []);
 });
 
 for (const [label, banned, pattern] of [
@@ -143,6 +204,24 @@ test("accepts language-tagged code fences", () => {
   );
 
   assert.deepEqual(errors, []);
+});
+
+test("rejects blockquoted untagged code fences", () => {
+  const errors = validatePublishedText(
+    "integration/example.mdx",
+    validPage("> ```\n> const value = true;\n> ```"),
+  );
+
+  assertHasError(errors, /code fence.*language tag/i);
+});
+
+test("rejects metadata-only untagged code fences", () => {
+  const errors = validatePublishedText(
+    "integration/example.mdx",
+    validPage('``` {title="Example"}\nconst value = true;\n```'),
+  );
+
+  assertHasError(errors, /code fence.*language tag/i);
 });
 
 test("allows historical version references in excluded specs and plans", () => {
@@ -220,6 +299,83 @@ test("requires the API Reference navigation to use openapi.json", () => {
   assertHasError(errors, /API Reference.*openapi\.json/i);
 });
 
+test("rejects duplicate OpenAPI references anywhere in navigation", () => {
+  const config = navigationFixture();
+  config.navigation.tabs[0].groups[0].openapi = "openapi.json";
+  const errors = validateNavigation(config, {
+    pageExists: () => true,
+    requiredPages: ["integration/overview"],
+  });
+
+  assertHasError(errors, /exactly one openapi reference/i);
+});
+
+test("rejects OpenAPI navigation placed on another top-level tab", () => {
+  const config = navigationFixture();
+  delete config.navigation.tabs[1].openapi;
+  config.navigation.tabs[0].openapi = "openapi.json";
+  const errors = validateNavigation(config, {
+    pageExists: () => true,
+    requiredPages: ["integration/overview"],
+  });
+
+  assertHasError(errors, /top-level API Reference tab/i);
+});
+
+test("preserves false redirect verification in the current phase", () => {
+  assert.deepEqual(
+    validateRedirectInventory([redirect()], {
+      expectedSources: ["/old"],
+      knownDestinations: new Set(["/integration/overview"]),
+    }),
+    [],
+  );
+});
+
+test("rejects true redirect verification in the current phase", () => {
+  const errors = validateRedirectInventory(
+    [redirect("/old", "/integration/overview", true)],
+    {
+      expectedSources: ["/old"],
+      knownDestinations: new Set(["/integration/overview"]),
+    },
+  );
+
+  assertHasError(errors, /verified must be false.*current phase/i);
+});
+
+test("requires true redirect verification in the final phase", () => {
+  const options = {
+    expectedSources: ["/old"],
+    knownDestinations: new Set(["/integration/overview"]),
+    verificationPhase: "final",
+  };
+
+  assert.deepEqual(
+    validateRedirectInventory(
+      [redirect("/old", "/integration/overview", true)],
+      options,
+    ),
+    [],
+  );
+  assertHasError(
+    validateRedirectInventory([redirect()], options),
+    /verified must be true.*final phase/i,
+  );
+});
+
+test("parses the explicit redirect verification CLI phase", () => {
+  assert.equal(parseRedirectVerificationPhase([]), "current");
+  assert.equal(
+    parseRedirectVerificationPhase(["--redirect-phase=final"]),
+    "final",
+  );
+  assert.throws(
+    () => parseRedirectVerificationPhase(["--redirect-phase=release"]),
+    /redirect phase.*current.*final/i,
+  );
+});
+
 test("rejects redirects to unknown destinations", () => {
   const errors = validateRedirectInventory(
     [redirect("/old", "/unknown")],
@@ -242,6 +398,131 @@ test("rejects duplicate redirect sources", () => {
   );
 
   assertHasError(errors, /duplicate redirect source \/old/i);
+});
+
+test("requires expected redirect destinations for every expected source", () => {
+  const errors = validateRedirectInventory([redirect()], {
+    expectedSources: ["/old"],
+    expectedDestinations: {},
+    knownDestinations: new Set(["/integration/overview"]),
+  });
+
+  assertHasError(errors, /expected destinations.*missing source \/old/i);
+});
+
+test("rejects unexpected keys in expected redirect destinations", () => {
+  const errors = validateRedirectInventory([redirect()], {
+    expectedSources: ["/old"],
+    expectedDestinations: {
+      "/old": "/integration/overview",
+      "/extra": "/integration/overview",
+    },
+    knownDestinations: new Set(["/integration/overview"]),
+  });
+
+  assertHasError(errors, /expected destinations.*unexpected source \/extra/i);
+});
+
+test("filters only explicitly ignored MDX paths from publication", () => {
+  const paths = selectPublishableMdxPaths(
+    [
+      "index.mdx",
+      "quickstart.mdx",
+      "integration/overview.mdx",
+      "docs/specs/internal.mdx",
+      "drafts/example.mdx",
+      "integration/example.draft.mdx",
+    ],
+    ["docs/", "drafts/", "*.draft.mdx"],
+  );
+
+  assert.deepEqual(paths, [
+    "index.mdx",
+    "integration/overview.mdx",
+    "quickstart.mdx",
+  ]);
+});
+
+test("rejects every unexpected publishable MDX page", () => {
+  const errors = validatePublishedMdxInventory(
+    [
+      "index.mdx",
+      "integration/overview.mdx",
+      "quickstart.mdx",
+      "content/t-c/index.mdx",
+      "integration/extra.mdx",
+    ],
+    { requiredPages: ["index", "integration/overview"] },
+  );
+
+  assertHasError(errors, /quickstart\.mdx.*unexpected publishable MDX page/i);
+  assertHasError(
+    errors,
+    /content\/t-c\/index\.mdx.*unexpected publishable MDX page/i,
+  );
+  assertHasError(
+    errors,
+    /integration\/extra\.mdx.*unexpected publishable MDX page/i,
+  );
+});
+
+test("documentation CLI discovers root-level unexpected MDX pages", () => {
+  const fixture = mkdtempSync(join(tmpdir(), "docs-validation-"));
+  const cli = fileURLToPath(
+    new URL("../scripts/verify-docs.mjs", import.meta.url),
+  );
+  try {
+    writeFileSync(join(fixture, ".mintignore"), "docs/\n");
+    writeFileSync(join(fixture, "quickstart.mdx"), validPage());
+    mkdirSync(join(fixture, "docs/plans"), { recursive: true });
+    writeFileSync(
+      join(fixture, "docs/plans/internal.mdx"),
+      validPage(),
+    );
+
+    const result = spawnSync(process.execPath, [cli], {
+      cwd: fixture,
+      encoding: "utf8",
+    });
+
+    assert.equal(result.status, 1);
+    assert.match(
+      result.stderr,
+      /quickstart\.mdx: unexpected publishable MDX page/i,
+    );
+    assert.doesNotMatch(result.stderr, /docs\/plans\/.*publishable MDX/i);
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
+test("scans decoded docs.json string values", () => {
+  const config = JSON.parse(
+    '{"name":"Mintlify \\u0053tarter Kit","route":"/v\\u0031/customers"}',
+  );
+  const errors = validatePublishedJsonStrings("docs.json", config);
+
+  assertHasError(errors, /docs\.json#\/name.*starter branding/i);
+  assertHasError(errors, /docs\.json#\/route.*prohibited \/v1\//i);
+});
+
+test("migration ledger parser validates the separator row", () => {
+  const markdown = [
+    "| Source path | Source commit | Destination | Disposition | Review state | Notes |",
+    "| source | commit | destination | disposition | review | notes |",
+  ].join("\n");
+
+  assert.throws(() => parseMigrationLedger(markdown), /separator.*malformed/i);
+});
+
+test("migration ledger parser handles escaped pipes", () => {
+  const markdown = [
+    "| Source path | Source commit | Destination | Disposition | Review state | Notes |",
+    "| --- | --- | --- | --- | --- | --- |",
+    `| \`content/index.mdx\` | \`${SOURCE_COMMIT}\` | \`/\` | \`contract-rewrite\` | \`not-applicable\` | Preserve A \\| B. |`,
+  ].join("\n");
+
+  assert.equal(parseMigrationLedger(markdown)[0].notes, "Preserve A | B.");
 });
 
 test("rejects source pages missing from the migration ledger", () => {
@@ -273,12 +554,77 @@ test("normalizes index source pages to public routes", () => {
 
 test("commits the complete approved page and frozen source inventories", () => {
   assert.equal(REQUIRED_NAVIGATION_PAGES.length, 42);
+  assert.equal(REQUIRED_PUBLISHED_PAGES.length, 43);
   assert.equal(FROZEN_SOURCE_PAGES.length, 59);
+  assert.equal(Object.keys(FROZEN_MIGRATION_DECISIONS).length, 59);
   assert.equal(EXPECTED_REDIRECT_SOURCES.length, 53);
   assert.equal(new Set(FROZEN_SOURCE_PAGES).size, FROZEN_SOURCE_PAGES.length);
   assert.equal(
     new Set(EXPECTED_REDIRECT_SOURCES).size,
     EXPECTED_REDIRECT_SOURCES.length,
+  );
+  assert.deepEqual(
+    Object.keys(APPROVED_REDIRECT_DESTINATIONS).sort(),
+    [...EXPECTED_REDIRECT_SOURCES].sort(),
+  );
+  assert.deepEqual(
+    Object.entries(FROZEN_MIGRATION_DECISIONS)
+      .filter(([, decision]) => decision.disposition === "omitted")
+      .map(([sourcePath]) => sourcePath),
+    [
+      "content/t-c/creating-customer.mdx",
+      "content/t-c/implementation.mdx",
+      "content/t-c/incorporating-terms.mdx",
+      "content/t-c/index.mdx",
+      "content/t-c/updates.mdx",
+    ],
+  );
+});
+
+test("rejects mutation of an approved migration destination", () => {
+  const ledger = committedLedger().map((row) => ({ ...row }));
+  const row = ledger.find(
+    ({ sourcePath }) => sourcePath === "content/reference/rates.mdx",
+  );
+  row.destination = "/integration/overview";
+
+  assertHasError(
+    validateMigrationCoverage(FROZEN_SOURCE_PAGES, ledger),
+    /content\/reference\/rates\.mdx: destination must remain \/api-reference\/money-movement\/get-v3-rates/i,
+  );
+});
+
+test("rejects downgrading an approved policy row to a contract rewrite", () => {
+  const ledger = committedLedger().map((row) => ({ ...row }));
+  const row = ledger.find(
+    ({ sourcePath }) =>
+      sourcePath === "content/compliance/travel-rule.mdx",
+  );
+  row.disposition = "contract-rewrite";
+  row.reviewState = "not-applicable";
+
+  const errors = validateMigrationCoverage(FROZEN_SOURCE_PAGES, ledger);
+  assertHasError(
+    errors,
+    /content\/compliance\/travel-rule\.mdx: disposition must remain preserved-policy/i,
+  );
+  assertHasError(
+    errors,
+    /content\/compliance\/travel-rule\.mdx: review state must remain review-required/i,
+  );
+});
+
+test("rejects omitting any approved non-Terms source page", () => {
+  const ledger = committedLedger().map((row) => ({ ...row }));
+  const row = ledger.find(
+    ({ sourcePath }) => sourcePath === "content/index.mdx",
+  );
+  row.destination = "—";
+  row.disposition = "omitted";
+
+  assertHasError(
+    validateMigrationCoverage(FROZEN_SOURCE_PAGES, ledger),
+    /content\/index\.mdx: disposition must remain contract-rewrite/i,
   );
 });
 
@@ -354,9 +700,7 @@ test("keeps the approved legacy route destinations", () => {
 });
 
 test("validates complete ledger and redirect coverage", () => {
-  const ledger = parseMigrationLedger(
-    readFileSync("docs/content-migration-ledger.md", "utf8"),
-  );
+  const ledger = committedLedger();
   const redirects = JSON.parse(
     readFileSync("docs/redirect-inventory.json", "utf8"),
   );

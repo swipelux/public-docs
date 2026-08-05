@@ -55,6 +55,14 @@ Run the complete documentation verification suite before handoff:
 npm run check
 ```
 
+Redirect verification defaults to the current rebuild phase, where every
+committed inventory entry remains `verified: false`. After Task 11 completes
+the preview redirect checks, require the final state explicitly:
+
+```bash
+npm run verify:docs -- --redirect-phase=final
+```
+
 The complete check prepares no source data. Generate `openapi.json` first when the source contract changes. During the staged rebuild, Tasks 2 and 3 add the `verify:openapi` and `verify:docs` implementations. Until then, use `npm test` for the runnable Task 1 checks.
 
 ## Deploy

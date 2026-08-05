@@ -14,17 +14,24 @@ import {
   FROZEN_SOURCE_PAGES,
   REQUIRED_NAVIGATION_PAGES,
   REQUIRED_PUBLISHED_PAGES,
-  collectJsonStrings,
+  isMintlifyIgnoredPath,
   parseMigrationLedger,
+  parseRedirectVerificationPhase,
+  selectPublishableMdxPaths,
   validateFrontmatter,
   validateMigrationCoverage,
   validateNavigation,
+  validatePublishedJsonStrings,
+  validatePublishedMdxInventory,
   validatePublishedText,
   validateRedirectInventory,
 } from "./lib/docs-validation.mjs";
 
 const rootDir = process.cwd();
 const errors = [];
+const redirectVerificationPhase = parseRedirectVerificationPhase(
+  process.argv.slice(2),
+);
 
 function projectPath(path) {
   return resolve(rootDir, path);
@@ -53,17 +60,22 @@ function pageExists(page) {
   return existsSync(projectPath(pageFile(page)));
 }
 
-function listMdx(directory) {
+const mintIgnoreRules = readText(".mintignore").split("\n");
+
+function listMdx(directory = "") {
   const absolute = projectPath(directory);
   if (!existsSync(absolute)) return [];
 
   const files = [];
   for (const entry of readdirSync(absolute).sort()) {
     const path = join(absolute, entry);
+    const relativePath = relative(rootDir, path).replaceAll("\\", "/");
     if (statSync(path).isDirectory()) {
-      files.push(...listMdx(relative(rootDir, path)));
+      if (relativePath === ".git") continue;
+      if (isMintlifyIgnoredPath(`${relativePath}/`, mintIgnoreRules)) continue;
+      files.push(...listMdx(relativePath));
     } else if (entry.endsWith(".mdx")) {
-      files.push(relative(rootDir, path).replaceAll("\\", "/"));
+      files.push(relativePath);
     }
   }
   return files;
@@ -73,18 +85,12 @@ function add(findings) {
   errors.push(...findings);
 }
 
-for (const page of REQUIRED_PUBLISHED_PAGES) {
-  const path = pageFile(page);
-  if (!existsSync(projectPath(path))) {
-    errors.push(`${path}: missing required published page`);
-  }
-}
-
-const publishedMdx = [
-  ...(existsSync(projectPath("index.mdx")) ? ["index.mdx"] : []),
-  ...listMdx("integration"),
-  ...listMdx("knowledge-base"),
-].sort();
+const publishedMdx = selectPublishableMdxPaths(listMdx(), mintIgnoreRules);
+add(
+  validatePublishedMdxInventory(publishedMdx, {
+    requiredPages: REQUIRED_PUBLISHED_PAGES,
+  }),
+);
 
 for (const path of publishedMdx) {
   const text = readText(path);
@@ -94,9 +100,7 @@ for (const path of publishedMdx) {
 
 const docsConfig = readJson("docs.json");
 if (docsConfig) {
-  add(validatePublishedText("docs.json", readText("docs.json"), {
-    checkCodeFences: false,
-  }));
+  add(validatePublishedJsonStrings("docs.json", docsConfig));
   add(
     validateNavigation(docsConfig, {
       pageExists,
@@ -107,13 +111,7 @@ if (docsConfig) {
 
 const openapi = readJson("openapi.json");
 if (openapi) {
-  for (const { pointer, value } of collectJsonStrings(openapi)) {
-    add(
-      validatePublishedText(`openapi.json#${pointer}`, value, {
-        checkCodeFences: false,
-      }),
-    );
-  }
+  add(validatePublishedJsonStrings("openapi.json", openapi));
 }
 
 const coverage = readJson("openapi-coverage.json");
@@ -131,6 +129,7 @@ if (redirects) {
       expectedSources: EXPECTED_REDIRECT_SOURCES,
       expectedDestinations: APPROVED_REDIRECT_DESTINATIONS,
       knownDestinations,
+      verificationPhase: redirectVerificationPhase,
     }),
   );
 }
