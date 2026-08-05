@@ -1,22 +1,148 @@
 ---
 title: "Capabilities and requirements"
-description: "Enable a customer capability and complete the requirements needed to make it ready."
+description: "Select a capability for the intended flow and complete its current onboarding requirements."
 ---
 
-Enable the capability that supports the customer's intended pay-in, payout, or bank-account flow.
+Enable the customer capability that matches the pay-in, payout, or issued bank account you intend to build.
 
-## Choose and request a capability
+```bash
+export API_BASE='https://platform.swipelux.com'
+export SWIPELUX_API_KEY='replace-with-your-api-key'
+```
 
-List supported capabilities for the customer, choose an eligible option for the intended outcome, request it, and store its current status and open task IDs.
+## Find a capability for the intended flow
+
+Discover supported options before requesting one with [`GET /v3/customers/{customerId}/capabilities/supported`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-supported):
+
+```bash
+curl --request GET \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/capabilities/supported" \
+  --header "X-API-Key: ${SWIPELUX_API_KEY}"
+```
+
+Choose from the current response using only the fields that change the next step:
+
+| Field | Decision |
+|---|---|
+| `availability` | Select an option offered as `available` or `beta` |
+| `eligibility.eligible` | Continue only when customer-specific eligibility is true |
+| `directions` | Match `payin` or `payout` to the intended money flow |
+| `method` | Match the payment method needed by the flow |
+| `accountType` | Match the bank-account model when this field applies |
+| `institutions` | Keep the applicable default or select IDs returned for this option |
+
+Store the selected `data[].id` as `CAPABILITY_ID`. Do not substitute a capability ID from another customer or environment.
+
+## Request the capability
+
+Request the selected option with [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id). Send an empty object when you want the applicable defaults:
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/capabilities/${CAPABILITY_ID}" \
+  --header "X-API-Key: ${SWIPELUX_API_KEY}" \
+  --header "Idempotency-Key: capability-request-001" \
+  --header "Content-Type: application/json" \
+  --data '{}'
+```
+
+To make an explicit institution choice, use only institution IDs returned by the supported-capability response:
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/capabilities/${CAPABILITY_ID}" \
+  --header "X-API-Key: ${SWIPELUX_API_KEY}" \
+  --header "Idempotency-Key: capability-request-institution-001" \
+  --header "Content-Type: application/json" \
+  --data @- <<'JSON'
+{
+  "institutions": ["institution_from_supported_response"]
+}
+JSON
+```
+
+From the current capability response, store `data.status` as `CAPABILITY_STATUS`, `data.openTaskIds` as `OPEN_TASK_IDS`, and each `data.applications[].id` as an entry in `APPLICATION_IDS`.
 
 ## Complete requirements
 
-Read the current tasks and complete the requested hosted or API steps. Use the current task revision when submitting answers.
+List customer tasks with [`GET /v3/customers/{customerId}/tasks`](/api-reference/tasks/list-customer-tasks):
+
+```bash
+curl --request GET \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/tasks" \
+  --header "X-API-Key: ${SWIPELUX_API_KEY}"
+```
+
+Use the current capability's `OPEN_TASK_IDS` to select a task, store its ID as `TASK_ID`, then read its current detail with [`GET /v3/customers/{customerId}/tasks/{taskId}`](/api-reference/tasks/get-customer-task):
+
+```bash
+curl --request GET \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/tasks/${TASK_ID}" \
+  --header "X-API-Key: ${SWIPELUX_API_KEY}"
+```
+
+Use the returned `data.revision`, `data.requirements`, and hosted-session collections from this detail response. Refetch the task before submitting if its revision or requirements may have changed.
+
+## Use hosted sessions
+
+When the task detail returns `verificationSessions` or `tosSessions`, store each current `verificationSessions[].id` or `tosSessions[].id` as `SESSION_ID` and its corresponding `.url` as `SESSION_URL`. Send the customer to the current returned URL, then read the task again for its current status.
 
 ## Upload documents
 
-Upload a requested document before submitting an answer that references it. Refetch the capability after completing its requirements.
+When a current requirement requests a document, upload it with [`POST /v3/customers/{customerId}/documents`](/api-reference/documents/post-v3-customers-by-customer-id-documents). Use that operation for the current accepted media and document types instead of copying a static catalog.
 
-## Next step
+```bash
+export DOCUMENT_PATH='/absolute/path/to/requested-document.pdf'
+```
 
-When the capability is ready, choose the matching workflow in [Common flows](/integration/common-flows).
+```bash
+curl --request POST \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/documents" \
+  --header "X-API-Key: ${SWIPELUX_API_KEY}" \
+  --header "Idempotency-Key: customer-document-001" \
+  --form "file=@${DOCUMENT_PATH}"
+```
+
+Store the returned `data.id` as `DOCUMENT_ID`. Upload the requested file before you submit any document answer that references it.
+
+## Submit API answers
+
+Submit one complete answer set for the current task with [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission):
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/tasks/${TASK_ID}/submissions" \
+  --header "X-API-Key: ${SWIPELUX_API_KEY}" \
+  --header "Idempotency-Key: task-submission-001" \
+  --header "Content-Type: application/json" \
+  --data @- <<'JSON'
+{
+  "taskRevision": 3,
+  "answers": [
+    {
+      "requirementId": "req_from_current_task",
+      "answer": {
+        "type": "text",
+        "value": "Current answer"
+      }
+    }
+  ]
+}
+JSON
+```
+
+Store the returned `data.id` as `SUBMISSION_ID`. Take `taskRevision` from the current task revision. Take each requirement ID and answer type from the current requirement; for a document answer, reference the `DOCUMENT_ID` uploaded for that requirement. See the operation above for the complete answer variants.
+
+## Wait for readiness
+
+After hosted steps, uploads, or submissions, read the capability again with [`GET /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id):
+
+```bash
+curl --request GET \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/capabilities/${CAPABILITY_ID}" \
+  --header "X-API-Key: ${SWIPELUX_API_KEY}"
+```
+
+Replace `CAPABILITY_STATUS`, `OPEN_TASK_IDS`, and `APPLICATION_IDS` with the current response values. Continue only when the current status permits the selected account, quote, or transfer operation.
+
+Next, choose the matching workflow in [Common flows](/integration/common-flows), or inspect complete operation schemas in the [API Reference](/api-reference).
