@@ -74,6 +74,15 @@ const PAGE_OPERATIONS = new Map([
         "get",
         "/v3/customers/{customerId}/tasks/{taskId}/submissions",
       ],
+      [
+        "get",
+        "/v3/customers/{customerId}/tasks/{taskId}/submissions/{submissionId}",
+      ],
+      ["post", "/v3/customers/{customerId}/capabilities/{capabilityId}"],
+      [
+        "post",
+        "/v3/customers/{customerId}/capabilities/{capabilityId}/cancel",
+      ],
     ],
   ],
   [
@@ -82,6 +91,7 @@ const PAGE_OPERATIONS = new Map([
       ["post", "/v3/customers/{customerId}/documents"],
       ["get", "/v3/customers/{customerId}/documents"],
       ["get", "/v3/customers/{customerId}/documents/{documentId}"],
+      ["delete", "/v3/customers/{customerId}/documents/{documentId}"],
     ],
   ],
 ]);
@@ -117,11 +127,19 @@ const WRITE_OPERATIONS = new Map([
         "post",
         "/v3/customers/{customerId}/tasks/{taskId}/submissions",
       ],
+      ["post", "/v3/customers/{customerId}/capabilities/{capabilityId}"],
+      [
+        "post",
+        "/v3/customers/{customerId}/capabilities/{capabilityId}/cancel",
+      ],
     ],
   ],
   [
     "integration/onboarding/documents",
-    [["post", "/v3/customers/{customerId}/documents"]],
+    [
+      ["post", "/v3/customers/{customerId}/documents"],
+      ["delete", "/v3/customers/{customerId}/documents/{documentId}"],
+    ],
   ],
 ]);
 
@@ -239,6 +257,31 @@ function responseDataSchema(method, path, status = "200") {
   const envelope = responseSchema(method, path, status);
   assert.ok(envelope.required?.includes("data"));
   return resolveOpenApiReference(envelope.properties?.data);
+}
+
+function responseHeaderSchema(method, path, status, headerName) {
+  const { operationObject } = openApiOperation(method, path);
+  const response = resolveOpenApiReference(operationObject.responses?.[status]);
+  assert.ok(response, `Missing ${status} response for ${method.toUpperCase()} ${path}`);
+  const header = resolveOpenApiReference(response.headers?.[headerName]);
+  assert.ok(
+    header,
+    `Missing ${headerName} header for ${method.toUpperCase()} ${path} ${status}`,
+  );
+  return resolveOpenApiReference(header.schema);
+}
+
+function assertNoStoreResponses(method, path) {
+  const { operationObject } = openApiOperation(method, path);
+  for (const status of Object.keys(operationObject.responses)) {
+    const schema = responseHeaderSchema(method, path, status, "Cache-Control");
+    assert.equal(schema.type, "string");
+    assertExactOpenApiSet(
+      schema.enum,
+      ["no-store"],
+      `${method.toUpperCase()} ${path} ${status} Cache-Control values`,
+    );
+  }
 }
 
 function assertExactOpenApiSet(actual, expected, label) {
@@ -429,6 +472,18 @@ function assertSafeMdxCurlBlock(block, label) {
       `${label} must contain only curl arguments and continuations`,
     );
   }
+
+  assert.deepEqual(
+    commandLines,
+    [
+      "curl --request POST \\",
+      '  "${API_BASE}/v3/customers/${CUSTOMER_ID}/documents" \\',
+      '  --header "X-API-Key: ${SWIPELUX_API_KEY}" \\',
+      '  --header "Idempotency-Key: ${IDEMPOTENCY_KEY}" \\',
+      '  --form "file=@./document.pdf;type=application/pdf"',
+    ],
+    `${label} must use the exact POST document-upload command with the exact URL and option order, exactly two expected headers, exactly one file form field, and no extra options`,
+  );
 }
 
 function assertGeneratedDocumentIdempotencySource(block, label) {
@@ -585,6 +640,28 @@ function curlOptionValues(argv, option) {
   return values;
 }
 
+function curlFormFieldNames(argv) {
+  return curlOptionValues(argv, "--form").map((value) => {
+    const separator = value.indexOf("=");
+    assert.ok(separator > 0, `multipart form value must contain a field name: ${value}`);
+    return value.slice(0, separator);
+  });
+}
+
+function expectedDocumentUploadCurlArgv(idempotencyKey) {
+  return [
+    "--request",
+    "POST",
+    "https://platform.swipelux.com/v3/customers/cus_example123/documents",
+    "--header",
+    "X-API-Key: YOUR_API_KEY",
+    "--header",
+    `Idempotency-Key: ${idempotencyKey}`,
+    "--form",
+    "file=@./document.pdf;type=application/pdf",
+  ];
+}
+
 function proseParagraphs(text) {
   const paragraphs = [];
   let current = [];
@@ -604,6 +681,11 @@ function proseParagraphs(text) {
     if (inFence) continue;
     if (line.trim() === "" || /^#{1,6}\s/.test(line)) {
       flush();
+      continue;
+    }
+    if (/^\s*(?:[-+*]|\d+[.)])\s+/.test(line)) {
+      flush();
+      current.push(line);
       continue;
     }
     current.push(line);
@@ -856,6 +938,8 @@ test("capability discovery, optional preview, and request guidance follow the co
   assert.match(preview.description, /pinned, side-effect-free evaluation snapshot/i);
 
   const requestPath = "/v3/customers/{customerId}/capabilities/{capabilityId}";
+  const capabilityRequestBody = requestBody("post", requestPath);
+  assert.equal(capabilityRequestBody.required, true);
   const requestSchema = requestBodySchema("post", requestPath);
   assert.deepEqual(requestSchema.required ?? [], []);
   const institutions = requestSchema.properties.institutions;
@@ -888,6 +972,13 @@ test("capability discovery, optional preview, and request guidance follow the co
     );
     assert.match(text, /known ineligible[\s\S]{0,80}fail/i);
   }
+
+  const businessText = requiredPage("integration/onboarding/businesses");
+  assert.match(businessText, /JSON body is required/i);
+  assert.match(
+    businessText,
+    /`\{\}`[\s\S]{0,80}(?:uses|selects)[\s\S]{0,80}defaults/i,
+  );
 });
 
 test("openTaskIds lead to customer-scoped task details and only details expose action URLs", () => {
@@ -973,6 +1064,81 @@ test("openTaskIds lead to customer-scoped task details and only details expose a
   assert.match(text, /do not expose[\s\S]{0,100}`X-API-Key`[\s\S]{0,100}(?:browser|client)/i);
 });
 
+test("sensitive task and submission responses are no-store and submission detail preserves the authorized snapshot", () => {
+  const taskDetailPath = "/v3/customers/{customerId}/tasks/{taskId}";
+  const submissionCreatePath =
+    "/v3/customers/{customerId}/tasks/{taskId}/submissions";
+  const submissionDetailPath =
+    "/v3/customers/{customerId}/tasks/{taskId}/submissions/{submissionId}";
+
+  for (const [method, path] of [
+    ["get", taskDetailPath],
+    ["post", submissionCreatePath],
+    ["get", submissionDetailPath],
+  ]) {
+    assertNoStoreResponses(method, path);
+  }
+
+  const detailOperation = openApiOperation(
+    "get",
+    submissionDetailPath,
+  ).operationObject;
+  assert.equal(
+    detailOperation.description,
+    "Returns the authorized immutable answer snapshot and current public outcome.",
+  );
+
+  const createDetail = responseDataSchema("post", submissionCreatePath, "201");
+  const authorizedDetail = responseDataSchema("get", submissionDetailPath);
+  for (const detail of [createDetail, authorizedDetail]) {
+    assert.equal(
+      detail.properties.answers.items.$ref,
+      "#/components/schemas/SubmissionSnapshotAnswerEntry",
+    );
+    const snapshotEntry = resolveOpenApiReference(detail.properties.answers.items);
+    assertExactOpenApiSet(
+      snapshotEntry.required,
+      ["requirementId", "answer"],
+      "submission snapshot answer required fields",
+    );
+    assert.ok(snapshotEntry.properties.alternativeKey);
+    assert.ok(snapshotEntry.properties.answer);
+  }
+
+  const listEnvelope = responseSchema("get", submissionCreatePath);
+  assert.equal(listEnvelope.properties.data.type, "array");
+  const summary = resolveOpenApiReference(listEnvelope.properties.data.items);
+  assert.equal(
+    summary.properties.answers.items.$ref,
+    "#/components/schemas/SubmissionAnswerSummary",
+  );
+  const summaryAnswer = resolveOpenApiReference(summary.properties.answers.items);
+  assertExactOpenApiSet(
+    Object.keys(summaryAnswer.properties),
+    ["requirementId", "answerType"],
+    "redacted submission answer fields",
+  );
+
+  const text = requiredPage("integration/onboarding/tasks-and-submissions");
+  assert.match(
+    text,
+    /task detail[\s\S]{0,180}submission creation[\s\S]{0,180}submission detail[\s\S]{0,120}`Cache-Control: no-store`/i,
+  );
+  assert.match(
+    text,
+    /`Cache-Control: no-store`[\s\S]{0,160}do not[\s\S]{0,80}(?:browser|proxy|application) cache/i,
+  );
+  assert.match(
+    text,
+    /authorized immutable answer snapshot[\s\S]{0,120}current (?:public )?outcome/i,
+  );
+  assert.match(
+    text,
+    /redacted[\s\S]{0,120}(?:omits|without)[\s\S]{0,120}(?:answer values|alternatives|document ids)/i,
+  );
+  assert.doesNotMatch(text, /does not add other hosted-session security properties/i);
+});
+
 test("task submissions use the current revision and one complete immutable answer set", () => {
   const path = "/v3/customers/{customerId}/tasks/{taskId}/submissions";
   const { operationObject } = openApiOperation("post", path);
@@ -1029,6 +1195,22 @@ test("task submissions use the current revision and one complete immutable answe
   assert.match(text, /do not reuse[\s\S]{0,160}(?:task|revision|answer set)/i);
 });
 
+test("submission idempotency keys replay only the exact body and never a rebuilt body", () => {
+  const text = requiredPage("integration/onboarding/tasks-and-submissions");
+  const section = markdownSection(text, "Build one current submission");
+  const exactGuidance =
+    "Reuse the same `Idempotency-Key` only to replay the exact same submission body. If you rebuild the body after `task_submission_incomplete` or `task_changed`, use a new key.";
+
+  assert.ok(
+    section.includes(exactGuidance),
+    "submission guidance must preserve the exact replay-versus-rebuild key boundary",
+  );
+  assert.doesNotMatch(
+    section,
+    /same `Idempotency-Key`[\s\S]{0,160}(?:rebuilt|changed|new) (?:body|submission)/i,
+  );
+});
+
 test("customer document upload preserves the exact multipart and format boundary", () => {
   const path = "/v3/customers/{customerId}/documents";
   const { operationObject } = openApiOperation("post", path);
@@ -1044,6 +1226,11 @@ test("customer document upload preserves the exact multipart and format boundary
   assert.deepEqual(Object.keys(body.content), ["multipart/form-data"]);
   const upload = requestBodySchema("post", path, "multipart/form-data");
   assertExactOpenApiSet(upload.required, ["file"], "document upload required fields");
+  assertExactOpenApiSet(
+    Object.keys(upload.properties),
+    ["file", "type"],
+    "document upload multipart field names",
+  );
   assert.equal(upload.properties.file.type, "string");
   assert.equal(upload.properties.file.format, "binary");
   assert.equal(upload.properties.type.type, "string");
@@ -1083,6 +1270,18 @@ test("customer document upload preserves the exact multipart and format boundary
   assert.match(text, /raw binary[\s\S]{0,120}`file`/i);
   assert.match(text, /base64 JSON[\s\S]{0,80}not accepted/i);
   assert.match(text, /optional `type`/i);
+  assert.match(
+    text,
+    /example[\s\S]{0,100}(?:intentionally|explicitly) omits[\s\S]{0,100}(?:API|multipart) `type` field/i,
+  );
+  assert.match(
+    text,
+    /`;type=application\/pdf`[\s\S]{0,140}(?:sets|declares)[\s\S]{0,100}(?:MIME|media) type[\s\S]{0,100}`file` part/i,
+  );
+  assert.match(
+    text,
+    /`;type=application\/pdf`[\s\S]{0,180}(?:does not|doesn't)[\s\S]{0,100}(?:API|multipart) `type` field/i,
+  );
   assert.match(text, /`data\.id`[\s\S]{0,120}`documentIds`/i);
   assert.match(text, /metadata[\s\S]{0,80}(?:not|rather than)[\s\S]{0,80}(?:download|file bytes)/i);
   assert.match(
@@ -1135,6 +1334,25 @@ test("document upload curl replays and rotates run-scoped keys safely without ne
     generatedKeys,
     "a generated RUN_ID must remain reusable for replay in the same shell",
   );
+
+  for (const [argv, idempotencyKey, label] of [
+    [first, "customer-document-run-shell-test", "first intended upload"],
+    [replay, "customer-document-run-shell-test", "same-shell replay"],
+    [nextRun, "customer-document-run-shell-next", "next intended upload"],
+    [generated, generatedKeys[0], "generated-key upload"],
+    [generatedReplay, generatedKeys[0], "generated-key replay"],
+  ]) {
+    assert.deepEqual(
+      argv,
+      expectedDocumentUploadCurlArgv(idempotencyKey),
+      `${label} must execute the exact document upload argv`,
+    );
+    assertExactOpenApiSet(
+      curlFormFieldNames(argv),
+      ["file"],
+      `${label} multipart field names`,
+    );
+  }
 
   assert.deepEqual(curlHeaderValues(first, "X-API-Key"), ["YOUR_API_KEY"]);
   assert.ok(
@@ -1199,6 +1417,19 @@ test("shell-block safety rejects unapproved syntax before execution", () => {
       "extra export",
       safeBlock.replace("export API_BASE", "export HOME='/tmp'\nexport API_BASE"),
       /exactly the permitted export assignments/,
+    ],
+    [
+      "PUT method",
+      safeBlock.replace("curl --request POST", "curl --request PUT"),
+      /exact POST document-upload command/,
+    ],
+    [
+      "extra header",
+      safeBlock.replace(
+        '  --form "file=@./document.pdf;type=application/pdf"',
+        '  --header "Accept: application/json" \\\n  --form "file=@./document.pdf;type=application/pdf"',
+      ),
+      /exact POST document-upload command/,
     ],
   ];
   for (const [name, probe, expected] of probes) {
@@ -1274,6 +1505,90 @@ test("document upload idempotency checks reject stale keys and weak generators",
   );
 });
 
+test("document archival retains compliance data while excluding archived documents from active surfaces", () => {
+  const path = "/v3/customers/{customerId}/documents/{documentId}";
+  const { operationObject } = openApiOperation("delete", path);
+  const exactLifecycle =
+    "Archives one customer document. Archived documents are retained for compliance but excluded from subsequent reads, lists, and task submissions.";
+  assert.equal(operationObject.description, exactLifecycle);
+  assert.equal(requestBody("delete", path), undefined);
+
+  const archivedDocument = resolveOpenApiReference(
+    openapi.components.schemas.ArchivedDocument,
+  );
+  assertExactOpenApiSet(
+    archivedDocument.required,
+    [
+      "id",
+      "type",
+      "fileName",
+      "contentType",
+      "sizeBytes",
+      "status",
+      "archivedAt",
+      "createdAt",
+      "updatedAt",
+    ],
+    "ArchivedDocument fields",
+  );
+  assertExactOpenApiSet(
+    archivedDocument.properties.status.enum,
+    ["archived"],
+    "ArchivedDocument status",
+  );
+  assert.equal(archivedDocument.properties.archivedAt.type, "string");
+  assert.equal(archivedDocument.properties.archivedAt.format, "date-time");
+  assert.match(archivedDocument.properties.archivedAt.description, /set exactly once/i);
+
+  const archivedResponse = responseDataSchema("delete", path);
+  assertExactOpenApiSet(
+    archivedResponse.properties.status.enum,
+    ["archived"],
+    "document DELETE response status",
+  );
+  assert.match(archivedResponse.properties.archivedAt.description, /set exactly once/i);
+
+  const listPath = "/v3/customers/{customerId}/documents";
+  const listEnvelope = responseSchema("get", listPath);
+  const listedDocument = resolveOpenApiReference(listEnvelope.properties.data.items);
+  const currentDocument = responseDataSchema("get", path);
+  for (const [label, document] of [
+    ["document list item", listedDocument],
+    ["document detail", currentDocument],
+  ]) {
+    assert.equal(document.properties.archivedAt.nullable, true, label);
+    assert.match(document.properties.archivedAt.description, /always null/i, label);
+    assertExactOpenApiSet(
+      document.properties.status.enum,
+      ["uploaded"],
+      `${label} status`,
+    );
+  }
+
+  const text = requiredPage("integration/onboarding/documents");
+  assert.ok(
+    text.includes(exactLifecycle),
+    "documents guide must preserve the exact archive lifecycle wording",
+  );
+  assert.match(
+    text,
+    /DELETE response[\s\S]{0,100}`ArchivedDocument`[\s\S]{0,100}`archived`[\s\S]{0,120}`archivedAt`[\s\S]{0,100}set (?:exactly )?once/i,
+  );
+  assert.match(
+    text,
+    /ordinary (?:document )?(?:reads|read and list)[\s\S]{0,120}`Document`[\s\S]{0,120}`archivedAt`[\s\S]{0,80}always `null`/i,
+  );
+  assert.match(
+    text,
+    /same `Idempotency-Key`[\s\S]{0,140}(?:exact|same) archive request[\s\S]{0,160}new (?:key|`Idempotency-Key`)[\s\S]{0,120}different intended archival/i,
+  );
+  assertExactOpenApiSet(
+    statusLineValues(text, "Archived document status"),
+    ["archived"],
+    "Archived document status",
+  );
+});
+
 test("publishes exact task, application, capability, and document vocabularies", () => {
   const vocabularies = [
     [
@@ -1332,6 +1647,44 @@ test("publishes exact task, application, capability, and document vocabularies",
   assert.match(taskText, /application[\s\S]{0,160}`ready`[\s\S]{0,120}`rejected`/i);
   assert.match(taskText, /capability[\s\S]{0,160}`ready`[\s\S]{0,120}`rejected`/i);
   assert.match(taskText, /do not assume[\s\S]{0,120}(?:transition|next status|become)/i);
+});
+
+test("capability cancellation documents exact eligibility, dependency, and replacement behavior", () => {
+  const cancelPath =
+    "/v3/customers/{customerId}/capabilities/{capabilityId}/cancel";
+  const { operationObject: cancelOperation } = openApiOperation(
+    "post",
+    cancelPath,
+  );
+  const exactCancelContract =
+    "Cancels a `pending` or `restricted` capability that has no active linked accounts or transfers. On success, tasks owned exclusively by the capability or its applications and all non-archived applications are canceled. A customer-scoped intake task shared with another active capability remains open for that sibling until its final dependency ends. The canceled lifecycle remains readable until a new create request successfully replaces it.";
+  assert.equal(cancelOperation.description, exactCancelContract);
+  assert.equal(requestBody("post", cancelPath), undefined);
+
+  const createPath = "/v3/customers/{customerId}/capabilities/{capabilityId}";
+  const { operationObject: createOperation } = openApiOperation("post", createPath);
+  const exactReplacementBehavior =
+    "Requesting a canceled capability with a new idempotency key starts a fresh lifecycle after current eligibility and routing checks pass.";
+  assert.ok(createOperation.description.includes(exactReplacementBehavior));
+
+  const text = requiredPage("integration/onboarding/tasks-and-submissions");
+  const section = markdownSection(text, "Cancel a current capability lifecycle");
+  assert.ok(
+    section.includes(exactCancelContract),
+    "tasks guide must preserve the exact cancellation contract",
+  );
+  assert.ok(
+    section.includes(exactReplacementBehavior),
+    "tasks guide must preserve the exact canceled-capability replacement behavior",
+  );
+  assert.match(
+    section,
+    /same `Idempotency-Key`[\s\S]{0,140}(?:exact|same) cancel request/i,
+  );
+  assert.match(
+    section,
+    /new `Idempotency-Key`[\s\S]{0,120}(?:different|another) intended cancellation/i,
+  );
 });
 
 test("documents an explicit current-state monitoring loop from exact status fields", () => {
@@ -1402,13 +1755,24 @@ test("documents an explicit current-state monitoring loop from exact status fiel
 
   const restricted = labeledBullet(section, "`restricted`");
   assert.match(restricted, /not a stop condition/i);
-  assert.match(restricted, /fresh `openTaskIds`/i);
   assert.match(
     restricted,
     /current `statusReason\.resolution`/i,
   );
+  const resolutionIndex = restricted.indexOf("`statusReason.resolution`");
+  const openTasksIndex = restricted.indexOf("fresh `openTaskIds`");
+  assert.ok(resolutionIndex >= 0, "restricted guidance must consult resolution");
+  assert.ok(openTasksIndex >= 0, "restricted complete_tasks guidance must use fresh task ids");
+  assert.ok(
+    resolutionIndex < openTasksIndex,
+    "restricted guidance must consult statusReason.resolution before following openTaskIds",
+  );
+  assert.match(
+    restricted,
+    /`complete_tasks`[\s\S]{0,100}fresh `openTaskIds`[\s\S]{0,120}current task details/i,
+  );
   for (const [resolution, action] of [
-    ["complete_tasks", /complete[\s\S]{0,80}current tasks/i],
+    ["complete_tasks", /complete[\s\S]{0,100}current tasks/i],
     ["wait", /continue monitoring/i],
     ["contact_support", /contact support/i],
     ["none", /do not invent/i],
@@ -1424,8 +1788,13 @@ test("documents an explicit current-state monitoring loop from exact status fiel
   const applicationLifecycle = labeledBullet(section, "Application lifecycle");
   assert.match(
     applicationLifecycle,
-    /`ready`[\s\S]{0,120}usable[\s\S]{0,160}`rejected`[\s\S]{0,120}`disabled`[\s\S]{0,120}`canceled`/i,
+    /`ready`[\s\S]{0,120}institution flow[\s\S]{0,180}`rejected`[\s\S]{0,120}`disabled`[\s\S]{0,120}`canceled`/i,
   );
+  assert.match(
+    applicationLifecycle,
+    /only (?:a )?`ready` capability[\s\S]{0,100}capability usable/i,
+  );
+  assert.doesNotMatch(applicationLifecycle, /application is usable/i);
   assert.match(
     applicationLifecycle,
     /do not (?:treat|classify)[\s\S]{0,80}`canceled`[\s\S]{0,80}`disabled`[\s\S]{0,120}(?:waiting|action)/i,
@@ -1450,18 +1819,6 @@ test("documents an explicit current-state monitoring loop from exact status fiel
   }
   assert.doesNotMatch(applicationReasonText, /when present/i);
 
-  const canceledRestart =
-    "Requesting a canceled capability with a new idempotency key starts a fresh lifecycle after current eligibility and routing checks pass.";
-  const requestCapability = openApiOperation(
-    "post",
-    "/v3/customers/{customerId}/capabilities/{capabilityId}",
-  ).operationObject;
-  assert.ok(requestCapability.description.includes(canceledRestart));
-  assert.ok(
-    section.includes(canceledRestart),
-    "tasks guide must preserve the exact canceled-capability restart behavior",
-  );
-
   assert.doesNotMatch(
     section,
     /other listed statuses[\s\S]{0,100}(?:require action|waiting)/i,
@@ -1483,12 +1840,22 @@ test("idempotency guidance cannot be borrowed from a neighboring paragraph", () 
   for (const text of [
     `${markdown} creates a customer.\n\nUse \`Idempotency-Key\` for the write.`,
     `Use \`Idempotency-Key\` for the write.\n\n${markdown} creates a customer.`,
+    `- ${markdown} creates a customer.\n- Use \`Idempotency-Key\` for the write.`,
   ]) {
     assert.throws(
       () => assertParagraphIdempotency("neighbor probe", text, method, path),
       /same prose paragraph/,
     );
   }
+
+  assert.doesNotThrow(() =>
+    assertParagraphIdempotency(
+      "same bullet probe",
+      `- ${markdown} declares \`Idempotency-Key\`.`,
+      method,
+      path,
+    ),
+  );
 });
 
 test("keeps idempotency and API credentials operation-aware and backend-only", () => {

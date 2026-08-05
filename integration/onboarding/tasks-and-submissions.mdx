@@ -19,11 +19,13 @@ Use [`GET /v3/customers/{customerId}/tasks`](/api-reference/tasks/list-customer-
 
 In the detail response, `verificationSessions` entries include a `url`, and `tosSessions` entries include a `url`. The current schema describes each as a stable first-party Swipelux action URL over HTTPS. It also includes `expiresAt`; that field is nullable and currently constrained to `null`, so do not infer a lifetime or expiry window.
 
-Your backend must fetch task detail with `X-API-Key`. Return only the task data your client needs, and do not expose `X-API-Key` to a browser or client. The contract does not add other hosted-session security properties.
+Your backend must fetch task detail with `X-API-Key`. Return only the task data your client needs, and do not expose `X-API-Key` to a browser or client.
 
 ## Build one current submission
 
 Submit answers with [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission). This operation declares `Idempotency-Key` and creates one complete immutable attempt for the current remediation round. The entire JSON request body is limited to 524,288 bytes.
+
+Reuse the same `Idempotency-Key` only to replay the exact same submission body. If you rebuild the body after `task_submission_incomplete` or `task_changed`, use a new key.
 
 Copy the task's current `revision` into `taskRevision`. Build a complete answer set from the current actionable requirements. Each entry uses its `requirementId`; match the requirement's `request.type` to the corresponding `answer.type`. Include `alternativeKey` only when answering one of a requirement's alternatives.
 
@@ -58,11 +60,25 @@ Do not reuse this answer set for another task or revision. Requirement-specific 
 
 If the response is `task_submission_incomplete`, inspect `missingRequirementIds` and rebuild one complete request. If the response is `task_changed`, use `currentRevision`, `currentStatus`, and `taskUrl` to read the task again; the stale submission is not reusable.
 
-Read redacted submission summaries with [`GET /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/list-customer-task-submissions). This list omits answer values, alternatives, and document ids.
+Read redacted submission summaries with [`GET /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/list-customer-task-submissions). The redacted list omits answer values, alternatives, and document ids.
+
+Read one submission with [`GET /v3/customers/{customerId}/tasks/{taskId}/submissions/{submissionId}`](/api-reference/task-submissions/get-customer-task-submission). It returns the authorized immutable answer snapshot and current public outcome. The answer snapshot does not change; the outcome and review feedback describe the current public review state.
+
+Task detail, submission creation, and submission detail responses set `Cache-Control: no-store`. Honor that directive: do not place these sensitive response bodies in a browser, proxy, or application cache.
+
+## Cancel a current capability lifecycle
+
+Cancel a current capability with [`POST /v3/customers/{customerId}/capabilities/{capabilityId}/cancel`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id-cancel). This operation declares `Idempotency-Key` and has no request body. Reuse the same `Idempotency-Key` only to replay the exact same cancel request after transport uncertainty; use a new `Idempotency-Key` for another intended cancellation.
+
+Cancels a `pending` or `restricted` capability that has no active linked accounts or transfers. On success, tasks owned exclusively by the capability or its applications and all non-archived applications are canceled. A customer-scoped intake task shared with another active capability remains open for that sibling until its final dependency ends. The canceled lifecycle remains readable until a new create request successfully replaces it.
+
+Request the capability again with [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id). This operation declares `Idempotency-Key`; use a new key and the current required JSON body for the new intended lifecycle.
+
+Requesting a canceled capability with a new idempotency key starts a fresh lifecycle after current eligibility and routing checks pass.
 
 ## Monitor current resources
 
-After every action or status event, refetch the current task, application, and capability. Follow each id in the fresh `openTaskIds` arrays through customer-scoped task detail, act only from the current response, and repeat the loop.
+After every action or status event, refetch the current task, application, and capability. Use the current status and reason to choose the next action. When that action requires tasks, follow each id in the fresh `openTaskIds` arrays through customer-scoped task detail, act only from the current response, and repeat the loop.
 
 Their vocabularies are separate:
 
@@ -75,12 +91,12 @@ Their vocabularies are separate:
 
 - **`ready`:** The capability is usable. You can stop the capability readiness loop for this lifecycle.
 - **`pending`:** Continue monitoring current resources. Refetch after every action or status event and follow any fresh `openTaskIds`.
-- **`restricted`:** This is not a stop condition. Refetch the current resources and follow every fresh `openTaskIds` entry before using the current `statusReason.resolution`: `complete_tasks` means complete the current tasks from their current details; `wait` means continue monitoring; `contact_support` means contact support with the current `code` and `message`; `none` means no resolution action is specified, so do not invent one.
+- **`restricted`:** This is not a stop condition. Consult the current `statusReason.resolution` first. For `complete_tasks`, follow the fresh `openTaskIds` and complete the current tasks from their current task details. For `wait`, continue monitoring. For `contact_support`, contact support with the current `code` and `message`. For `none`, no resolution action is specified, so do not invent one.
 - **`rejected` and `canceled`:** Stop the current lifecycle.
 
-Every `pending`, `restricted`, `rejected`, or `canceled` capability response requires `statusReason`; `ready` omits it. Requesting a canceled capability with a new idempotency key starts a fresh lifecycle after current eligibility and routing checks pass.
+Every `pending`, `restricted`, `rejected`, or `canceled` capability response requires `statusReason`; `ready` omits it.
 
-- **Application lifecycle:** Only `ready` means the application is usable. Continue following current resources for `requested`, `in_review`, and `action_required`. `rejected`, `disabled`, and `canceled` stop the current application lifecycle. Do not classify `canceled` or `disabled` as waiting or action states.
+- **Application lifecycle:** A `ready` application means the institution flow is ready, but it does not make the capability usable. Only a `ready` capability makes the capability usable. `rejected`, `disabled`, and `canceled` stop the current application lifecycle. Continue following current resources for `requested`, `in_review`, and `action_required`. Do not classify `canceled` or `disabled` as waiting or action states.
 - **Application `statusReason`:** `statusReason` is a required field whose value is nullable. When non-null, it contains `code`, `message`, `actor`, and `retryable`; `actor` is `customer`, `developer`, `provider`, `network`, or `swipelux`. An `in_review` application always has a stored or synthesized reason, while self-explanatory statuses may return `null`.
 - **Task lifecycle:** Act only on the current `action_required` detail, treat `in_review` as the current review state, and stop acting on that task when its current status is `satisfied`, `rejected`, or `canceled`.
 
