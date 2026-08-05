@@ -287,6 +287,31 @@ function shellBlocks(text) {
   );
 }
 
+function shellPlaceholderNames(value) {
+  const names = new Set();
+  const isUppercaseShellName = (name) => /^[A-Z_][A-Z0-9_]*$/.test(name);
+
+  for (const match of value.matchAll(
+    /(?<!\\)\$\{([A-Za-z_][A-Za-z0-9_]*)(?:[^}]*)\}/g,
+  )) {
+    if (isUppercaseShellName(match[1])) names.add(match[1]);
+  }
+
+  for (const match of value.matchAll(
+    /(?<!\\)\$(?!\{)([A-Za-z_][A-Za-z0-9_]*)/g,
+  )) {
+    const name = match[1];
+    if (
+      isUppercaseShellName(name) &&
+      (Object.hasOwn(QUICKSTART_SHELL_ENV, name) || name.includes("_"))
+    ) {
+      names.add(name);
+    }
+  }
+
+  return [...names];
+}
+
 function curlArgumentsFromBash(block, label) {
   const startMarker = "__SWIPELUX_CURL_START__";
   const endMarker = "__SWIPELUX_CURL_END__";
@@ -324,27 +349,28 @@ function curlArgumentsFromBash(block, label) {
   assert.equal(endIndexes.length, 1, `${label} must finish one curl invocation`);
 
   const argv = output.slice(startIndexes[0] + 1, endIndexes[0]);
-  assert.doesNotMatch(
-    argv.join("\n"),
-    /\$\{[^}]+\}/,
-    `${label} must not pass an unresolved shell placeholder to curl`,
+  const unresolvedPlaceholders = new Set(
+    argv.flatMap((argument) => shellPlaceholderNames(argument)),
+  );
+  assert.equal(
+    unresolvedPlaceholders.size,
+    0,
+    `${label} must not pass an unresolved shell placeholder to curl: ${[
+      ...unresolvedPlaceholders,
+    ].join(", ")}`,
   );
 
-  const curlSource = block.slice(block.search(/(?:^|\n)\s*curl\b/));
-  const variables = new Set(
-    [...curlSource.matchAll(/\$\{([A-Z][A-Z0-9_]*)(?:[^}]*)\}/g)].map(
-      (match) => match[1],
-    ),
-  );
+  const curlStart = block.search(/(?:^|\n)\s*curl\b/);
+  assert.notEqual(curlStart, -1, `${label} must contain a curl command`);
+  const curlSource = block.slice(curlStart);
+  const variables = shellPlaceholderNames(curlSource);
   for (const variable of variables) {
     assert.ok(
       Object.hasOwn(QUICKSTART_SHELL_ENV, variable),
       `${label} uses unknown shell placeholder ${variable}`,
     );
     assert.ok(
-      argv.some((argument) =>
-        argument.includes(QUICKSTART_SHELL_ENV[variable]),
-      ),
+      argv.some((argument) => argument.includes(QUICKSTART_SHELL_ENV[variable])),
       `${label} must expand ${variable} into curl argv`,
     );
   }
@@ -352,35 +378,153 @@ function curlArgumentsFromBash(block, label) {
   return argv;
 }
 
-function normalizeQuickstartPath(path) {
-  let normalized = path.split(/[?#]/, 1)[0];
-  for (const [variable, parameter] of QUICKSTART_PATH_VARIABLES) {
-    normalized = normalized.replaceAll(`\${${variable}}`, `{${parameter}}`);
+function curlOptionValue(argv, index, option, label) {
+  assert.ok(
+    index + 1 < argv.length,
+    `${label} must provide a value for curl option ${option}`,
+  );
+  return argv[index + 1];
+}
+
+function parseCurlArguments(argv, label) {
+  const methods = [];
+  const headers = [];
+  const bodies = [];
+  const urls = [];
+
+  for (let index = 0; index < argv.length; index += 1) {
+    const argument = argv[index];
+
+    if (argument === "--") {
+      urls.push(...argv.slice(index + 1));
+      break;
+    }
+
+    if (argument === "--request" || argument === "-X") {
+      methods.push(curlOptionValue(argv, index, argument, label));
+      index += 1;
+      continue;
+    }
+    if (argument.startsWith("--request=")) {
+      methods.push(argument.slice("--request=".length));
+      continue;
+    }
+    if (argument.startsWith("-X") && argument.length > 2) {
+      methods.push(argument.slice(2));
+      continue;
+    }
+
+    if (argument === "--header" || argument === "-H") {
+      headers.push(curlOptionValue(argv, index, argument, label));
+      index += 1;
+      continue;
+    }
+    if (argument.startsWith("--header=")) {
+      headers.push(argument.slice("--header=".length));
+      continue;
+    }
+    if (argument.startsWith("-H") && argument.length > 2) {
+      headers.push(argument.slice(2));
+      continue;
+    }
+
+    const longBodyWithEquals = argument.match(
+      /^(--data(?:-[a-z]+)?|--json)=([\s\S]*)$/,
+    );
+    if (longBodyWithEquals) {
+      bodies.push({
+        option: longBodyWithEquals[1],
+        value: longBodyWithEquals[2],
+      });
+      continue;
+    }
+    if (/^--data(?:-[a-z]+)?$/.test(argument) || argument === "--json") {
+      bodies.push({
+        option: argument,
+        value: curlOptionValue(argv, index, argument, label),
+      });
+      index += 1;
+      continue;
+    }
+    if (argument === "-d") {
+      bodies.push({
+        option: argument,
+        value: curlOptionValue(argv, index, argument, label),
+      });
+      index += 1;
+      continue;
+    }
+    if (argument.startsWith("-d") && argument.length > 2) {
+      bodies.push({ option: "-d", value: argument.slice(2) });
+      continue;
+    }
+
+    if (argument === "--url") {
+      urls.push(curlOptionValue(argv, index, argument, label));
+      index += 1;
+      continue;
+    }
+    if (argument.startsWith("--url=")) {
+      urls.push(argument.slice("--url=".length));
+      continue;
+    }
+
+    if (!argument.startsWith("-")) urls.push(argument);
   }
+
+  return { methods, headers, bodies, urls };
+}
+
+function normalizeExecutedQuickstartPath(url, label) {
+  const apiBase = QUICKSTART_SHELL_ENV.API_BASE.replace(/\/+$/, "");
+  assert.ok(url.startsWith(apiBase), `${label} must use API_BASE ${apiBase}`);
+
+  let normalized = url.slice(apiBase.length);
+  assert.match(
+    normalized,
+    /^\/v3\//,
+    `${label} must use API_BASE plus one OpenAPI v3 path`,
+  );
   assert.doesNotMatch(
     normalized,
-    /\$\{[A-Z0-9_]+\}/,
-    `Unrecognized shell path variable in ${path}`,
+    /[?#]/,
+    `${label} must not add a query or fragment to the OpenAPI path`,
   );
+  assert.doesNotMatch(
+    normalized,
+    /[{}]/,
+    `${label} must use deterministic environment values for path parameters`,
+  );
+
+  const pathParameters = new Map(
+    [...QUICKSTART_PATH_VARIABLES].map(([variable, parameter]) => [
+      QUICKSTART_SHELL_ENV[variable],
+      `{${parameter}}`,
+    ]),
+  );
+  normalized = normalized
+    .split("/")
+    .map((segment) => pathParameters.get(segment) ?? segment)
+    .join("/");
+
   return normalized;
 }
 
-function curlOperation(block, label) {
-  const methodMatches = [
-    ...block.matchAll(/(?:--request|-X)\s+([A-Za-z]+)/g),
-  ];
-  assert.equal(methodMatches.length, 1, `${label} must declare exactly one method`);
-  const method = methodMatches[0][1].toLowerCase();
-
-  const pathMatches = [
-    ...block.matchAll(/\$\{API_BASE\}(\/v3\/[^\s"'\\]+)/g),
-  ];
+function curlOperation(curl, label) {
   assert.equal(
-    pathMatches.length,
+    curl.methods.length,
     1,
-    `${label} must contain exactly one API_BASE path`,
+    `${label} must declare exactly one method`,
   );
-  const path = normalizeQuickstartPath(pathMatches[0][1]);
+  assert.match(
+    curl.methods[0],
+    /^[A-Za-z]+$/,
+    `${label} must declare an alphabetic HTTP method`,
+  );
+  const method = curl.methods[0].toLowerCase();
+
+  assert.equal(curl.urls.length, 1, `${label} must contain exactly one URL`);
+  const path = normalizeExecutedQuickstartPath(curl.urls[0], label);
 
   const matches = Object.entries(openapi.paths).filter(
     ([candidatePath, pathItem]) =>
@@ -395,7 +539,20 @@ function curlOperation(block, label) {
   return { method, path };
 }
 
-function curlHeaderValues(block, headerName) {
+function curlHeaderValues(headers, headerName) {
+  return headers
+    .filter((header) => {
+      const separator = header.indexOf(":");
+      return (
+        separator >= 0 &&
+        header.slice(0, separator).trim().toLowerCase() ===
+          headerName.toLowerCase()
+      );
+    })
+    .map((header) => header.slice(header.indexOf(":") + 1).trim());
+}
+
+function curlSourceHeaderValues(block, headerName) {
   return [...block.matchAll(/(?:--header|-H)\s+(["'])([^"']*)\1/g)]
     .map((match) => match[2])
     .filter((header) => {
@@ -409,14 +566,6 @@ function curlHeaderValues(block, headerName) {
     .map((header) => header.slice(header.indexOf(":") + 1).trim());
 }
 
-function curlBodyArgumentCount(block) {
-  return [
-    ...block.matchAll(
-      /(?:^|\s)(?:--data(?:-[a-z]+)?|-d|--json)(?=\s|=)/gim,
-    ),
-  ].length;
-}
-
 function operationRequestBody(method, path) {
   const { operationObject } = openApiOperation(method, path);
   return operationObject.requestBody
@@ -424,11 +573,12 @@ function operationRequestBody(method, path) {
     : undefined;
 }
 
-function assertCurlMatchesOpenApi(block, label) {
-  curlArgumentsFromBash(block, label);
-  const { method, path } = curlOperation(block, label);
+function validatedCurlMatchesOpenApi(block, label) {
+  const argv = curlArgumentsFromBash(block, label);
+  const curl = parseCurlArguments(argv, label);
+  const { method, path } = curlOperation(curl, label);
   assert.equal(
-    curlHeaderValues(block, "X-API-Key").length,
+    curlHeaderValues(curl.headers, "X-API-Key").length,
     1,
     `${label} must include X-API-Key exactly once`,
   );
@@ -436,7 +586,7 @@ function assertCurlMatchesOpenApi(block, label) {
   const parameter = idempotencyParameter(method, path);
   const requiresIdempotency = parameter?.required === true;
   assert.equal(
-    curlHeaderValues(block, "Idempotency-Key").length,
+    curlHeaderValues(curl.headers, "Idempotency-Key").length,
     requiresIdempotency ? 1 : 0,
     `${method.toUpperCase()} ${path} ${
       requiresIdempotency ? "requires" : "does not require"
@@ -444,7 +594,7 @@ function assertCurlMatchesOpenApi(block, label) {
   );
 
   const requestBody = operationRequestBody(method, path);
-  const bodyArgumentCount = curlBodyArgumentCount(block);
+  const bodyArgumentCount = curl.bodies.length;
   if (requestBody?.required === true) {
     assert.equal(
       bodyArgumentCount,
@@ -471,20 +621,39 @@ function assertCurlMatchesOpenApi(block, label) {
       `${method.toUpperCase()} ${path} must declare application/json before the curl sends JSON`,
     );
   }
-  const contentTypes = curlHeaderValues(block, "Content-Type");
-  assert.equal(
-    contentTypes.length,
-    sendsJsonBody ? 1 : 0,
-    `${method.toUpperCase()} ${path} must include Content-Type exactly when sending a JSON body`,
-  );
+  const contentTypes = curlHeaderValues(curl.headers, "Content-Type");
+  const usesJsonOption = curl.bodies.some(({ option }) => option === "--json");
   if (sendsJsonBody) {
+    if (usesJsonOption) {
+      assert.ok(
+        contentTypes.length <= 1,
+        `${method.toUpperCase()} ${path} must not send duplicate Content-Type headers`,
+      );
+    } else {
+      assert.equal(
+        contentTypes.length,
+        1,
+        `${method.toUpperCase()} ${path} must include Content-Type exactly when sending a JSON body`,
+      );
+    }
     assert.equal(
-      contentTypes[0].toLowerCase(),
+      (contentTypes[0] ?? "application/json").toLowerCase(),
       "application/json",
       `${method.toUpperCase()} ${path} must send JSON as application/json`,
     );
+  } else {
+    assert.equal(
+      contentTypes.length,
+      0,
+      `${method.toUpperCase()} ${path} must include Content-Type exactly when sending a JSON body`,
+    );
   }
 
+  return { method, path, curl };
+}
+
+function assertCurlMatchesOpenApi(block, label) {
+  const { method, path } = validatedCurlMatchesOpenApi(block, label);
   return { method, path };
 }
 
@@ -701,6 +870,80 @@ test("curl contract checks reject request-body and Content-Type drift", () => {
   );
 });
 
+test("curl argv parsing supports documented option forms", () => {
+  const fixtures = [
+    {
+      label: "long equals fixture",
+      block: [
+        "curl --request=POST \\",
+        '  --url="${API_BASE}/v3/customers" \\',
+        '  --header="X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \\',
+        '  --header="Idempotency-Key: quickstart-${RUN_ID}-customer-equals" \\',
+        '  --header="Content-Type: application/json" \\',
+        "  --data-binary='{\"type\":\"individual\"}'",
+      ].join("\n"),
+    },
+    {
+      label: "attached short options fixture",
+      block: [
+        "curl -XPOST \\",
+        '  "${API_BASE}/v3/customers" \\',
+        '  -H"X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \\',
+        '  -H"Idempotency-Key: quickstart-${RUN_ID}-customer-short" \\',
+        '  -H"Content-Type: application/json" \\',
+        "  -d'{\"type\":\"individual\"}'",
+      ].join("\n"),
+    },
+    {
+      label: "json option fixture",
+      block: [
+        "curl -X POST \\",
+        '  "$API_BASE/v3/customers" \\',
+        '  -H "X-API-Key: $SWIPELUX_SANDBOX_API_KEY" \\',
+        '  -H "Idempotency-Key: quickstart-$RUN_ID-customer-json" \\',
+        "  --json='{\"type\":\"individual\"}'",
+      ].join("\n"),
+    },
+    {
+      label: "literal dollar text fixture",
+      block: [
+        "curl --request POST \\",
+        '  "${API_BASE}/v3/customers" \\',
+        '  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \\',
+        '  --header "Idempotency-Key: quickstart-${RUN_ID}-customer-text" \\',
+        '  --header "Content-Type: application/json" \\',
+        "  --data '{\"type\":\"individual\",\"note\":\"$USD 100 and $ordinary text\"}'",
+      ].join("\n"),
+    },
+  ];
+
+  for (const { block, label } of fixtures) {
+    assert.deepEqual(assertCurlMatchesOpenApi(block, label), {
+      method: "post",
+      path: "/v3/customers",
+    });
+  }
+});
+
+test("curl source placeholders must come from the deterministic environment", () => {
+  for (const placeholder of ["${LOCAL_CUSTOMER_ID}", "$LOCAL_CUSTOMER_ID"]) {
+    const block = [
+      "LOCAL_CUSTOMER_ID=local-customer",
+      "curl --request POST \\",
+      '  "${API_BASE}/v3/customers" \\',
+      '  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \\',
+      '  --header "Idempotency-Key: quickstart-${RUN_ID}-customer-local" \\',
+      '  --header "Content-Type: application/json" \\',
+      `  --data "{\\"type\\":\\"individual\\",\\"externalId\\":\\"${placeholder}\\"}"`,
+    ].join("\n");
+
+    assert.throws(
+      () => assertCurlMatchesOpenApi(block, `source ${placeholder} fixture`),
+      /unknown shell placeholder LOCAL_CUSTOMER_ID/i,
+    );
+  }
+});
+
 test("curl contract checks reject placeholders Bash would leave unresolved", () => {
   const fixtures = [
     {
@@ -745,6 +988,17 @@ test("curl contract checks reject placeholders Bash would leave unresolved", () 
         '  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}"',
       ].join("\n"),
     },
+    {
+      label: "single-quoted transfer body placeholder fixture",
+      block: [
+        "curl --request POST \\",
+        '  "${API_BASE}/v3/transfers" \\',
+        '  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \\',
+        '  --header "Idempotency-Key: quickstart-${RUN_ID}-transfer" \\',
+        '  --header "Content-Type: application/json" \\',
+        "  --data '{\"quoteId\":\"$QUOTE_ID\"}'",
+      ].join("\n"),
+    },
   ];
 
   for (const { block, label } of fixtures) {
@@ -754,6 +1008,53 @@ test("curl contract checks reject placeholders Bash would leave unresolved", () 
       `${label} must fail executable Bash validation`,
     );
   }
+});
+
+test("curl contract checks reject executed URL suffix drift", () => {
+  const fixtures = [
+    {
+      label: "shell-concatenated URL suffix fixture",
+      url: '"${API_BASE}/v3/quotes"/unexpected',
+      error: /must resolve exactly one OpenAPI operation/i,
+    },
+    {
+      label: "URL query fixture",
+      url: '"${API_BASE}/v3/quotes?preview=true"',
+      error: /must not add a query or fragment/i,
+    },
+    {
+      label: "URL fragment fixture",
+      url: '"${API_BASE}/v3/quotes#preview"',
+      error: /must not add a query or fragment/i,
+    },
+  ];
+
+  for (const { error, label, url } of fixtures) {
+    const block = [
+      "curl --request POST \\",
+      `  ${url} \\`,
+      '  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \\',
+      '  --header "Idempotency-Key: quickstart-${RUN_ID}-quote" \\',
+      '  --header "Content-Type: application/json" \\',
+      "  --data @quote.json",
+    ].join("\n");
+
+    assert.throws(() => assertCurlMatchesOpenApi(block, label), error);
+  }
+
+  const literalPathParameter = [
+    "curl --request GET \\",
+    '  "${API_BASE}/v3/customers/{customerId}/tasks" \\',
+    '  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}"',
+  ].join("\n");
+  assert.throws(
+    () =>
+      assertCurlMatchesOpenApi(
+        literalPathParameter,
+        "literal OpenAPI path parameter fixture",
+      ),
+    /must use deterministic environment values for path parameters/i,
+  );
 });
 
 test("OpenAPI set assertions ignore order and reject incomplete or duplicate values", () => {
@@ -892,34 +1193,59 @@ test("quickstart follows the common lifecycle and preserves destination alternat
     QUICKSTART_CURL_OPERATIONS.length,
     "quickstart must contain exactly the intended curl walkthrough",
   );
-  const resolvedOperations = curlBlocks.map((block, index) =>
-    assertCurlMatchesOpenApi(block, `quickstart curl block ${index + 1}`),
+  const validatedCurls = curlBlocks.map((block, index) =>
+    validatedCurlMatchesOpenApi(block, `quickstart curl block ${index + 1}`),
   );
+  const resolvedOperations = validatedCurls.map(({ method, path }) => ({
+    method,
+    path,
+  }));
   assert.deepEqual(
     resolvedOperations,
     QUICKSTART_CURL_OPERATIONS.map(([method, path]) => ({ method, path })),
     "quickstart curl operations must match the exact intended order without duplicates",
   );
+  for (const { curl } of validatedCurls) {
+    assert.deepEqual(curlHeaderValues(curl.headers, "X-API-Key"), [
+      QUICKSTART_SHELL_ENV.SWIPELUX_SANDBOX_API_KEY,
+    ]);
+  }
   for (const block of curlBlocks) {
-    assert.deepEqual(curlHeaderValues(block, "X-API-Key"), [
+    assert.deepEqual(curlSourceHeaderValues(block, "X-API-Key"), [
       "${SWIPELUX_SANDBOX_API_KEY}",
     ]);
   }
 
-  const idempotencyValues = resolvedOperations.flatMap(
-    ({ method, path }, index) => {
+  const idempotencyValues = validatedCurls.flatMap(
+    ({ method, path, curl }) => {
       if (idempotencyParameter(method, path)?.required !== true) return [];
-      return curlHeaderValues(curlBlocks[index], "Idempotency-Key");
+      return curlHeaderValues(curl.headers, "Idempotency-Key");
     },
   );
   for (const value of idempotencyValues) {
-    assert.match(value, /\$\{RUN_ID\}/, `${value} must reference RUN_ID`);
+    assert.ok(
+      value.includes(QUICKSTART_SHELL_ENV.RUN_ID),
+      `${value} must contain the executed RUN_ID`,
+    );
   }
   assert.equal(
     new Set(idempotencyValues).size,
     idempotencyValues.length,
     "each required operation must use a unique RUN_ID-scoped idempotency value",
   );
+  const sourceIdempotencyValues = resolvedOperations.flatMap(
+    ({ method, path }, index) => {
+      if (idempotencyParameter(method, path)?.required !== true) return [];
+      return curlSourceHeaderValues(curlBlocks[index], "Idempotency-Key");
+    },
+  );
+  for (const value of sourceIdempotencyValues) {
+    assert.match(
+      value,
+      /\$\{RUN_ID\}|\$RUN_ID\b/,
+      `${value} must reference RUN_ID`,
+    );
+  }
   assert.doesNotMatch(curlBlocks.join("\n"), /Idempotency-Key:[^"\n]*-001\b/i);
   assert.match(
     text,
