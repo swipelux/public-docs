@@ -1,10 +1,18 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, readdirSync } from "node:fs";
+import {
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { generateOpenApiPages, slugify } from "@mintlify/common";
+import { generateOpenApiPages } from "@mintlify/common";
+import { buildGraph } from "@mintlify/link-rot";
 
 import {
   APPROVED_REDIRECT_DESTINATIONS,
@@ -102,76 +110,29 @@ function markdownRoute(path) {
   return `/${route}`;
 }
 
-function markdownLinesOutsideCodeFences(text) {
-  const lines = [];
-  let openFence;
-
-  for (const line of text.split("\n")) {
-    const fenceMatch = line.match(/^\s{0,3}(`{3,}|~{3,})/);
-    if (fenceMatch) {
-      const marker = fenceMatch[1];
-      if (!openFence) {
-        openFence = { character: marker[0], length: marker.length };
-      } else if (
-        marker[0] === openFence.character &&
-        marker.length >= openFence.length
-      ) {
-        openFence = undefined;
-      }
-      continue;
-    }
-    if (!openFence) lines.push(line);
-  }
-
-  return lines;
+function graphNodeAnchors(graph, path) {
+  const node = graph.getNode(path);
+  assert.ok(node, `${path} must be present in the Mintlify link graph`);
+  assert.ok(
+    node.headingSlugs,
+    `${path} must have Mintlify-derived heading slugs`,
+  );
+  return node.headingSlugs;
 }
 
-function markdownAnchors(text) {
-  const lines = markdownLinesOutsideCodeFences(text);
-  const anchors = new Set();
-  const seenSlugs = new Map();
-  const addHeading = (title) => {
-    const baseSlug = slugify(title.replace(/\s+#+\s*$/, ""));
-    const count = seenSlugs.get(baseSlug) ?? 0;
-    seenSlugs.set(baseSlug, count + 1);
-    if (count === 0) {
-      anchors.add(baseSlug);
-      return;
-    }
+async function mintlifyAnchorsForContent(content) {
+  const fixtureRoot = mkdtempSync(
+    resolve(tmpdir(), "swipelux-mintlify-anchors-"),
+  );
+  const fixturePath = "fixture.mdx";
 
-    let suffix = count + 1;
-    let candidate = `${baseSlug}-${suffix}`;
-    while (seenSlugs.has(candidate)) {
-      suffix += 1;
-      candidate = `${baseSlug}-${suffix}`;
-    }
-    seenSlugs.set(candidate, 1);
-    anchors.add(candidate);
-  };
-
-  for (let index = 0; index < lines.length; index += 1) {
-    const heading = lines[index].match(/^\s{0,3}#{1,6}[ \t]+(.+?)\s*$/);
-    if (heading) {
-      addHeading(heading[1]);
-      continue;
-    }
-
-    if (
-      lines[index].trim() &&
-      /^\s{0,3}(?:=+|-+)\s*$/.test(lines[index + 1] ?? "")
-    ) {
-      addHeading(lines[index].trim());
-      index += 1;
-    }
+  try {
+    writeFileSync(resolve(fixtureRoot, fixturePath), content);
+    const graph = await buildGraph(fixtureRoot);
+    return graphNodeAnchors(graph, fixturePath);
+  } finally {
+    rmSync(fixtureRoot, { recursive: true, force: true });
   }
-
-  const explicitIdPattern =
-    /\bid\s*=\s*(?:"([^"\n]+)"|'([^'\n]+)'|\{\s*"([^"\n]+)"\s*\}|\{\s*'([^'\n]+)'\s*\})/g;
-  for (const match of lines.join("\n").matchAll(explicitIdPattern)) {
-    anchors.add(match.slice(1).find(Boolean));
-  }
-
-  return anchors;
 }
 
 function assertStageARetargetedLegacyRedirects(redirects) {
@@ -484,28 +445,38 @@ test("every redirect destination resolves to a published or generated page", () 
   }
 });
 
-test("Markdown anchors include Mintlify heading slugs and explicit ids", () => {
-  const anchors = markdownAnchors(`
-## Sandbox and production
+test("Mintlify anchors match heading and component-id behavior", async () => {
+  const anchors = await mintlifyAnchorsForContent(`
+## Use \`X-API-Key\`
 
-<div id="html-anchor" />
-<Example id={'mdx-anchor'} />
+## Heading {#custom-anchor}
+
+<Warning id="warning-anchor">
+This warning does not create an anchor.
+</Warning>
+
+##### Deep heading
+
+<h2 id="foo:bar">
+Custom
+</h2>
 `);
 
   assert.deepEqual(
     [...anchors].sort(),
-    ["html-anchor", "mdx-anchor", "sandbox-and-production"],
+    ["custom-anchor", "foobar", "use-x-api-key"],
   );
 });
 
-test("every fragment-bearing redirect resolves to a Markdown/MDX anchor", () => {
+test("every fragment-bearing redirect resolves to a Markdown/MDX anchor", async () => {
   const markdownByRoute = new Map(
     markdownFiles().map((path) => [markdownRoute(path), path]),
   );
   const fragmentRedirects = inventory.filter(({ destination }) =>
     destination.includes("#"),
   );
-  assert.ok(fragmentRedirects.length > 0, "expected fragment-bearing redirects");
+  assert.equal(fragmentRedirects.length, 12);
+  const graph = await buildGraph(projectRoot);
 
   for (const { source, destination } of fragmentRedirects) {
     const [destinationPath, fragment] = destination.split("#", 2);
@@ -515,7 +486,7 @@ test("every fragment-bearing redirect resolves to a Markdown/MDX anchor", () => 
       `${source} redirects to ${destination}, but ${destinationPath} has no Markdown/MDX source`,
     );
     assert.ok(
-      markdownAnchors(readProjectFile(projectPath)).has(fragment),
+      graphNodeAnchors(graph, projectPath).has(fragment),
       `${source} redirects to ${destinationPath} with missing fragment #${fragment}`,
     );
   }
