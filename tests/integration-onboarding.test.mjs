@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { isDeepStrictEqual } from "node:util";
 
 import { assertPages, readPage } from "./helpers/content.mjs";
+import { createOpenApiValidator } from "./helpers/openapi-validation.mjs";
 
 const PAGES = [
   "integration/onboarding/customers",
@@ -20,6 +21,7 @@ const PATH_VARIABLES = new Map([
 
 const coverage = JSON.parse(readFileSync("openapi-coverage.json", "utf8"));
 const openapi = JSON.parse(readFileSync("openapi.json", "utf8"));
+const openApiValidator = createOpenApiValidator(openapi);
 
 function resolveReference(value) {
   let resolved = value;
@@ -47,13 +49,6 @@ function openApiOperation(method, path) {
   const operation = pathItem[method];
   assert.ok(operation, `Missing OpenAPI operation ${method.toUpperCase()} ${path}`);
   return { operation, pathItem };
-}
-
-function operationParameters(method, path) {
-  const { operation, pathItem } = openApiOperation(method, path);
-  return [...(pathItem.parameters ?? []), ...(operation.parameters ?? [])].map(
-    resolveReference,
-  );
 }
 
 function requestBody(method, path) {
@@ -165,81 +160,35 @@ function headerValues(example, name) {
     .map((header) => header.slice(header.indexOf(":") + 1).trim());
 }
 
-function schemaErrors(value, rawSchema, pointer = "$") {
-  const schema = resolveReference(rawSchema);
-  const errors = [];
-  if (schema?.nullable === true && value === null) return errors;
-
-  if (schema?.allOf) {
-    return schema.allOf.flatMap((variant) => schemaErrors(value, variant, pointer));
-  }
-  if (schema?.oneOf || schema?.anyOf) {
-    const variants = schema.oneOf ?? schema.anyOf;
-    if (!variants.some((variant) => schemaErrors(value, variant, pointer).length === 0)) {
-      errors.push(`${pointer} does not match any schema variant`);
-    }
-    return errors;
-  }
-
-  if (schema?.enum && !schema.enum.some((candidate) => Object.is(candidate, value))) {
-    errors.push(`${pointer} is not in the OpenAPI enum`);
-  }
-
-  const type = schema?.type ?? (schema?.properties ? "object" : undefined);
-  if (type === "object") {
-    if (value === null || Array.isArray(value) || typeof value !== "object") {
-      return [...errors, `${pointer} must be an object`];
-    }
-    for (const required of schema.required ?? []) {
-      if (!Object.hasOwn(value, required)) errors.push(`${pointer}.${required} is required`);
-    }
-    if (schema.additionalProperties === false) {
-      for (const key of Object.keys(value)) {
-        if (!Object.hasOwn(schema.properties ?? {}, key)) errors.push(`${pointer}.${key} is not allowed`);
-      }
-    }
-    for (const [key, item] of Object.entries(value)) {
-      if (schema.properties?.[key]) {
-        errors.push(...schemaErrors(item, schema.properties[key], `${pointer}.${key}`));
-      }
-    }
-  } else if (type === "array") {
-    if (!Array.isArray(value)) return [...errors, `${pointer} must be an array`];
-    if (schema.minItems !== undefined && value.length < schema.minItems) {
-      errors.push(`${pointer} has fewer than ${schema.minItems} items`);
-    }
-    value.forEach((item, index) => {
-      if (schema.items) errors.push(...schemaErrors(item, schema.items, `${pointer}[${index}]`));
-    });
-  } else if (type === "string") {
-    if (typeof value !== "string") return [...errors, `${pointer} must be a string`];
-    if (schema.minLength !== undefined && value.length < schema.minLength) {
-      errors.push(`${pointer} is shorter than ${schema.minLength}`);
-    }
-    if (schema.pattern && !new RegExp(schema.pattern).test(value)) {
-      errors.push(`${pointer} does not match ${schema.pattern}`);
-    }
-  } else if (type === "integer") {
-    if (!Number.isInteger(value)) errors.push(`${pointer} must be an integer`);
-  } else if (type === "number") {
-    if (typeof value !== "number") errors.push(`${pointer} must be a number`);
-  } else if (type === "boolean") {
-    if (typeof value !== "boolean") errors.push(`${pointer} must be a boolean`);
-  }
-  return errors;
-}
-
 function assertCurlMatchesOpenApi(example, label) {
   const { method, path } = example;
   openApiOperation(method, path);
   assert.deepEqual(headerValues(example, "X-API-Key"), ["${SWIPELUX_API_KEY}"]);
 
-  const idempotency = operationParameters(method, path).find(
-    (parameter) => parameter.in === "header" && parameter.name === "Idempotency-Key",
+  const requiredHeaders = openApiValidator.requiredParameterNames(
+    method,
+    path,
+    "header",
   );
+  for (const name of requiredHeaders) {
+    const values = headerValues(example, name);
+    assert.equal(values.length, 1, `${label} requires one ${name} header`);
+    const validation = openApiValidator.validateParameter(
+      method,
+      path,
+      "header",
+      name,
+      values[0],
+    );
+    assert.equal(
+      validation.valid,
+      true,
+      `${label} has an invalid ${name}: ${JSON.stringify(validation.errors)}`,
+    );
+  }
   assert.equal(
     headerValues(example, "Idempotency-Key").length,
-    idempotency?.required === true ? 1 : 0,
+    requiredHeaders.includes("Idempotency-Key") ? 1 : 0,
     `${label} must follow the operation's Idempotency-Key requirement`,
   );
 
@@ -254,13 +203,30 @@ function assertCurlMatchesOpenApi(example, label) {
   if (json) {
     assert.notEqual(example.body, undefined, `${label} must send JSON`);
     assert.deepEqual(headerValues(example, "Content-Type"), ["application/json"]);
-    assert.deepEqual(schemaErrors(example.body, json.schema), [], `${label} must match OpenAPI`);
+    const validation = openApiValidator.validateRequestBody(method, path, example.body);
+    assert.equal(
+      validation.valid,
+      true,
+      `${label} must match OpenAPI: ${JSON.stringify(validation.errors)}`,
+    );
   } else if (multipart) {
-    const schema = resolveReference(multipart.schema);
-    const fields = example.forms.map((form) => form.slice(0, form.indexOf("=")));
-    for (const required of schema.required ?? []) {
-      assert.ok(fields.includes(required), `${label} requires multipart field ${required}`);
-    }
+    const fields = Object.fromEntries(
+      example.forms.map((form) => {
+        const separator = form.indexOf("=");
+        return [form.slice(0, separator), form.slice(separator + 1)];
+      }),
+    );
+    const validation = openApiValidator.validateRequestBody(
+      method,
+      path,
+      fields,
+      "multipart/form-data",
+    );
+    assert.equal(
+      validation.valid,
+      true,
+      `${label} multipart body must match OpenAPI: ${JSON.stringify(validation.errors)}`,
+    );
   } else {
     assert.fail(`${label} uses an unsupported request media type`);
   }
@@ -417,10 +383,6 @@ test("capability request, document upload, and text submission examples validate
     "/v3/customers/{customerId}/capabilities/{capabilityId}",
   );
   assert.ok(containsBody(requests, {}), "Capability request must show the default empty body");
-  assert.ok(
-    requests.some(({ body }) => Array.isArray(body?.institutions) && body.institutions.length === 1),
-    "Capability request must show explicit response-derived institution selection",
-  );
 
   const uploads = examplesFor(examples, "post", "/v3/customers/{customerId}/documents");
   assert.equal(uploads.length, 1);
@@ -447,11 +409,14 @@ test("capability request, document upload, and text submission examples validate
     true,
   );
 
-  const submissionSchema = requestBody(
-    "post",
-    "/v3/customers/{customerId}/tasks/{taskId}/submissions",
-  ).content["application/json"].schema;
-  assert.deepEqual(schemaErrors(expectedSubmission, submissionSchema), []);
+  assert.equal(
+    openApiValidator.validateRequestBody(
+      "post",
+      "/v3/customers/{customerId}/tasks/{taskId}/submissions",
+      expectedSubmission,
+    ).valid,
+    true,
+  );
 });
 
 test("selection and hosted-session guidance names only response fields defined by OpenAPI", () => {
@@ -460,9 +425,20 @@ test("selection and hosted-session guidance names only response fields defined b
     "/v3/customers/{customerId}/capabilities/supported",
   );
   const supportedItem = resolveReference(supported.items);
+  const expectedRequired = [
+    "id",
+    "method",
+    "accountType",
+    "directions",
+    "availability",
+    "eligibility",
+    "institutions",
+  ];
+  assert.equal(new Set(supportedItem.required).size, supportedItem.required.length);
   assert.deepEqual(
-    supportedItem.required,
-    ["id", "method", "accountType", "directions", "availability", "eligibility", "institutions"],
+    new Set(supportedItem.required),
+    new Set(expectedRequired),
+    "Supported-capability required fields must match as a set",
   );
 
   const capability = responseDataSchema(

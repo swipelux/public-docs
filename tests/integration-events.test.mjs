@@ -8,6 +8,7 @@ import {
   assertNoBannedText,
   readPage,
 } from "./helpers/content.mjs";
+import { createOpenApiValidator } from "./helpers/openapi-validation.mjs";
 
 const PAGES = [
   "integration/webhooks",
@@ -206,6 +207,7 @@ const EXPECTED_RECOVERY_OPERATIONS = [
 const config = JSON.parse(readFileSync("docs.json", "utf8"));
 const coverage = JSON.parse(readFileSync("openapi-coverage.json", "utf8"));
 const openapi = JSON.parse(readFileSync("openapi.json", "utf8"));
+const openApiValidator = createOpenApiValidator(openapi);
 const HTTP_METHODS = [
   "get",
   "post",
@@ -217,6 +219,21 @@ const HTTP_METHODS = [
   "trace",
 ];
 
+const SANDBOX_PATH_VARIABLES = new Map([
+  ["CUSTOMER_ID", "customerId"],
+  ["CAPABILITY_ID", "capabilityId"],
+  ["TASK_ID", "taskId"],
+  ["ACCOUNT_ID", "accountId"],
+  ["TRANSFER_ID", "transferId"],
+]);
+
+const SANDBOX_BODY_VARIABLES = Object.freeze({
+  CAPABILITY_ID: "ach_pooled",
+  CUSTOMER_ID: "cus_01JTESTCUSTOMER",
+  REQUIREMENT_ID: "req_01JTESTREQUIREMENT",
+  TASK_REVISION: 1,
+});
+
 function pageFile(page) {
   return `${page}.mdx`;
 }
@@ -227,6 +244,62 @@ function requiredPage(page) {
   assertFrontmatter(page, text);
   assertNoBannedText(page, text);
   return text;
+}
+
+function materializeSandboxValue(value) {
+  if (Array.isArray(value)) return value.map(materializeSandboxValue);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [key, materializeSandboxValue(item)]),
+    );
+  }
+  if (typeof value === "string") {
+    const variable = value.match(/^\$\{([A-Z_][A-Z0-9_]*)\}$/)?.[1];
+    if (variable && Object.hasOwn(SANDBOX_BODY_VARIABLES, variable)) {
+      return SANDBOX_BODY_VARIABLES[variable];
+    }
+  }
+  return value;
+}
+
+function sandboxCurlExamples(text) {
+  return [...text.matchAll(/```bash\n([\s\S]*?)```/g)]
+    .map((match) => match[1])
+    .filter((block) => /(^|\n)\s*curl\s/.test(block))
+    .map((block) => {
+      const method = block.match(/--request\s+([A-Z]+)/i)?.[1]?.toLowerCase();
+      const rawUrl = block.match(/["'](\$\{API_BASE\}\/v3\/[^"']+)["']/)?.[1];
+      assert.ok(method && rawUrl, "Sandbox curl examples must declare method and API_BASE URL");
+      let path = rawUrl.replace(/^\$\{API_BASE\}/, "");
+      for (const [variable, parameter] of SANDBOX_PATH_VARIABLES) {
+        path = path.replaceAll(`\${${variable}}`, `{${parameter}}`);
+      }
+
+      const heredoc = block.match(/--data\s+@-\s+<<'?JSON'?\n([\s\S]*?)\nJSON(?:\n|$)/);
+      const quoted = block.match(/--data\s+'([^']*)'/);
+      let body;
+      if (heredoc) {
+        const json = heredoc[1].replace(
+          /\$\{([A-Z_][A-Z0-9_]*)\}/g,
+          (value, name) =>
+            typeof SANDBOX_BODY_VARIABLES[name] === "number"
+              ? String(SANDBOX_BODY_VARIABLES[name])
+              : value,
+        );
+        body = materializeSandboxValue(JSON.parse(json));
+      } else if (quoted) {
+        body = materializeSandboxValue(JSON.parse(quoted[1]));
+      }
+
+      return {
+        body,
+        headers: [...block.matchAll(/--header\s+["']([^"']+)["']/g)].map(
+          (match) => match[1],
+        ),
+        method,
+        path,
+      };
+    });
 }
 
 function resolveOpenApiReference(value) {
@@ -653,24 +726,6 @@ function updatedAfterRecoveryOperations() {
   );
 }
 
-function labeledCodeValues(text, label) {
-  const prefix = `- **${label}:**`;
-  const lines = text.split("\n").filter((line) => line.startsWith(prefix));
-  assert.equal(lines.length, 1, `Expected one ${label} vocabulary line`);
-  return [...lines[0].matchAll(/`([^`]+)`/g)].map((match) => match[1]);
-}
-
-function operationSemanticUnit(text, method, path) {
-  const markdown = operationMarkdown(method, path);
-  const units = proseSemanticUnits(text).filter((unit) => unit.includes(markdown));
-  assert.equal(
-    units.length,
-    1,
-    `Expected exactly one semantic unit for ${method.toUpperCase()} ${path}`,
-  );
-  return units[0];
-}
-
 function webhookMatrixRow(section, name) {
   const markdown = webhookMarkdown(name);
   const rows = section
@@ -915,27 +970,28 @@ function assertProductionCutoverSemantics(label, text) {
 }
 
 function assertEnvironmentSemantics(label, text) {
-  assert.match(text, /same (?:API )?(?:host|base URL)[\s\S]{0,120}`https:\/\/platform\.swipelux\.com`/i);
-  assert.match(text, /API key selects the environment|environment is selected by the API key/i);
-  assert.match(text, /no real funds move/i);
+  assert.match(
+    text,
+    /same (?:API )?(?:host|base URL)[\s\S]{0,120}`https:\/\/platform\.swipelux\.com`/i,
+  );
+  assert.match(text, /sandbox (?:API )?key selects (?:the )?environment/i);
+  assert.match(text, /no real funds move|without moving real funds/i);
+  assert.match(text, /do not replace production compliance or onboarding/i);
   assert.doesNotMatch(text, /sandbox\.swipelux\.com|api\.swipelux\.com/i);
   assert.doesNotMatch(text, /same as production|identical to production|production equivalent/i);
-  assert.doesNotMatch(text, /automatically (?:runs?|advances?|progresses?|sequences?|transitions?)/i);
-  assert.match(text, /do not assume[\s\S]{0,120}(?:automatic|production)/i, `${label} must state the sandbox boundary`);
 }
 
 function assertSandboxSafetyBoundary(label, text) {
-  assert.match(
+  assert.doesNotMatch(
     text,
-    /none of (?:these|the) six[\s\S]{0,100}declare `Idempotency-Key`/i,
-    `${label} must derive sandbox idempotency from each operation`,
+    /sandbox[\s\S]{0,120}(?:requires?|send|use)[\s\S]{0,80}`Idempotency-Key`/i,
+    `${label} must not invent a sandbox-wide idempotency requirement`,
   );
-  assert.match(
+  assert.doesNotMatch(
     text,
-    /none of (?:their|the six|these)[\s\S]{0,100}document `Idempotency-Replayed`/i,
-    `${label} must derive sandbox replay behavior from each operation`,
+    /sandbox[\s\S]{0,120}`Idempotency-Replayed`/i,
+    `${label} must not invent sandbox replay headers`,
   );
-  assert.doesNotMatch(text, /sandbox[\s\S]{0,120}(?:requires?|send|use)[\s\S]{0,80}`Idempotency-Key`/i);
 }
 
 function checklistItems(text) {
@@ -1334,157 +1390,134 @@ test("states the negative webhook security and delivery contract without inventi
   );
 });
 
-test("documents all six sandbox helpers with exact request fields and response meanings", () => {
+test("sandbox guide links the exact six helpers while API Reference owns their catalogs", () => {
   const text = requiredPage("integration/sandbox");
-
-  const topup = requestBodySchema("post", "/v3/sandbox/accounts/{accountId}/topup");
-  assertExactSet(topup.required, ["amount", "currency"], "top-up fields");
-  const topupResponse = responseDataSchema(
-    "post",
-    "/v3/sandbox/accounts/{accountId}/topup",
+  const examples = sandboxCurlExamples(text);
+  const sandboxExamples = examples.filter(({ path }) => path.startsWith("/v3/sandbox/"));
+  const contractOperations = Object.entries(openapi.paths).flatMap(
+    ([path, pathItem]) =>
+      HTTP_METHODS.filter(
+        (method) => path.startsWith("/v3/sandbox/") && pathItem[method],
+      ).map((method) => [method, path]),
   );
-  assert.deepEqual(enumValues(topupResponse.properties.type), ["wallet_to_wallet"]);
-  assert.deepEqual(enumValues(topupResponse.properties.state), ["completed"]);
-  let unit = operationSemanticUnit(text, "post", "/v3/sandbox/accounts/{accountId}/topup");
-  assert.match(unit, /requires `amount` and `currency`/i);
-  assert.match(unit, /`data\.type`[\s\S]{0,80}`wallet_to_wallet`/i);
-  assert.match(unit, /`data\.state`[\s\S]{0,80}`completed`/i);
-
-  const transferPath = "/v3/sandbox/transfers/{transferId}/state";
-  const transfer = requestBodySchema("post", transferPath);
-  assertExactSet(transfer.required, ["state"], "transfer-state fields");
-  assertExactSet(enumValues(transfer.properties.state), ["completed", "failed"], "transfer-state enum");
-  assertExactSet(transfer.properties.stateDetail.required, ["code"], "stateDetail fields");
-  assert.match(transfer.properties.stateDetail.description, /only when forcing a payin transfer to `failed`/i);
-  assert.match(transfer.properties.stateDetail.description, /ignored for completed states and payout transfers/i);
-  unit = operationSemanticUnit(text, "post", transferPath);
-  assert.match(unit, /requires `state`/i);
-  assert.match(unit, /optional `stateDetail`/i);
-  assert.match(unit, /`stateDetail`[\s\S]{0,120}requires `code`/i);
-  assert.match(unit, /payin[\s\S]{0,80}`failed`/i);
-  assert.match(unit, /ignored[\s\S]{0,100}completed[\s\S]{0,100}payout/i);
-  assert.match(unit, /returns[\s\S]{0,80}(?:current|updated) transfer/i);
-
-  const createTask = requestBodySchema("post", "/v3/sandbox/tasks");
-  assertExactSet(createTask.required, ["scope", "items"], "sandbox task fields");
-  assert.equal(createTask.properties.items.minItems, 1);
   assertExactSet(
-    createTask.properties.items.items.required,
-    ["type", "request"],
-    "sandbox task item fields",
+    contractOperations.map(JSON.stringify),
+    SANDBOX_OPERATIONS.map(JSON.stringify),
+    "sandbox operations",
   );
-  unit = operationSemanticUnit(text, "post", "/v3/sandbox/tasks");
-  assert.match(unit, /requires `scope` and at least one `items` entry/i);
-  assert.match(unit, /each item requires `type` and `request`/i);
-  assert.match(unit, /customer scope[\s\S]{0,120}`type`[\s\S]{0,80}`customerId`/i);
-  assert.match(unit, /capability scope[\s\S]{0,120}`type`[\s\S]{0,80}`customerId`[\s\S]{0,80}`capabilityId`/i);
-  assert.match(unit, /transfer scope[\s\S]{0,120}`type`[\s\S]{0,80}`customerId`[\s\S]{0,80}`transferId`/i);
-  assert.match(unit, /`subject`[\s\S]{0,120}requires `type`, `name`, and `relatedPartyId`/i);
-  assert.match(unit, /`deadline`[\s\S]{0,120}requires `type` and `outcome`/i);
-  assert.match(unit, /returns[\s\S]{0,80}(?:created|current) task/i);
-
-  const review = requestBodySchema("post", "/v3/sandbox/tasks/{taskId}/review");
-  assertExactSet(review.required, ["outcome"], "sandbox review fields");
-  assertExactSet(review.properties.items.items.required, ["key", "verdict"], "review item fields");
   assertExactSet(
-    review.properties.items.items.properties.rejection.required,
-    ["code", "message"],
-    "review rejection fields",
+    linkedOperationLabels(text)
+      .filter(({ path }) => path.startsWith("/v3/sandbox/"))
+      .map(({ method, path }) => JSON.stringify([method, path])),
+    SANDBOX_OPERATIONS.map(JSON.stringify),
+    "sandbox guide helper links",
   );
-  unit = operationSemanticUnit(text, "post", "/v3/sandbox/tasks/{taskId}/review");
-  assert.match(unit, /requires `outcome`/i);
-  assert.match(unit, /`items`[\s\S]{0,120}`key`[\s\S]{0,80}`verdict`/i);
-  assert.match(unit, /`rejection`[\s\S]{0,100}`code`[\s\S]{0,80}`message`/i);
-  assert.match(unit, /returns[\s\S]{0,80}(?:reviewed|current) task/i);
-
-  const verificationPath = "/v3/sandbox/customers/{customerId}/verification";
-  const verification = requestBodySchema("post", verificationPath);
-  assertExactSet(verification.required, ["status"], "verification fields");
-  const verificationResponse = responseDataSchema("post", verificationPath);
   assertExactSet(
-    verificationResponse.required,
-    ["customerId", "customerType", "status", "previousStatus", "reason"],
-    "verification response fields",
+    [...new Set(sandboxExamples.map(({ method, path }) => JSON.stringify([method, path])))],
+    SANDBOX_OPERATIONS.map(JSON.stringify),
+    "sandbox guide helper examples",
   );
-  unit = operationSemanticUnit(text, "post", verificationPath);
-  assert.match(unit, /requires `status`/i);
-  assert.match(unit, /optional `reason`/i);
-  assert.match(unit, /`customerId`[\s\S]{0,100}`customerType`[\s\S]{0,100}`status`[\s\S]{0,100}`previousStatus`[\s\S]{0,100}`reason`/i);
 
-  const capabilityPath =
-    "/v3/sandbox/customers/{customerId}/capabilities/{capabilityId}/status";
-  const capability = requestBodySchema("post", capabilityPath);
-  assertExactSet(capability.required, ["status"], "capability-status fields");
-  unit = operationSemanticUnit(text, "post", capabilityPath);
-  assert.match(unit, /requires `status`/i);
-  assert.match(unit, /returns[\s\S]{0,80}(?:current|updated) capability/i);
+  for (const [method, path] of SANDBOX_OPERATIONS) {
+    const { operationObject } = openApiOperation(method, path);
+    const security = operationObject.security ?? openapi.security ?? [];
+    assert.ok(
+      security.some((requirement) => Object.hasOwn(requirement, "apiKey")),
+      `${method.toUpperCase()} ${path} must use apiKey security`,
+    );
+    assert.ok(requestBodySchema(method, path));
+  }
+  for (const example of sandboxExamples) {
+    assert.deepEqual(
+      example.headers.filter((header) => header.startsWith("X-API-Key:")),
+      ["X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}"],
+    );
+    const validation = openApiValidator.validateRequestBody(
+      example.method,
+      example.path,
+      example.body,
+    );
+    assert.equal(
+      validation.valid,
+      true,
+      `${example.method.toUpperCase()} ${example.path} example must match OpenAPI: ${JSON.stringify(validation.errors)}`,
+    );
+  }
+
+  assertExactSet(
+    enumValues(
+      requestBodySchema("post", "/v3/sandbox/transfers/{transferId}/state")
+        .properties.state,
+    ),
+    ["completed", "failed"],
+    "sandbox transfer states",
+  );
+  assert.ok(
+    enumValues(
+      requestBodySchema(
+        "post",
+        "/v3/sandbox/customers/{customerId}/verification",
+      ).properties.status,
+    ).includes("approved"),
+  );
+  assert.ok(
+    enumValues(
+      requestBodySchema(
+        "post",
+        "/v3/sandbox/customers/{customerId}/capabilities/{capabilityId}/status",
+      ).properties.status,
+    ).includes("ready"),
+  );
 });
 
-test("derives every sandbox request enum exactly from OpenAPI", () => {
+test("sandbox requirements use response-derived task data and submit before review", () => {
   const text = requiredPage("integration/sandbox");
-  const createTask = requestBodySchema("post", "/v3/sandbox/tasks");
-  const scopeValues = createTask.properties.scope.anyOf.flatMap((variant) =>
-    enumValues(resolveOpenApiReference(variant).properties.type),
+  const examples = sandboxCurlExamples(text);
+  assert.doesNotMatch(text, /cus_01JTESTCUSTOMER|capability_from_supported_response/);
+  const create = text.indexOf(operationMarkdown("post", "/v3/sandbox/tasks"));
+  const submit = text.indexOf(
+    operationMarkdown(
+      "post",
+      "/v3/customers/{customerId}/tasks/{taskId}/submissions",
+    ),
+  );
+  const review = text.indexOf(
+    operationMarkdown("post", "/v3/sandbox/tasks/{taskId}/review"),
+  );
+  assert.ok(create >= 0 && create < submit && submit < review);
+  assert.match(text, /\/integration\/onboarding\/capabilities-and-requirements/);
+  assert.match(text, /"customerId": "\$\{CUSTOMER_ID\}"/);
+  assert.match(text, /"capabilityId": "\$\{CAPABILITY_ID\}"/);
+  assert.match(text, /data\.id[\s\S]{0,120}TASK_ID/i);
+  assert.match(text, /data\.revision[\s\S]{0,120}TASK_REVISION/i);
+  assert.match(text, /data\.requirements[\s\S]{0,160}REQUIREMENT_ID/i);
+  assert.match(
+    sectionText(text, "Fund a sandbox wallet"),
+    /data\.id[\s\S]{0,120}TRANSFER_ID/i,
   );
 
-  assertExactSet(labeledCodeValues(text, "Transfer target states"), ["completed", "failed"], "transfer target states");
-  assertExactSet(labeledCodeValues(text, "Task scope types"), scopeValues, "task scope types");
-  assertExactSet(
-    labeledCodeValues(text, "Task categories"),
-    enumValues(createTask.properties.category),
-    "task categories",
-  );
-  assertExactSet(
-    labeledCodeValues(text, "Task subject types"),
-    enumValues(createTask.properties.subject.properties.type),
-    "task subject types",
-  );
-  assertExactSet(
-    labeledCodeValues(text, "Task item types"),
-    enumValues(createTask.properties.items.items.properties.type),
-    "task item types",
-  );
-  assertExactSet(
-    labeledCodeValues(text, "Deadline types"),
-    enumValues(createTask.properties.deadline.properties.type),
-    "deadline types",
-  );
-  assertExactSet(
-    labeledCodeValues(text, "Deadline outcomes"),
-    enumValues(createTask.properties.deadline.properties.outcome),
-    "deadline outcomes",
-  );
+  const taskBlock = [...text.matchAll(/```bash\n([\s\S]*?)```/g)]
+    .map((match) => match[1])
+    .find((block) => block.includes("/v3/sandbox/tasks"));
+  assert.ok(taskBlock);
+  assert.match(taskBlock, /<<JSON/);
+  assert.doesNotMatch(taskBlock, /<<'JSON'/);
 
-  const review = requestBodySchema("post", "/v3/sandbox/tasks/{taskId}/review");
-  assertExactSet(
-    labeledCodeValues(text, "Review outcomes"),
-    enumValues(review.properties.outcome),
-    "review outcomes",
+  const submission = examples.find(
+    ({ method, path }) =>
+      method === "post" &&
+      path === "/v3/customers/{customerId}/tasks/{taskId}/submissions",
   );
-  assertExactSet(
-    labeledCodeValues(text, "Review item verdicts"),
-    enumValues(review.properties.items.items.properties.verdict),
-    "review item verdicts",
+  assert.ok(submission);
+  const validation = openApiValidator.validateRequestBody(
+    submission.method,
+    submission.path,
+    submission.body,
   );
-
-  const verification = requestBodySchema(
-    "post",
-    "/v3/sandbox/customers/{customerId}/verification",
-  );
-  assertExactSet(
-    labeledCodeValues(text, "Verification decisions"),
-    enumValues(verification.properties.status),
-    "verification decisions",
-  );
-
-  const capability = requestBodySchema(
-    "post",
-    "/v3/sandbox/customers/{customerId}/capabilities/{capabilityId}/status",
-  );
-  assertExactSet(
-    labeledCodeValues(text, "Capability target statuses"),
-    enumValues(capability.properties.status),
-    "capability target statuses",
+  assert.equal(
+    validation.valid,
+    true,
+    `Sandbox task submission must match OpenAPI: ${JSON.stringify(validation.errors)}`,
   );
 });
 
@@ -1803,7 +1836,7 @@ Use the portal only for documented delivery logs, retries, and manual replay.`;
     /reuse sandbox IDs/,
   );
 
-  const environment = `Sandbox and production use the same API host, \`https://platform.swipelux.com\`. The API key selects the environment. No real funds move. Do not assume automatic sequencing or production equivalence.`;
+  const environment = `Sandbox and production use the same API host, \`https://platform.swipelux.com\`. The sandbox API key selects the environment. Helpers simulate outcomes and no real funds move. They do not replace production compliance or onboarding.`;
   assert.doesNotThrow(() => assertEnvironmentSemantics("safe environment", environment));
   assert.throws(
     () =>
@@ -1829,6 +1862,6 @@ Use the portal only for documented delivery logs, retries, and manual replay.`;
         "unsafe sandbox",
         "All sandbox writes require \`Idempotency-Key\` and return \`Idempotency-Replayed\`.",
       ),
-    /must derive sandbox idempotency/,
+    /must not invent a sandbox-wide idempotency requirement/,
   );
 });

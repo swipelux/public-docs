@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { isDeepStrictEqual } from "node:util";
 
 import { assertPages, readPage } from "./helpers/content.mjs";
+import { createOpenApiValidator } from "./helpers/openapi-validation.mjs";
 
 const PAGES = [
   "integration/overview",
@@ -17,10 +18,9 @@ const PATH_VARIABLES = new Map([
   ["CAPABILITY_ID", "capabilityId"],
   ["TASK_ID", "taskId"],
   ["ACCOUNT_ID", "accountId"],
-  ["SOURCE_WALLET_ID", "accountId"],
-  ["SETTLEMENT_WALLET_ID", "accountId"],
+  ["FLOW_WALLET_ID", "accountId"],
+  ["PAYOUT_ACCOUNT_ID", "accountId"],
   ["BANK_ACCOUNT_ID", "accountId"],
-  ["RECIPIENT_ID", "recipientId"],
   ["TRANSFER_ID", "transferId"],
 ]);
 
@@ -28,18 +28,19 @@ const BODY_VARIABLES = Object.freeze({
   CUSTOMER_ID: "cus_01JTESTCUSTOMER",
   CAPABILITY_ID: "ach_pooled",
   ACCOUNT_ID: "acc_01JTESTACCOUNT",
-  SOURCE_WALLET_ID: "acc_01JTESTSOURCE",
-  SETTLEMENT_WALLET_ID: "acc_01JTESTSETTLEMENT",
+  FLOW_WALLET_ID: "acc_01JTESTFLOW",
+  PAYOUT_ACCOUNT_ID: "acc_01JTESTPAYOUT",
   BANK_ACCOUNT_ID: "acc_01JTESTBANK",
-  RECIPIENT_ID: "rcp_01JTESTRECIPIENT",
-  DESTINATION_ID: "dst_01JTESTDESTINATION",
   QUOTE_ID: "quo_01JTESTQUOTE",
+  REQUIREMENT_ID: "req_01JTESTREQUIREMENT",
+  TASK_REVISION: 1,
   TRANSFER_ID: "tr_01JTESTTRANSFER",
 });
 
 const config = JSON.parse(readFileSync("docs.json", "utf8"));
 const coverage = JSON.parse(readFileSync("openapi-coverage.json", "utf8"));
 const openapi = JSON.parse(readFileSync("openapi.json", "utf8"));
+const openApiValidator = createOpenApiValidator(openapi);
 
 function resolveReference(value) {
   let resolved = value;
@@ -67,13 +68,6 @@ function openApiOperation(method, path) {
   const operation = pathItem[method];
   assert.ok(operation, `Missing OpenAPI operation ${method.toUpperCase()} ${path}`);
   return { operation, pathItem };
-}
-
-function operationParameters(method, path) {
-  const { operation, pathItem } = openApiOperation(method, path);
-  return [...(pathItem.parameters ?? []), ...(operation.parameters ?? [])].map(
-    resolveReference,
-  );
 }
 
 function requestBody(method, path) {
@@ -163,7 +157,16 @@ function normalizePath(url) {
 
 function parseJsonBody(block) {
   const heredoc = block.match(/--data\s+@-\s+<<'?JSON'?\n([\s\S]*?)\n\s*JSON(?:\n|$)/);
-  if (heredoc) return JSON.parse(heredoc[1]);
+  if (heredoc) {
+    const materializedNumbers = heredoc[1].replace(
+      /\$\{([A-Z_][A-Z0-9_]*)\}/g,
+      (value, name) =>
+        typeof BODY_VARIABLES[name] === "number"
+          ? String(BODY_VARIABLES[name])
+          : value,
+    );
+    return JSON.parse(materializedNumbers);
+  }
 
   const quoted = block.match(/--data\s+'([^']*)'/);
   if (quoted) return JSON.parse(quoted[1]);
@@ -203,78 +206,6 @@ function headerValues(example, name) {
     .map((header) => header.slice(header.indexOf(":") + 1).trim());
 }
 
-function schemaErrors(value, rawSchema, pointer = "$") {
-  const schema = resolveReference(rawSchema);
-  const errors = [];
-
-  if (schema?.nullable === true && value === null) return errors;
-
-  if (schema?.allOf) {
-    return schema.allOf.flatMap((variant) => schemaErrors(value, variant, pointer));
-  }
-
-  if (schema?.oneOf || schema?.anyOf) {
-    const variants = schema.oneOf ?? schema.anyOf;
-    const passing = variants.filter(
-      (variant) => schemaErrors(value, variant, pointer).length === 0,
-    );
-    if (passing.length === 0) errors.push(`${pointer} does not match any schema variant`);
-    return errors;
-  }
-
-  if (schema?.enum && !schema.enum.some((candidate) => Object.is(candidate, value))) {
-    errors.push(`${pointer} is not in the OpenAPI enum`);
-  }
-  if (schema?.const !== undefined && !Object.is(schema.const, value)) {
-    errors.push(`${pointer} does not match the OpenAPI const`);
-  }
-
-  const type = schema?.type ?? (schema?.properties ? "object" : undefined);
-  if (type === "object") {
-    if (value === null || Array.isArray(value) || typeof value !== "object") {
-      return [...errors, `${pointer} must be an object`];
-    }
-    for (const required of schema.required ?? []) {
-      if (!Object.hasOwn(value, required)) errors.push(`${pointer}.${required} is required`);
-    }
-    if (schema.additionalProperties === false) {
-      for (const key of Object.keys(value)) {
-        if (!Object.hasOwn(schema.properties ?? {}, key)) {
-          errors.push(`${pointer}.${key} is not allowed`);
-        }
-      }
-    }
-    for (const [key, item] of Object.entries(value)) {
-      const property = schema.properties?.[key];
-      if (property) errors.push(...schemaErrors(item, property, `${pointer}.${key}`));
-    }
-  } else if (type === "array") {
-    if (!Array.isArray(value)) return [...errors, `${pointer} must be an array`];
-    if (schema.minItems !== undefined && value.length < schema.minItems) {
-      errors.push(`${pointer} has fewer than ${schema.minItems} items`);
-    }
-    value.forEach((item, index) => {
-      if (schema.items) errors.push(...schemaErrors(item, schema.items, `${pointer}[${index}]`));
-    });
-  } else if (type === "string") {
-    if (typeof value !== "string") return [...errors, `${pointer} must be a string`];
-    if (schema.minLength !== undefined && value.length < schema.minLength) {
-      errors.push(`${pointer} is shorter than ${schema.minLength}`);
-    }
-    if (schema.pattern && !new RegExp(schema.pattern).test(value)) {
-      errors.push(`${pointer} does not match ${schema.pattern}`);
-    }
-  } else if (type === "integer") {
-    if (!Number.isInteger(value)) errors.push(`${pointer} must be an integer`);
-  } else if (type === "number") {
-    if (typeof value !== "number") errors.push(`${pointer} must be a number`);
-  } else if (type === "boolean") {
-    if (typeof value !== "boolean") errors.push(`${pointer} must be a boolean`);
-  }
-
-  return errors;
-}
-
 function materializeBody(value) {
   if (Array.isArray(value)) return value.map(materializeBody);
   if (value && typeof value === "object") {
@@ -302,12 +233,30 @@ function assertCurlMatchesOpenApi(example, label) {
     `${label} must use an environment variable for X-API-Key`,
   );
 
-  const idempotency = operationParameters(method, path).find(
-    (parameter) => parameter.in === "header" && parameter.name === "Idempotency-Key",
+  const requiredHeaders = openApiValidator.requiredParameterNames(
+    method,
+    path,
+    "header",
   );
+  for (const name of requiredHeaders) {
+    const values = headerValues(example, name);
+    assert.equal(values.length, 1, `${label} requires one ${name} header`);
+    const validation = openApiValidator.validateParameter(
+      method,
+      path,
+      "header",
+      name,
+      values[0],
+    );
+    assert.equal(
+      validation.valid,
+      true,
+      `${label} has an invalid ${name}: ${JSON.stringify(validation.errors)}`,
+    );
+  }
   assert.equal(
     headerValues(example, "Idempotency-Key").length,
-    idempotency?.required === true ? 1 : 0,
+    requiredHeaders.includes("Idempotency-Key") ? 1 : 0,
     `${label} must follow the operation's Idempotency-Key requirement`,
   );
 
@@ -327,17 +276,34 @@ function assertCurlMatchesOpenApi(example, label) {
       "application/json",
       `${label} must send JSON as application/json`,
     );
-    assert.deepEqual(
-      schemaErrors(materializeBody(example.body), json.schema),
-      [],
-      `${label} request body must match OpenAPI`,
+    const validation = openApiValidator.validateRequestBody(
+      method,
+      path,
+      materializeBody(example.body),
+    );
+    assert.equal(
+      validation.valid,
+      true,
+      `${label} request body must match OpenAPI: ${JSON.stringify(validation.errors)}`,
     );
   } else if (multipart) {
-    const schema = resolveReference(multipart.schema);
-    const fieldNames = example.forms.map((form) => form.slice(0, form.indexOf("=")));
-    for (const required of schema.required ?? []) {
-      assert.ok(fieldNames.includes(required), `${label} requires multipart field ${required}`);
-    }
+    const fields = Object.fromEntries(
+      example.forms.map((form) => {
+        const separator = form.indexOf("=");
+        return [form.slice(0, separator), form.slice(separator + 1)];
+      }),
+    );
+    const validation = openApiValidator.validateRequestBody(
+      method,
+      path,
+      fields,
+      "multipart/form-data",
+    );
+    assert.equal(
+      validation.valid,
+      true,
+      `${label} multipart body must match OpenAPI: ${JSON.stringify(validation.errors)}`,
+    );
   } else {
     assert.fail(`${label} uses an unsupported request media type`);
   }
@@ -387,11 +353,107 @@ test("every linked operation and representative curl remains OpenAPI-backed", ()
   }
 });
 
+test("request validation rejects format, length, uniqueness, bounds, variants, and empty idempotency keys", () => {
+  const validCustomer = {
+    type: "individual",
+    individual: {
+      email: "developer@example.com",
+      nationalities: ["US"],
+    },
+    financialProfile: { expectedMonthlyTransactionCount: 1 },
+  };
+  assert.equal(
+    openApiValidator.validateRequestBody("post", "/v3/customers", validCustomer)
+      .valid,
+    true,
+  );
+  assert.equal(
+    openApiValidator.validateRequestBody(
+      "post",
+      "/v3/customers",
+      {
+        ...validCustomer,
+        individual: { ...validCustomer.individual, email: "not-an-email" },
+      },
+    ).valid,
+    false,
+    "invalid email formats must be rejected",
+  );
+  assert.equal(
+    openApiValidator.validateRequestBody(
+      "post",
+      "/v3/customers",
+      {
+        ...validCustomer,
+        individual: { ...validCustomer.individual, nationalities: ["US", "US"] },
+      },
+    ).valid,
+    false,
+    "duplicate uniqueItems values must be rejected",
+  );
+  assert.equal(
+    openApiValidator.validateRequestBody(
+      "post",
+      "/v3/customers",
+      {
+        ...validCustomer,
+        financialProfile: { expectedMonthlyTransactionCount: -1 },
+      },
+    ).valid,
+    false,
+    "numeric bounds must be rejected",
+  );
+  assert.equal(
+    openApiValidator.validateRequestBody("post", "/v3/customers", {
+      ...validCustomer,
+      individual: { ...validCustomer.individual, phone: "123" },
+    }).valid,
+    false,
+    "invalid patterns must be rejected",
+  );
+
+  assert.equal(
+    openApiValidator.validateRequestBody(
+      "post",
+      "/v3/customers/{customerId}/accounts",
+      {
+        origin: "external",
+        type: "bank",
+        method: "ach",
+        country: "US",
+        currency: "USD",
+        details: {},
+      },
+    ).valid,
+    false,
+    "invalid oneOf request shapes must be rejected",
+  );
+
+  assert.equal(
+    openApiValidator.validateParameter(
+      "post",
+      "/v3/customers",
+      "header",
+      "Idempotency-Key",
+      "",
+    ).valid,
+    false,
+  );
+  assert.equal(
+    openApiValidator.validateParameter(
+      "post",
+      "/v3/customers",
+      "header",
+      "Idempotency-Key",
+      "x".repeat(256),
+    ).valid,
+    false,
+    "overlong Idempotency-Key values must be rejected",
+  );
+});
+
 test("overview leads with outcomes, the shared lifecycle, and core resources", () => {
   const text = readPage("integration/overview");
-  const opening = text.slice(text.indexOf("---", 3) + 3, text.indexOf("## "));
-  assert.match(opening, /customer onboarding, pay-ins, payouts, and issued bank accounts through one API/i);
-
   assertHeadingOrder(text, ["What you can build", "How an integration works", "Core resources", "Start building"]);
   for (const [title, href] of [
     ["Pay-ins", "/integration/receive-funds"],
@@ -410,11 +472,20 @@ test("overview leads with outcomes, the shared lifecycle, and core resources", (
     "Request an eligible capability",
     "Complete current requirements",
     "Create the account or destination",
-    "Quote, execute, and monitor",
   ];
   const indexes = lifecycle.map((step) => text.indexOf(step));
   assert.ok(indexes.every((index) => index >= 0), "Overview is missing a lifecycle step");
   assert.deepEqual(indexes, indexes.toSorted((left, right) => left - right));
+
+  const finalStep = text.match(/^6\. \*\*[^\n]+$/m)?.[0] ?? "";
+  assert.match(finalStep, /money movement/i);
+  assert.match(finalStep, /quote/i);
+  assert.match(finalStep, /execute/i);
+  assert.match(finalStep, /monitor/i);
+  assert.match(
+    finalStep,
+    /issued bank account[\s\S]*create[\s\S]*monitor[\s\S]*provision/i,
+  );
 
   for (const resource of ["customer", "capability", "account", "recipient", "destination", "quote", "transfer"]) {
     assert.match(text, new RegExp(`\\*\\*${resource}\\.\\*\\*`, "i"));
@@ -435,13 +506,23 @@ test("authentication shows one backend API-key flow and preserves the environmen
   assert.match(text, /\$\{SWIPELUX_API_KEY\}/);
   assert.match(text, /API key selects (?:sandbox or production|the environment)/i);
   assert.match(text, /backend|server-side/i);
-  assert.match(text, /separate secret-manager entries/i);
+  assert.match(text, /secret[- ]manager/i);
   assert.doesNotMatch(text, /YOUR_API_KEY/);
 
   const examples = curlExamples("integration/authentication", text);
   assert.equal(examples.length, 1);
   assert.equal(examples[0].method, "get");
   assert.equal(examples[0].path, "/v3/capabilities");
+  const requestBlock = bashBlocks(text).find((block) => /(^|\n)\s*curl\s/.test(block));
+  assert.ok(requestBlock);
+  assert.match(
+    requestBlock,
+    /export SWIPELUX_API_KEY=['"]replace-with-your-api-key['"]/,
+  );
+  assert.ok(
+    requestBlock.indexOf("export SWIPELUX_API_KEY") < requestBlock.indexOf("curl"),
+    "Authentication must define SWIPELUX_API_KEY before the request",
+  );
 });
 
 test("quickstart follows the customer-first shared setup before outcome branches", () => {
@@ -470,6 +551,10 @@ test("quickstart follows the customer-first shared setup before outcome branches
   }
   assert.match(text, /hardcod(?:e|ing)[^.]*universal capability ID|response-derived capability/i);
   assert.doesNotMatch(text, /@(?:account|recipient|destination|quote|task-submission)\.json/);
+  assert.ok(
+    (text.match(/\S+/g) ?? []).length <= 1000,
+    "Quickstart must stay at or below 1,000 words",
+  );
 
   const firstWebhook = text.search(/\/integration\/webhooks|\/v3\/webhooks/);
   const firstTransfer = text.indexOf("`POST /v3/transfers`");
@@ -484,6 +569,27 @@ test("quickstart follows the customer-first shared setup before outcome branches
   }
   assert.match(text, /\/integration\/webhooks/);
   assert.match(text, /\/api-reference/);
+});
+
+test("quickstart keeps one customer-owned payout path and delegates third-party payouts", () => {
+  const text = readPage("integration/quickstart");
+  const linkedOperations = operationLinks(text);
+  assert.equal(
+    linkedOperations.some(
+      ({ path }) => path.includes("/recipients") || path.includes("/destinations"),
+    ),
+    false,
+    "Quickstart must send third-party payouts to the dedicated guides",
+  );
+  assert.match(text, /\/integration\/(?:recipients|send-funds)/);
+  assert.match(text, /customer-owned/i);
+});
+
+test("quickstart stores the transfer instruction response fields", () => {
+  const text = readPage("integration/quickstart");
+  assert.match(text, /data\.transferId[\s\S]{0,160}data\.instructions/i);
+  assert.match(text, /data\.instructions[\s\S]{0,120}FUNDING_INSTRUCTIONS/i);
+  assert.doesNotMatch(text, /Store the returned `data` as `FUNDING_INSTRUCTIONS`/i);
 });
 
 test("quickstart includes complete contract-valid bodies and stores response-derived values", () => {
@@ -517,11 +623,16 @@ test("quickstart includes complete contract-valid bodies and stores response-der
   );
 
   const accounts = examplesFor(examples, "post", "/v3/customers/{customerId}/accounts");
-  assert.ok(
-    accounts.some(
-      ({ body }) => body?.origin === "issued" && body.type === "wallet" && body.currency === "USDC" && body.network === "base",
-    ),
-    "Quickstart needs an issued USDC/Base wallet body",
+  assert.equal(
+    accounts.filter(
+      ({ body }) =>
+        body?.origin === "issued" &&
+        body.type === "wallet" &&
+        body.currency === "USDC" &&
+        body.network === "base",
+    ).length,
+    1,
+    "Quickstart needs one shared issued USDC/Base wallet",
   );
   assert.ok(
     accounts.some(
@@ -541,27 +652,53 @@ test("quickstart includes complete contract-valid bodies and stores response-der
   assert.ok(quotes.some(({ body }) => body?.in?.currency === "USDC" && body?.out?.currency === "USD"));
   assert.ok(examplesFor(examples, "post", "/v3/transfers").length >= 2);
   assert.ok(examplesFor(examples, "get", "/v3/transfers/{transferId}/instructions").length >= 1);
-  assert.ok(examplesFor(examples, "get", "/v3/customers/{customerId}/accounts/{accountId}").length >= 1);
+  assert.ok(
+    examplesFor(examples, "get", "/v3/customers/{customerId}/accounts/{accountId}")
+      .length >= 3,
+  );
 
-  for (const name of [
-    "CUSTOMER_ID",
-    "CAPABILITY_ID",
-    "CAPABILITY_STATUS",
-    "TASK_IDS",
-    "SOURCE_WALLET_ID",
-    "ACCOUNT_ID",
-    "RECIPIENT_ID",
-    "DESTINATION_ID",
-    "QUOTE_ID",
-    "TRANSFER_ID",
-    "FUNDING_INSTRUCTIONS",
-    "BANK_ACCOUNT_STATUS",
-    "BANK_ACCOUNT_DETAILS",
-  ]) {
-    assert.match(text, new RegExp(`\\b${name}\\b`), `Quickstart must name ${name}`);
+  for (const field of ["data.id", "data.status", "data.openTaskIds"]) {
+    assert.ok(text.includes(`\`${field}\``), `Quickstart must store ${field}`);
   }
   assert.match(text, /test control[^.]*not production onboarding|not production onboarding[^.]*test control/i);
   assert.match(text, /details may not be present immediately|do not assume[^.]*bank details/i);
+});
+
+test("quickstart gates both reusable accounts on current readiness before use", () => {
+  const text = readPage("integration/quickstart");
+  const tabs = text.indexOf("<Tabs>");
+  const flowWallet = text.indexOf("FLOW_WALLET_ID");
+  assert.ok(flowWallet >= 0 && flowWallet < tabs, "Create the shared wallet before the flow tabs");
+  assert.match(
+    text,
+    /FLOW_WALLET_ID[\s\S]{0,240}data\.status[\s\S]{0,120}FLOW_WALLET_STATUS[\s\S]{0,160}data\.openTaskIds[\s\S]{0,120}FLOW_WALLET_TASK_IDS/i,
+  );
+  assert.match(
+    text,
+    /FLOW_WALLET_TASK_IDS[\s\S]{0,320}complete[\s\S]{0,120}(?:current )?tasks?/i,
+  );
+  assert.match(
+    text,
+    /GET \/v3\/customers\/\{customerId\}\/accounts\/\{accountId\}[\s\S]{0,500}FLOW_WALLET_STATUS[\s\S]{0,120}`ready`/i,
+  );
+
+  const flowReady = text.search(/FLOW_WALLET_STATUS[^\n.]{0,120}`ready`/i);
+  const topup = text.indexOf("`POST /v3/sandbox/accounts/{accountId}/topup`");
+  const firstQuote = text.indexOf("`POST /v3/quotes`");
+  assert.ok(flowReady >= 0 && flowReady < topup && flowReady < firstQuote);
+
+  assert.match(
+    text,
+    /PAYOUT_ACCOUNT_ID[\s\S]{0,240}data\.status[\s\S]{0,120}PAYOUT_ACCOUNT_STATUS[\s\S]{0,160}data\.openTaskIds[\s\S]{0,120}PAYOUT_ACCOUNT_TASK_IDS/i,
+  );
+  assert.match(
+    text,
+    /PAYOUT_ACCOUNT_TASK_IDS[\s\S]{0,320}complete[\s\S]{0,120}(?:current )?tasks?/i,
+  );
+  assert.match(
+    text,
+    /PAYOUT_ACCOUNT_STATUS[\s\S]{0,160}`ready`[\s\S]{0,500}`POST \/v3\/quotes`/i,
+  );
 });
 
 test("sandbox is organized by testing scenario and links every helper", () => {
@@ -591,8 +728,30 @@ test("sandbox is organized by testing scenario and links every helper", () => {
   for (const [method, path] of expected) {
     assert.ok(examplesFor(examples, method, path).length >= 1, `Missing curl for ${method.toUpperCase()} ${path}`);
   }
+  const taskBlock = bashBlocks(text).find((block) =>
+    block.includes("/v3/sandbox/tasks"),
+  );
+  assert.ok(taskBlock);
+  assert.match(taskBlock, /<<JSON/);
+  assert.doesNotMatch(taskBlock, /<<'JSON'/);
+  assert.match(taskBlock, /"customerId": "\$\{CUSTOMER_ID\}"/);
+  assert.match(taskBlock, /"capabilityId": "\$\{CAPABILITY_ID\}"/);
+
+  const createTask = text.indexOf("`POST /v3/sandbox/tasks`");
+  const submitTask = text.indexOf(
+    "`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`",
+  );
+  const reviewTask = text.indexOf("`POST /v3/sandbox/tasks/{taskId}/review`");
+  assert.ok(
+    createTask >= 0 && createTask < submitTask && submitTask < reviewTask,
+    "Sandbox requirements must be submitted before review",
+  );
+  assert.match(text, /data\.revision[\s\S]{0,160}data\.requirements/i);
   assert.match(text, /simulate|test control/i);
   assert.match(text, /do not replace production compliance|does not replace production compliance/i);
+  assert.match(text, /same (?:base URL|API host)/i);
+  assert.match(text, /sandbox (?:API )?key selects (?:the )?environment/i);
+  assert.match(text, /without moving real funds|no real funds move/i);
 });
 
 test("Get started pages keep public-only language and root-relative links", () => {
