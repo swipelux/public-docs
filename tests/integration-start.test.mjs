@@ -35,6 +35,21 @@ const SANDBOX_OPERATIONS = [
   ],
 ];
 
+const NORMAL_GUIDE_IDEMPOTENT_OPERATIONS = [
+  ["post", "/v3/customers"],
+  ["post", "/v3/customers/{customerId}/capabilities/{capabilityId}"],
+  ["post", "/v3/customers/{customerId}/tasks/{taskId}/submissions"],
+  ["post", "/v3/customers/{customerId}/accounts"],
+  ["post", "/v3/customers/{customerId}/recipients"],
+  [
+    "post",
+    "/v3/customers/{customerId}/recipients/{recipientId}/destinations",
+  ],
+  ["post", "/v3/quotes"],
+  ["post", "/v3/transfers"],
+  ["post", "/v3/webhooks"],
+];
+
 const config = JSON.parse(readFileSync("docs.json", "utf8"));
 const coverage = JSON.parse(readFileSync("openapi-coverage.json", "utf8"));
 const openapi = JSON.parse(readFileSync("openapi.json", "utf8"));
@@ -49,6 +64,65 @@ function operation(method, path) {
     `Expected one coverage operation for ${method.toUpperCase()} ${path}`,
   );
   return matches[0];
+}
+
+function resolveOpenApiReference(value) {
+  let resolved = value;
+  const visited = new Set();
+
+  while (resolved?.$ref) {
+    const reference = resolved.$ref;
+    assert.match(reference, /^#\//, `Unsupported OpenAPI reference ${reference}`);
+    assert.ok(!visited.has(reference), `Circular OpenAPI reference ${reference}`);
+    visited.add(reference);
+
+    resolved = reference
+      .slice(2)
+      .split("/")
+      .map((segment) => segment.replaceAll("~1", "/").replaceAll("~0", "~"))
+      .reduce((current, segment) => current?.[segment], openapi);
+    assert.ok(resolved, `Missing OpenAPI reference ${reference}`);
+  }
+
+  return resolved;
+}
+
+function openApiOperation(method, path) {
+  const pathItem = openapi.paths[path];
+  assert.ok(pathItem, `Missing OpenAPI path ${path}`);
+
+  const operationObject = pathItem[method];
+  assert.ok(
+    operationObject,
+    `Missing OpenAPI operation ${method.toUpperCase()} ${path}`,
+  );
+
+  return { operationObject, pathItem };
+}
+
+function operationParameters(method, path) {
+  const { operationObject, pathItem } = openApiOperation(method, path);
+  return [...(pathItem.parameters ?? []), ...(operationObject.parameters ?? [])].map(
+    resolveOpenApiReference,
+  );
+}
+
+function idempotencyParameter(method, path) {
+  return operationParameters(method, path).find(
+    (parameter) =>
+      parameter.in === "header" &&
+      parameter.name.toLowerCase() === "idempotency-key",
+  );
+}
+
+function documentsResponseHeader(method, path, headerName) {
+  const { operationObject } = openApiOperation(method, path);
+  return Object.values(operationObject.responses ?? {}).some((response) => {
+    const resolvedResponse = resolveOpenApiReference(response);
+    return Object.keys(resolvedResponse.headers ?? {}).some(
+      (name) => name.toLowerCase() === headerName.toLowerCase(),
+    );
+  });
 }
 
 function assertOperationLinks(page, operations) {
@@ -311,21 +385,106 @@ test("API reference guide explains generated exact fields and stable links", () 
   ]);
 });
 
+test("OpenAPI scopes required idempotency keys to declared operations", () => {
+  for (const [method, path] of SANDBOX_OPERATIONS) {
+    assert.equal(
+      idempotencyParameter(method, path),
+      undefined,
+      `${method.toUpperCase()} ${path} must not declare Idempotency-Key`,
+    );
+  }
+
+  for (const [method, path] of NORMAL_GUIDE_IDEMPOTENT_OPERATIONS) {
+    const parameter = idempotencyParameter(method, path);
+    assert.ok(parameter, `${method.toUpperCase()} ${path} must declare Idempotency-Key`);
+    assert.equal(
+      parameter.required,
+      true,
+      `${method.toUpperCase()} ${path} must require Idempotency-Key`,
+    );
+  }
+});
+
+test("OpenAPI scopes replay response headers separately from required keys", () => {
+  const cancellation = ["post", "/v3/transfers/{transferId}/cancel"];
+  const cancellationParameter = idempotencyParameter(...cancellation);
+  assert.ok(
+    cancellationParameter,
+    "transfer cancellation must declare Idempotency-Key",
+  );
+  assert.equal(
+    cancellationParameter.required,
+    true,
+    "transfer cancellation must require Idempotency-Key",
+  );
+  assert.equal(
+    documentsResponseHeader(...cancellation, "Idempotency-Replayed"),
+    false,
+    "transfer cancellation responses must not document Idempotency-Replayed",
+  );
+
+  for (const operationEntry of [
+    ["post", "/v3/quotes"],
+    ["post", "/v3/transfers"],
+  ]) {
+    assert.ok(
+      documentsResponseHeader(...operationEntry, "Idempotency-Replayed"),
+      `${operationEntry[0].toUpperCase()} ${operationEntry[1]} must document Idempotency-Replayed`,
+    );
+  }
+});
+
 test("request safety preserves the documented idempotency and retry boundary", () => {
   const text = readPage("integration/request-safety");
 
-  assert.match(text, /POST[\s\S]*PATCH[\s\S]*PUT[\s\S]*DELETE/);
-  assert.match(text, /Idempotency-Key/);
-  assert.match(text, /same key[\s\S]{0,120}(?:same|identical) body[\s\S]{0,120}cached response/i);
-  assert.match(text, /Idempotency-Replayed/);
-  assert.match(text, /`true`/);
+  assert.match(text, /idempotency is operation-specific/i);
+  assert.match(text, /generated operation page/i);
+  assert.match(text, /committed `openapi\.json`/i);
+  assert.match(text, /authoritative|source of truth/i);
+  assert.match(
+    text,
+    /when an operation declares[\s\S]{0,120}`Idempotency-Key`[\s\S]{0,120}required/i,
+  );
   assert.match(text, /unique key[\s\S]{0,100}intended effect/i);
-  assert.match(text, /transport uncertainty[\s\S]{0,120}identical body/i);
+  assert.match(
+    text,
+    /transport uncertainty[\s\S]{0,120}(?:reuse|same key)[\s\S]{0,120}identical body/i,
+  );
+  assert.match(
+    text,
+    /normal (?:integration )?guides[\s\S]{0,220}customer[\s\S]{0,80}capability[\s\S]{0,80}task[\s\S]{0,80}account[\s\S]{0,80}recipient[\s\S]{0,80}quote[\s\S]{0,80}transfer[\s\S]{0,80}webhook/i,
+  );
+  assert.match(
+    text,
+    /six current[\s\S]{0,80}`\/v3\/sandbox\/\*`[\s\S]{0,100}do not declare[\s\S]{0,80}`Idempotency-Key`/i,
+  );
+  assert.match(
+    text,
+    /do not add[\s\S]{0,120}(?:header|`Idempotency-Key`)[\s\S]{0,120}sandbox[\s\S]{0,120}unless[\s\S]{0,120}operation page changes/i,
+  );
+  assert.match(text, /`Idempotency-Replayed: true`/);
+  assert.match(
+    text,
+    /operations? or responses?[\s\S]{0,100}document[\s\S]{0,80}`Idempotency-Replayed`/i,
+  );
+  assert.match(
+    text,
+    /check the generated operation page[\s\S]{0,140}(?:rather than|instead of)[\s\S]{0,100}(?:rely|assum)[\s\S]{0,80}universally/i,
+  );
   assert.match(text, /safe[\s\S]{0,80}(?:read|GET)[\s\S]{0,80}retr/i);
   assert.match(text, /retryable[\s\S]{0,100}status[\s\S]{0,100}code|status[\s\S]{0,100}code[\s\S]{0,100}retryable/i);
   assert.match(text, /idempotency_conflict/);
   assert.match(text, /idempotency_request_in_progress/);
+  assert.match(text, /where they apply/i);
   assert.match(text, /do not blindly retry/i);
+  assert.doesNotMatch(
+    text,
+    /every effectful[\s\S]{0,100}(?:requires|must include)[\s\S]{0,80}`Idempotency-Key`/i,
+  );
+  assert.doesNotMatch(
+    text,
+    /a replayed response includes[\s\S]{0,100}`Idempotency-Replayed`/i,
+  );
   assert.doesNotMatch(text, /\bTTL\b|time[- ]to[- ]live|concurren(?:cy|t) guarantee/i);
 
   assertOperationLinks("integration/request-safety", [
