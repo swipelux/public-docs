@@ -158,6 +158,27 @@ test("allows historical version references in excluded specs and plans", () => {
   );
 });
 
+test("keeps the docs validation library free of ambient disk access", () => {
+  const source = readFileSync(
+    new URL("../scripts/lib/docs-validation.mjs", import.meta.url),
+    "utf8",
+  );
+  const forbiddenReferences = [
+    "node:fs",
+    "node:path",
+    "process.cwd",
+    "existsSync",
+    "readFileSync",
+    "readdirSync",
+    "statSync",
+  ];
+
+  assert.deepEqual(
+    forbiddenReferences.filter((reference) => source.includes(reference)),
+    [],
+  );
+});
+
 test("recursively rejects navigation pages missing from disk", () => {
   const config = navigationFixture([
     "integration/overview",

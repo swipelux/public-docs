@@ -49,6 +49,10 @@ function pageFile(page) {
   return page === "index" ? "index.mdx" : `${page}.mdx`;
 }
 
+function pageExists(page) {
+  return existsSync(projectPath(pageFile(page)));
+}
+
 function listMdx(directory) {
   const absolute = projectPath(directory);
   if (!existsSync(absolute)) return [];
@@ -95,7 +99,7 @@ if (docsConfig) {
   }));
   add(
     validateNavigation(docsConfig, {
-      rootDir,
+      pageExists,
       requiredPages: REQUIRED_NAVIGATION_PAGES,
     }),
   );

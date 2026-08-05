@@ -1,6 +1,3 @@
-import { existsSync } from "node:fs";
-import { resolve } from "node:path";
-
 export const SOURCE_COMMIT =
   "b4c9b5b7101ec03e01424259f58a5c8763ea489b";
 
@@ -475,16 +472,10 @@ function findObjects(value, predicate, matches = []) {
   return matches;
 }
 
-function pageFile(page) {
-  return page === "index" ? "index.mdx" : `${page}.mdx`;
-}
-
 export function validateNavigation(config, options = {}) {
   const errors = [];
   const requiredPages = options.requiredPages ?? REQUIRED_NAVIGATION_PAGES;
-  const rootDir = options.rootDir ?? process.cwd();
-  const pageExists =
-    options.pageExists ?? ((page) => existsSync(resolve(rootDir, pageFile(page))));
+  const pageExists = options.pageExists;
   const navigation = config?.navigation;
 
   if (!navigation || typeof navigation !== "object") {
@@ -502,7 +493,7 @@ export function validateNavigation(config, options = {}) {
     if (count > 1) {
       errors.push(`docs.json: navigation page ${page} appears ${count} times`);
     }
-    if (!pageExists(page)) {
+    if (pageExists && !pageExists(page)) {
       errors.push(`docs.json: navigation page ${page} is missing from disk`);
     }
   }
