@@ -1849,12 +1849,21 @@ Use the portal only for documented delivery logs, retries, and manual replay.`;
       ),
     /same .*host|sandbox\.swipelux\.com/,
   );
+  const realFunds = environment.replace(
+    /no real funds move/i,
+    "real funds move",
+  );
+  assert.notEqual(
+    realFunds,
+    environment,
+    "real-funds fixture must mutate the safe environment text",
+  );
   assert.throws(
-    () => assertEnvironmentSemantics("real funds", environment.replace("No real funds move", "Real funds move")),
+    () => assertEnvironmentSemantics("real funds", realFunds),
     /no real funds move/,
   );
 
-  const sandboxSafety = `None of the six sandbox operations declare \`Idempotency-Key\`. None of their responses document \`Idempotency-Replayed\`.`;
+  const sandboxSafety = `None of the six operations declare \`Idempotency-Key\`. None of their responses document \`Idempotency-Replayed\`.`;
   assert.doesNotThrow(() => assertSandboxSafetyBoundary("safe sandbox", sandboxSafety));
   assert.throws(
     () =>
