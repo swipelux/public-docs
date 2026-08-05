@@ -46,7 +46,9 @@ The create operation says a quote can be executed before `expiresAt` while the q
 
 Read the current quote with [`GET /v3/quotes/{quoteId}`](/api-reference/money-movement/get-v3-quotes-by-quote-id) and the current transfer with [`GET /v3/transfers/{transferId}`](/api-reference/money-movement/get-v3-transfers-by-transfer-id) instead of assuming either resource stayed unchanged.
 
-The returned Quote's required `rate` and `fees` fee lines are the executable price snapshot. A Transfer's `fees` are the applied snapshot using the same quote fee-line shape.
+The returned Quote's `in`, `out`, `rate`, and `fees` together form the executable snapshot. Do not recompute executable amounts from `rate` alone.
+
+A Transfer's `amounts.in` and `amounts.out` record the executed quote legs, while `fees` is the applied fee snapshot. `amounts.settled` records the amount actually delivered and is present once completed.
 
 ## Execute the selected quote
 
@@ -58,9 +60,13 @@ Transfer creation requires `quoteId`. Optional transfer context includes `extern
 }
 ```
 
+`externalId` on a quote or transfer is a non-unique correlation value. It does not provide idempotency or replace `Idempotency-Key`; the transfer value is independent of the quote value.
+
 - **Transfer directions:** `fiat_to_stablecoin`, `stablecoin_to_fiat`, `stablecoin_move`
 - **Transfer states:** `awaiting_funds`, `processing`, `action_required`, `completed`, `failed`, `canceled`
 - **Transfer 409 codes:** `account_unavailable`, `account_not_ready`, `capability_not_ready`, `idempotency_conflict`, `insufficient_balance`, `quote_already_executed`, `quote_destination_missing`, `quote_expired`, `rail_not_ready`
+
+`quote_already_executed` returns the existing `transferId` that consumed the quote.
 
 Use [`GET /v3/transfers`](/api-reference/money-movement/get-v3-transfers) to list quoted transfers and reconciled inbound deposits. Its filters include customer, public state, method, direction, origin, source-or-destination account, quote, exact external id, created-at range, and `updatedAfter`.
 
@@ -92,6 +98,8 @@ Payout-side transfers are funded from the source account and have no instruction
 
 ## Replay writes safely
 
-- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) declares `Idempotency-Key`. Reuse a key only with the same body. Successful responses document `Idempotency-Replayed: true`.
-- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) declares `Idempotency-Key`. Reuse a key only with the same body. Successful responses document `Idempotency-Replayed: true`.
-- [`POST /v3/transfers/{transferId}/cancel`](/api-reference/money-movement/post-v3-transfers-by-transfer-id-cancel) declares `Idempotency-Key`. Reuse a key only with the same request. This operation does not document `Idempotency-Replayed`.
+Follow [Request safety](/integration/request-safety) for every write below. Each operation requires `Idempotency-Key`. Generate a fresh key for each intended effect.
+
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) requires `Idempotency-Key`. After transport uncertainty, reuse the same key only with the identical body. On a replay, the documented successful response includes `Idempotency-Replayed: true`.
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) requires `Idempotency-Key`. After transport uncertainty, reuse the same key only with the identical body. On a replay, the documented successful response includes `Idempotency-Replayed: true`.
+- [`POST /v3/transfers/{transferId}/cancel`](/api-reference/money-movement/post-v3-transfers-by-transfer-id-cancel) requires `Idempotency-Key`. After transport uncertainty, reuse the same key only with the identical request. This operation does not document `Idempotency-Replayed`.
