@@ -1,0 +1,105 @@
+---
+title: "Quotes and transfers"
+description: "Price a movement with a quote, execute it as a transfer, and follow current states, instructions, and tasks."
+---
+
+[`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) prices the movement. [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) executes the selected quote without intentionally re-pricing it, although execution can still fail current validation, balance, destination, rail, or provider checks.
+
+<Warning>
+Call quote and transfer operations from your backend with `X-API-Key`. Do not expose the key to a browser or client.
+</Warning>
+
+## Build a conditional quote
+
+There is no universal quote payload. Supply `customerId`, a ready `capabilityId`, `in`, `out`, and `destinationId`. Provide exactly one of `in.amount` or `out.amount`. Stablecoin-funded quotes can select `in.accountId`; fiat-funded quotes ignore it.
+
+The public destination prefix selects the resource kind: `acc_` identifies an account and `dst_` identifies a recipient destination. Stablecoin moves require the same network and currency and do not support cross-chain bridging or asset swaps. Raw inline addresses are not accepted.
+
+This contract example prices a stablecoin move:
+
+```json
+{
+  "customerId": "cus_7F3pL2nQ9xA5mW8kR1sT4v",
+  "capabilityId": "stablecoin_transfers",
+  "in": {
+    "amount": "1.234567",
+    "currency": "USDC",
+    "accountId": "acc_base123"
+  },
+  "destinationId": "dst_8xN2pQ4rT7mA9sL1kBc6dV",
+  "out": {
+    "currency": "USDC"
+  }
+}
+```
+
+An optional quote-level `fees` developer fee override uses the `breakdown.developer.fixed` and `breakdown.developer.bips` rule shape. It overrides account fees for that quote only; see [account fees](/integration/accounts#configure-account-developer-fees).
+
+For `stablecoin_transfers` wallet moves, the API currently accepts zero fees only. Any non-zero platform or developer fee returns `422 amount_not_deliverable`.
+
+- **Quote modes:** `exact_in`, `exact_out`
+- **Quote statuses:** `active`, `executed`, `expired`, `failed`
+- **Quote 422 codes:** `account_method_not_supported`, `amount_not_deliverable`, `developer_fee_invalid`, `quote_direction_invalid`, `recipient_destination_invalid`
+- **Quote 503 code:** `rail_temporarily_unavailable`
+
+The create operation says a quote can be executed before `expiresAt` while the quote, capability, balance, destination, rail, and provider checks still pass. The contract does not define a fixed quote lifetime. Do not derive a duration from an example timestamp.
+
+Read the current quote with [`GET /v3/quotes/{quoteId}`](/api-reference/money-movement/get-v3-quotes-by-quote-id) and the current transfer with [`GET /v3/transfers/{transferId}`](/api-reference/money-movement/get-v3-transfers-by-transfer-id) instead of assuming either resource stayed unchanged.
+
+The returned Quote's `in`, `out`, `rate`, and `fees` together form the executable snapshot. Do not recompute executable amounts from `rate` alone.
+
+A Transfer's `amounts.in` and `amounts.out` record the executed quote legs, while `fees` is the applied fee snapshot. `amounts.settled` records the amount actually delivered and is present once completed.
+
+## Execute the selected quote
+
+Transfer creation requires `quoteId`. Optional transfer context includes `externalId`, `memo`, and up to the contract-defined set of previously uploaded supporting document ids. The minimal contract example is:
+
+```json
+{
+  "quoteId": "quo_6dV8xN2pQ4rT7mA9sL1kBc"
+}
+```
+
+`externalId` on a quote or transfer is a non-unique correlation value. It does not provide idempotency or replace `Idempotency-Key`; the transfer value is independent of the quote value.
+
+- **Transfer directions:** `fiat_to_stablecoin`, `stablecoin_to_fiat`, `stablecoin_move`
+- **Transfer states:** `awaiting_funds`, `processing`, `action_required`, `completed`, `failed`, `canceled`
+- **Transfer 409 codes:** `account_unavailable`, `account_not_ready`, `capability_not_ready`, `idempotency_conflict`, `insufficient_balance`, `quote_already_executed`, `quote_destination_missing`, `quote_expired`, `rail_not_ready`
+
+`quote_already_executed` returns the existing `transferId` that consumed the quote.
+
+Use [`GET /v3/transfers`](/api-reference/money-movement/get-v3-transfers) to list quoted transfers and reconciled inbound deposits. Its filters include customer, public state, method, direction, origin, source-or-destination account, quote, exact external id, created-at range, and `updatedAfter`.
+
+## Follow state details and transfer tasks
+
+`processing` covers funds received through settlement. `canceled` is projected when an unfunded deposit window expires.
+
+`stateDetail` is nullable on happy-path states. It is required for `action_required` and other non-terminal blocking/failure states.
+
+- **StatusReason fields:** `code`, `message`, `actor`, `retryable`
+- **StatusReason actors:** `customer`, `developer`, `provider`, `network`, `swipelux`
+- **Task statuses:** `action_required`, `in_review`, `satisfied`, `rejected`, `canceled`
+
+`action_required` is projected when an otherwise in-flight transfer has open transfer tasks. Follow the transfer's `openTaskIds` through [`GET /v3/transfers/{transferId}/tasks`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-tasks). That operation returns current task details; use each task's current `revision` and `requirements`. There is no universal task submission payload, so continue through [Tasks and submissions](/integration/onboarding/tasks-and-submissions) with the current task data.
+
+The transfer-read examples use `network_rejected` and `deposit_window_expired` as `stateDetail.code` values. These are examples, not an exhaustive transfer reason-code catalog.
+
+## Fetch instructions only when applicable
+
+Applicable inbound transfers can return typed funding instructions: `bank`, `code`, or `redirect`. Read them with [`GET /v3/transfers/{transferId}/instructions`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-instructions), or use the nullable `instructions` field on the current transfer.
+
+When `reference.required` is `true`, the exact returned reference must accompany the deposit. Pooled accounts match deposits by reference; named virtual accounts match by account number. `localAmount` is the amount in the local settlement currency when the rail currency differs from the quoted input.
+
+Payout-side transfers are funded from the source account and have no instructions. The instruction request returns 404 with `transfer_has_no_instructions` for that case.
+
+## Treat cancellation as contract-limited
+
+[`POST /v3/transfers/{transferId}/cancel`](/api-reference/money-movement/post-v3-transfers-by-transfer-id-cancel) returns 409 with `transfer_not_cancelable`; no current transfer state is cancelable through this operation.
+
+## Replay writes safely
+
+Follow [Request safety](/integration/request-safety) for every write below. Each operation requires `Idempotency-Key`. Generate a fresh key for each intended effect.
+
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) requires `Idempotency-Key`. After transport uncertainty, reuse the same key only with the identical body. On a replay, the documented successful response includes `Idempotency-Replayed: true`.
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) requires `Idempotency-Key`. After transport uncertainty, reuse the same key only with the identical body. On a replay, the documented successful response includes `Idempotency-Replayed: true`.
+- [`POST /v3/transfers/{transferId}/cancel`](/api-reference/money-movement/post-v3-transfers-by-transfer-id-cancel) requires `Idempotency-Key`. After transport uncertainty, reuse the same key only with the identical request. This operation does not document `Idempotency-Replayed`.

@@ -1,0 +1,56 @@
+---
+title: "Pagination and sync"
+description: "Traverse cursor envelopes and recover changed resources with updatedAfter."
+---
+
+Paginated list operations use a cursor envelope:
+
+```json
+{
+  "data": [],
+  "nextCursor": "opaque-next-page-value",
+  "hasMore": true
+}
+```
+
+For a paginated list, treat each value as an opaque cursor. Pass `nextCursor` to the next request and continue until `hasMore` is false.
+
+```js
+let cursor;
+let hasMore = true;
+
+while (hasMore) {
+  const url = new URL("https://platform.swipelux.com/v3/customers");
+  if (cursor) url.searchParams.set("cursor", cursor);
+
+  const response = await fetch(url, {
+    headers: { "X-API-Key": process.env.SWIPELUX_API_KEY },
+  });
+  if (!response.ok) {
+    const problem = await response.json();
+    throw new Error(`${problem.code}: ${problem.detail}`);
+  }
+  const page = await response.json();
+
+  await processPage(page.data);
+  cursor = page.nextCursor;
+  hasMore = page.hasMore;
+}
+```
+
+## Keep ordering scoped to the operation
+
+[`GET /v3/customers`](/api-reference/customers/get-v3-customers) documents deterministic `createdAt DESC`, `id DESC` ordering. Do not assume or generalize that ordering to any other resource; check its generated operation page.
+
+## Recover a window of changes
+
+`updatedAfter` is an inclusive RFC 3339 lower bound documented for missed webhook recovery.
+
+1. Keep your last successful synchronization checkpoint.
+2. Start the next query with an overlap window before that checkpoint. Choose the overlap in your system; the contract does not set a duration.
+3. Follow every cursor page.
+4. Deduplicate results by resource id.
+5. Refetch each changed resource from its current read operation, such as [get customer](/api-reference/customers/get-v3-customers-by-customer-id), before applying downstream work.
+6. Advance the checkpoint only after processing the window successfully.
+
+This recovery pattern does not imply a webhook delivery guarantee.

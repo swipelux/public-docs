@@ -1,55 +1,70 @@
-# Mintlify Starter Kit
+# Swipelux public docs
 
-Use the starter kit to get your docs deployed and ready to customize.
+This repository contains the Mintlify source for Swipelux Integration Docs, the generated API v3 reference, and the compliance and onboarding Knowledge Base.
 
-Click the green **Use this template** button at the top of this repo to copy the Mintlify starter kit. The starter kit contains examples with
+## Prerequisites
 
-- Guide pages
-- Navigation
-- Customizations
-- API reference pages
-- Use of popular components
+- nvm
+- Node.js 24.15.0
+- npm 11.12.1
 
-**[Follow the full quickstart guide](https://starter.mintlify.com/quickstart)**
+This repository requires nvm so `.nvmrc` can select the supported Node.js release. Run `nvm use` whenever you open a new shell in the repository. The repository also pins npm 11.12.1 and Mintlify CLI 4.2.775.
 
-## AI-assisted writing
-
-Set up your AI coding tool to work with Mintlify:
+## Set up the repository
 
 ```bash
-npx skills add https://mintlify.com/docs
+nvm install
+nvm use
+npm --version
+npm ci
 ```
 
-This command installs Mintlify's documentation skill for your configured AI tools like Claude Code, Cursor, Windsurf, and others. The skill includes component reference, writing standards, and workflow guidance.
+`nvm install` installs Node.js 24.15.0 when needed, and `nvm use` activates it in your current shell. If `npm --version` does not print `11.12.1`, install the pinned npm release and run `npm ci` again:
 
-See the [AI tools guides](/ai-tools) for tool-specific setup.
-
-## Development
-
-Install the [Mintlify CLI](https://www.npmjs.com/package/mint) to preview your documentation changes locally. To install, use the following command:
-
-```
-npm i -g mint
+```bash
+npm install --global npm@11.12.1
 ```
 
-Run the following command at the root of your documentation, where your `docs.json` is located:
+## Prepare the OpenAPI reference
 
+The source contract is authoritative for technical behavior. Generate the repository-local public contract from the approved source file:
+
+```bash
+npm run prepare:openapi -- "/absolute/path/to/api-source.json"
 ```
-mint dev
+
+The preparation step verifies the approved source hash before writing `openapi.json` and its verification artifacts. Do not edit generated OpenAPI artifacts by hand.
+
+## Preview and verify locally
+
+Start the local Mintlify preview:
+
+```bash
+npx mint dev
 ```
 
-View your local preview at `http://localhost:3000`.
+Run the focused repository tests:
 
-## Publishing changes
+```bash
+npm test
+```
 
-Install our GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app) to propagate changes from your repo to your deployment. Changes are deployed to production automatically after pushing to the default branch.
+Run the complete documentation verification suite before handoff:
 
-## Need help?
+```bash
+npm run check
+```
 
-### Troubleshooting
+`npm run check` runs the repository tests, verifies the generated OpenAPI and documentation artifacts, validates the Mintlify site, checks links, and runs accessibility checks. It prepares no source data, so regenerate `openapi.json` first when the source contract changes.
 
-- If your dev environment isn't running: Run `mint update` to ensure you have the most recent version of the CLI.
-- If a page loads as a 404: Make sure you are running in a folder with a valid `docs.json`.
+Redirect verification is complete. The committed phase in `docs/redirect-verification-phase.json` is `final`, and all 53 redirects in `docs/redirect-inventory.json` are verified. `npm run check` validates the committed marker and inventory.
 
-### Resources
-- [Mintlify documentation](https://mintlify.com/docs)
+## CI and production deployment
+
+GitHub Actions runs `npm run check` for every pull request and every push to `main` through `.github/workflows/docs.yml`.
+
+The repository must first be connected to Mintlify through the GitHub App. The production deployment branch is `main`, and the Mintlify dashboard deployment branch must match `main`; use Mintlify's [Check deployment branch](https://www.mintlify.com/docs/deploy/github#check-deployment-branch) guidance to confirm the setting. Once connected and after local and CI verification, merging to `main` triggers Mintlify production deployment.
+
+## Production release gate
+
+Automated verification does not constitute legal approval. Rows marked `review-required` in `docs/content-migration-ledger.md` still require accountable legal/compliance approval before production release. The known jurisdiction-source contradictions remain a production-release blocker until resolved.

@@ -1,0 +1,188 @@
+---
+title: "Quickstart"
+description: "Run a contract-grounded sandbox workflow from customer creation through transfer state."
+---
+
+This sequence shows the shape of a sandbox integration. Use placeholders from your own responses, and open each linked operation before preparing a conditional request body.
+
+<Warning>
+  This quickstart is sandbox-only. Sandbox and production share `https://platform.swipelux.com`. A production key selects production on the shared hostname, so these requests would target production. Use only a sandbox key for this walkthrough.
+</Warning>
+
+```bash
+export API_BASE='https://platform.swipelux.com'
+export SWIPELUX_SANDBOX_API_KEY='YOUR_SANDBOX_API_KEY'
+export RUN_ID="$(date +%s)-${RANDOM}"
+```
+
+`RUN_ID` scopes the example idempotency keys to this walkthrough. When retrying one intended effect after transport uncertainty, preserve the same generated key and body. Start a new run with a new `RUN_ID`.
+
+<Warning>
+  Each task, submission, account, and destination shape depends on the selected capability and current resource status. Do not substitute a universal capability or account model.
+</Warning>
+
+## 1. Create a webhook endpoint — `POST /v3/webhooks`
+
+This step is optional, but recommended for status changes. It requires `WEBHOOK_URL`; set that variable to an HTTPS URL on a domain you own. Register only the event names your backend handles. See [`POST /v3/webhooks`](/api-reference/webhooks/post-v3-webhooks).
+
+```bash
+: "${WEBHOOK_URL:?Set WEBHOOK_URL to an HTTPS endpoint you own}"
+curl --request POST \
+  "${API_BASE}/v3/webhooks" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-${RUN_ID}-webhook" \
+  --header "Content-Type: application/json" \
+  --data "{\"url\":\"${WEBHOOK_URL}\",\"events\":[\"transfer.state_changed\"]}"
+```
+
+## 2. Create a customer — `POST /v3/customers`
+
+The contract permits an individual request containing only `type`. Start there, then keep the returned customer id. See [`POST /v3/customers`](/api-reference/customers/post-v3-customers).
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/customers" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-${RUN_ID}-customer" \
+  --header "Content-Type: application/json" \
+  --data '{"type":"individual"}'
+```
+
+```bash
+export CUSTOMER_ID='cus_example123'
+```
+
+## 3. Read supported capabilities — `GET /v3/customers/{customerId}/capabilities/supported`
+
+The response contains known variants, including entries whose `availability` is `disabled` or whose customer is ineligible. Select only an entry whose `availability` is `available` or `beta` and whose `eligibility.eligible` is `true`. A known ineligible variant fails when requested. See [`GET /v3/customers/{customerId}/capabilities/supported`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-supported).
+
+```bash
+curl --request GET \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/capabilities/supported" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}"
+```
+
+```bash
+export CAPABILITY_ID='replace-with-supported-capability'
+```
+
+## 4. Request the capability — `POST /v3/customers/{customerId}/capabilities/{capabilityId}`
+
+Omitted or empty `institutions` lists select applicable registry defaults. A non-empty list explicitly overrides defaults; if you override, use only public institution ids returned by the supported-capability response. See [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id).
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/capabilities/${CAPABILITY_ID}" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-${RUN_ID}-capability" \
+  --header "Content-Type: application/json" \
+  --data '{}'
+```
+
+## 5. Inspect open tasks — `GET /v3/customers/{customerId}/tasks`
+
+List customer-scoped tasks and inspect each current revision before answering it. See [`GET /v3/customers/{customerId}/tasks`](/api-reference/tasks/list-customer-tasks).
+
+```bash
+curl --request GET \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/tasks" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}"
+```
+
+## 6. Complete a task when required — `POST /v3/customers/{customerId}/tasks/{taskId}/submissions`
+
+This step is conditional. Build `task-submission.json` from the current task revision and requirement shapes; do not reuse an answer set from a different task or revision. See [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission).
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/tasks/${TASK_ID}/submissions" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-${RUN_ID}-submission" \
+  --header "Content-Type: application/json" \
+  --data @task-submission.json
+```
+
+## 7. Re-check capability readiness — `GET /v3/customers/{customerId}/capabilities/{capabilityId}`
+
+After each required task submission, read the requested capability again. See [`GET /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id).
+
+```bash
+curl --request GET \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/capabilities/${CAPABILITY_ID}" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}"
+```
+
+Continue only when the current status permits the account, destination, or quote operation you intend to call next. Do not assume a universal transition to `ready`. If you need a controlled sandbox state change, use only a documented helper linked from [Environments](/integration/environments), then read the capability again.
+
+## 8. Create the appropriate account or destination
+
+For a customer-owned endpoint, use [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) and prepare `account.json` from the selected operation variant.
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/accounts" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-${RUN_ID}-account" \
+  --header "Content-Type: application/json" \
+  --data @account.json
+```
+
+For a third party, first use [`POST /v3/customers/{customerId}/recipients`](/api-reference/recipients/post-v3-customers-by-customer-id-recipients), then use [`POST /v3/customers/{customerId}/recipients/{recipientId}/destinations`](/api-reference/recipients/post-v3-customers-by-customer-id-recipients-by-recipient-id-destinations). Build each file from the matching generated request schema.
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/recipients" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-${RUN_ID}-recipient" \
+  --header "Content-Type: application/json" \
+  --data @recipient.json
+```
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/recipients/${RECIPIENT_ID}/destinations" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-${RUN_ID}-destination" \
+  --header "Content-Type: application/json" \
+  --data @destination.json
+```
+
+Use the account branch or the recipient-destination branch that fits the selected capability. You may need both in a broader integration, but this quickstart does not prescribe one.
+
+## 9. Create a quote — `POST /v3/quotes`
+
+Prepare `quote.json` with the customer, ready capability, source, destination, and amount direction required by the generated schema. See [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes).
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/quotes" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-${RUN_ID}-quote" \
+  --header "Content-Type: application/json" \
+  --data @quote.json
+```
+
+## 10. Execute the quote — `POST /v3/transfers`
+
+Use the quote id returned by the preceding operation. See [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers).
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/transfers" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-${RUN_ID}-transfer" \
+  --header "Content-Type: application/json" \
+  --data "{\"quoteId\":\"${QUOTE_ID}\"}"
+```
+
+## 11. Read transfer state — `GET /v3/transfers/{transferId}`
+
+Read the transfer instead of assuming its state. See [`GET /v3/transfers/{transferId}`](/api-reference/money-movement/get-v3-transfers-by-transfer-id).
+
+```bash
+curl --request GET \
+  "${API_BASE}/v3/transfers/${TRANSFER_ID}" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}"
+```
+
+Creating a transfer does not promise a completed state.

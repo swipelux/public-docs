@@ -1,0 +1,23 @@
+---
+title: "Production readiness"
+description: "Check credentials, write safety, asynchronous recovery, approvals, cutover, and smoke tests before launch."
+---
+
+Use this checklist before you replace a sandbox key with a production key. Keep every API key server-side in a secret manager. Do not expose `X-API-Key` to a browser or client.
+
+## Launch checklist
+
+- [ ] Keep production credentials server-side, restrict access to the backend services that need them, and follow [Authentication](/integration/authentication) for `X-API-Key` handling.
+- [ ] For each intended write whose operation declares `Idempotency-Key`, generate one fresh `Idempotency-Key` for that intended effect and follow [Request safety](/integration/request-safety).
+- [ ] After transport uncertainty, reuse the original key only with the identical body or request; treat `Idempotency-Replayed` as meaningful only when that operation or response documents it.
+- [ ] Run polling alongside event handling and use `updatedAfter` recovery with overlap windows and complete cursor traversal from [Pagination and sync](/integration/pagination-and-sync), including [`GET /v3/customers`](/api-reference/customers/get-v3-customers) and [`GET /v3/transfers`](/api-reference/money-movement/get-v3-transfers).
+- [ ] For each of the 12 generated webhook payload contracts, persist a pending record in a durable inbox keyed by event id. Only completed records are no-ops; stale, failed, or otherwise incomplete records remain resumable after crashes. Refetch or reconcile authenticated current state as described in [Webhooks](/integration/webhooks). This workflow does not apply to `api.deprecation` or `transfer.created`, which have no generated payload schema.
+- [ ] For webhook local effects, commit local effects and completed status atomically when possible. For external effects, write a durable outbox or retry record and use idempotent downstream handling.
+- [ ] Obtain legal and compliance approval before production, then confirm current capability availability and eligibility with [`GET /v3/customers/{customerId}/capabilities/supported`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-supported).
+- [ ] Review redirects and callbacks only for flows that use them: hosted task-session URLs from [`GET /v3/customers/{customerId}/tasks/{taskId}`](/api-reference/tasks/get-customer-task), redirect instructions from [`GET /v3/transfers/{transferId}/instructions`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-instructions), and your webhook destination callback. See [Tasks and submissions](/integration/onboarding/tasks-and-submissions) and [Receive funds](/integration/receive-funds).
+- [ ] Build a production inventory of the configuration and resources your launch requires, including webhook endpoints and environment-scoped resource relationships.
+- [ ] Create or verify the needed production configuration and resources, then store environment-specific IDs separately from sandbox IDs.
+- [ ] Perform the environment cutover on the same host and base URL by replacing the sandbox API key with the approved production API key in your secret manager. A different API key only selects the target environment; the public contract does not document copying sandbox resource IDs, customers, webhooks, or configuration to production. Review [Sandbox](/integration/sandbox).
+- [ ] Run post-cutover read-only smoke tests: authenticate, list configured endpoints with [`GET /v3/webhooks`](/api-reference/webhooks/get-v3-webhooks), read supported capabilities, verify expected empty or known list responses, and inspect failures through [Errors](/integration/errors) before enabling production writes.
+
+Keep the first production writes controlled and observable. Advance rollout only after the current resource reads and your own downstream records agree.
