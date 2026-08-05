@@ -374,6 +374,33 @@ for (const [label, banned, pattern] of [
   });
 }
 
+test("rejects internal documentation implementation details in Integration pages", () => {
+  for (const value of [
+    "openapi-coverage.json",
+    "openapi-provenance.json",
+    "x-mint.href",
+    "the committed contract defines",
+    "the generated schema says",
+  ]) {
+    const errors = validatePublishedText(
+      "integration/example.mdx",
+      validPage(value),
+    );
+
+    assertHasError(errors, /internal documentation implementation detail/i);
+  }
+});
+
+test("allows internal documentation terms in planning files", () => {
+  assert.deepEqual(
+    validatePublishedText(
+      "docs/plans/example.md",
+      "openapi-coverage.json and x-mint.href",
+    ),
+    [],
+  );
+});
+
 test("rejects standalone legacy API version identifiers and routes", () => {
   for (const legacyReference of [
     "API v1",
@@ -1241,11 +1268,11 @@ test("normalizes index source pages to public routes", () => {
 });
 
 test("commits the complete approved page and frozen source inventories", () => {
-  assert.equal(REQUIRED_NAVIGATION_PAGES.length, 42);
-  assert.equal(REQUIRED_PUBLISHED_PAGES.length, 43);
+  assert.equal(REQUIRED_NAVIGATION_PAGES.length, 39);
+  assert.equal(REQUIRED_PUBLISHED_PAGES.length, 40);
   assert.equal(FROZEN_SOURCE_PAGES.length, 59);
   assert.equal(Object.keys(FROZEN_MIGRATION_DECISIONS).length, 59);
-  assert.equal(EXPECTED_REDIRECT_SOURCES.length, 53);
+  assert.equal(EXPECTED_REDIRECT_SOURCES.length, 62);
   assert.equal(new Set(FROZEN_SOURCE_PAGES).size, FROZEN_SOURCE_PAGES.length);
   assert.equal(
     new Set(EXPECTED_REDIRECT_SOURCES).size,
@@ -1319,7 +1346,7 @@ test("rejects omitting any approved non-Terms source page", () => {
 test("validates the committed redirect inventory", () => {
   const { inventory, marker } = committedRedirectState();
 
-  assert.equal(inventory.length, 53);
+  assert.equal(inventory.length, 62);
   assert.ok(["current", "final"].includes(marker.phase));
   assert.equal(assertRedirectRepositoryState(marker, inventory), marker.phase);
 });
@@ -1343,7 +1370,7 @@ test("keeps the approved legacy route destinations", () => {
   );
   assert.equal(
     destinations.get("/individual-onboarding/api-reference"),
-    "/integration/onboarding/individuals",
+    "/integration/onboarding/customers#individual-customers",
   );
   assert.equal(destinations.get("/concepts/accounts"), "/integration/accounts");
   assert.equal(destinations.get("/concepts/wallets"), "/integration/accounts");
@@ -1359,7 +1386,7 @@ test("keeps the approved legacy route destinations", () => {
   assert.equal(destinations.get("/reference/rates"), rates.href);
   assert.equal(
     destinations.get("/reference/v3-reason-codes"),
-    "/integration/errors",
+    "/integration/api-reliability#handle-errors",
   );
   assert.equal(
     destinations.get("/reference/webhooks"),
@@ -1367,7 +1394,7 @@ test("keeps the approved legacy route destinations", () => {
   );
   assert.equal(
     destinations.get("/reference/endpoint-map"),
-    "/integration/using-the-api-reference",
+    "/api-reference",
   );
   assert.equal(
     inventory.some(({ source }) => source.startsWith("/t-c")),

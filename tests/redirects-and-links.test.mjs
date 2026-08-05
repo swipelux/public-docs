@@ -36,6 +36,24 @@ const ledger = parseMigrationLedger(
   readProjectFile("docs/content-migration-ledger.md"),
 );
 
+const STRUCTURE_REDIRECTS = {
+  "/integration/environments":
+    "/integration/authentication#sandbox-and-production",
+  "/integration/errors": "/integration/api-reliability#handle-errors",
+  "/integration/pagination-and-sync":
+    "/integration/sync-and-reconciliation",
+  "/integration/request-safety": "/integration/api-reliability",
+  "/integration/using-the-api-reference": "/api-reference",
+  "/integration/onboarding/individuals":
+    "/integration/onboarding/customers#individual-customers",
+  "/integration/onboarding/businesses":
+    "/integration/onboarding/customers#business-customers",
+  "/integration/onboarding/tasks-and-submissions":
+    "/integration/onboarding/capabilities-and-requirements#complete-requirements",
+  "/integration/onboarding/documents":
+    "/integration/onboarding/capabilities-and-requirements#upload-documents",
+};
+
 function publishedRoute(page) {
   return page === "index" ? "/" : `/${page}`;
 }
@@ -110,8 +128,8 @@ test("every frozen source page has exactly one approved migration row", () => {
   }
 });
 
-test("every redirectable non-Terms source has one approved redirect and root has none", () => {
-  assert.equal(EXPECTED_REDIRECT_SOURCES.length, 53);
+test("every approved redirect source has one direct redirect and root has none", () => {
+  assert.equal(EXPECTED_REDIRECT_SOURCES.length, 62);
   assert.equal(inventory.length, EXPECTED_REDIRECT_SOURCES.length);
 
   const redirectsBySource = new Map();
@@ -151,6 +169,25 @@ test("docs.json redirects exactly match the approved inventory pairs", () => {
     config.redirects,
     inventory.map(({ source, destination }) => ({ source, destination })),
   );
+});
+
+test("retired Integration routes and legacy sources resolve without redirect chains", () => {
+  const destinations = new Map(
+    inventory.map(({ source, destination }) => [source, destination]),
+  );
+  for (const [source, destination] of Object.entries(STRUCTURE_REDIRECTS)) {
+    assert.equal(destinations.get(source), destination);
+  }
+
+  const sources = new Set(inventory.map(({ source }) => source));
+  for (const { source, destination } of inventory) {
+    const destinationPath = destination.split("#", 1)[0];
+    assert.equal(
+      sources.has(destinationPath),
+      false,
+      `${source} must redirect directly instead of chaining through ${destinationPath}`,
+    );
+  }
 });
 
 test("Terms routes have no redirects", () => {
@@ -287,10 +324,14 @@ test("every redirect destination resolves to a published or generated page", () 
   const generatedRoutes = new Set(
     generatedOpenApiPages().map(({ href }) => href),
   );
+  const implicitRoutes = new Set(["/api-reference"]);
 
   for (const { source, destination } of inventory) {
+    const destinationPath = destination.split("#", 1)[0];
     assert.ok(
-      publishedRoutes.has(destination) || generatedRoutes.has(destination),
+      publishedRoutes.has(destinationPath) ||
+        generatedRoutes.has(destinationPath) ||
+        implicitRoutes.has(destinationPath),
       `${source} redirects to unresolved destination ${destination}`,
     );
   }
