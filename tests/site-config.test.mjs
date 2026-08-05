@@ -77,6 +77,17 @@ const NEW_CANONICAL_PAGE_TITLES = {
     "Capabilities and requirements",
 };
 
+const PENDING_STAGE_A_PAGE_DESCRIPTIONS = {
+  "integration/common-flows":
+    "Choose the right Swipelux workflow for pay-ins, payouts, or issued bank accounts.",
+  "integration/issue-bank-account":
+    "Create a settlement wallet, issue a bank account, and monitor provisioning.",
+  "integration/api-reliability":
+    "Use idempotency, safe retries, errors, and correlation IDs in production.",
+  "integration/sync-and-reconciliation":
+    "Paginate API resources and recover changes after missed webhook deliveries.",
+};
+
 const RETIRED_INTEGRATION_PAGES = [
   "integration/environments.mdx",
   "integration/errors.mdx",
@@ -238,6 +249,20 @@ function assertDocsConfigRoundTrips(value) {
   );
 }
 
+function assertStageAPurposeGuard(path, text, expectedDescription) {
+  const { attributes, body } = parseFrontmatter(text);
+  assert.equal(attributes.description, expectedDescription);
+  assert.match(
+    body,
+    /^## Next step$/m,
+    `${path} must include the literal ## Next step heading`,
+  );
+  assert.ok(
+    body.trim().split(/\s+/).length <= 120,
+    `${path} must keep its Stage A purpose copy concise`,
+  );
+}
+
 test("uses the approved Swipelux identity and site controls", () => {
   assert.equal(config.name, "Swipelux");
   assert.equal(config.favicon, "/favicon.svg");
@@ -287,6 +312,11 @@ test("publishes the new canonical Integration pages and removes retired files", 
 
     const { attributes } = parseFrontmatter(text);
     assert.equal(attributes.title, expectedTitle);
+
+    const expectedDescription = PENDING_STAGE_A_PAGE_DESCRIPTIONS[page];
+    if (expectedDescription !== undefined) {
+      assertStageAPurposeGuard(path, text, expectedDescription);
+    }
   }
 
   for (const path of RETIRED_INTEGRATION_PAGES) {
@@ -498,4 +528,28 @@ test("rejects unknown docs.json properties stripped by the schema", () => {
       message,
     );
   }
+});
+
+test("Stage A purpose guard fails closed on heading and word-count regressions", () => {
+  const page = "integration/common-flows";
+  const path = `${page}.mdx`;
+  const text = read(path);
+  const expectedDescription = PENDING_STAGE_A_PAGE_DESCRIPTIONS[page];
+
+  assert.doesNotThrow(() =>
+    assertStageAPurposeGuard(path, text, expectedDescription),
+  );
+
+  const withoutNextStep = text.replace(/^## Next step$/m, "");
+  assert.notEqual(withoutNextStep, text, `${path} must contain the test fixture`);
+  assert.throws(
+    () => assertStageAPurposeGuard(path, withoutNextStep, expectedDescription),
+    /must include the literal ## Next step heading/,
+  );
+
+  const overlong = `${text}\n\n${"extra ".repeat(121)}`;
+  assert.throws(
+    () => assertStageAPurposeGuard(path, overlong, expectedDescription),
+    /must keep its Stage A purpose copy concise/,
+  );
 });
