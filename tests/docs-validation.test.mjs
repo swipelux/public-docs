@@ -21,6 +21,8 @@ import {
   REQUIRED_NAVIGATION_PAGES,
   REQUIRED_PUBLISHED_PAGES,
   SOURCE_COMMIT,
+  collectJsonStrings,
+  pagePathToRoute,
   parseFrontmatter,
   parseMigrationLedger,
   parseRedirectVerificationPhase,
@@ -81,6 +83,46 @@ function committedLedger() {
   return parseMigrationLedger(
     readFileSync("docs/content-migration-ledger.md", "utf8"),
   );
+}
+
+function committedRedirectState() {
+  return {
+    inventory: JSON.parse(
+      readFileSync("docs/redirect-inventory.json", "utf8"),
+    ),
+    marker: JSON.parse(
+      readFileSync("docs/redirect-verification-phase.json", "utf8"),
+    ),
+  };
+}
+
+function knownRedirectDestinations() {
+  return new Set([
+    "/",
+    ...REQUIRED_NAVIGATION_PAGES.map((page) => `/${page}`),
+    "/api-reference/money-movement/get-v3-rates",
+  ]);
+}
+
+function assertRedirectRepositoryState(marker, inventory) {
+  const phase = parseRedirectVerificationPhase([], marker);
+  const expectedVerified = phase === "final";
+
+  assert.ok(
+    inventory.every(({ verified }) => verified === expectedVerified),
+    `every redirect must use verified: ${expectedVerified} in the ${phase} phase`,
+  );
+  assert.deepEqual(
+    validateRedirectInventory(inventory, {
+      expectedDestinations: APPROVED_REDIRECT_DESTINATIONS,
+      expectedSources: EXPECTED_REDIRECT_SOURCES,
+      knownDestinations: knownRedirectDestinations(),
+      verificationPhase: phase,
+    }),
+    [],
+  );
+
+  return phase;
 }
 
 function writeFixtureFile(root, relativePath, content) {
@@ -289,6 +331,25 @@ test("scans decoded YAML strings in frontmatter", () => {
   assertHasError(errors, /frontmatter.*starter branding/i);
 });
 
+test("scans recursive YAML aliases deterministically", () => {
+  const text = [
+    "---",
+    "title: Example",
+    "description: Example description.",
+    "metadata: &metadata",
+    '  label: "Mintlify Starter Kit"',
+    "  self: *metadata",
+    "---",
+    "Body",
+  ].join("\n");
+
+  const first = validateFrontmatter("integration/example.mdx", text);
+  const second = validateFrontmatter("integration/example.mdx", text);
+
+  assert.deepEqual(first, second);
+  assertHasError(first, /frontmatter\/metadata\/label.*starter branding/i);
+});
+
 for (const [label, banned, pattern] of [
   [
     "v1 routes",
@@ -385,6 +446,24 @@ test("rejects untagged code fences", () => {
   assertHasError(errors, /code fence.*language tag/i);
 });
 
+test("rejects untagged code fences in lowercase Markdown pages", () => {
+  const errors = validatePublishedText(
+    "integration/example.md",
+    validPage("```\nconst value = true;\n```"),
+  );
+
+  assertHasError(errors, /code fence.*language tag/i);
+});
+
+test("rejects untagged code fences in uppercase MDX pages", () => {
+  const errors = validatePublishedText(
+    "integration/example.MDX",
+    validPage("```\nconst value = true;\n```"),
+  );
+
+  assertHasError(errors, /code fence.*language tag/i);
+});
+
 test("accepts language-tagged code fences", () => {
   const errors = validatePublishedText(
     "integration/example.mdx",
@@ -419,6 +498,42 @@ test("rejects metadata-only code fences nested in Markdown list items", () => {
   );
 
   assertHasError(errors, /code fence.*language tag/i);
+});
+
+test("accepts tagged code fences through multiple nested list containers", () => {
+  const errors = validatePublishedText(
+    "integration/example.mdx",
+    validPage("- 1. ```js\n    const value = true;\n    ```"),
+  );
+
+  assert.deepEqual(errors, []);
+});
+
+test("rejects untagged code fences through multiple nested list containers", () => {
+  const errors = validatePublishedText(
+    "integration/example.mdx",
+    validPage("- 1. ```\n- 1. ```"),
+  );
+
+  assertHasError(errors, /code fence.*language tag/i);
+});
+
+test("rejects metadata-only fences through multiple nested list containers", () => {
+  const errors = validatePublishedText(
+    "integration/example.mdx",
+    validPage('- 1. ``` {title="Example"}\n- 1. ```'),
+  );
+
+  assertHasError(errors, /code fence.*language tag/i);
+});
+
+test("rejects blockquoted fences through multiple nested list containers", () => {
+  const errors = validatePublishedText(
+    "integration/example.mdx",
+    validPage("> - 1. ```js\n> - 1. ```"),
+  );
+
+  assertHasError(errors, /code fence.*blockquoted/i);
 });
 
 test("rejects blockquoted untagged code fences", () => {
@@ -546,6 +661,23 @@ test("rejects OpenAPI navigation placed on another top-level tab", () => {
   assertHasError(errors, /top-level API Reference tab/i);
 });
 
+test("keeps uppercase page extensions in Mintlify navigation slugs", () => {
+  const config = navigationFixture(["integration/overview.MDX"]);
+  const errors = validateNavigation(config, {
+    pageExists: (page) => page === "integration/overview.MDX",
+    requiredPages: ["integration/overview"],
+  });
+
+  assertHasError(
+    errors,
+    /missing required navigation page integration\/overview/i,
+  );
+  assertHasError(
+    errors,
+    /unexpected navigation page integration\/overview\.MDX/i,
+  );
+});
+
 test("preserves false redirect verification in the current phase", () => {
   assert.deepEqual(
     validateRedirectInventory([redirect()], {
@@ -655,7 +787,7 @@ test("documentation CLI rejects malformed arguments before validation", () => {
     ]) {
       const result = runDocsCli(fixture, args);
 
-      assert.notEqual(result.status, 0, args.join(" "));
+      assert.equal(result.status, 2, args.join(" "));
       assert.match(result.stderr, /^Argument error:.*usage:/is);
       assert.doesNotMatch(result.stderr, /ENOENT|Documentation verification/i);
     }
@@ -711,6 +843,19 @@ test("documentation CLI accepts all-true redirects with the final marker", () =>
   } finally {
     rmSync(fixture, { recursive: true, force: true });
   }
+});
+
+test("accepts the Task 11 final marker and all-true committed inventory", () => {
+  const { inventory } = committedRedirectState();
+  const finalInventory = inventory.map((entry) => ({
+    ...entry,
+    verified: true,
+  }));
+
+  assert.equal(
+    assertRedirectRepositoryState({ phase: "final" }, finalInventory),
+    "final",
+  );
 });
 
 test("rejects redirects to unknown destinations", () => {
@@ -828,12 +973,41 @@ test("uses gitignore negation and nested re-inclusion semantics", () => {
   ]);
 });
 
-test("counts Markdown and uppercase extensions toward required-page coverage", () => {
+test("uses lowercase Markdown extensions for Mintlify page routes", () => {
+  assert.equal(pagePathToRoute("index.md"), "index");
+  assert.equal(
+    pagePathToRoute("integration/overview.mdx"),
+    "integration/overview",
+  );
   assert.deepEqual(
-    validatePublishedPageInventory(["index.md", "integration/overview.MDX"], {
+    validatePublishedPageInventory(["index.md", "integration/overview.mdx"], {
       requiredPages: ["index", "integration/overview"],
     }),
     [],
+  );
+});
+
+test("keeps uppercase page extensions in Mintlify page routes", () => {
+  assert.equal(pagePathToRoute("index.MD"), "index.MD");
+  assert.equal(
+    pagePathToRoute("integration/overview.MDX"),
+    "integration/overview.MDX",
+  );
+
+  const errors = validatePublishedPageInventory(
+    ["index.MD", "integration/overview.MDX"],
+    { requiredPages: ["index", "integration/overview"] },
+  );
+
+  assertHasError(errors, /index\.mdx: missing required published page/i);
+  assertHasError(
+    errors,
+    /integration\/overview\.mdx: missing required published page/i,
+  );
+  assertHasError(errors, /index\.MD: unexpected publishable page/i);
+  assertHasError(
+    errors,
+    /integration\/overview\.MDX: unexpected publishable page/i,
   );
 });
 
@@ -946,6 +1120,18 @@ test("scans decoded docs.json string values", () => {
     errors,
     /docs\.json#\/route.*prohibited legacy API v1\/v2 identifier/i,
   );
+});
+
+test("collects shared strings without following recursive object cycles", () => {
+  const shared = { label: "Mintlify Starter Kit" };
+  const value = { first: shared, second: shared };
+  value.self = value;
+  shared.parent = value;
+
+  assert.deepEqual(collectJsonStrings(value), [
+    { pointer: "/first/label", value: "Mintlify Starter Kit" },
+    { pointer: "/second/label", value: "Mintlify Starter Kit" },
+  ]);
 });
 
 test("migration ledger parser validates the separator row", () => {
@@ -1071,23 +1257,11 @@ test("rejects omitting any approved non-Terms source page", () => {
 });
 
 test("validates the committed redirect inventory", () => {
-  const inventory = JSON.parse(
-    readFileSync("docs/redirect-inventory.json", "utf8"),
-  );
-  const knownDestinations = new Set([
-    "/",
-    ...REQUIRED_NAVIGATION_PAGES.map((page) => `/${page}`),
-    "/api-reference/money-movement/get-v3-rates",
-  ]);
+  const { inventory, marker } = committedRedirectState();
 
   assert.equal(inventory.length, 53);
-  assert.deepEqual(
-    validateRedirectInventory(inventory, {
-      expectedSources: EXPECTED_REDIRECT_SOURCES,
-      knownDestinations,
-    }),
-    [],
-  );
+  assert.ok(["current", "final"].includes(marker.phase));
+  assert.equal(assertRedirectRepositoryState(marker, inventory), marker.phase);
 });
 
 test("keeps the approved legacy route destinations", () => {

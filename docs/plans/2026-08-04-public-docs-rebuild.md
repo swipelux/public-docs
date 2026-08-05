@@ -460,7 +460,7 @@ Expected: all validation-library tests pass. `npm run verify:docs` is expected t
 - [ ] **Step 7: Commit**
 
 ```bash
-git add scripts tests docs/content-migration-ledger.md docs/redirect-inventory.json
+git add scripts tests docs/content-migration-ledger.md docs/redirect-inventory.json docs/redirect-verification-phase.json
 git commit -m "test: add documentation migration guards"
 ```
 

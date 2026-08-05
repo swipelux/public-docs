@@ -53,10 +53,17 @@ test("locks the root Mintlify dependency to the supported version", () => {
   assert.equal(lock.packages["node_modules/mint"].version, "4.2.775");
 });
 
-test("commits the current redirect phase marker and Task 11 transition", () => {
-  assert.deepEqual(
-    JSON.parse(read("docs/redirect-verification-phase.json")),
-    { phase: "current" },
+test("commits a supported redirect phase and matching inventory", () => {
+  const marker = JSON.parse(read("docs/redirect-verification-phase.json"));
+  const inventory = JSON.parse(read("docs/redirect-inventory.json"));
+
+  assert.deepEqual(Object.keys(marker).sort(), ["phase"]);
+  assert.ok(["current", "final"].includes(marker.phase));
+  assert.ok(
+    inventory.every(
+      ({ verified }) => verified === (marker.phase === "final"),
+    ),
+    `every redirect must match the committed ${marker.phase} phase`,
   );
 
   const readme = read("README.md");

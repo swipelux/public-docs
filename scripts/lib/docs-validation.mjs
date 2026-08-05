@@ -570,7 +570,7 @@ export function selectPublishablePagePaths(paths, ignoreRules = []) {
 }
 
 export function pagePathToRoute(path) {
-  return normalizePath(path).replace(/\.(?:md|mdx)$/i, "");
+  return normalizePath(path).replace(/\.mdx?$/, "");
 }
 
 export function validatePublishedPageInventory(paths, options = {}) {
@@ -713,13 +713,20 @@ function validateCodeFences(path, text) {
   let openFence;
 
   for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index];
-    const containerMatch =
-      /^\s*(?:(?:[-+*]|\d+[.)])\s+)?/.exec(line)?.[0] ?? "";
-    let candidate = line.slice(containerMatch.length);
-    const blockquoteMatch = /^(?:>\s*)+/.exec(candidate)?.[0];
-    const blockquoted = blockquoteMatch !== undefined;
-    if (blockquoteMatch) candidate = candidate.slice(blockquoteMatch.length);
+    let candidate = lines[index];
+    let blockquoted = false;
+    while (true) {
+      candidate = candidate.trimStart();
+      const blockquoteMatch = /^>\s*/.exec(candidate)?.[0];
+      if (blockquoteMatch) {
+        blockquoted = true;
+        candidate = candidate.slice(blockquoteMatch.length);
+        continue;
+      }
+      const listMatch = /^(?:[-+*]|\d+[.)])\s+/.exec(candidate)?.[0];
+      if (!listMatch) break;
+      candidate = candidate.slice(listMatch.length);
+    }
     const match = /^(`{3,}|~{3,})(.*)$/.exec(candidate);
     if (!match) continue;
 
@@ -791,7 +798,7 @@ export function validatePublishedText(path, text, options = {}) {
 
   const normalized = normalizePath(path).split("#", 1)[0];
   const checkCodeFences =
-    options.checkCodeFences ?? normalized.endsWith(".mdx");
+    options.checkCodeFences ?? getFileCategory(normalized) === "page";
   if (checkCodeFences) errors.push(...validateCodeFences(path, value));
 
   return sortedErrors(errors);
@@ -801,7 +808,7 @@ function normalizeNavigationPage(page) {
   const normalized = String(page)
     .replaceAll("\\", "/")
     .replace(/^\//, "")
-    .replace(/\.(?:md|mdx)$/i, "")
+    .replace(/\.mdx?$/, "")
     .replace(/\/$/, "");
   return normalized === "" ? "index" : normalized;
 }
@@ -1266,24 +1273,37 @@ function escapeJsonPointer(segment) {
   return segment.replaceAll("~", "~0").replaceAll("/", "~1");
 }
 
-export function collectJsonStrings(value, pointer = "", output = []) {
+export function collectJsonStrings(
+  value,
+  pointer = "",
+  output = [],
+  ancestors = new WeakSet(),
+) {
   if (typeof value === "string") {
     output.push({ pointer: pointer || "/", value });
     return output;
   }
-  if (Array.isArray(value)) {
-    value.forEach((item, index) =>
-      collectJsonStrings(item, `${pointer}/${index}`, output),
-    );
-    return output;
-  }
   if (!value || typeof value !== "object") return output;
-  for (const key of Object.keys(value).sort(compareStrings)) {
-    collectJsonStrings(
-      value[key],
-      `${pointer}/${escapeJsonPointer(key)}`,
-      output,
-    );
+  if (ancestors.has(value)) return output;
+
+  ancestors.add(value);
+  try {
+    if (Array.isArray(value)) {
+      value.forEach((item, index) =>
+        collectJsonStrings(item, `${pointer}/${index}`, output, ancestors),
+      );
+    } else {
+      for (const key of Object.keys(value).sort(compareStrings)) {
+        collectJsonStrings(
+          value[key],
+          `${pointer}/${escapeJsonPointer(key)}`,
+          output,
+          ancestors,
+        );
+      }
+    }
+  } finally {
+    ancestors.delete(value);
   }
   return output;
 }
