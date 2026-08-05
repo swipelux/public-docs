@@ -21,11 +21,13 @@ test("pins the supported Node, npm, and Mintlify versions", () => {
   assert.deepEqual(
     {
       common: pkg.devDependencies["@mintlify/common"],
+      validation: pkg.devDependencies["@mintlify/validation"],
       frontMatter: pkg.devDependencies["front-matter"],
       ignore: pkg.devDependencies.ignore,
     },
     {
       common: "1.0.1071",
+      validation: "0.1.816",
       frontMatter: "4.0.2",
       ignore: "7.0.5",
     },
@@ -37,6 +39,7 @@ test("locks the root Mintlify dependency to the supported version", () => {
   const lock = JSON.parse(read("package-lock.json"));
   assert.deepEqual(lock.packages[""].devDependencies, {
     "@mintlify/common": "1.0.1071",
+    "@mintlify/validation": "0.1.816",
     "front-matter": "4.0.2",
     ignore: "7.0.5",
     mint: "4.2.775",
@@ -44,6 +47,10 @@ test("locks the root Mintlify dependency to the supported version", () => {
   assert.equal(
     lock.packages["node_modules/@mintlify/common"].version,
     "1.0.1071",
+  );
+  assert.equal(
+    lock.packages["node_modules/@mintlify/validation"].version,
+    "0.1.816",
   );
   assert.equal(
     lock.packages["node_modules/front-matter"].version,

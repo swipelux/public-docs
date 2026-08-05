@@ -142,6 +142,31 @@ function attribute(openingTag, name) {
   return new RegExp(`\\b${name}="([^"]+)"`).exec(openingTag)?.[1];
 }
 
+function normalizeKnownDocsConfigDefaults(value) {
+  const normalized = structuredClone(value);
+  if (
+    normalized.contextual &&
+    normalized.contextual.display === undefined
+  ) {
+    normalized.contextual.display = "header";
+  }
+  return normalized;
+}
+
+function assertDocsConfigRoundTrips(value) {
+  const result = docsConfigSchema.safeParse(value);
+  assert.equal(
+    result.success,
+    true,
+    result.success ? undefined : JSON.stringify(result.error.issues, null, 2),
+  );
+  assert.deepEqual(
+    result.data,
+    normalizeKnownDocsConfigDefaults(value),
+    "docsConfigSchema must preserve every configured property",
+  );
+}
+
 test("uses the approved Swipelux identity and site controls", () => {
   assert.equal(config.name, "Swipelux");
   assert.equal(config.favicon, "/favicon.svg");
@@ -273,6 +298,15 @@ test("keeps the landing page valid and within published-content guards", () => {
 });
 
 test("links three native cards to the approved documentation sections", () => {
+  const capabilitiesOperation = coverage.operations.find(
+    ({ method, path }) =>
+      method === "get" && path === "/v3/capabilities",
+  );
+  assert.ok(
+    capabilitiesOperation,
+    "openapi coverage must include GET /v3/capabilities",
+  );
+
   const { body } = parseFrontmatter(indexText);
   const columns = /<Columns\s+cols=\{3\}>([\s\S]*?)<\/Columns>/.exec(body);
   assert.ok(columns, "index.mdx must contain one three-column Columns layout");
@@ -287,19 +321,13 @@ test("links three native cards to the approved documentation sections", () => {
     cardTags.map((tag) => attribute(tag, "title")),
     ["Integration Docs", "API Reference", "Knowledge Base"],
   );
-  assert.deepEqual(
-    cardTags.map((tag) => attribute(tag, "href")),
-    [
-      "/integration/overview",
-      coverage.operations[0].href,
-      "/knowledge-base/compliance/overview",
-    ],
-  );
-  assert.ok(
-    coverage.operations.some(
-      ({ href }) => href === attribute(cardTags[1], "href"),
-    ),
-  );
+  const cardHrefs = cardTags.map((tag) => attribute(tag, "href"));
+  assert.deepEqual(cardHrefs, [
+    "/integration/overview",
+    capabilitiesOperation.href,
+    "/knowledge-base/compliance/overview",
+  ]);
+  assert.equal(cardHrefs[1], capabilitiesOperation.href);
   assert.doesNotMatch(body, /^import\s/m);
 });
 
@@ -326,10 +354,32 @@ test("keeps landing copy concise and separates guides, reference, and knowledge"
 });
 
 test("conforms to the pinned Mintlify docs.json schema", () => {
-  const result = docsConfigSchema.safeParse(config);
-  assert.equal(
-    result.success,
-    true,
-    result.success ? undefined : JSON.stringify(result.error.issues, null, 2),
-  );
+  assertDocsConfigRoundTrips(config);
+});
+
+test("rejects unknown docs.json properties stripped by the schema", () => {
+  const mutations = [
+    [
+      "misspelled root property",
+      (value) => {
+        value.colours = value.colors;
+      },
+    ],
+    [
+      "misspelled nested property",
+      (value) => {
+        value.contextual.dispay = "toc";
+      },
+    ],
+  ];
+
+  for (const [message, mutate] of mutations) {
+    const mutatedConfig = structuredClone(config);
+    mutate(mutatedConfig);
+    assert.throws(
+      () => assertDocsConfigRoundTrips(mutatedConfig),
+      /docsConfigSchema must preserve every configured property/,
+      message,
+    );
+  }
 });
