@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 
 import {
@@ -64,6 +65,26 @@ const QUICKSTART_PATH_VARIABLES = new Map([
   ["RECIPIENT_ID", "recipientId"],
   ["TRANSFER_ID", "transferId"],
 ]);
+
+const QUICKSTART_SHELL_ENV = Object.freeze({
+  PATH: "/nonexistent",
+  API_BASE: "https://quickstart.test",
+  SWIPELUX_SANDBOX_API_KEY: "sandbox-key-shell-test",
+  RUN_ID: "run-shell-test",
+  WEBHOOK_URL: "https://webhooks.quickstart.test/swipelux",
+  CUSTOMER_ID: "cus_shell_test",
+  CAPABILITY_ID: "cap_shell_test",
+  TASK_ID: "task_shell_test",
+  RECIPIENT_ID: "recipient_shell_test",
+  QUOTE_ID: "quote_shell_test",
+  TRANSFER_ID: "transfer_shell_test",
+});
+
+const CAPABILITY_AVAILABILITY = Object.freeze({
+  available: "available",
+  beta: "beta",
+  disabled: "disabled",
+});
 
 const config = JSON.parse(readFileSync("docs.json", "utf8"));
 const coverage = JSON.parse(readFileSync("openapi-coverage.json", "utf8"));
@@ -187,6 +208,20 @@ function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+function assertExactOpenApiSet(actual, expected, label) {
+  assert.ok(Array.isArray(actual), `${label} must be an array`);
+  assert.equal(
+    new Set(actual).size,
+    actual.length,
+    `${label} must not contain duplicates`,
+  );
+  assert.deepEqual(
+    actual.toSorted(),
+    expected.toSorted(),
+    `${label} must contain exactly the expected values`,
+  );
+}
+
 function assertOperationLinksInText(label, text, operations) {
   for (const [method, path] of operations) {
     const { href } = operation(method, path);
@@ -250,6 +285,71 @@ function shellBlocks(text) {
   return [...text.matchAll(/```(?:bash|sh|shell)\n([\s\S]*?)```/g)].map(
     (match) => match[1],
   );
+}
+
+function curlArgumentsFromBash(block, label) {
+  const startMarker = "__SWIPELUX_CURL_START__";
+  const endMarker = "__SWIPELUX_CURL_END__";
+  const script = [
+    "set -euo pipefail",
+    "curl() {",
+    `  printf '%s\\0' '${startMarker}' \"$@\" '${endMarker}'`,
+    "}",
+    block,
+  ].join("\n");
+  const result = spawnSync(
+    "/bin/bash",
+    ["--noprofile", "--norc", "-c", script],
+    {
+      encoding: "utf8",
+      env: QUICKSTART_SHELL_ENV,
+    },
+  );
+
+  assert.ifError(result.error);
+  assert.equal(
+    result.status,
+    0,
+    `${label} must execute under Bash with the stub curl: ${result.stderr.trim()}`,
+  );
+
+  const output = result.stdout.split("\0");
+  const startIndexes = output.flatMap((value, index) =>
+    value === startMarker ? [index] : [],
+  );
+  const endIndexes = output.flatMap((value, index) =>
+    value === endMarker ? [index] : [],
+  );
+  assert.equal(startIndexes.length, 1, `${label} must invoke curl exactly once`);
+  assert.equal(endIndexes.length, 1, `${label} must finish one curl invocation`);
+
+  const argv = output.slice(startIndexes[0] + 1, endIndexes[0]);
+  assert.doesNotMatch(
+    argv.join("\n"),
+    /\$\{[^}]+\}/,
+    `${label} must not pass an unresolved shell placeholder to curl`,
+  );
+
+  const curlSource = block.slice(block.search(/(?:^|\n)\s*curl\b/));
+  const variables = new Set(
+    [...curlSource.matchAll(/\$\{([A-Z][A-Z0-9_]*)(?:[^}]*)\}/g)].map(
+      (match) => match[1],
+    ),
+  );
+  for (const variable of variables) {
+    assert.ok(
+      Object.hasOwn(QUICKSTART_SHELL_ENV, variable),
+      `${label} uses unknown shell placeholder ${variable}`,
+    );
+    assert.ok(
+      argv.some((argument) =>
+        argument.includes(QUICKSTART_SHELL_ENV[variable]),
+      ),
+      `${label} must expand ${variable} into curl argv`,
+    );
+  }
+
+  return argv;
 }
 
 function normalizeQuickstartPath(path) {
@@ -325,6 +425,7 @@ function operationRequestBody(method, path) {
 }
 
 function assertCurlMatchesOpenApi(block, label) {
+  curlArgumentsFromBash(block, label);
   const { method, path } = curlOperation(block, label);
   assert.equal(
     curlHeaderValues(block, "X-API-Key").length,
@@ -402,7 +503,11 @@ function capabilitySelectionFacts() {
   }
 
   const availability = variant.properties.availability;
-  assert.deepEqual(availability.enum, ["available", "beta", "disabled"]);
+  assertExactOpenApiSet(
+    availability.enum,
+    Object.values(CAPABILITY_AVAILABILITY),
+    "supported capability availability enum",
+  );
 
   const eligibility = resolveOpenApiReference(variant.properties.eligibility);
   assert.ok(
@@ -435,7 +540,7 @@ function capabilitySelectionFacts() {
   );
 
   return {
-    availability: availability.enum,
+    availability: CAPABILITY_AVAILABILITY,
     eligibilityField: "eligibility.eligible",
   };
 }
@@ -445,14 +550,14 @@ function assertCapabilitySelectionProse(text) {
   assert.match(
     text,
     new RegExp(
-      `known variants[\\s\\S]{0,160}\`${facts.availability[2]}\`[\\s\\S]{0,120}ineligible`,
+      `known variants[\\s\\S]{0,160}\`${facts.availability.disabled}\`[\\s\\S]{0,120}ineligible`,
       "i",
     ),
   );
   assert.match(
     text,
     new RegExp(
-      `\`availability\`[\\s\\S]{0,80}\`${facts.availability[0]}\`[\\s\\S]{0,40}\`${facts.availability[1]}\``,
+      `\`availability\`[\\s\\S]{0,80}\`${facts.availability.available}\`[\\s\\S]{0,40}\`${facts.availability.beta}\``,
       "i",
     ),
   );
@@ -593,6 +698,89 @@ test("curl contract checks reject request-body and Content-Type drift", () => {
         "JSON without Content-Type fixture",
       ),
     /must include Content-Type exactly when sending a JSON body/,
+  );
+});
+
+test("curl contract checks reject placeholders Bash would leave unresolved", () => {
+  const fixtures = [
+    {
+      label: "single-quoted API key fixture",
+      block: [
+        "curl --request POST \\",
+        '  "${API_BASE}/v3/customers" \\',
+        "  --header 'X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}' \\",
+        '  --header "Idempotency-Key: quickstart-${RUN_ID}-customer" \\',
+        '  --header "Content-Type: application/json" \\',
+        "  --data '{\"type\":\"individual\"}'",
+      ].join("\n"),
+    },
+    {
+      label: "single-quoted idempotency key fixture",
+      block: [
+        "curl --request POST \\",
+        '  "${API_BASE}/v3/customers" \\',
+        '  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \\',
+        "  --header 'Idempotency-Key: quickstart-${RUN_ID}-customer' \\",
+        '  --header "Content-Type: application/json" \\',
+        "  --data '{\"type\":\"individual\"}'",
+      ].join("\n"),
+    },
+    {
+      label: "single-quoted URL data fixture",
+      block: [
+        ': "${WEBHOOK_URL:?Set WEBHOOK_URL}"',
+        "curl --request POST \\",
+        '  "${API_BASE}/v3/webhooks" \\',
+        '  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \\',
+        '  --header "Idempotency-Key: quickstart-${RUN_ID}-webhook" \\',
+        '  --header "Content-Type: application/json" \\',
+        "  --data '{\"url\":\"${WEBHOOK_URL}\",\"events\":[\"transfer.state_changed\"]}'",
+      ].join("\n"),
+    },
+    {
+      label: "single-quoted path placeholder fixture",
+      block: [
+        "curl --request GET \\",
+        "  '${API_BASE}/v3/customers/${CUSTOMER_ID}/tasks' \\",
+        '  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}"',
+      ].join("\n"),
+    },
+  ];
+
+  for (const { block, label } of fixtures) {
+    assert.throws(
+      () => assertCurlMatchesOpenApi(block, label),
+      /unresolved shell placeholder/i,
+      `${label} must fail executable Bash validation`,
+    );
+  }
+});
+
+test("OpenAPI set assertions ignore order and reject incomplete or duplicate values", () => {
+  assert.doesNotThrow(() =>
+    assertExactOpenApiSet(
+      ["disabled", "available", "beta"],
+      ["available", "beta", "disabled"],
+      "availability fixture",
+    ),
+  );
+  assert.throws(
+    () =>
+      assertExactOpenApiSet(
+        ["available", "available", "beta", "disabled"],
+        ["available", "beta", "disabled"],
+        "duplicate fixture",
+      ),
+    /must not contain duplicates/i,
+  );
+  assert.throws(
+    () =>
+      assertExactOpenApiSet(
+        ["available", "beta"],
+        ["available", "beta", "disabled"],
+        "incomplete fixture",
+      ),
+    /must contain exactly the expected values/i,
   );
 });
 
@@ -1047,19 +1235,20 @@ test("errors documents the shared Problem contract and safe diagnostics", () => 
   const text = readPage("integration/errors");
   const problem = resolveOpenApiReference(openapi.components?.schemas?.Problem);
   assert.ok(problem, "OpenAPI must define components.schemas.Problem");
-  assert.deepEqual(problem.required, [
-    "type",
-    "title",
-    "status",
-    "code",
-    "detail",
-    "correlationId",
-  ]);
+  assertExactOpenApiSet(
+    problem.required,
+    ["type", "title", "status", "code", "detail", "correlationId"],
+    "Problem required fields",
+  );
 
   const fieldErrors = resolveOpenApiReference(problem.properties?.errors);
   assert.equal(fieldErrors.type, "array");
   const fieldError = resolveOpenApiReference(fieldErrors.items);
-  assert.deepEqual(fieldError.required, ["pointer", "code", "message"]);
+  assertExactOpenApiSet(
+    fieldError.required,
+    ["pointer", "code", "message"],
+    "Problem field error required fields",
+  );
 
   assert.match(
     problem.properties.correlationId.description,
@@ -1090,7 +1279,11 @@ test("errors documents the shared Problem contract and safe diagnostics", () => 
 test("pagination scopes ordering and explains cursor recovery", () => {
   const text = readPage("integration/pagination-and-sync");
   const page = responseSchema("get", "/v3/customers");
-  assert.deepEqual(page.required, ["data", "nextCursor", "hasMore"]);
+  assertExactOpenApiSet(
+    page.required,
+    ["data", "nextCursor", "hasMore"],
+    "Page required fields",
+  );
   assert.equal(page.properties.data.type, "array");
   assert.equal(page.properties.nextCursor.type, "string");
   assert.equal(page.properties.nextCursor.nullable, true);
