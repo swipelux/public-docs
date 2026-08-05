@@ -736,11 +736,11 @@ function validateCodeFences(path, text) {
         continue;
       }
 
-      const startsNewContainer =
+      const exitsListContainer =
         openFence.containerIndent > 0 &&
         indentation < openFence.containerIndent &&
-        /^(?:>\s*|(?:[-+*]|\d+[.)])\s+)/.test(candidate);
-      if (!startsNewContainer) continue;
+        line.trim() !== "";
+      if (!exitsListContainer) continue;
 
       openFence = undefined;
     }

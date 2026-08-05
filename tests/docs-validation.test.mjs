@@ -542,7 +542,28 @@ test("rejects metadata-only code fences nested in Markdown list items", () => {
 test("accepts tagged code fences through multiple nested list containers", () => {
   const errors = validatePublishedText(
     "integration/example.mdx",
+    validPage("- 1. ```js\n     const value = true;\n     ```"),
+  );
+
+  assert.deepEqual(errors, []);
+});
+
+test("ends nested list-contained fences before nonblank dedented lines", () => {
+  const errors = validatePublishedText(
+    "integration/example.mdx",
     validPage("- 1. ```js\n    const value = true;\n    ```"),
+  );
+
+  assertHasError(
+    errors,
+    /integration\/example\.mdx:8: code fence.*language tag/i,
+  );
+});
+
+test("keeps unindented blank lines inside nested list-contained fences", () => {
+  const errors = validatePublishedText(
+    "integration/example.mdx",
+    validPage("- 1. ```js\n\n     const value = true;\n     ```"),
   );
 
   assert.deepEqual(errors, []);
