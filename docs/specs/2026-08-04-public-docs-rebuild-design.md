@@ -1,7 +1,7 @@
 # Swipelux Public Docs Rebuild Design
 
 Date: 2026-08-04
-Status: Approved design; implementation pending written-spec review
+Status: Approved for implementation
 Repository: `/Users/andry/brain/swipelux/public-docs`
 Implementation branch: `codex/public-docs-rebuild`
 Production deployment branch: `main`
