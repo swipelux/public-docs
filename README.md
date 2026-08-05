@@ -55,9 +55,14 @@ Run the complete documentation verification suite before handoff:
 npm run check
 ```
 
-Redirect verification defaults to the current rebuild phase, where every
-committed inventory entry remains `verified: false`. After Task 11 completes
-the preview redirect checks, require the final state explicitly:
+`npm run verify:docs` and `npm run check` read the committed phase from
+`docs/redirect-verification-phase.json`. It is `current` during the rebuild,
+when every redirect inventory entry remains `verified: false`. In Task 11,
+after the preview redirect checks pass, change every inventory entry to
+`verified: true` and set the marker's `phase` to `final` in the same commit.
+No package-script change is required.
+
+For diagnostics, you can override the committed marker explicitly:
 
 ```bash
 npm run verify:docs -- --redirect-phase=final

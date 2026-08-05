@@ -367,6 +367,7 @@ git commit -m "feat: prepare the public v3 OpenAPI reference"
 - Create: `tests/helpers/content.mjs`
 - Create: `docs/content-migration-ledger.md`
 - Create: `docs/redirect-inventory.json`
+- Create: `docs/redirect-verification-phase.json`
 
 - [ ] **Step 1: Write failing validation tests**
 
@@ -413,6 +414,8 @@ openapi.json examples/vendor extensions
 ```
 
 It must exclude `docs/`, `tests/`, `scripts/`, `.agents/`, and dependencies. It must verify the complete required-page list from the approved navigation skeleton and print a deterministic failure list.
+
+Commit `docs/redirect-verification-phase.json` with `{"phase":"current"}`. With no CLI override, `verify:docs` must read this marker. Accept only the diagnostic override `--redirect-phase=current|final`; reject every other argument form before validation begins.
 
 - [ ] **Step 4: Create the redirect inventory**
 
@@ -830,6 +833,7 @@ git commit -m "docs: migrate customer onboarding knowledge"
 
 **Files:**
 - Modify: `docs/redirect-inventory.json`
+- Modify: `docs/redirect-verification-phase.json`
 - Modify: `docs.json`
 - Modify: published MDX cross-links as identified
 - Create: `tests/redirects-and-links.test.mjs`
@@ -853,12 +857,12 @@ PATH=/Users/andry/.nvm/versions/node/v24.15.0/bin:$PATH npm run verify:docs
 PATH=/Users/andry/.nvm/versions/node/v24.15.0/bin:$PATH npm run links
 ```
 
-Expected: both commands exit 0. Update every inventory entry’s `verified` field to `true` only after the Mintlify redirect check passes.
+Expected: both commands exit 0. Update every inventory entry’s `verified` field to `true` only after the Mintlify redirect check passes, then set `docs/redirect-verification-phase.json` to `{"phase":"final"}` in the same commit. `npm run check` will enforce the final state automatically through the committed marker.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add docs.json docs/redirect-inventory.json integration knowledge-base tests/redirects-and-links.test.mjs
+git add docs.json docs/redirect-inventory.json docs/redirect-verification-phase.json integration knowledge-base tests/redirects-and-links.test.mjs
 git commit -m "docs: preserve public documentation routes"
 ```
 

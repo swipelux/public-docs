@@ -6,10 +6,11 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -20,18 +21,23 @@ import {
   REQUIRED_NAVIGATION_PAGES,
   REQUIRED_PUBLISHED_PAGES,
   SOURCE_COMMIT,
+  parseFrontmatter,
   parseMigrationLedger,
   parseRedirectVerificationPhase,
-  selectPublishableMdxPaths,
+  selectPublishablePagePaths,
   sourcePathToRoute,
   validateFrontmatter,
   validateMigrationCoverage,
   validateNavigation,
   validatePublishedJsonStrings,
-  validatePublishedMdxInventory,
+  validatePublishedPageInventory,
   validatePublishedText,
   validateRedirectInventory,
 } from "../scripts/lib/docs-validation.mjs";
+
+const docsCli = fileURLToPath(
+  new URL("../scripts/verify-docs.mjs", import.meta.url),
+);
 
 function assertHasError(errors, pattern) {
   assert.ok(
@@ -77,6 +83,79 @@ function committedLedger() {
   );
 }
 
+function writeFixtureFile(root, relativePath, content) {
+  const path = join(root, relativePath);
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, content);
+}
+
+function writeFixtureJson(root, relativePath, value) {
+  writeFixtureFile(root, relativePath, `${JSON.stringify(value, null, 2)}\n`);
+}
+
+function createCompleteCliFixture({
+  phase = "current",
+  verified = false,
+} = {}) {
+  const fixture = mkdtempSync(join(tmpdir(), "docs-validation-"));
+  writeFixtureFile(fixture, ".mintignore", readFileSync(".mintignore", "utf8"));
+
+  for (const page of REQUIRED_PUBLISHED_PAGES) {
+    const path = page === "index" ? "index.mdx" : `${page}.mdx`;
+    writeFixtureFile(fixture, path, validPage());
+  }
+
+  writeFixtureJson(fixture, "docs.json", {
+    name: "Swipelux docs",
+    navigation: {
+      tabs: [
+        {
+          tab: "Integration Docs",
+          groups: [
+            {
+              group: "Published pages",
+              pages: REQUIRED_NAVIGATION_PAGES,
+            },
+          ],
+        },
+        { tab: "API Reference", openapi: "openapi.json" },
+      ],
+    },
+  });
+  writeFixtureJson(fixture, "openapi.json", {});
+  writeFixtureJson(fixture, "openapi-coverage.json", {
+    operations: [
+      { href: "/api-reference/money-movement/get-v3-rates" },
+    ],
+    webhooks: [],
+  });
+  writeFixtureJson(
+    fixture,
+    "docs/redirect-inventory.json",
+    JSON.parse(readFileSync("docs/redirect-inventory.json", "utf8")).map(
+      (entry) => ({ ...entry, verified }),
+    ),
+  );
+  writeFixtureJson(fixture, "docs/redirect-verification-phase.json", {
+    phase,
+  });
+  writeFixtureFile(
+    fixture,
+    "docs/content-migration-ledger.md",
+    readFileSync("docs/content-migration-ledger.md", "utf8"),
+  );
+
+  return fixture;
+}
+
+function runDocsCli(fixture, args = [], options = {}) {
+  return spawnSync(process.execPath, [docsCli, ...args], {
+    cwd: fixture,
+    encoding: "utf8",
+    ...options,
+  });
+}
+
 test("requires title frontmatter", () => {
   const errors = validateFrontmatter(
     "integration/example.mdx",
@@ -107,8 +186,11 @@ test("rejects YAML-null and comment-only frontmatter values", () => {
     ["title", "# TODO"],
     ["title", "null # TODO"],
     ["title", "~"],
+    ["title", "!!null # TODO"],
+    ["title", "&empty # TODO"],
     ["description", '\"\" # TODO'],
     ["description", "'' # TODO"],
+    ["description", '!!str ""'],
   ]) {
     const frontmatter = {
       title: "Example",
@@ -136,9 +218,88 @@ test("accepts quoted frontmatter values containing hash characters", () => {
   assert.deepEqual(validateFrontmatter("integration/example.mdx", text), []);
 });
 
+test("parses arrays and objects with Mintlify YAML semantics", () => {
+  const parsed = parseFrontmatter(
+    [
+      "---",
+      'title: "C# reference"',
+      "description: Structured metadata.",
+      "keywords: [accounts, transfers]",
+      'metadata: {label: "Hash # value", priority: 2}',
+      "---",
+      "Body",
+    ].join("\n"),
+  );
+
+  assert.deepEqual(parsed.errors, []);
+  assert.deepEqual(parsed.attributes, {
+    title: "C# reference",
+    description: "Structured metadata.",
+    keywords: ["accounts", "transfers"],
+    metadata: { label: "Hash # value", priority: 2 },
+  });
+});
+
+test("rejects arrays and objects used as required frontmatter scalars", () => {
+  for (const [field, value] of [
+    ["title", "[Example]"],
+    ["title", "{label: Example}"],
+    ["description", "[Example]"],
+    ["description", "{label: Example}"],
+  ]) {
+    const frontmatter = {
+      title: "Example",
+      description: "Example description.",
+      [field]: value,
+    };
+    const errors = validateFrontmatter(
+      "integration/example.mdx",
+      `---\ntitle: ${frontmatter.title}\ndescription: ${frontmatter.description}\n---\n`,
+    );
+
+    assertHasError(errors, new RegExp(`missing ${field} frontmatter`, "i"));
+  }
+});
+
+test("reports malformed YAML frontmatter deterministically", () => {
+  const errors = validateFrontmatter(
+    "integration/example.mdx",
+    "---\ntitle: [broken\ndescription: Example\n---\nBody\n",
+  );
+
+  assert.deepEqual(errors, [
+    "integration/example.mdx: invalid YAML frontmatter at line 2, column 1: missed comma between flow collection entries",
+  ]);
+});
+
+test("scans decoded YAML strings in frontmatter", () => {
+  const text = [
+    "---",
+    'title: "Mintlify \\u0053tarter Kit"',
+    "description: Example description.",
+    'metadata: {labels: ["safe", "Mintlify \\u0053tarter Kit"]}',
+    "---",
+    "Body",
+  ].join("\n");
+  const errors = [
+    ...validateFrontmatter("integration/example.mdx", text),
+    ...validatePublishedText("integration/example.mdx", text),
+  ];
+
+  assertHasError(errors, /frontmatter.*starter branding/i);
+});
+
 for (const [label, banned, pattern] of [
-  ["v1 routes", "Call POST /v1/customers.", /\/v1\//i],
-  ["v2 routes", "Call GET /v2/customers.", /\/v2\//i],
+  [
+    "v1 routes",
+    "Call POST /v1/customers.",
+    /prohibited legacy API v1\/v2 identifier/i,
+  ],
+  [
+    "v2 routes",
+    "Call GET /v2/customers.",
+    /prohibited legacy API v1\/v2 identifier/i,
+  ],
   ["the deprecated wallet host", "https://wallet.swipelux.com", /wallet\.swipelux\.com/i],
   ["starter branding", "Mintlify Starter Kit", /Mintlify Starter Kit/i],
 ]) {
@@ -151,6 +312,33 @@ for (const [label, banned, pattern] of [
     assertHasError(errors, pattern);
   });
 }
+
+test("rejects standalone legacy API version identifiers and routes", () => {
+  for (const legacyReference of [
+    "API v1",
+    "v1",
+    "/v1",
+    "/v1?x=1",
+    "/v2#fragment",
+    "/v1/",
+    "/V2/customers",
+  ]) {
+    const errors = validatePublishedText(
+      "integration/example.mdx",
+      validPage(`Legacy reference: ${legacyReference}`),
+    );
+
+    assertHasError(errors, /prohibited legacy API v1\/v2 identifier/i);
+  }
+});
+
+test("does not match legacy-version text inside longer alphanumeric tokens", () => {
+  const text = validPage(
+    "Allowed tokens: v10, v12beta, apiV1Client, servicev2api, and /v10/customers.",
+  );
+
+  assert.deepEqual(validatePublishedText("integration/example.mdx", text), []);
+});
 
 test("rejects realistic live and sandbox secret keys", () => {
   for (const secret of [
@@ -206,6 +394,33 @@ test("accepts language-tagged code fences", () => {
   assert.deepEqual(errors, []);
 });
 
+test("accepts language-tagged code fences nested in Markdown list items", () => {
+  const errors = validatePublishedText(
+    "integration/example.mdx",
+    validPage("- ```js\n  const value = true;\n  ```"),
+  );
+
+  assert.deepEqual(errors, []);
+});
+
+test("rejects untagged code fences nested in Markdown list items", () => {
+  const errors = validatePublishedText(
+    "integration/example.mdx",
+    validPage("1. ```\n   const value = true;\n   ```"),
+  );
+
+  assertHasError(errors, /code fence.*language tag/i);
+});
+
+test("rejects metadata-only code fences nested in Markdown list items", () => {
+  const errors = validatePublishedText(
+    "integration/example.mdx",
+    validPage('- ``` {title="Example"}\n  const value = true;\n  ```'),
+  );
+
+  assertHasError(errors, /code fence.*language tag/i);
+});
+
 test("rejects blockquoted untagged code fences", () => {
   const errors = validatePublishedText(
     "integration/example.mdx",
@@ -213,6 +428,15 @@ test("rejects blockquoted untagged code fences", () => {
   );
 
   assertHasError(errors, /code fence.*language tag/i);
+});
+
+test("rejects blockquoted language-tagged code fences", () => {
+  const errors = validatePublishedText(
+    "integration/example.mdx",
+    validPage("> ```js\n> const value = true;\n> ```"),
+  );
+
+  assertHasError(errors, /code fence.*blockquoted/i);
 });
 
 test("rejects metadata-only untagged code fences", () => {
@@ -364,16 +588,129 @@ test("requires true redirect verification in the final phase", () => {
   );
 });
 
-test("parses the explicit redirect verification CLI phase", () => {
-  assert.equal(parseRedirectVerificationPhase([]), "current");
+test("resolves redirect verification from an exact CLI override or marker", () => {
+  assert.equal(
+    parseRedirectVerificationPhase([], { phase: "current" }),
+    "current",
+  );
+  assert.equal(
+    parseRedirectVerificationPhase([], { phase: "final" }),
+    "final",
+  );
+  assert.equal(
+    parseRedirectVerificationPhase(["--redirect-phase=current"]),
+    "current",
+  );
   assert.equal(
     parseRedirectVerificationPhase(["--redirect-phase=final"]),
     "final",
   );
+});
+
+test("rejects malformed redirect verification markers", () => {
+  for (const marker of [
+    undefined,
+    null,
+    [],
+    {},
+    { phase: "release" },
+    { phase: "current", extra: true },
+  ]) {
+    assert.throws(
+      () => parseRedirectVerificationPhase([], marker),
+      /redirect verification phase marker.*phase.*current.*final/i,
+    );
+  }
+});
+
+test("rejects every unsupported redirect verification CLI form", () => {
+  for (const args of [
+    ["--redirect-phase="],
+    ["--redirect-phase", "final"],
+    ["--redirect-phaze=final"],
+    ["--redirect-phase=final", "--redirect-phase=final"],
+    ["final"],
+  ]) {
+    assert.throws(
+      () => parseRedirectVerificationPhase(args, { phase: "current" }),
+      /usage:.*--redirect-phase=current\|final/i,
+    );
+  }
+
   assert.throws(
     () => parseRedirectVerificationPhase(["--redirect-phase=release"]),
-    /redirect phase.*current.*final/i,
+    /usage:.*--redirect-phase=current\|final/i,
   );
+});
+
+test("documentation CLI rejects malformed arguments before validation", () => {
+  const fixture = mkdtempSync(join(tmpdir(), "docs-validation-"));
+  try {
+    for (const args of [
+      ["--redirect-phase="],
+      ["--redirect-phase", "final"],
+      ["--redirect-phaze=final"],
+      ["--redirect-phase=final", "--redirect-phase=current"],
+      ["final"],
+    ]) {
+      const result = runDocsCli(fixture, args);
+
+      assert.notEqual(result.status, 0, args.join(" "));
+      assert.match(result.stderr, /^Argument error:.*usage:/is);
+      assert.doesNotMatch(result.stderr, /ENOENT|Documentation verification/i);
+    }
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
+test("documentation CLI rejects an invalid committed phase marker", () => {
+  const fixture = createCompleteCliFixture();
+  try {
+    writeFixtureJson(fixture, "docs/redirect-verification-phase.json", {
+      phase: "release",
+    });
+    const result = runDocsCli(fixture);
+
+    assert.notEqual(result.status, 0);
+    assert.match(
+      result.stderr,
+      /^Redirect phase configuration error:.*phase.*current.*final/is,
+    );
+    assert.doesNotMatch(result.stderr, /Documentation verification failed/i);
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
+test("documentation CLI accepts false redirects with the current marker", () => {
+  const fixture = createCompleteCliFixture({
+    phase: "current",
+    verified: false,
+  });
+  try {
+    const result = runDocsCli(fixture);
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /Documentation verification passed/i);
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
+test("documentation CLI accepts all-true redirects with the final marker", () => {
+  const fixture = createCompleteCliFixture({
+    phase: "final",
+    verified: true,
+  });
+  try {
+    const result = runDocsCli(fixture);
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /Documentation verification passed/i);
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
+  }
 });
 
 test("rejects redirects to unknown destinations", () => {
@@ -423,8 +760,8 @@ test("rejects unexpected keys in expected redirect destinations", () => {
   assertHasError(errors, /expected destinations.*unexpected source \/extra/i);
 });
 
-test("filters only explicitly ignored MDX paths from publication", () => {
-  const paths = selectPublishableMdxPaths(
+test("filters explicitly ignored page paths from publication", () => {
+  const paths = selectPublishablePagePaths(
     [
       "index.mdx",
       "quickstart.mdx",
@@ -443,54 +780,156 @@ test("filters only explicitly ignored MDX paths from publication", () => {
   ]);
 });
 
-test("rejects every unexpected publishable MDX page", () => {
-  const errors = validatePublishedMdxInventory(
+test("discovers Markdown pages case-insensitively with Mintlify categories", () => {
+  const paths = selectPublishablePagePaths(
+    [
+      "guide.md",
+      "rogue.MDX",
+      "nested/reference.Md",
+      "README.md",
+      "LICENSE.MD",
+      "component.jsx",
+    ],
+    [],
+  );
+
+  assert.deepEqual(paths, ["guide.md", "nested/reference.Md", "rogue.MDX"]);
+});
+
+test("applies Mintlify default ignores to discovered pages", () => {
+  const paths = selectPublishablePagePaths(
+    [
+      ".git/rogue.mdx",
+      ".github/rogue.md",
+      ".agents/rogue.MDX",
+      "node_modules/package/rogue.mdx",
+      "integration/overview.mdx",
+    ],
+    [],
+  );
+
+  assert.deepEqual(paths, ["integration/overview.mdx"]);
+});
+
+test("uses gitignore negation and nested re-inclusion semantics", () => {
+  const paths = selectPublishablePagePaths(
+    [
+      "index.mdx",
+      "integration/overview.mdx",
+      "integration/onboarding/businesses.mdx",
+      "knowledge-base/overview.mdx",
+    ],
+    ["*.mdx", "!integration/**"],
+  );
+
+  assert.deepEqual(paths, [
+    "integration/onboarding/businesses.mdx",
+    "integration/overview.mdx",
+  ]);
+});
+
+test("counts Markdown and uppercase extensions toward required-page coverage", () => {
+  assert.deepEqual(
+    validatePublishedPageInventory(["index.md", "integration/overview.MDX"], {
+      requiredPages: ["index", "integration/overview"],
+    }),
+    [],
+  );
+});
+
+test("rejects every unexpected publishable page", () => {
+  const errors = validatePublishedPageInventory(
     [
       "index.mdx",
       "integration/overview.mdx",
       "quickstart.mdx",
+      "rogue.md",
+      "rogue.MDX",
       "content/t-c/index.mdx",
       "integration/extra.mdx",
     ],
     { requiredPages: ["index", "integration/overview"] },
   );
 
-  assertHasError(errors, /quickstart\.mdx.*unexpected publishable MDX page/i);
+  assertHasError(errors, /quickstart\.mdx.*unexpected publishable page/i);
   assertHasError(
     errors,
-    /content\/t-c\/index\.mdx.*unexpected publishable MDX page/i,
+    /content\/t-c\/index\.mdx.*unexpected publishable page/i,
   );
   assertHasError(
     errors,
-    /integration\/extra\.mdx.*unexpected publishable MDX page/i,
+    /integration\/extra\.mdx.*unexpected publishable page/i,
   );
+  assertHasError(errors, /rogue\.md.*unexpected publishable page/i);
+  assertHasError(errors, /rogue\.MDX.*unexpected publishable page/i);
 });
 
-test("documentation CLI discovers root-level unexpected MDX pages", () => {
+test("documentation CLI discovers root-level unexpected Markdown pages", () => {
   const fixture = mkdtempSync(join(tmpdir(), "docs-validation-"));
-  const cli = fileURLToPath(
-    new URL("../scripts/verify-docs.mjs", import.meta.url),
-  );
   try {
     writeFileSync(join(fixture, ".mintignore"), "docs/\n");
     writeFileSync(join(fixture, "quickstart.mdx"), validPage());
+    writeFileSync(join(fixture, "rogue.md"), validPage());
+    writeFileSync(join(fixture, "rogue.MDX"), validPage());
     mkdirSync(join(fixture, "docs/plans"), { recursive: true });
     writeFileSync(
       join(fixture, "docs/plans/internal.mdx"),
       validPage(),
     );
-
-    const result = spawnSync(process.execPath, [cli], {
-      cwd: fixture,
-      encoding: "utf8",
+    writeFixtureJson(fixture, "docs/redirect-verification-phase.json", {
+      phase: "current",
     });
+
+    const result = runDocsCli(fixture);
 
     assert.equal(result.status, 1);
     assert.match(
       result.stderr,
-      /quickstart\.mdx: unexpected publishable MDX page/i,
+      /quickstart\.mdx: unexpected publishable page/i,
     );
-    assert.doesNotMatch(result.stderr, /docs\/plans\/.*publishable MDX/i);
+    assert.match(result.stderr, /rogue\.md: unexpected publishable page/i);
+    assert.match(result.stderr, /rogue\.MDX: unexpected publishable page/i);
+    assert.doesNotMatch(result.stderr, /docs\/plans\/.*publishable page/i);
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
+test("documentation CLI scans decoded frontmatter values", () => {
+  const fixture = createCompleteCliFixture();
+  try {
+    writeFixtureFile(
+      fixture,
+      "index.mdx",
+      [
+        "---",
+        'title: "Mintlify \\u0053tarter Kit"',
+        "description: Example description.",
+        "---",
+        "Body",
+      ].join("\n"),
+    );
+    const result = runDocsCli(fixture);
+
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /index\.mdx#frontmatter.*starter branding/i);
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
+test("documentation CLI rejects directory symlinks without following them", () => {
+  const fixture = createCompleteCliFixture();
+  try {
+    symlinkSync(".", join(fixture, "cycle"), "dir");
+    const result = runDocsCli(fixture, [], { timeout: 2_000 });
+
+    assert.equal(result.signal, null, result.stderr);
+    assert.equal(result.status, 1);
+    assert.match(
+      result.stderr,
+      /cycle: symbolic link entries are not supported/i,
+    );
   } finally {
     rmSync(fixture, { recursive: true, force: true });
   }
@@ -503,7 +942,10 @@ test("scans decoded docs.json string values", () => {
   const errors = validatePublishedJsonStrings("docs.json", config);
 
   assertHasError(errors, /docs\.json#\/name.*starter branding/i);
-  assertHasError(errors, /docs\.json#\/route.*prohibited \/v1\//i);
+  assertHasError(
+    errors,
+    /docs\.json#\/route.*prohibited legacy API v1\/v2 identifier/i,
+  );
 });
 
 test("migration ledger parser validates the separator row", () => {

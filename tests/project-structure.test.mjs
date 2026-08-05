@@ -18,13 +18,51 @@ test("pins the supported Node, npm, and Mintlify versions", () => {
     },
   );
   assert.equal(pkg.devDependencies.mint, "4.2.775");
+  assert.deepEqual(
+    {
+      common: pkg.devDependencies["@mintlify/common"],
+      frontMatter: pkg.devDependencies["front-matter"],
+      ignore: pkg.devDependencies.ignore,
+    },
+    {
+      common: "1.0.1071",
+      frontMatter: "4.0.2",
+      ignore: "7.0.5",
+    },
+  );
   assert.equal(pkg.scripts.test, "node --test tests/*.test.mjs");
 });
 
 test("locks the root Mintlify dependency to the supported version", () => {
   const lock = JSON.parse(read("package-lock.json"));
-  assert.equal(lock.packages[""].devDependencies.mint, "4.2.775");
+  assert.deepEqual(lock.packages[""].devDependencies, {
+    "@mintlify/common": "1.0.1071",
+    "front-matter": "4.0.2",
+    ignore: "7.0.5",
+    mint: "4.2.775",
+  });
+  assert.equal(
+    lock.packages["node_modules/@mintlify/common"].version,
+    "1.0.1071",
+  );
+  assert.equal(
+    lock.packages["node_modules/front-matter"].version,
+    "4.0.2",
+  );
+  assert.equal(lock.packages["node_modules/ignore"].version, "7.0.5");
   assert.equal(lock.packages["node_modules/mint"].version, "4.2.775");
+});
+
+test("commits the current redirect phase marker and Task 11 transition", () => {
+  assert.deepEqual(
+    JSON.parse(read("docs/redirect-verification-phase.json")),
+    { phase: "current" },
+  );
+
+  const readme = read("README.md");
+  assert.match(readme, /docs\/redirect-verification-phase\.json/);
+  assert.match(readme, /Task 11[\s\S]*phase[\s\S]*final/i);
+  assert.match(readme, /npm run check[\s\S]*committed marker/i);
 });
 
 test("keeps Codex and Claude repository instructions synchronized", () => {

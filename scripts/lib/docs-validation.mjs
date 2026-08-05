@@ -1,3 +1,11 @@
+import {
+  DEFAULT_MINT_IGNORES,
+  getFileCategory,
+  processMintIgnoreString,
+} from "@mintlify/common";
+import frontMatter from "front-matter";
+import ignore from "ignore";
+
 export const SOURCE_COMMIT =
   "b4c9b5b7101ec03e01424259f58a5c8763ea489b";
 
@@ -531,55 +539,74 @@ function pageFile(page) {
   return page === "index" ? "index.mdx" : `${page}.mdx`;
 }
 
-function matchesMintIgnoreRule(path, rule) {
-  const normalizedPath = normalizePath(path);
-  const normalizedRule = normalizePath(rule).replace(/^\//, "");
-  if (normalizedRule.endsWith("/")) {
-    return normalizedPath.startsWith(normalizedRule);
-  }
-  if (normalizedRule.startsWith("*.")) {
-    return normalizedPath.endsWith(normalizedRule.slice(1));
-  }
-  return normalizedPath === normalizedRule;
+export function parseMintIgnoreRules(content) {
+  return processMintIgnoreString(String(content));
+}
+
+export function createMintlifyIgnoreMatcher(rules = []) {
+  const customRules = Array.isArray(rules)
+    ? rules.map((rule) => String(rule).trim())
+    : parseMintIgnoreRules(rules);
+  const matcher = ignore().add(
+    Array.from(new Set([...DEFAULT_MINT_IGNORES, ...customRules])),
+  );
+
+  return (path) => {
+    const normalized = normalizePath(path).replace(/^\/+/, "");
+    return normalized !== "" && matcher.ignores(normalized);
+  };
 }
 
 export function isMintlifyIgnoredPath(path, rules = []) {
-  let ignored = false;
-  for (const rawRule of rules) {
-    const trimmed = String(rawRule).trim();
-    if (trimmed === "" || trimmed.startsWith("#")) continue;
-    const negated = trimmed.startsWith("!");
-    const rule = negated ? trimmed.slice(1) : trimmed;
-    if (rule && matchesMintIgnoreRule(path, rule)) ignored = !negated;
-  }
-  return ignored;
+  return createMintlifyIgnoreMatcher(rules)(path);
 }
 
-export function selectPublishableMdxPaths(paths, ignoreRules = []) {
+export function selectPublishablePagePaths(paths, ignoreRules = []) {
+  const isIgnored = createMintlifyIgnoreMatcher(ignoreRules);
   return [...new Set(paths.map(normalizePath))]
-    .filter((path) => path.endsWith(".mdx"))
-    .filter((path) => !isMintlifyIgnoredPath(path, ignoreRules))
+    .filter((path) => getFileCategory(path) === "page")
+    .filter((path) => !isIgnored(path))
     .sort(compareStrings);
 }
 
-export function validatePublishedMdxInventory(paths, options = {}) {
+export function pagePathToRoute(path) {
+  return normalizePath(path).replace(/\.(?:md|mdx)$/i, "");
+}
+
+export function validatePublishedPageInventory(paths, options = {}) {
   const requiredPages = options.requiredPages ?? REQUIRED_PUBLISHED_PAGES;
-  const requiredFiles = requiredPages.map(pageFile);
-  const requiredSet = new Set(requiredFiles);
+  const requiredSet = new Set(requiredPages);
   const publishedFiles = [...new Set(paths.map(normalizePath))].sort(
     compareStrings,
   );
-  const publishedSet = new Set(publishedFiles);
+  const pathsByRoute = new Map();
   const errors = [];
 
-  for (const path of requiredFiles) {
-    if (!publishedSet.has(path)) {
-      errors.push(`${path}: missing required published page`);
+  for (const path of publishedFiles) {
+    const route = pagePathToRoute(path);
+    const routePaths = pathsByRoute.get(route) ?? [];
+    routePaths.push(path);
+    pathsByRoute.set(route, routePaths);
+  }
+
+  for (const page of requiredPages) {
+    if (!pathsByRoute.has(page)) {
+      errors.push(`${pageFile(page)}: missing required published page`);
     }
   }
-  for (const path of publishedFiles) {
-    if (!requiredSet.has(path)) {
-      errors.push(`${path}: unexpected publishable MDX page`);
+
+  for (const [route, routePaths] of [...pathsByRoute.entries()].sort(
+    ([left], [right]) => compareStrings(left, right),
+  )) {
+    if (routePaths.length > 1) {
+      errors.push(
+        `${route}: multiple publishable page files: ${routePaths.join(", ")}`,
+      );
+    }
+    if (!requiredSet.has(route)) {
+      for (const path of routePaths) {
+        errors.push(`${path}: unexpected publishable page`);
+      }
     }
   }
 
@@ -588,124 +615,74 @@ export function validatePublishedMdxInventory(paths, options = {}) {
 
 export function isPublishedPath(path) {
   const normalized = normalizePath(path).split("#", 1)[0];
+  if (normalized.startsWith("docs/")) return false;
   return (
-    normalized.endsWith(".mdx") ||
+    getFileCategory(normalized) === "page" ||
     normalized === "docs.json" ||
     normalized === "openapi.json"
   );
 }
 
-function stripYamlInlineComment(value) {
-  const text = String(value);
-  let quote;
-
-  for (let index = 0; index < text.length; index += 1) {
-    const character = text[index];
-    if (quote) {
-      if (quote === '"' && character === "\\") {
-        index += 1;
-      } else if (
-        quote === "'" &&
-        character === "'" &&
-        text[index + 1] === "'"
-      ) {
-        index += 1;
-      } else if (character === quote) {
-        quote = undefined;
-      }
-      continue;
-    }
-
-    if (character === '"' || character === "'") {
-      quote = character;
-    } else if (
-      character === "#" &&
-      (index === 0 || /\s/.test(text[index - 1]))
-    ) {
-      return text.slice(0, index).trimEnd();
-    }
-  }
-
-  return text.trimEnd();
-}
-
-function unquote(value) {
-  const trimmed = stripYamlInlineComment(value).trim();
-  if (
-    trimmed.length >= 2 &&
-    ((trimmed.startsWith('"') && trimmed.endsWith('"')) ||
-      (trimmed.startsWith("'") && trimmed.endsWith("'")))
-  ) {
-    return trimmed.slice(1, -1).trim();
-  }
-  if (["null", "~"].includes(trimmed.toLowerCase())) return "";
-  return trimmed;
+function formatFrontmatterParseError(error) {
+  const reason =
+    error && typeof error === "object" && typeof error.reason === "string"
+      ? error.reason
+      : error instanceof Error
+        ? error.message.split("\n", 1)[0]
+        : String(error);
+  const line =
+    error && typeof error === "object" && Number.isInteger(error.mark?.line)
+      ? error.mark.line + 1
+      : undefined;
+  const column =
+    error && typeof error === "object" && Number.isInteger(error.mark?.column)
+      ? error.mark.column + 1
+      : undefined;
+  const location =
+    line === undefined || column === undefined
+      ? ""
+      : ` at line ${line}, column ${column}`;
+  return `invalid YAML frontmatter${location}: ${reason}`;
 }
 
 export function parseFrontmatter(text) {
-  const normalized = String(text).replaceAll("\r\n", "\n");
-  const lines = normalized.split("\n");
-  const errors = [];
-  const attributes = {};
-
-  if (lines[0]?.trim() !== "---") {
+  const content = String(text);
+  try {
     return {
-      attributes,
-      body: normalized,
-      errors: ["missing opening frontmatter delimiter"],
+      ...frontMatter(content),
+      errors: [],
+    };
+  } catch (error) {
+    return {
+      attributes: {},
+      body: content,
+      bodyBegin: 1,
+      errors: [formatFrontmatterParseError(error)],
     };
   }
-
-  const closingIndex = lines.findIndex(
-    (line, index) => index > 0 && line.trim() === "---",
-  );
-  if (closingIndex === -1) {
-    return {
-      attributes,
-      body: "",
-      errors: ["missing closing frontmatter delimiter"],
-    };
-  }
-
-  const frontmatterLines = lines.slice(1, closingIndex);
-  for (let index = 0; index < frontmatterLines.length; index += 1) {
-    const line = frontmatterLines[index];
-    const match = /^([A-Za-z][A-Za-z0-9_-]*):(?:\s*(.*))?$/.exec(line);
-    if (!match) continue;
-
-    const [, key, rawValue = ""] = match;
-    const scalar = stripYamlInlineComment(rawValue).trim();
-    if (["|", ">", "|-", ">-", "|+", ">+"].includes(scalar)) {
-      const block = [];
-      while (
-        index + 1 < frontmatterLines.length &&
-        /^\s+/.test(frontmatterLines[index + 1])
-      ) {
-        index += 1;
-        block.push(frontmatterLines[index].trim());
-      }
-      attributes[key] = block.join(" ").trim();
-    } else {
-      attributes[key] = unquote(rawValue);
-    }
-  }
-
-  return {
-    attributes,
-    body: lines.slice(closingIndex + 1).join("\n"),
-    errors,
-  };
 }
 
 export function validateFrontmatter(path, text) {
   const { attributes, errors: parseErrors } = parseFrontmatter(text);
   const errors = parseErrors.map((error) => `${path}: ${error}`);
 
-  if (!attributes.title?.trim()) {
+  if (parseErrors.length > 0) return sortedErrors(errors);
+
+  if (typeof attributes?.title !== "string" || !attributes.title.trim()) {
     errors.push(`${path}: missing title frontmatter`);
   }
-  if (!attributes.description?.trim()) {
+  if (
+    typeof attributes?.description !== "string" ||
+    !attributes.description.trim()
+  ) {
     errors.push(`${path}: missing description frontmatter`);
+  }
+
+  for (const { pointer, value } of collectJsonStrings(attributes)) {
+    const location = `${path}#frontmatter${pointer === "/" ? "" : pointer}`;
+    errors.push(
+      ...validatePublishedText(location, value, { checkCodeFences: false }),
+    );
   }
 
   return sortedErrors(errors);
@@ -736,8 +713,14 @@ function validateCodeFences(path, text) {
   let openFence;
 
   for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index].replace(/^\s*(?:>\s*)+/, "");
-    const match = /^\s*(`{3,}|~{3,})(.*)$/.exec(line);
+    const line = lines[index];
+    const containerMatch =
+      /^\s*(?:(?:[-+*]|\d+[.)])\s+)?/.exec(line)?.[0] ?? "";
+    let candidate = line.slice(containerMatch.length);
+    const blockquoteMatch = /^(?:>\s*)+/.exec(candidate)?.[0];
+    const blockquoted = blockquoteMatch !== undefined;
+    if (blockquoteMatch) candidate = candidate.slice(blockquoteMatch.length);
+    const match = /^(`{3,}|~{3,})(.*)$/.exec(candidate);
     if (!match) continue;
 
     const [, marker, remainder] = match;
@@ -752,6 +735,9 @@ function validateCodeFences(path, text) {
       continue;
     }
 
+    if (blockquoted) {
+      errors.push(`${path}:${index + 1}: code fence must not be blockquoted`);
+    }
     const info = remainder.trim();
     const language = info.split(/\s+/, 1)[0] ?? "";
     if (!/^[A-Za-z0-9][A-Za-z0-9_+#.-]*$/.test(language)) {
@@ -771,8 +757,10 @@ export function validatePublishedText(path, text, options = {}) {
   const errors = [];
   const value = String(text);
   const bannedPatterns = [
-    { pattern: /\/v1\//i, label: "prohibited /v1/ route" },
-    { pattern: /\/v2\//i, label: "prohibited /v2/ route" },
+    {
+      pattern: /(^|[^A-Za-z0-9])v[12](?=$|[^A-Za-z0-9])/i,
+      label: "prohibited legacy API v1/v2 identifier",
+    },
     {
       pattern: /wallet\.swipelux\.com/i,
       label: "deprecated wallet.swipelux.com host",
@@ -813,7 +801,7 @@ function normalizeNavigationPage(page) {
   const normalized = String(page)
     .replaceAll("\\", "/")
     .replace(/^\//, "")
-    .replace(/\.mdx$/, "")
+    .replace(/\.(?:md|mdx)$/i, "")
     .replace(/\/$/, "");
   return normalized === "" ? "index" : normalized;
 }
@@ -922,22 +910,31 @@ export function validateNavigation(config, options = {}) {
   return sortedErrors(errors);
 }
 
-export function parseRedirectVerificationPhase(args = []) {
-  const prefix = "--redirect-phase=";
-  const phaseArguments = args.filter((argument) =>
-    String(argument).startsWith(prefix),
-  );
-  if (phaseArguments.length > 1) {
-    throw new Error("Redirect phase may be specified only once");
+export function parseRedirectVerificationPhase(args = [], marker) {
+  const usage = "Usage: verify-docs [--redirect-phase=current|final]";
+  if (!Array.isArray(args)) throw new Error(usage);
+
+  if (args.length > 0) {
+    if (args.length !== 1) throw new Error(usage);
+    const match = /^--redirect-phase=(current|final)$/.exec(String(args[0]));
+    if (!match) throw new Error(usage);
+    return match[1];
   }
 
-  const phase = phaseArguments[0]?.slice(prefix.length) || "current";
-  if (phase !== "current" && phase !== "final") {
+  const keys =
+    marker && typeof marker === "object" && !Array.isArray(marker)
+      ? Object.keys(marker).sort(compareStrings)
+      : [];
+  if (
+    keys.length !== 1 ||
+    keys[0] !== "phase" ||
+    (marker.phase !== "current" && marker.phase !== "final")
+  ) {
     throw new Error(
-      `Redirect phase must be current or final, received ${phase}`,
+      "Redirect verification phase marker must be an object with exactly one phase key set to current or final",
     );
   }
-  return phase;
+  return marker.phase;
 }
 
 export function validateRedirectInventory(inventory, options = {}) {

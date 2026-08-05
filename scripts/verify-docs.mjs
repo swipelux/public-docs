@@ -4,7 +4,6 @@ import {
   existsSync,
   readdirSync,
   readFileSync,
-  statSync,
 } from "node:fs";
 import { join, relative, resolve } from "node:path";
 
@@ -14,24 +13,60 @@ import {
   FROZEN_SOURCE_PAGES,
   REQUIRED_NAVIGATION_PAGES,
   REQUIRED_PUBLISHED_PAGES,
-  isMintlifyIgnoredPath,
+  createMintlifyIgnoreMatcher,
+  pagePathToRoute,
   parseMigrationLedger,
+  parseMintIgnoreRules,
   parseRedirectVerificationPhase,
-  selectPublishableMdxPaths,
+  selectPublishablePagePaths,
   validateFrontmatter,
   validateMigrationCoverage,
   validateNavigation,
   validatePublishedJsonStrings,
-  validatePublishedMdxInventory,
+  validatePublishedPageInventory,
   validatePublishedText,
   validateRedirectInventory,
 } from "./lib/docs-validation.mjs";
 
 const rootDir = process.cwd();
+const cliArgs = process.argv.slice(2);
+let redirectPhaseMarker;
+if (cliArgs.length === 0) {
+  try {
+    redirectPhaseMarker = JSON.parse(
+      readFileSync(
+        resolve(rootDir, "docs/redirect-verification-phase.json"),
+        "utf8",
+      ),
+    );
+  } catch (error) {
+    console.error(
+      `Redirect phase configuration error: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+    process.exit(1);
+  }
+}
+
+let redirectVerificationPhase;
+try {
+  redirectVerificationPhase = parseRedirectVerificationPhase(
+    cliArgs,
+    redirectPhaseMarker,
+  );
+} catch (error) {
+  const prefix =
+    cliArgs.length === 0
+      ? "Redirect phase configuration error"
+      : "Argument error";
+  console.error(
+    `${prefix}: ${error instanceof Error ? error.message : String(error)}`,
+  );
+  process.exit(cliArgs.length === 0 ? 1 : 2);
+}
+
 const errors = [];
-const redirectVerificationPhase = parseRedirectVerificationPhase(
-  process.argv.slice(2),
-);
 
 function projectPath(path) {
   return resolve(rootDir, path);
@@ -52,29 +87,32 @@ function readJson(path) {
   }
 }
 
-function pageFile(page) {
-  return page === "index" ? "index.mdx" : `${page}.mdx`;
-}
+const mintIgnoreRules = parseMintIgnoreRules(readText(".mintignore"));
+const isMintIgnored = createMintlifyIgnoreMatcher(mintIgnoreRules);
 
-function pageExists(page) {
-  return existsSync(projectPath(pageFile(page)));
-}
-
-const mintIgnoreRules = readText(".mintignore").split("\n");
-
-function listMdx(directory = "") {
+function listRepositoryFiles(directory = "") {
   const absolute = projectPath(directory);
   if (!existsSync(absolute)) return [];
 
   const files = [];
-  for (const entry of readdirSync(absolute).sort()) {
-    const path = join(absolute, entry);
+  const entries = readdirSync(absolute, { withFileTypes: true }).sort(
+    (left, right) => {
+      if (left.name < right.name) return -1;
+      if (left.name > right.name) return 1;
+      return 0;
+    },
+  );
+  for (const entry of entries) {
+    const path = join(absolute, entry.name);
     const relativePath = relative(rootDir, path).replaceAll("\\", "/");
-    if (statSync(path).isDirectory()) {
-      if (relativePath === ".git") continue;
-      if (isMintlifyIgnoredPath(`${relativePath}/`, mintIgnoreRules)) continue;
-      files.push(...listMdx(relativePath));
-    } else if (entry.endsWith(".mdx")) {
+    if (entry.isSymbolicLink()) {
+      errors.push(`${relativePath}: symbolic link entries are not supported`);
+      continue;
+    }
+    if (entry.isDirectory()) {
+      if (isMintIgnored(`${relativePath}/`)) continue;
+      files.push(...listRepositoryFiles(relativePath));
+    } else if (entry.isFile()) {
       files.push(relativePath);
     }
   }
@@ -85,18 +123,24 @@ function add(findings) {
   errors.push(...findings);
 }
 
-const publishedMdx = selectPublishableMdxPaths(listMdx(), mintIgnoreRules);
+const publishedPages = selectPublishablePagePaths(
+  listRepositoryFiles(),
+  mintIgnoreRules,
+);
 add(
-  validatePublishedMdxInventory(publishedMdx, {
+  validatePublishedPageInventory(publishedPages, {
     requiredPages: REQUIRED_PUBLISHED_PAGES,
   }),
 );
 
-for (const path of publishedMdx) {
+for (const path of publishedPages) {
   const text = readText(path);
   add(validateFrontmatter(path, text));
   add(validatePublishedText(path, text));
 }
+
+const publishedPageRoutes = new Set(publishedPages.map(pagePathToRoute));
+const pageExists = (page) => publishedPageRoutes.has(page);
 
 const docsConfig = readJson("docs.json");
 if (docsConfig) {
