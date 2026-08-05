@@ -23,18 +23,6 @@ const PAGES = [
   "integration/pagination-and-sync",
 ];
 
-const SANDBOX_OPERATIONS = [
-  ["post", "/v3/sandbox/accounts/{accountId}/topup"],
-  ["post", "/v3/sandbox/transfers/{transferId}/state"],
-  ["post", "/v3/sandbox/tasks"],
-  ["post", "/v3/sandbox/tasks/{taskId}/review"],
-  ["post", "/v3/sandbox/customers/{customerId}/verification"],
-  [
-    "post",
-    "/v3/sandbox/customers/{customerId}/capabilities/{capabilityId}/status",
-  ],
-];
-
 const NORMAL_GUIDE_IDEMPOTENT_OPERATIONS = [
   ["post", "/v3/customers"],
   ["post", "/v3/customers/{customerId}/capabilities/{capabilityId}"],
@@ -80,6 +68,25 @@ const QUICKSTART_PATH_VARIABLES = new Map([
 const config = JSON.parse(readFileSync("docs.json", "utf8"));
 const coverage = JSON.parse(readFileSync("openapi-coverage.json", "utf8"));
 const openapi = JSON.parse(readFileSync("openapi.json", "utf8"));
+const HTTP_METHODS = [
+  "get",
+  "post",
+  "put",
+  "patch",
+  "delete",
+  "options",
+  "head",
+  "trace",
+];
+const SANDBOX_OPERATIONS = Object.entries(openapi.paths).flatMap(
+  ([path, pathItem]) =>
+    path.startsWith("/v3/sandbox/")
+      ? HTTP_METHODS.filter((method) => pathItem[method]).map((method) => [
+          method,
+          path,
+        ])
+      : [],
+);
 
 function operation(method, path) {
   const matches = coverage.operations.filter(
@@ -198,15 +205,45 @@ function assertOperationLinks(page, operations) {
   assertOperationLinksInText(`${page}.mdx`, readPage(page), operations);
 }
 
-function assertOperationHrefs(page, operations) {
-  const text = readPage(page);
-  for (const [method, path] of operations) {
+function mdxAttributeValues(attributes, name) {
+  return [
+    ...attributes.matchAll(
+      new RegExp(`\\b${escapeRegExp(name)}\\s*=\\s*(["'])(.*?)\\1`, "g"),
+    ),
+  ].map((match) => match[2]);
+}
+
+function cardLinks(text, label) {
+  return [...text.matchAll(/<Card\b([\s\S]*?)>/g)].map((match, index) => {
+    const attributes = match[1];
+    const titles = mdxAttributeValues(attributes, "title");
+    const hrefs = mdxAttributeValues(attributes, "href");
+    assert.equal(titles.length, 1, `${label} Card ${index + 1} must have one title`);
+    assert.equal(hrefs.length, 1, `${label} Card ${index + 1} must have one href`);
+    return { title: titles[0], href: hrefs[0] };
+  });
+}
+
+function assertCardOperationLinksInText(label, text, expectedCards) {
+  const cards = cardLinks(text, label);
+  for (const [title, method, path] of expectedCards) {
+    const matches = cards.filter((card) => card.title === title);
+    assert.equal(matches.length, 1, `${label} must contain one ${title} Card`);
     const { href } = operation(method, path);
-    assert.ok(
-      text.includes(href),
-      `${page}.mdx must include ${method.toUpperCase()} ${path} href ${href}`,
+    assert.equal(
+      matches[0].href,
+      href,
+      `${label} must bind the ${title} Card to ${method.toUpperCase()} ${path}`,
     );
   }
+}
+
+function assertCardOperationLinks(page, expectedCards) {
+  assertCardOperationLinksInText(
+    `${page}.mdx`,
+    readPage(page),
+    expectedCards,
+  );
 }
 
 function shellBlocks(text) {
@@ -258,30 +295,94 @@ function curlOperation(block, label) {
   return { method, path };
 }
 
-function curlHasHeader(block, headerName) {
-  return new RegExp(
-    `(?:--header|-H)\\s+["'][^"']*${escapeRegExp(headerName)}\\s*:`,
-    "i",
-  ).test(block);
+function curlHeaderValues(block, headerName) {
+  return [...block.matchAll(/(?:--header|-H)\s+(["'])([^"']*)\1/g)]
+    .map((match) => match[2])
+    .filter((header) => {
+      const separator = header.indexOf(":");
+      return (
+        separator >= 0 &&
+        header.slice(0, separator).trim().toLowerCase() ===
+          headerName.toLowerCase()
+      );
+    })
+    .map((header) => header.slice(header.indexOf(":") + 1).trim());
+}
+
+function curlBodyArgumentCount(block) {
+  return [
+    ...block.matchAll(
+      /(?:^|\s)(?:--data(?:-[a-z]+)?|-d|--json)(?=\s|=)/gim,
+    ),
+  ].length;
+}
+
+function operationRequestBody(method, path) {
+  const { operationObject } = openApiOperation(method, path);
+  return operationObject.requestBody
+    ? resolveOpenApiReference(operationObject.requestBody)
+    : undefined;
 }
 
 function assertCurlMatchesOpenApi(block, label) {
   const { method, path } = curlOperation(block, label);
   assert.equal(
-    curlHasHeader(block, "X-API-Key"),
-    true,
-    `${label} must include X-API-Key`,
+    curlHeaderValues(block, "X-API-Key").length,
+    1,
+    `${label} must include X-API-Key exactly once`,
   );
 
   const parameter = idempotencyParameter(method, path);
   const requiresIdempotency = parameter?.required === true;
   assert.equal(
-    curlHasHeader(block, "Idempotency-Key"),
-    requiresIdempotency,
+    curlHeaderValues(block, "Idempotency-Key").length,
+    requiresIdempotency ? 1 : 0,
     `${method.toUpperCase()} ${path} ${
       requiresIdempotency ? "requires" : "does not require"
-    } Idempotency-Key`,
+    } exactly one Idempotency-Key`,
   );
+
+  const requestBody = operationRequestBody(method, path);
+  const bodyArgumentCount = curlBodyArgumentCount(block);
+  if (requestBody?.required === true) {
+    assert.equal(
+      bodyArgumentCount,
+      1,
+      `${method.toUpperCase()} ${path} requires exactly one request body`,
+    );
+  } else if (!requestBody) {
+    assert.equal(
+      bodyArgumentCount,
+      0,
+      `${method.toUpperCase()} ${path} does not define a request body`,
+    );
+  } else {
+    assert.ok(
+      bodyArgumentCount <= 1,
+      `${method.toUpperCase()} ${path} must send at most one request body`,
+    );
+  }
+
+  const sendsJsonBody = bodyArgumentCount === 1;
+  if (sendsJsonBody) {
+    assert.ok(
+      requestBody?.content?.["application/json"],
+      `${method.toUpperCase()} ${path} must declare application/json before the curl sends JSON`,
+    );
+  }
+  const contentTypes = curlHeaderValues(block, "Content-Type");
+  assert.equal(
+    contentTypes.length,
+    sendsJsonBody ? 1 : 0,
+    `${method.toUpperCase()} ${path} must include Content-Type exactly when sending a JSON body`,
+  );
+  if (sendsJsonBody) {
+    assert.equal(
+      contentTypes[0].toLowerCase(),
+      "application/json",
+      `${method.toUpperCase()} ${path} must send JSON as application/json`,
+    );
+  }
 
   return { method, path };
 }
@@ -420,7 +521,7 @@ test("keeps public authentication and external-doc boundaries narrow", () => {
   assert.doesNotMatch(published, /https?:\/\/demo\.swipelux\.com/i);
 });
 
-test("operation links bind the expected label to the generated href", () => {
+test("semantic link checks reject mismatched labels and swapped Card hrefs", () => {
   const expected = operation("post", "/v3/customers");
   const wrong = operation("post", "/v3/transfers");
   const mismatchedFixture = [
@@ -434,6 +535,64 @@ test("operation links bind the expected label to the generated href", () => {
         ["post", "/v3/customers"],
       ]),
     /must bind `POST \/v3\/customers`/,
+  );
+
+  const swappedCardsFixture = [
+    `<Card title="Create a customer" href="${wrong.href}">`,
+    "  Customer details.",
+    "</Card>",
+    `<Card title="Create a transfer" href="${expected.href}">`,
+    "  Transfer details.",
+    "</Card>",
+  ].join("\n");
+  assert.throws(
+    () =>
+      assertCardOperationLinksInText("swapped Card fixture", swappedCardsFixture, [
+        ["Create a customer", "post", "/v3/customers"],
+        ["Create a transfer", "post", "/v3/transfers"],
+      ]),
+    /must bind the Create a customer Card to POST \/v3\/customers/,
+  );
+});
+
+test("curl contract checks reject request-body and Content-Type drift", () => {
+  const postWithoutBody = [
+    "curl --request POST \\",
+    '  "${API_BASE}/v3/customers" \\',
+    '  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \\',
+    '  --header "Idempotency-Key: quickstart-${RUN_ID}-customer"',
+  ].join("\n");
+  assert.throws(
+    () => assertCurlMatchesOpenApi(postWithoutBody, "POST without body fixture"),
+    /POST \/v3\/customers requires exactly one request body/,
+  );
+
+  const getWithBody = [
+    "curl --request GET \\",
+    '  "${API_BASE}/v3/customers/${CUSTOMER_ID}/tasks" \\',
+    '  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \\',
+    '  --header "Content-Type: application/json" \\',
+    "  --data '{}'",
+  ].join("\n");
+  assert.throws(
+    () => assertCurlMatchesOpenApi(getWithBody, "GET with body fixture"),
+    /GET \/v3\/customers\/\{customerId\}\/tasks does not define a request body/,
+  );
+
+  const jsonWithoutContentType = [
+    "curl --request POST \\",
+    '  "${API_BASE}/v3/customers" \\',
+    '  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \\',
+    '  --header "Idempotency-Key: quickstart-${RUN_ID}-customer" \\',
+    "  --data '{\"type\":\"individual\"}'",
+  ].join("\n");
+  assert.throws(
+    () =>
+      assertCurlMatchesOpenApi(
+        jsonWithoutContentType,
+        "JSON without Content-Type fixture",
+      ),
+    /must include Content-Type exactly when sending a JSON body/,
   );
 });
 
@@ -469,8 +628,32 @@ test("overview maps the contract lifecycle and availability boundaries", () => {
 test("quickstart follows the common lifecycle and preserves destination alternatives", () => {
   const text = readPage("integration/quickstart");
   assertCapabilitySelectionProse(text);
-  assert.match(text, /export SWIPELUX_API_KEY='YOUR_SANDBOX_API_KEY'/);
+  const warningBlocks = [
+    ...text.matchAll(/<Warning>\s*([\s\S]*?)<\/Warning>/g),
+  ].map((match) => match[1]);
+  const sandboxOnlyWarning = warningBlocks.find((warning) =>
+    /sandbox-only/i.test(warning),
+  );
+  assert.ok(
+    sandboxOnlyWarning,
+    "quickstart must include a prominent sandbox-only Warning",
+  );
+  assert.match(sandboxOnlyWarning, /shared (?:hostname|base URL)/i);
+  assert.match(
+    sandboxOnlyWarning,
+    /production key[\s\S]{0,120}(?:select|target)[\s\S]{0,80}production/i,
+  );
+  assert.match(
+    text,
+    /export SWIPELUX_SANDBOX_API_KEY='YOUR_SANDBOX_API_KEY'/,
+  );
+  assert.doesNotMatch(text, /export SWIPELUX_API_KEY=/);
   assert.match(text, /export RUN_ID="\$\(date \+%s\)-\$\{RANDOM\}"/);
+  assert.match(
+    text,
+    /`WEBHOOK_URL`[\s\S]{0,180}HTTPS[\s\S]{0,120}(?:you own|you control)/i,
+  );
+  assert.doesNotMatch(text, /https?:\/\/example\.com/i);
 
   const commonLifecycle = [
     "POST /v3/webhooks",
@@ -516,44 +699,59 @@ test("quickstart follows the common lifecycle and preserves destination alternat
   );
 
   const curlBlocks = shellBlocks(text).filter((block) => /\bcurl\b/.test(block));
-  assert.ok(
-    curlBlocks.length >= QUICKSTART_CURL_OPERATIONS.length,
-    "quickstart must retain the full operation walkthrough",
+  assert.equal(
+    curlBlocks.length,
+    QUICKSTART_CURL_OPERATIONS.length,
+    "quickstart must contain exactly the intended curl walkthrough",
   );
   const resolvedOperations = curlBlocks.map((block, index) =>
     assertCurlMatchesOpenApi(block, `quickstart curl block ${index + 1}`),
   );
-  for (const [method, path] of QUICKSTART_CURL_OPERATIONS) {
-    assert.equal(
-      resolvedOperations.filter(
-        (candidate) => candidate.method === method && candidate.path === path,
-      ).length,
-      1,
-      `quickstart must include one curl for ${method.toUpperCase()} ${path}`,
-    );
+  assert.deepEqual(
+    resolvedOperations,
+    QUICKSTART_CURL_OPERATIONS.map(([method, path]) => ({ method, path })),
+    "quickstart curl operations must match the exact intended order without duplicates",
+  );
+  for (const block of curlBlocks) {
+    assert.deepEqual(curlHeaderValues(block, "X-API-Key"), [
+      "${SWIPELUX_SANDBOX_API_KEY}",
+    ]);
   }
 
-  const expectedIdempotencyKeys = QUICKSTART_CURL_OPERATIONS.filter(
-    ([method, path]) => idempotencyParameter(method, path)?.required === true,
-  ).length;
-  const idempotencyHeaders = [
-    ...text.matchAll(/--header "Idempotency-Key: ([^"]+)"/g),
-  ];
-  assert.equal(idempotencyHeaders.length, expectedIdempotencyKeys);
-  for (const [, value] of idempotencyHeaders) {
+  const idempotencyValues = resolvedOperations.flatMap(
+    ({ method, path }, index) => {
+      if (idempotencyParameter(method, path)?.required !== true) return [];
+      return curlHeaderValues(curlBlocks[index], "Idempotency-Key");
+    },
+  );
+  for (const value of idempotencyValues) {
     assert.match(value, /\$\{RUN_ID\}/, `${value} must reference RUN_ID`);
   }
-  assert.doesNotMatch(text, /Idempotency-Key:[^"\n]*-001\b/i);
+  assert.equal(
+    new Set(idempotencyValues).size,
+    idempotencyValues.length,
+    "each required operation must use a unique RUN_ID-scoped idempotency value",
+  );
+  assert.doesNotMatch(curlBlocks.join("\n"), /Idempotency-Key:[^"\n]*-001\b/i);
   assert.match(
     text,
     /retrying one intended effect[\s\S]{0,120}same generated key and body/i,
   );
   assert.match(text, /new run[\s\S]{0,80}new `RUN_ID`/i);
 
+  const webhookIndex = resolvedOperations.findIndex(
+    ({ method, path }) => method === "post" && path === "/v3/webhooks",
+  );
+  assert.ok(webhookIndex >= 0, "quickstart must include webhook registration");
+  const webhookBlock = curlBlocks[webhookIndex];
+  assert.match(webhookBlock, /: "\$\{WEBHOOK_URL:\?[^}]+\}"/);
+  assert.match(webhookBlock, /--data[^\n]*\$\{WEBHOOK_URL\}/);
+  assert.doesNotMatch(webhookBlock, /"url"\s*:\s*"https?:\/\//);
+
   const sandboxHelperProbe = [
     "curl --request POST \\",
     '  "${API_BASE}/v3/sandbox/tasks/${TASK_ID}/review" \\',
-    '  --header "X-API-Key: ${SWIPELUX_API_KEY}" \\',
+    '  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \\',
     '  --header "Content-Type: application/json" \\',
     "  --data '{\"outcome\":\"accepted\"}'",
   ].join("\n");
@@ -675,10 +873,19 @@ test("authentication documents only the public apiKey header flow", () => {
     /\bBearer\b|serviceToken|uploadToken|token endpoints?|client credentials|\bscopes?\b|\bpermissions?\b/i,
   );
   assert.doesNotMatch(text, /store[\s\S]{0,40}(?:browser|localStorage)/i);
+  assertOperationLinks("integration/authentication", [
+    ["get", "/v3/capabilities"],
+  ]);
 });
 
 test("environments lists exactly the six contract sandbox helpers", () => {
   const text = readPage("integration/environments");
+
+  assert.equal(
+    SANDBOX_OPERATIONS.length,
+    6,
+    "OpenAPI must expose exactly six /v3/sandbox helper operations",
+  );
 
   assert.match(text, /same base URL/i);
   assert.match(text, /https:\/\/platform\.swipelux\.com/);
@@ -700,7 +907,10 @@ test("environments lists exactly the six contract sandbox helpers", () => {
       1,
       `${path} must appear once`,
     );
-    assert.match(text, new RegExp(openapi.paths[path][method].summary));
+    assert.match(
+      text,
+      new RegExp(escapeRegExp(openapi.paths[path][method].summary)),
+    );
   }
   assertOperationLinks("integration/environments", SANDBOX_OPERATIONS);
 });
@@ -714,10 +924,14 @@ test("API reference guide explains generated exact fields and stable links", () 
   assert.match(text, /`x-mint\.href`/);
   assert.match(text, /guides[\s\S]{0,120}concept/i);
 
-  assertOperationHrefs("integration/using-the-api-reference", [
-    ["post", "/v3/customers"],
-    ["get", "/v3/customers/{customerId}/capabilities/supported"],
-    ["post", "/v3/transfers"],
+  assertCardOperationLinks("integration/using-the-api-reference", [
+    ["Create a customer", "post", "/v3/customers"],
+    [
+      "Read supported capabilities",
+      "get",
+      "/v3/customers/{customerId}/capabilities/supported",
+    ],
+    ["Create a transfer", "post", "/v3/transfers"],
   ]);
 });
 
@@ -823,9 +1037,9 @@ test("request safety preserves the documented idempotency and retry boundary", (
   );
   assert.doesNotMatch(text, /\bTTL\b|time[- ]to[- ]live|concurren(?:cy|t) guarantee/i);
 
-  assertOperationHrefs("integration/request-safety", [
-    ["post", "/v3/quotes"],
-    ["post", "/v3/transfers"],
+  assertCardOperationLinks("integration/request-safety", [
+    ["Create a quote", "post", "/v3/quotes"],
+    ["Create a transfer", "post", "/v3/transfers"],
   ]);
 });
 
@@ -867,16 +1081,15 @@ test("errors documents the shared Problem contract and safe diagnostics", () => 
   assert.match(text, /PII/);
   assert.match(text, /```json\n[\s\S]*"correlationId"[\s\S]*```/);
 
-  assertOperationHrefs("integration/errors", [
-    ["post", "/v3/customers"],
-    ["post", "/v3/transfers"],
+  assertCardOperationLinks("integration/errors", [
+    ["Customer problems", "post", "/v3/customers"],
+    ["Transfer problems", "post", "/v3/transfers"],
   ]);
 });
 
 test("pagination scopes ordering and explains cursor recovery", () => {
   const text = readPage("integration/pagination-and-sync");
-  const page = resolveOpenApiReference(openapi.components?.schemas?.Page);
-  assert.ok(page, "OpenAPI must define components.schemas.Page");
+  const page = responseSchema("get", "/v3/customers");
   assert.deepEqual(page.required, ["data", "nextCursor", "hasMore"]);
   assert.equal(page.properties.data.type, "array");
   assert.equal(page.properties.nextCursor.type, "string");
