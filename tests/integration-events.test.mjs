@@ -282,7 +282,13 @@ function coveredOperation(method, path) {
 function coveredWebhook(name) {
   const matches = coverage.webhooks.filter((candidate) => candidate.name === name);
   assert.equal(matches.length, 1, `Expected one coverage webhook for ${name}`);
-  assert.ok(openapi.webhooks?.[name]?.post, `Missing OpenAPI webhook ${name}`);
+  const operationObject = openapi.webhooks?.[name]?.post;
+  assert.ok(operationObject, `Missing OpenAPI webhook ${name}`);
+  assert.equal(
+    operationObject["x-mint"]?.href,
+    matches[0].href,
+    `${name} coverage href must match x-mint.href`,
+  );
   return matches[0];
 }
 

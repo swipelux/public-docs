@@ -36,11 +36,11 @@ const fixtureExpectations = Object.freeze({
   sourceSha256:
     "b3b86c0a80dea1cbefb80737ba8669814c2a674566915e10967d282b572c2369",
   outputSha256:
-    "016273cfd6173e122978e7a8b85851ad63dba7455d384165ebe8d7c50b7fc9fc",
+    "e1795ee89ef93beefe56b058eecc3bb7873e46c0368196ef6d13f29c0cbc8713",
   coverageSha256:
-    "0e08e2512342a2468b6ac8573fdfb455f1be1006962a8f135788d76001af8db8",
+    "1f9f3a44c9f2624113806f85fa34eaf099d663e4b5961bd4a895884801e4ffdb",
   transformationsSha256:
-    "151bf3ef3def2bc41a8605034745de46f8cfbb3e3f39b2101e1e7bb65101d95e",
+    "d6981ea8056cc6472d5c255ce53b1a1379ebfd89bd3a4dd5b73d609c21f8d478",
   generatedAt: "2026-08-05T00:00:00.000Z",
   counts: Object.freeze({
     paths: 2,
@@ -300,14 +300,52 @@ test("removes only legacy customer webhook branches and keeps v3 examples", () =
   assert.deepEqual(source, original, "prepareOpenApi must not mutate the source");
   assert.deepEqual(
     transformations
-      .filter((item) => item.pointer.includes("/webhooks/"))
-      .map((item) => item.pointer)
-      .sort(),
+      .filter(
+        (item) =>
+          item.pointer.startsWith("/webhooks/") &&
+          item.pointer.includes("/requestBody/"),
+      )
+      .map(({ pointer, reason }) => ({ pointer, reason })),
     [
-      "/webhooks/customer.created/post/requestBody/content/application~1json/examples/legacy",
-      "/webhooks/customer.created/post/requestBody/content/application~1json/schema",
-      "/webhooks/customer.updated/post/requestBody/content/application~1json/examples/legacy",
-      "/webhooks/customer.updated/post/requestBody/content/application~1json/schema",
+      {
+        pointer:
+          "/webhooks/customer.created/post/requestBody/content/application~1json/examples/legacy",
+        reason: "Remove the legacy customer.created webhook example.",
+      },
+      {
+        pointer:
+          "/webhooks/customer.created/post/requestBody/content/application~1json/schema",
+        reason: "Publish only the v3 customer.created webhook envelope.",
+      },
+      {
+        pointer:
+          "/webhooks/customer.updated/post/requestBody/content/application~1json/examples/legacy",
+        reason: "Remove the legacy customer.updated webhook example.",
+      },
+      {
+        pointer:
+          "/webhooks/customer.updated/post/requestBody/content/application~1json/schema",
+        reason: "Publish only the v3 customer.updated webhook envelope.",
+      },
+    ],
+  );
+  assert.deepEqual(
+    transformations
+      .filter(
+        (item) =>
+          item.pointer.startsWith("/webhooks/") &&
+          item.pointer.endsWith("/x-mint/href"),
+      )
+      .map(({ pointer, reason }) => ({ pointer, reason })),
+    [
+      {
+        pointer: "/webhooks/customer.created/post/x-mint/href",
+        reason: "Assign a stable Mintlify URL to the webhook operation.",
+      },
+      {
+        pointer: "/webhooks/customer.updated/post/x-mint/href",
+        reason: "Assign a stable Mintlify URL to the webhook operation.",
+      },
     ],
   );
 });
@@ -336,7 +374,7 @@ test("rejects deleting security schemes referenced globally or by operations", (
   );
 });
 
-test("assigns stable unique endpoint hrefs and coverage-only webhook hrefs", () => {
+test("assigns stable unique endpoint and webhook hrefs", () => {
   const { spec, preparedCoverage } = prepareOpenApi(
     makeFixture(),
     SOURCE_SHA256,
@@ -351,8 +389,8 @@ test("assigns stable unique endpoint hrefs and coverage-only webhook hrefs", () 
     "/api-reference/task-submissions/create-customer-task-submission",
   );
   assert.equal(
-    spec.webhooks["customer.created"].post["x-mint"],
-    undefined,
+    spec.webhooks["customer.created"].post["x-mint"].href,
+    "/api-reference/webhooks/customer-created",
   );
   assert.deepEqual(
     preparedCoverage.webhooks.map(({ name, href }) => ({ name, href })),
@@ -373,9 +411,60 @@ test("assigns stable unique endpoint hrefs and coverage-only webhook hrefs", () 
     ...preparedCoverage.webhooks.map((entry) => entry.href),
   ];
   assert.equal(new Set(hrefs).size, hrefs.length);
+  for (const { name, href } of preparedCoverage.webhooks) {
+    assert.equal(spec.webhooks[name].post["x-mint"].href, href);
+  }
   assert.doesNotThrow(() =>
     compareCoverage(preparedCoverage, buildCoverage(spec)),
   );
+});
+
+test("preserves existing webhook x-mint fields while assigning hrefs", () => {
+  const source = makeFixture();
+  source.webhooks["customer.created"].post["x-mint"] = {
+    metadata: { title: "Customer created event" },
+    content: "Webhook-specific guidance",
+  };
+
+  const { spec } = prepareOpenApi(source, SOURCE_SHA256);
+  assert.deepEqual(spec.webhooks["customer.created"].post["x-mint"], {
+    metadata: { title: "Customer created event" },
+    content: "Webhook-specific guidance",
+    href: "/api-reference/webhooks/customer-created",
+  });
+});
+
+test("rejects non-object webhook x-mint containers", () => {
+  for (const invalid of [null, [], "invalid"]) {
+    const source = makeFixture();
+    source.webhooks["customer.created"].post["x-mint"] = invalid;
+    assert.throws(
+      () => prepareOpenApi(source, SOURCE_SHA256),
+      /x-mint must be an object for webhook customer\.created/i,
+    );
+  }
+});
+
+test("rejects non-object x-mint metadata", () => {
+  for (const invalid of [null, [], "invalid", 42, true]) {
+    const webhookSource = makeFixture();
+    webhookSource.webhooks["customer.created"].post["x-mint"] = {
+      metadata: invalid,
+    };
+    assert.throws(
+      () => prepareOpenApi(webhookSource, SOURCE_SHA256),
+      /x-mint\.metadata must be an object for webhook customer\.created/i,
+    );
+
+    const operationSource = makeFixture();
+    operationSource.paths["/v3/customers"].get["x-mint"] = {
+      metadata: invalid,
+    };
+    assert.throws(
+      () => prepareOpenApi(operationSource, SOURCE_SHA256),
+      /x-mint\.metadata must be an object for GET \/v3\/customers/i,
+    );
+  }
 });
 
 test("assigns href groups independently of source tag order", () => {

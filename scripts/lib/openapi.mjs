@@ -4,13 +4,13 @@ export const SOURCE_SHA256 =
   "ac2cb435a7099da53e6028bca98a4d57f0a1bf684cddfe64c438106a2997e3a7";
 export const SOURCE_BASENAME = "api-1 (23).json";
 export const EXPECTED_OUTPUT_SHA256 =
-  "1c2e1ada5892ec2f26612fe3badd2f567850f1fab3f0ed4eb5b71df84f9457f6";
+  "f121192b2ff9886be50e321243eb0c9632638b35118a7f1f2b4ad94e007f8a12";
 export const EXPECTED_COVERAGE_SHA256 =
-  "64c0f69ba49c489528c4398205dcce942c3ae3d9345b9200903908e1fc124a27";
+  "d13317b85a855551763d82dd4cba87f702f67b058b6e2500ab2746a837483a1d";
 export const EXPECTED_TRANSFORMATIONS_SHA256 =
-  "9b8c0520465bc9d6b9691de73c783e78f4c120ca723cf3e3ab78d1c97db853de";
-// Task 2 approval commit 8e6a68d timestamp, normalized to UTC whole seconds.
-export const APPROVED_GENERATED_AT = "2026-08-05T03:31:23.000Z";
+  "9409d356b658b2dce95fb2f3ef32f66912571d15decc4d095af3034cbb9a3d48";
+// Task 11 webhook-route preparation timestamp, normalized to UTC whole seconds.
+export const APPROVED_GENERATED_AT = "2026-08-05T17:54:33.000Z";
 export const HTTP_METHODS = new Set([
   "get",
   "post",
@@ -21,7 +21,7 @@ export const HTTP_METHODS = new Set([
   "options",
   "trace",
 ]);
-export const PREPARATION_VERSION = "1.1.0";
+export const PREPARATION_VERSION = "1.2.1";
 
 export const EXPECTED_OPENAPI_COUNTS = Object.freeze({
   paths: 49,
@@ -30,7 +30,6 @@ export const EXPECTED_OPENAPI_COUNTS = Object.freeze({
   webhooks: 12,
 });
 const CUSTOMER_WEBHOOKS = ["customer.created", "customer.updated"];
-const WEBHOOK_HREFS_IN_SPEC = false;
 
 function isPlainObject(value) {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
@@ -99,7 +98,25 @@ function operationHref(operation) {
 function webhookHref(operation) {
   const configuredHref = operation?.["x-mint"]?.href;
   if (configuredHref !== undefined) return configuredHref;
+  return stableWebhookHref(operation);
+}
+
+function stableWebhookHref(operation) {
   return `/api-reference/${operationSlug("webhooks", operation.operationId)}`;
+}
+
+function validateXMint(operation, label) {
+  const xMint = operation?.["x-mint"];
+  if (xMint === undefined) return;
+  if (!isPlainObject(xMint)) {
+    throw new Error(`x-mint must be an object for ${label}`);
+  }
+  if (
+    Object.hasOwn(xMint, "metadata") &&
+    !isPlainObject(xMint.metadata)
+  ) {
+    throw new Error(`x-mint.metadata must be an object for ${label}`);
+  }
 }
 
 function compareStrings(left, right) {
@@ -420,6 +437,15 @@ function expectedTransformationReasons(spec) {
     }
   }
 
+  for (const name of Object.keys(spec?.webhooks ?? {}).sort()) {
+    for (const { method } of httpOperations(spec.webhooks[name])) {
+      expected.set(
+        `/webhooks/${escapePointerSegment(name)}/${method}/x-mint/href`,
+        "Assign a stable Mintlify URL to the webhook operation.",
+      );
+    }
+  }
+
   return expected;
 }
 
@@ -710,12 +736,13 @@ function validatePreparedHrefs(spec) {
     }
   }
 
-  if (!WEBHOOK_HREFS_IN_SPEC) {
-    for (const name of Object.keys(spec?.webhooks ?? {}).sort()) {
-      for (const { operation } of httpOperations(spec.webhooks[name])) {
-        if (operation?.["x-mint"]?.href !== undefined) {
-          throw new Error(`Unsupported webhook x-mint.href on ${name}`);
-        }
+  for (const name of Object.keys(spec?.webhooks ?? {}).sort()) {
+    for (const { operation } of httpOperations(spec.webhooks[name])) {
+      const expected = stableWebhookHref(operation);
+      if (operation?.["x-mint"]?.href !== expected) {
+        throw new Error(
+          `Invalid x-mint.href for webhook ${name}: expected ${expected}`,
+        );
       }
     }
   }
@@ -851,12 +878,7 @@ export function prepareOpenApi(
 
   for (const path of Object.keys(spec.paths).sort()) {
     for (const { method, operation } of httpOperations(spec.paths[path])) {
-      if (
-        operation["x-mint"] !== undefined &&
-        !isPlainObject(operation["x-mint"])
-      ) {
-        throw new Error(`x-mint must be an object for ${method.toUpperCase()} ${path}`);
-      }
+      validateXMint(operation, `${method.toUpperCase()} ${path}`);
       const href = `/api-reference/${operationSlug(
         operationGroup(operation),
         operation.operationId,
@@ -867,6 +889,19 @@ export function prepareOpenApi(
         `/paths/${escapePointerSegment(path)}/${method}/x-mint/href`,
         href,
         "Assign a stable Mintlify URL to the HTTP operation.",
+      );
+    }
+  }
+
+  for (const name of Object.keys(spec.webhooks ?? {}).sort()) {
+    for (const { method, operation } of httpOperations(spec.webhooks[name])) {
+      validateXMint(operation, `webhook ${name}`);
+      addValue(
+        spec,
+        transformations,
+        `/webhooks/${escapePointerSegment(name)}/${method}/x-mint/href`,
+        stableWebhookHref(operation),
+        "Assign a stable Mintlify URL to the webhook operation.",
       );
     }
   }
