@@ -124,6 +124,28 @@ const EXPECTED_NAVIGATION = {
 
 const APPROVED_SYMBOL =
   '<svg xmlns="http://www.w3.org/2000/svg" width="65" height="64" fill="none"><path fill="#F4663E" d="M2.938 34.102a2.97 2.97 0 0 1 0-4.204L18.2 14.655a2.98 2.98 0 0 1 4.21 0l15.262 15.243a2.97 2.97 0 0 1 0 4.204L22.411 49.345a2.98 2.98 0 0 1-4.21 0L2.937 34.102Z"/><path fill="#FA9B51" d="M27.897 44.922a1.486 1.486 0 0 0 0 2.103l2.323 2.32a2.98 2.98 0 0 0 4.21 0l15.262-15.243a2.97 2.97 0 0 0 0-4.204L34.43 14.655a2.98 2.98 0 0 0-4.21 0l-2.323 2.32a1.485 1.485 0 0 0 0 2.103l10.834 10.82a2.97 2.97 0 0 1 0 4.204l-10.834 10.82Z"/><path fill="#FFDA99" d="M39.909 44.923a1.485 1.485 0 0 0 0 2.102l2.323 2.32a2.98 2.98 0 0 0 4.21 0l15.262-15.243a2.97 2.97 0 0 0 0-4.204L46.442 14.655a2.98 2.98 0 0 0-4.21 0l-2.323 2.32a1.485 1.485 0 0 0 0 2.102l10.834 10.82a2.97 2.97 0 0 1 0 4.205l-10.834 10.82Z"/></svg>';
+const LIGHT_DOCS_BACKGROUND = "#FFFFFF";
+
+function relativeLuminance(hex) {
+  assert.match(hex, /^#[A-F0-9]{6}$/i, `${hex} must be a six-digit hex color`);
+  const channels = [1, 3, 5].map((offset) =>
+    Number.parseInt(hex.slice(offset, offset + 2), 16) / 255,
+  );
+  const [red, green, blue] = channels.map((channel) =>
+    channel <= 0.04045
+      ? channel / 12.92
+      : ((channel + 0.055) / 1.055) ** 2.4,
+  );
+  return 0.2126 * red + 0.7152 * green + 0.0722 * blue;
+}
+
+function contrastRatio(foreground, background) {
+  const luminances = [
+    relativeLuminance(foreground),
+    relativeLuminance(background),
+  ].sort((left, right) => right - left);
+  return (luminances[0] + 0.05) / (luminances[1] + 0.05);
+}
 
 function findObjects(value, predicate, matches = []) {
   if (Array.isArray(value)) {
@@ -175,12 +197,20 @@ test("uses the approved Swipelux identity and site controls", () => {
     dark: "/logo/dark.svg",
   });
   assert.deepEqual(config.colors, {
-    primary: "#F4663E",
+    primary: "#B8381D",
     light: "#FA9B51",
     dark: "#E2471D",
   });
   assert.deepEqual(config.api?.playground, { display: "none" });
   assert.deepEqual(config.contextual, { options: ["copy", "view"] });
+});
+
+test("uses an accessible primary docs UI color on the light background", () => {
+  const ratio = contrastRatio(config.colors.primary, LIGHT_DOCS_BACKGROUND);
+  assert.ok(
+    ratio >= 4.5,
+    `${config.colors.primary} has ${ratio.toFixed(2)}:1 contrast against ${LIGHT_DOCS_BACKGROUND}; expected at least 4.5:1`,
+  );
 });
 
 test("uses exactly the approved three-tab navigation skeleton", () => {

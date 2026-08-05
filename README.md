@@ -16,10 +16,10 @@ This repository requires nvm so `.nvmrc` can select the supported Node.js releas
 nvm install
 nvm use
 npm --version
-npm install
+npm ci
 ```
 
-`nvm install` installs Node.js 24.15.0 when needed, and `nvm use` activates it in your current shell. If `npm --version` does not print `11.12.1`, install the pinned npm release before installing dependencies:
+`nvm install` installs Node.js 24.15.0 when needed, and `nvm use` activates it in your current shell. If `npm --version` does not print `11.12.1`, install the pinned npm release and run `npm ci` again:
 
 ```bash
 npm install --global npm@11.12.1
@@ -55,21 +55,16 @@ Run the complete documentation verification suite before handoff:
 npm run check
 ```
 
-`npm run verify:docs` and `npm run check` read the committed phase from
-`docs/redirect-verification-phase.json`. It is `current` during the rebuild,
-when every redirect inventory entry remains `verified: false`. In Task 11,
-after the preview redirect checks pass, change every inventory entry to
-`verified: true` and set the marker's `phase` to `final` in the same commit.
-No package-script change is required.
+`npm run check` runs the repository tests, verifies the generated OpenAPI and documentation artifacts, validates the Mintlify site, checks links, and runs accessibility checks. It prepares no source data, so regenerate `openapi.json` first when the source contract changes.
 
-For diagnostics, you can override the committed marker explicitly:
+Redirect verification is complete. The committed phase in `docs/redirect-verification-phase.json` is `final`, and all 53 redirects in `docs/redirect-inventory.json` are verified. `npm run check` validates the committed marker and inventory.
 
-```bash
-npm run verify:docs -- --redirect-phase=final
-```
+## CI and production deployment
 
-The complete check prepares no source data. Generate `openapi.json` first when the source contract changes. During the staged rebuild, Tasks 2 and 3 add the `verify:openapi` and `verify:docs` implementations. Until then, use `npm test` for the runnable Task 1 checks.
+GitHub Actions runs `npm run check` for every pull request and every push to `main` through `.github/workflows/docs.yml`.
 
-## Deploy
+The repository must first be connected to Mintlify through the GitHub App. The production deployment branch is `main`, and the Mintlify dashboard deployment branch must match `main`; use Mintlify's [Check deployment branch](https://www.mintlify.com/docs/deploy/github#check-deployment-branch) guidance to confirm the setting. Once connected and after local and CI verification, merging to `main` triggers Mintlify production deployment.
 
-Mintlify production builds use the `main` branch. Work on a feature branch, verify the documentation locally, and merge the reviewed changes into `main` to deploy them.
+## Production release gate
+
+Automated verification does not constitute legal approval. Rows marked `review-required` in `docs/content-migration-ledger.md` still require accountable legal/compliance approval before production release. The known jurisdiction-source contradictions remain a production-release blocker until resolved.

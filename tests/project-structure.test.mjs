@@ -43,6 +43,7 @@ test("locks the root Mintlify dependency to the supported version", () => {
     "front-matter": "4.0.2",
     ignore: "7.0.5",
     mint: "4.2.775",
+    yaml: "2.9.0",
   });
   assert.equal(
     lock.packages["node_modules/@mintlify/common"].version,
@@ -75,7 +76,8 @@ test("commits a supported redirect phase and matching inventory", () => {
 
   const readme = read("README.md");
   assert.match(readme, /docs\/redirect-verification-phase\.json/);
-  assert.match(readme, /Task 11[\s\S]*phase[\s\S]*final/i);
+  assert.match(readme, /Redirect verification is complete/i);
+  assert.match(readme, /committed[^\n]*phase[^\n]*`?final`?/i);
   assert.match(readme, /npm run check[\s\S]*committed marker/i);
 });
 

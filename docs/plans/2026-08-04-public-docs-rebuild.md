@@ -486,7 +486,7 @@ Test that:
 - The API Reference tab uses `openapi.json`.
 - `api.playground.display` is `none`.
 - Contextual options are exactly `copy` and `view`.
-- Primary colors are `#F4663E`, `#FA9B51`, and `#E2471D`.
+- Docs UI colors are `#B8381D`, `#FA9B51`, and `#E2471D`; the official logo assets retain their original `#F4663E` brand path.
 - `docs.json.redirects` exactly matches the source/destination pairs in `docs/redirect-inventory.json`.
 - Starter Mintlify links, email addresses, logos, and page names are absent.
 
@@ -512,7 +512,7 @@ Use the exact three-tab navigation from the approved design. Add:
   "options": ["copy", "view"]
 },
 "colors": {
-  "primary": "#F4663E",
+  "primary": "#B8381D",
   "light": "#FA9B51",
   "dark": "#E2471D"
 }
@@ -873,8 +873,14 @@ git commit -m "docs: preserve public documentation routes"
 **Files:**
 - Create: `.github/workflows/docs.yml`
 - Modify: `README.md`
-- Modify: `docs/content-migration-ledger.md` only to record review state, not to invent approval
+- Modify: `docs.json`
+- Modify: `docs/plans/2026-08-04-public-docs-rebuild.md`
+- Modify: `package.json`
+- Modify: `package-lock.json`
 - Create: `tests/ci-config.test.mjs`
+- Modify: `tests/project-structure.test.mjs`
+- Modify: `tests/site-config.test.mjs`
+- Review: `docs/content-migration-ledger.md` without inventing approval
 
 - [ ] **Step 1: Write the failing CI configuration test**
 
@@ -895,6 +901,9 @@ on:
   pull_request:
   push:
     branches: [main]
+
+permissions:
+  contents: read
 
 jobs:
   verify:
@@ -947,7 +956,7 @@ Confirm every migration-ledger row has a disposition. Do not mark `review-requir
 - [ ] **Step 7: Commit**
 
 ```bash
-git add .github README.md docs/content-migration-ledger.md tests/ci-config.test.mjs
+git add .github/workflows/docs.yml README.md docs.json docs/plans/2026-08-04-public-docs-rebuild.md package.json package-lock.json tests/ci-config.test.mjs tests/project-structure.test.mjs tests/site-config.test.mjs
 git commit -m "ci: verify Mintlify public documentation"
 ```
 
