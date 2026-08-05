@@ -1,0 +1,57 @@
+---
+title: "Receive funds"
+description: "Receive inbound funds through issued-bank settlement or a quoted fiat-to-stablecoin transfer."
+---
+
+Receiving funds is conditional on the customer's ready capabilities and current account resources. An issued bank account settles matched fiat into its configured settlement wallet account. A quoted `fiat_to_stablecoin` transfer can instead return transfer-specific funding instructions.
+
+<Warning>
+Call receiving operations from your backend with `X-API-Key`. Do not expose the key to a browser or client.
+</Warning>
+
+## Choose the inbound path
+
+For an issued bank account, use the current account details described in [Accounts](/integration/accounts). Its `settlement.accountId` identifies the issued wallet that receives settled funds. Re-fetch the account before sharing current routing details or references.
+
+For a quoted `fiat_to_stablecoin` movement, the resolved source is `external` and the destination is a customer account. Build the request from the selected capability and account; there is no universal inbound payload.
+
+Create the price with [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes). The contract example is:
+
+```json
+{
+  "customerId": "cus_7F3pL2nQ9xA5mW8kR1sT4v",
+  "capabilityId": "ach_pooled",
+  "externalId": "quote-ref-123",
+  "in": {
+    "amount": "150.00",
+    "currency": "USD"
+  },
+  "destinationId": "acc_base123",
+  "out": {
+    "currency": "USDC"
+  }
+}
+```
+
+Execute the selected quote with [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers).
+
+## Use instructions only when returned
+
+Funding instructions exist only when they are applicable to the inbound transfer. Read the current transfer with [`GET /v3/transfers/{transferId}`](/api-reference/money-movement/get-v3-transfers-by-transfer-id), then fetch typed instructions with [`GET /v3/transfers/{transferId}/instructions`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-instructions) when `instructions` is non-null.
+
+Instruction types are `bank`, `code`, and `redirect`. Use the returned `amount`, method-specific fields, reference requirements, URL or code, and `expiresAt` only when those fields are present. Do not reuse one transfer's instructions for another transfer.
+
+When `reference.required` is `true`, the exact returned reference must accompany the deposit. Pooled accounts match deposits by reference; named virtual accounts match by account number. `localAmount` is the amount in the local settlement currency when the rail currency differs from the quoted input.
+
+Payout-side transfers have no instructions. Calling the instruction operation for one returns `transfer_has_no_instructions`.
+
+## Read reconciled inbound deposits
+
+Use [`GET /v3/transfers`](/api-reference/money-movement/get-v3-transfers) to list quoted transfers and reconciled deposits. A reconciled deposit can have `origin` `inbound_deposit` rather than `quoted`.
+
+Read the current transfer and its `state` after every action or event. The transfer resource, not an assumed schedule, determines whether funds are awaiting receipt, processing, action-required, completed, failed, or canceled.
+
+## Replay writes safely
+
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) declares `Idempotency-Key`. Reuse a key only with the same body. Successful responses document `Idempotency-Replayed: true`.
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) declares `Idempotency-Key`. Reuse a key only with the same body. Successful responses document `Idempotency-Replayed: true`.

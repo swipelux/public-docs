@@ -1,0 +1,139 @@
+---
+title: "Accounts"
+description: "Create and manage issued or external wallet and bank accounts, including issued-bank settlement wallets."
+---
+
+Accounts belong to a customer and represent customer-owned wallet or bank endpoints. Choose the create variant that matches the account's origin and type, then make later decisions from the current account resource.
+
+<Warning>
+Call account operations from your backend with `X-API-Key`. Do not expose the key to a browser or client.
+</Warning>
+
+## Understand the account union
+
+- **Account types:** `wallet`, `bank`
+- **Account origins:** `issued`, `external`
+- **Account statuses:** `provisioning`, `in_review`, `ready`, `action_required`, `suspended`, `rejected`, `archived`
+- **Account statusReason codes:** `account_holder_name_mismatch`, `awaiting_assignment`, `provider_provisioning`, `provisioning_failed`, `temporarily_unsupported`, `verification_pending`
+
+An `issued` account is platform-issued. An `external` account records a customer-owned wallet or bank account. Issued bank accounts require `settlement.accountId`; it identifies the issued customer wallet account that receives settled funds.
+
+Create an account with [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts). There is no universal account payload: wallet and bank variants require different fields, issued bank accounts use one `method`, and external bank accounts use `methods` plus matching details.
+
+The contract provides these request examples:
+
+<Tabs>
+  <Tab title="Issued wallet">
+
+```json
+{
+  "origin": "issued",
+  "type": "wallet",
+  "currency": "USDC",
+  "network": "base",
+  "label": "Treasury wallet"
+}
+```
+
+  </Tab>
+  <Tab title="Issued ACH">
+
+```json
+{
+  "origin": "issued",
+  "type": "bank",
+  "method": "ach",
+  "country": "US",
+  "currency": "USD",
+  "settlement": {
+    "accountId": "acc_3eG7xN2pQ4rT8mA1sL6dVc"
+  },
+  "label": "USD payin account"
+}
+```
+
+  </Tab>
+  <Tab title="External wallet">
+
+```json
+{
+  "origin": "external",
+  "type": "wallet",
+  "currency": "USDC",
+  "network": "polygon",
+  "details": {
+    "address": "0x4997b0a68bebc1b0d80a93567ba7002be92b8b11"
+  },
+  "label": "Customer Polygon wallet"
+}
+```
+
+  </Tab>
+  <Tab title="External bank">
+
+```json
+{
+  "origin": "external",
+  "type": "bank",
+  "methods": [
+    "ach",
+    "wire"
+  ],
+  "country": "US",
+  "currency": "USD",
+  "details": {
+    "routingNumber": "021000021",
+    "accountNumber": "123456789",
+    "accountType": "checking",
+    "bankName": "JPMorgan Chase Bank",
+    "accountHolderName": "Swipelux Inc."
+  }
+}
+```
+
+  </Tab>
+</Tabs>
+
+## Read current account state
+
+Use [`GET /v3/customers/{customerId}/accounts`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts) to list accounts and [`GET /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts-by-account-id) to read the current account before routing funds or changing metadata.
+
+`statusReason` is present when the account is `provisioning`, `in_review`, `action_required`, `suspended`, or `rejected`. It is absent on `ready` and `archived` accounts. Its fields are `code`, `message`, `actor`, and `retryable`; actor is `customer`, `developer`, `provider`, `network`, or `swipelux`. Treat the listed account reason codes as the current catalog and tolerate future codes.
+
+When `statusReason.code` is `awaiting_assignment`, concrete details for a pooled issued bank account remain unavailable until the first pay-in is created and supplies them.
+
+When `openTaskIds` is non-empty, follow those current account-scoped tasks through [Tasks and submissions](/integration/onboarding/tasks-and-submissions). Do not infer readiness from an earlier account response.
+
+## Configure account developer fees
+
+Read the current fee rule with [`GET /v3/customers/{customerId}/accounts/{accountId}/fees`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts-by-account-id-fees). This is the read-back mirror of the replace operation: `breakdown.developer` is `null` when no rule is configured.
+
+Replace the rule with [`PUT /v3/customers/{customerId}/accounts/{accountId}/fees`](/api-reference/accounts/put-v3-customers-by-customer-id-accounts-by-account-id-fees). The required shape contains `breakdown.developer.fixed` and `breakdown.developer.bips`:
+
+```json
+{
+  "breakdown": {
+    "developer": {
+      "fixed": "1.00",
+      "bips": 50
+    }
+  }
+}
+```
+
+`fixed` is a major-unit decimal string in the account currency with at most 2 decimal places. `bips` is an integer from 0 through 9999. The request has no wildcard or fee-level currency rule.
+
+A positive developer fee requires an account backed by a settlement network and an available developer settlement wallet on that network. Otherwise, the operation returns `422 developer_fee_invalid`.
+
+## Update or archive an account
+
+[`PATCH /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/patch-v3-customers-by-customer-id-accounts-by-account-id) updates `label` on any account. It can also set `isDefault: true` on an issued wallet or replace `settlement.accountId` on an issued bank account. Read the current account again after the update.
+
+[`DELETE /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/delete-v3-customers-by-customer-id-accounts-by-account-id) archives the account. Archived accounts remain available from the list operation with `status=archived`. An account with in-flight transfers cannot be archived until those transfers reach a terminal state; the documented conflict code is `account_has_active_transfers`.
+
+## Replay writes safely
+
+- [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) declares `Idempotency-Key`. Reuse a key only with the same body. Successful responses document `Idempotency-Replayed: true`.
+- [`PUT /v3/customers/{customerId}/accounts/{accountId}/fees`](/api-reference/accounts/put-v3-customers-by-customer-id-accounts-by-account-id-fees) declares `Idempotency-Key`. Reuse a key only with the same body. Successful responses document `Idempotency-Replayed: true`.
+- [`PATCH /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/patch-v3-customers-by-customer-id-accounts-by-account-id) declares `Idempotency-Key`. Reuse a key only with the same body. Successful responses document `Idempotency-Replayed: true`.
+- [`DELETE /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/delete-v3-customers-by-customer-id-accounts-by-account-id) declares `Idempotency-Key`. Reuse a key only with the same request. Successful responses document `Idempotency-Replayed: true`.
