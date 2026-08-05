@@ -1,29 +1,19 @@
 ---
-title: "Recipients"
-description: "Create third-party recipients and their bank or wallet payout destinations."
+title: "Recipients and destinations"
+description: "Create a third-party recipient and prepare a bank or wallet payout destination."
 ---
 
-Use customer accounts for first-party movements. Use recipients and recipient destinations when funds land with a third-party relationship.
+Use an account when the customer owns the destination; use a recipient and destination for another person or business.
 
-<Warning>
-Call recipient operations from your backend with `X-API-Key`. Do not expose the key to a browser or client.
-</Warning>
+A recipient records the third party. A destination records where that third party receives funds. Keep this ownership boundary explicit before you create a payout.
 
-## Keep ownership boundaries explicit
+Use one recipient for the person or business relationship, then attach the bank or wallet endpoints that belong to that recipient. Do not put customer-owned endpoints under a recipient to make the payout shape look uniform; customer accounts and third-party destinations have separate ownership and readiness rules.
 
-- **Recipient types:** `individual`, `business`
-- **Recipient statuses:** `active`, `rejected`, `archived`
-- **Destination types:** `sepa`, `swift`, `ach`, `wire`, `spei`, `pse`, `transfers_3_0`, `wallet`
-- **Destination statuses:** `in_review`, `ready`, `action_required`, `archived`
+## Create an addressed recipient
 
-First-party payouts target customer accounts. Third-party payouts target recipient destinations. Do not create a recipient destination for a customer-owned account; use [Accounts](/integration/accounts) instead.
+Create the individual first with [`POST /v3/customers/{customerId}/recipients`](/api-reference/recipients/post-v3-customers-by-customer-id-recipients). Include a complete address before you add any fiat destination, because the destination can depend on recipient address data.
 
-## Create the recipient
-
-Create an individual or business recipient with [`POST /v3/customers/{customerId}/recipients`](/api-reference/recipients/post-v3-customers-by-customer-id-recipients). There is no universal recipient or destination payload. The individual variant requires `type`, `relationship`, `firstName`, and `lastName`. The business variant requires `type`, `relationship`, and `companyName`.
-
-<Tabs>
-  <Tab title="Individual">
+### Individual recipient
 
 ```json
 {
@@ -44,38 +34,18 @@ Create an individual or business recipient with [`POST /v3/customers/{customerId
 }
 ```
 
-  </Tab>
-  <Tab title="Business">
+Store the recipient `data.id` and `data.status`. Read the current recipient with [`GET /v3/customers/{customerId}/recipients/{recipientId}`](/api-reference/recipients/get-v3-customers-by-customer-id-recipients-by-recipient-id) before you attach or use changed information.
 
-```json
-{
-  "type": "business",
-  "relationship": "vendor",
-  "companyName": "Northwind Supplies LLC",
-  "businessIndustry": "541511",
-  "email": "finance@northwind.example",
-  "address": {
-    "streetLine1": "500 Market Street",
-    "city": "San Francisco",
-    "state": "CA",
-    "postalCode": "94105",
-    "country": "US"
-  },
-  "label": "Northwind vendor"
-}
-```
+The recipient status and destination status are independent. Keep both values: a stored recipient ID does not prove that a newly created destination is ready for a quote.
 
-  </Tab>
-</Tabs>
+Use the latest values whenever your application reopens this payout setup.
 
-## Add a payout destination
+## Add a destination
 
-Add a recipient-owned destination with [`POST /v3/customers/{customerId}/recipients/{recipientId}/destinations`](/api-reference/recipients/post-v3-customers-by-customer-id-recipients-by-recipient-id-destinations). Select the exact type-specific schema. Fiat destinations require their matching bank details; wallet destinations require `currency`, `details.network`, `details.address`, and an `ownership` declaration.
-
-Wallet `ownership` is a declaration only; verification is not performed at creation. For `self_custodied`, omit `custodianName`. `custodial` requires a non-empty `custodianName`.
+Send the selected type to [`POST /v3/customers/{customerId}/recipients/{recipientId}/destinations`](/api-reference/recipients/post-v3-customers-by-customer-id-recipients-by-recipient-id-destinations).
 
 <Tabs>
-  <Tab title="ACH">
+  <Tab title="Bank destination">
 
 ```json
 {
@@ -93,7 +63,7 @@ Wallet `ownership` is a declaration only; verification is not performed at creat
 ```
 
   </Tab>
-  <Tab title="Wallet">
+  <Tab title="Wallet destination">
 
 ```json
 {
@@ -112,24 +82,20 @@ Wallet `ownership` is a declaration only; verification is not performed at creat
   </Tab>
 </Tabs>
 
-For fiat destinations, a missing recipient address can return `recipient_address_required`. Ready bank destinations can be fiat quote targets when other quote checks pass. Compatible ready wallet destinations can be stablecoin-move quote targets when they use the same network and asset as the source. `statusReason` is present exactly when destination status is `action_required`; it contains `code`, `message`, `actor`, and `retryable`. Actor is `customer`, `developer`, `provider`, `network`, or `swipelux`.
+The wallet `ownership` object is a declaration needed by the request. Use `self_custodied` only when the recipient controls the wallet; a custodial declaration also requires the custodian name.
 
-## Read and maintain current resources
+Store the destination `data.id` and `data.status`. Before quoting a payout, read it with [`GET /v3/customers/{customerId}/recipients/{recipientId}/destinations/{destinationId}`](/api-reference/recipients/get-v3-customers-by-customer-id-recipients-by-recipient-id-destinations-by-destination-id). Use a bank or wallet destination only when the current destination `data.status` is `ready` and its currency and network or method fit the movement.
 
-List recipients with [`GET /v3/customers/{customerId}/recipients`](/api-reference/recipients/get-v3-customers-by-customer-id-recipients). Read one recipient and its destinations with [`GET /v3/customers/{customerId}/recipients/{recipientId}`](/api-reference/recipients/get-v3-customers-by-customer-id-recipients-by-recipient-id).
+For a bank destination, keep the destination currency with the destination ID and select a quote capability that supports the intended payout. For a wallet destination, compare both currency and network with the source movement. A valid create body does not by itself establish that pairing.
 
-List active destinations with [`GET /v3/customers/{customerId}/recipients/{recipientId}/destinations`](/api-reference/recipients/get-v3-customers-by-customer-id-recipients-by-recipient-id-destinations). When you supply `updatedAfter`, the inclusive recovery window also returns archived transitions. Read one current destination with [`GET /v3/customers/{customerId}/recipients/{recipientId}/destinations/{destinationId}`](/api-reference/recipients/get-v3-customers-by-customer-id-recipients-by-recipient-id-destinations-by-destination-id).
+## Maintain current resources
 
-Update supplied fields on an active recipient with [`PATCH /v3/customers/{customerId}/recipients/{recipientId}`](/api-reference/recipients/patch-v3-customers-by-customer-id-recipients-by-recipient-id). Read the current recipient again before using changed data.
+Read current resources before you update them, and archive only after you have removed them from new payout selection. [`PATCH /v3/customers/{customerId}/recipients/{recipientId}`](/api-reference/recipients/patch-v3-customers-by-customer-id-recipients-by-recipient-id) changes supported recipient fields. Refetch the recipient before displaying or using those changes.
 
-Archive a recipient with [`DELETE /v3/customers/{customerId}/recipients/{recipientId}`](/api-reference/recipients/delete-v3-customers-by-customer-id-recipients-by-recipient-id). Archive is terminal, and archived recipients reject later updates. Archive one destination with [`DELETE /v3/customers/{customerId}/recipients/{recipientId}/destinations/{destinationId}`](/api-reference/recipients/delete-v3-customers-by-customer-id-recipients-by-recipient-id-destinations-by-destination-id).
+[`DELETE /v3/customers/{customerId}/recipients/{recipientId}/destinations/{destinationId}`](/api-reference/recipients/delete-v3-customers-by-customer-id-recipients-by-recipient-id-destinations-by-destination-id) archives one destination, while [`DELETE /v3/customers/{customerId}/recipients/{recipientId}`](/api-reference/recipients/delete-v3-customers-by-customer-id-recipients-by-recipient-id) archives the recipient. Treat archive as terminal and keep archived IDs out of new quote requests.
 
-## Replay writes safely
+Apply safe write behavior from [API reliability](/integration/api-reliability).
 
-Follow [Request safety](/integration/request-safety) for every write below. Each operation requires `Idempotency-Key`. Generate a fresh key for each intended effect.
+## Next step
 
-- [`POST /v3/customers/{customerId}/recipients`](/api-reference/recipients/post-v3-customers-by-customer-id-recipients) requires `Idempotency-Key`. After transport uncertainty, reuse the same key only with the identical body. On a replay, the documented successful response includes `Idempotency-Replayed: true`.
-- [`PATCH /v3/customers/{customerId}/recipients/{recipientId}`](/api-reference/recipients/patch-v3-customers-by-customer-id-recipients-by-recipient-id) requires `Idempotency-Key`. After transport uncertainty, reuse the same key only with the identical body. On a replay, the documented successful response includes `Idempotency-Replayed: true`.
-- [`DELETE /v3/customers/{customerId}/recipients/{recipientId}`](/api-reference/recipients/delete-v3-customers-by-customer-id-recipients-by-recipient-id) requires `Idempotency-Key`. After transport uncertainty, reuse the same key only with the identical request. On a replay, the documented successful response includes `Idempotency-Replayed: true`.
-- [`POST /v3/customers/{customerId}/recipients/{recipientId}/destinations`](/api-reference/recipients/post-v3-customers-by-customer-id-recipients-by-recipient-id-destinations) requires `Idempotency-Key`. After transport uncertainty, reuse the same key only with the identical body. On a replay, the documented successful response includes `Idempotency-Replayed: true`.
-- [`DELETE /v3/customers/{customerId}/recipients/{recipientId}/destinations/{destinationId}`](/api-reference/recipients/delete-v3-customers-by-customer-id-recipients-by-recipient-id-destinations-by-destination-id) requires `Idempotency-Key`. After transport uncertainty, reuse the same key only with the identical request. On a replay, the documented successful response includes `Idempotency-Replayed: true`.
+Take the ready destination ID to [Send funds](/integration/send-funds) and build the third-party payout quote.

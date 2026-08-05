@@ -78,10 +78,6 @@ const NEW_CANONICAL_PAGE_TITLES = {
 };
 
 const PENDING_STAGE_A_PAGE_DESCRIPTIONS = {
-  "integration/common-flows":
-    "Choose the right Swipelux workflow for pay-ins, payouts, or issued bank accounts.",
-  "integration/issue-bank-account":
-    "Create a settlement wallet, issue a bank account, and monitor provisioning.",
   "integration/api-reliability":
     "Use idempotency, safe retries, errors, and correlation IDs in production.",
   "integration/sync-and-reconciliation":
@@ -531,7 +527,7 @@ test("rejects unknown docs.json properties stripped by the schema", () => {
 });
 
 test("Stage A purpose guard fails closed on heading and word-count regressions", () => {
-  const page = "integration/common-flows";
+  const page = "integration/api-reliability";
   const path = `${page}.mdx`;
   const text = read(path);
   const expectedDescription = PENDING_STAGE_A_PAGE_DESCRIPTIONS[page];

@@ -1,81 +1,78 @@
 ---
-title: "Rules"
-description: "Create and manage standing sweeps from eligible custodial wallet accounts."
+title: "Automated rules"
+description: "Create, inspect, pause, and archive an eligible funds-received rule."
 ---
 
-Rules are standing instructions. When funds become available on the watched account, the rule transfers those funds to its configured target.
+Use a rule to move funds automatically after they become available in a selected custodial wallet. Build the rule from current account and destination resources, then keep its status synchronized.
 
-<Warning>
-Call rule operations from your backend with `X-API-Key`. Do not expose the key to a browser or client.
-</Warning>
+## Before you start
 
-## Use the exact trigger and target shapes
+Confirm the trigger account is a current custodial wallet and the target is the account or destination you intend to use. Check the relevant capability and resource states first: not every account or capability supports every rule.
 
-The exact trigger is `funds_received` on a custodial wallet account identified by `trigger.accountId`. Matching occurs on the account credit, not on the deposit rail. Fiat deposits settle from an issued bank account into its settlement wallet account, so the rule catches those funds, stablecoin deposits, and internal transfers alike.
+If the target is a destination, prepare it through [Recipients and destinations](/integration/recipients) and wait for the state required by the intended movement. If the target is another customer account, read that account before creating the rule.
 
-The action type is `transfer`. Its target is `account` for another custodial wallet account or `destination` for a recipient destination, including a non-custodial wallet destination.
+Follow [API reliability](/integration/api-reliability) for every rule write.
 
-At most one non-archived rule can watch a trigger account. A conflict returns `rule_already_exists` and identifies the existing rule in `conflictingRuleId`.
+The trigger reacts after funds become available on the watched wallet. It does not select a deposit method or promise when an incoming movement will settle. If an issued bank account settles into that wallet, the rule observes the resulting available funds.
 
-<Tabs>
-  <Tab title="Sweep to destination">
+## Choose the trigger and target
 
-```json
-{
-  "trigger": {
-    "type": "funds_received",
-    "accountId": "acc_6dV8xN2pQ4rT7mA9sL1kBc"
-  },
-  "action": {
-    "type": "transfer",
-    "target": {
-      "type": "destination",
-      "id": "dst_7mA9sL1kBc6dV8xN2pQ4rT"
-    }
-  },
-  "label": "Operating wallet sweep"
-}
-```
+| Field | Choice |
+| --- | --- |
+| `trigger.type` | Use `funds_received` to react when funds become available on `trigger.accountId`. |
+| `action.target.type` = `account` | Send to another custodial wallet account identified by an `acc_` ID. |
+| `action.target.type` = `destination` | Send to a recipient destination identified by a `dst_` ID. |
 
-  </Tab>
-  <Tab title="Consolidate to account">
+Choose one target type. Keep the trigger and target IDs from their current API responses instead of copying display values.
+
+Only one non-archived rule can watch a trigger account. Read the customer's current rules before creation so your interface can offer an update or archive path instead of blindly attempting a duplicate.
+
+## Create the rule
+
+Create the standing instruction with [`POST /v3/customers/{customerId}/rules`](/api-reference/rules/post-v3-customers-by-customer-id-rules):
 
 ```json
 {
   "trigger": {
     "type": "funds_received",
-    "accountId": "acc_2pQ4rT7mA9sL1kBc6dV8xN"
+    "accountId": "${RULE_TRIGGER_ACCOUNT_ID}"
   },
   "action": {
     "type": "transfer",
     "target": {
       "type": "account",
-      "id": "acc_9sL1kBc6dV8xN2pQ4rT7mA"
+      "id": "${RULE_TARGET_ACCOUNT_ID}"
     }
   },
   "label": "Treasury consolidation"
 }
 ```
 
-  </Tab>
-</Tabs>
+Store `data.id` as the rule ID and `data.status` as the current status. Also retain the returned trigger and target so you can show what the rule watches without reconstructing it from local assumptions.
 
-Create the rule with [`POST /v3/customers/{customerId}/rules`](/api-reference/rules/post-v3-customers-by-customer-id-rules). Use the current account and destination resources when you construct the request.
+The create response describes the standing instruction, not an individual movement. Keep later transfers and their states separate from the rule resource.
 
-## Read and manage the lifecycle
+## Inspect the current rule
 
-- **Rule statuses:** `active`, `paused`, `archived`
+Read [`GET /v3/customers/{customerId}/rules/{ruleId}`](/api-reference/rules/get-v3-customers-by-customer-id-rules-by-rule-id) before you display, update, or replace a rule. Refetch the current rule before acting because its status may have changed since creation.
 
-List rules with [`GET /v3/customers/{customerId}/rules`](/api-reference/rules/get-v3-customers-by-customer-id-rules). Read the current rule with [`GET /v3/customers/{customerId}/rules/{ruleId}`](/api-reference/rules/get-v3-customers-by-customer-id-rules-by-rule-id). Archived rules stay readable for audit.
+Use the returned status to decide whether your interface should offer pause, resume, or no further changes. Keep archived rules readable in your history, but do not treat them as active automation.
 
-Pause or resume a rule and edit its label or metadata with [`PATCH /v3/customers/{customerId}/rules/{ruleId}`](/api-reference/rules/patch-v3-customers-by-customer-id-rules-by-rule-id). The writable statuses are `active` and `paused`. An archived rule is read-only and returns `rule_archived` when an update is attempted.
+Also compare the current trigger and target with what your application expects. If an operator intends to change the movement endpoint, pause or archive the existing rule before creating the replacement flow.
 
-Archive a rule with [`DELETE /v3/customers/{customerId}/rules/{ruleId}`](/api-reference/rules/delete-v3-customers-by-customer-id-rules-by-rule-id). Archiving is terminal, frees the trigger account for a new rule, and the archived rule stays readable.
+## Update or archive the rule
 
-## Replay writes safely
+Pause the rule or change supported metadata with [`PATCH /v3/customers/{customerId}/rules/{ruleId}`](/api-reference/rules/patch-v3-customers-by-customer-id-rules-by-rule-id):
 
-Follow [Request safety](/integration/request-safety) for every write below. Each operation requires `Idempotency-Key`. Generate a fresh key for each intended effect.
+```json
+{
+  "status": "paused",
+  "label": "Paused while destination changes"
+}
+```
 
-- [`POST /v3/customers/{customerId}/rules`](/api-reference/rules/post-v3-customers-by-customer-id-rules) requires `Idempotency-Key`. After transport uncertainty, reuse the same key only with the identical body. On a replay, the documented successful response includes `Idempotency-Replayed: true`.
-- [`PATCH /v3/customers/{customerId}/rules/{ruleId}`](/api-reference/rules/patch-v3-customers-by-customer-id-rules-by-rule-id) requires `Idempotency-Key`. After transport uncertainty, reuse the same key only with the identical body. On a replay, the documented successful response includes `Idempotency-Replayed: true`.
-- [`DELETE /v3/customers/{customerId}/rules/{ruleId}`](/api-reference/rules/delete-v3-customers-by-customer-id-rules-by-rule-id) requires `Idempotency-Key`. After transport uncertainty, reuse the same key only with the identical request. On a replay, the documented successful response includes `Idempotency-Replayed: true`.
+Read the rule again after the update. When the automation is no longer needed, archive it with [`DELETE /v3/customers/{customerId}/rules/{ruleId}`](/api-reference/rules/delete-v3-customers-by-customer-id-rules-by-rule-id). Archive is terminal, so create a new rule if you later need a different standing instruction.
+
+## Next step
+
+Persist the rule ID, show its current trigger, target, and status, and refetch it before every operator action.

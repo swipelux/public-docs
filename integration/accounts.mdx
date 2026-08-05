@@ -1,26 +1,24 @@
 ---
-title: "Accounts"
-description: "Create and manage issued or external wallet and bank accounts, including issued-bank settlement wallets."
+title: "Accounts and wallets"
+description: "Choose, create, and monitor customer-owned wallet and bank accounts."
 ---
 
-Accounts are customer-scoped wallet or bank endpoints. Choose the create variant that matches the account's origin and type, then make later decisions from the current account resource.
+Use accounts for endpoints the customer owns. Choose the account family from the movement you are building, create one representative resource, and wait for its current state to permit the next operation.
 
-<Warning>
-Call account operations from your backend with `X-API-Key`. Do not expose the key to a browser or client.
-</Warning>
+## Choose an account
 
-## Understand the account union
+| Account | Use it when |
+| --- | --- |
+| Issued wallet | You need a custodial stablecoin balance, a transfer source or destination, or the settlement wallet for an issued bank account. |
+| Issued bank | You need reusable bank details that settle incoming fiat into an issued wallet after provisioning. |
+| External wallet | You need to record a customer-owned blockchain address as a movement destination. |
+| External bank | You need a customer-owned bank account as a first-party payout destination. |
 
-- **Account types:** `wallet`, `bank`
-- **Account origins:** `issued`, `external`
-- **Account statuses:** `provisioning`, `in_review`, `ready`, `action_required`, `suspended`, `rejected`, `archived`
-- **Account statusReason codes:** `account_holder_name_mismatch`, `awaiting_assignment`, `provider_provisioning`, `provisioning_failed`, `temporarily_unsupported`, `verification_pending`
+The available currencies, networks, methods, and account families depend on the customer's current capabilities. Do not infer support from another customer or an earlier response.
 
-An `issued` account is platform-issued. An `external` account records a customer-owned wallet or bank account. Issued bank accounts require `settlement.accountId`; it identifies the issued customer wallet account that receives settled funds.
+## Create the account
 
-Create an account with [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts). There is no universal account payload: wallet and bank variants require different fields, issued bank accounts use one `method`, and external bank accounts use `methods` plus matching details.
-
-The contract provides these request examples:
+Send the selected body to [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts). These examples cover the four account families without reproducing every API Reference variant.
 
 <Tabs>
   <Tab title="Issued wallet">
@@ -31,12 +29,12 @@ The contract provides these request examples:
   "type": "wallet",
   "currency": "USDC",
   "network": "base",
-  "label": "Treasury wallet"
+  "label": "Settlement wallet"
 }
 ```
 
   </Tab>
-  <Tab title="Issued ACH">
+  <Tab title="Issued bank">
 
 ```json
 {
@@ -46,9 +44,9 @@ The contract provides these request examples:
   "country": "US",
   "currency": "USD",
   "settlement": {
-    "accountId": "acc_3eG7xN2pQ4rT8mA1sL6dVc"
+    "accountId": "${SETTLEMENT_WALLET_ID}"
   },
-  "label": "USD payin account"
+  "label": "USD pay-in account"
 }
 ```
 
@@ -87,34 +85,27 @@ The contract provides these request examples:
     "accountType": "checking",
     "bankName": "JPMorgan Chase Bank",
     "accountHolderName": "Swipelux Inc."
-  }
+  },
+  "label": "Customer operating account"
 }
 ```
 
   </Tab>
 </Tabs>
 
-## Read current account state
+For an issued bank account, set `settlement.accountId` from the issued wallet's response-derived `data.id`. That wallet must be ready for the settlement role before you create the bank account.
 
-Use [`GET /v3/customers/{customerId}/accounts`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts) to list accounts and [`GET /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts-by-account-id) to read the current account before routing funds or changing metadata.
+## Use the current state
 
-When current issued-bank details show `details.referenceRequired` is `true`, the sender must include the exact `details.reference` or funds may remain unmatched.
+Store `data.id`, `data.status`, and `data.openTaskIds` from each create response. Then read the resource with [`GET /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts-by-account-id) before you quote a movement, show bank details, or update the account.
 
-Transfer-specific funding instructions use the separate `reference.required` and `reference.value` fields.
+Use an account only when its current `data.status` is `ready`, unless the next operation explicitly allows another state. Treat `statusReason` as an action signal: use its current `message` and `retryable` value to decide whether to wait, change data, or complete a task. Keep following current task IDs through [Capabilities and requirements](/integration/onboarding/capabilities-and-requirements#complete-requirements); do not build a local reason-code catalog.
 
-`statusReason` is present when the account is `provisioning`, `in_review`, `action_required`, `suspended`, or `rejected`. It is absent on `ready` and `archived` accounts. Its fields are `code`, `message`, `actor`, and `retryable`; actor is `customer`, `developer`, `provider`, `network`, or `swipelux`. Treat the listed account reason codes as the current catalog and tolerate future codes.
+An issued bank account's `data.details` may be `null` while it is provisioning. Present details only after a current read returns them. If `details.referenceRequired` is `true`, show the exact `details.reference` with the bank coordinates.
 
-When `statusReason.code` is `awaiting_assignment`, concrete details for a pooled issued bank account remain unavailable until the first pay-in is created and supplies them.
+## Change an account only when needed
 
-When `openTaskIds` is non-empty, follow those current account-scoped tasks through [Tasks and submissions](/integration/onboarding/tasks-and-submissions). Do not infer readiness from an earlier account response.
-
-## Configure account developer fees
-
-Read the current fee rule with [`GET /v3/customers/{customerId}/accounts/{accountId}/fees`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts-by-account-id-fees). This is the read-back mirror of the replace operation: `breakdown.developer` is `null` when no rule is configured.
-
-These rules are the pay-in fee configuration for the account.
-
-Replace the rule with [`PUT /v3/customers/{customerId}/accounts/{accountId}/fees`](/api-reference/accounts/put-v3-customers-by-customer-id-accounts-by-account-id-fees). The required shape contains `breakdown.developer.fixed` and `breakdown.developer.bips`:
+The developer fee rule affects later pay-ins. Read the current rule with [`GET /v3/customers/{customerId}/accounts/{accountId}/fees`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts-by-account-id-fees), then replace it with [`PUT /v3/customers/{customerId}/accounts/{accountId}/fees`](/api-reference/accounts/put-v3-customers-by-customer-id-accounts-by-account-id-fees):
 
 ```json
 {
@@ -127,21 +118,10 @@ Replace the rule with [`PUT /v3/customers/{customerId}/accounts/{accountId}/fees
 }
 ```
 
-`fixed` is the fixed amount in the account currency, represented as a major-unit decimal string with at most 2 decimal places. `bips` is an integer from 0 through 9999; `50` bips means `0.50%`. The request has no wildcard or fee-level currency rule.
+Use [`PATCH /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/patch-v3-customers-by-customer-id-accounts-by-account-id) only to change supported metadata, the default issued wallet, or an issued bank account's settlement wallet. Refetch after the update. Use [`DELETE /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/delete-v3-customers-by-customer-id-accounts-by-account-id) to archive an unused account; finish in-flight transfers first.
 
-A positive developer fee requires an account backed by a settlement network and an available developer settlement wallet on that network. Otherwise, the operation returns `422 developer_fee_invalid`.
+Apply one idempotency key per intended write by following [API reliability](/integration/api-reliability).
 
-## Update or archive an account
+## Next step
 
-[`PATCH /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/patch-v3-customers-by-customer-id-accounts-by-account-id) updates `label` on any account. It can also set `isDefault: true` on an issued wallet or replace `settlement.accountId` on an issued bank account. Read the current account again after the update.
-
-[`DELETE /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/delete-v3-customers-by-customer-id-accounts-by-account-id) archives the account. Archived accounts remain available from the list operation with `status=archived`. An account with in-flight transfers cannot be archived until those transfers reach a terminal state; the documented conflict code is `account_has_active_transfers`.
-
-## Replay writes safely
-
-Follow [Request safety](/integration/request-safety) for every write below. Each operation requires `Idempotency-Key`. Generate a fresh key for each intended effect.
-
-- [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) requires `Idempotency-Key`. After transport uncertainty, reuse the same key only with the identical body. On a replay, the documented successful response includes `Idempotency-Replayed: true`.
-- [`PUT /v3/customers/{customerId}/accounts/{accountId}/fees`](/api-reference/accounts/put-v3-customers-by-customer-id-accounts-by-account-id-fees) requires `Idempotency-Key`. After transport uncertainty, reuse the same key only with the identical body. On a replay, the documented successful response includes `Idempotency-Replayed: true`.
-- [`PATCH /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/patch-v3-customers-by-customer-id-accounts-by-account-id) requires `Idempotency-Key`. After transport uncertainty, reuse the same key only with the identical body. On a replay, the documented successful response includes `Idempotency-Replayed: true`.
-- [`DELETE /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/delete-v3-customers-by-customer-id-accounts-by-account-id) requires `Idempotency-Key`. After transport uncertainty, reuse the same key only with the identical request. On a replay, the documented successful response includes `Idempotency-Replayed: true`.
+Use a ready account in [Receive funds](/integration/receive-funds), [Send funds](/integration/send-funds), or [Issue a bank account](/integration/issue-bank-account).
