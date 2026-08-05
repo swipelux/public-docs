@@ -1,34 +1,17 @@
 #!/usr/bin/env node
 
-import { createHash } from "node:crypto";
-import { readFileSync, writeFileSync } from "node:fs";
-import { basename, isAbsolute, join } from "node:path";
+import { isAbsolute } from "node:path";
 
 import {
-  PREPARATION_VERSION,
+  APPROVED_GENERATED_AT,
+  EXPECTED_COVERAGE_SHA256,
+  EXPECTED_OPENAPI_COUNTS,
+  EXPECTED_OUTPUT_SHA256,
+  EXPECTED_TRANSFORMATIONS_SHA256,
+  SOURCE_BASENAME,
   SOURCE_SHA256,
-  assertExpectedOpenApiCounts,
-  prepareOpenApi,
 } from "./lib/openapi.mjs";
-
-function byteHash(value) {
-  return createHash("sha256").update(value).digest("hex");
-}
-
-function formattedJson(value) {
-  return `${JSON.stringify(value, null, 2)}\n`;
-}
-
-function generationTimestamp() {
-  if (process.env.SOURCE_DATE_EPOCH !== undefined) {
-    const epoch = Number(process.env.SOURCE_DATE_EPOCH);
-    if (!Number.isInteger(epoch) || epoch < 0) {
-      throw new Error("SOURCE_DATE_EPOCH must be a non-negative integer");
-    }
-    return new Date(epoch * 1000).toISOString();
-  }
-  return new Date().toISOString();
-}
+import { prepareOpenApiArtifacts } from "./lib/openapi-artifacts.mjs";
 
 function main() {
   const [sourcePath, ...extraArguments] = process.argv.slice(2);
@@ -38,48 +21,17 @@ function main() {
     );
   }
 
-  const sourceBytes = readFileSync(sourcePath);
-  const actualSha = byteHash(sourceBytes);
-  if (actualSha !== SOURCE_SHA256) {
-    throw new Error(
-      `Source SHA-256 mismatch: expected ${SOURCE_SHA256}, received ${actualSha}`,
-    );
-  }
-
-  const source = JSON.parse(sourceBytes.toString("utf8"));
-  const { spec, transformations, preparedCoverage } = prepareOpenApi(
-    source,
-    actualSha,
-  );
-  const counts = assertExpectedOpenApiCounts(spec);
-  const openApiText = formattedJson(spec);
-  const provenance = {
-    source: {
-      basename: basename(sourcePath),
-      sha256: actualSha,
-    },
-    output: {
-      basename: "openapi.json",
-      sha256: byteHash(openApiText),
-    },
-    tool: {
-      script: "scripts/prepare-openapi.mjs",
-      version: PREPARATION_VERSION,
-    },
-    generatedAt: generationTimestamp(),
-    transformations,
-  };
-
-  const outputDirectory = process.cwd();
-  writeFileSync(join(outputDirectory, "openapi.json"), openApiText);
-  writeFileSync(
-    join(outputDirectory, "openapi-provenance.json"),
-    formattedJson(provenance),
-  );
-  writeFileSync(
-    join(outputDirectory, "openapi-coverage.json"),
-    formattedJson(preparedCoverage),
-  );
+  const { counts } = prepareOpenApiArtifacts({
+    sourcePath,
+    outputDirectory: process.cwd(),
+    expectedSourceSha256: SOURCE_SHA256,
+    expectedSourceBasename: SOURCE_BASENAME,
+    deterministicTimestamp: APPROVED_GENERATED_AT,
+    expectedOutputSha256: EXPECTED_OUTPUT_SHA256,
+    expectedCoverageSha256: EXPECTED_COVERAGE_SHA256,
+    expectedTransformationsSha256: EXPECTED_TRANSFORMATIONS_SHA256,
+    expectedCounts: EXPECTED_OPENAPI_COUNTS,
+  });
 
   console.log(
     `Prepared OpenAPI: ${counts.paths} paths, ${counts.operations} operations, ${counts.schemas} schemas, ${counts.webhooks} webhooks`,

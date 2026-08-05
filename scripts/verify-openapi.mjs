@@ -1,68 +1,28 @@
 #!/usr/bin/env node
 
-import { createHash } from "node:crypto";
-import { basename, join } from "node:path";
-import { readFileSync } from "node:fs";
-
 import {
-  PREPARATION_VERSION,
+  APPROVED_GENERATED_AT,
+  EXPECTED_COVERAGE_SHA256,
+  EXPECTED_OPENAPI_COUNTS,
+  EXPECTED_OUTPUT_SHA256,
+  EXPECTED_TRANSFORMATIONS_SHA256,
+  SOURCE_BASENAME,
   SOURCE_SHA256,
-  assertExpectedOpenApiCounts,
-  buildCoverage,
-  compareCoverage,
-  verifyPreparedTransformations,
 } from "./lib/openapi.mjs";
-
-function byteHash(value) {
-  return createHash("sha256").update(value).digest("hex");
-}
-
-function readArtifact(directory, name) {
-  const bytes = readFileSync(join(directory, name));
-  return { bytes, value: JSON.parse(bytes.toString("utf8")) };
-}
+import { verifyOpenApiArtifacts } from "./lib/openapi-artifacts.mjs";
 
 function main() {
-  const directory = process.cwd();
-  const openApi = readArtifact(directory, "openapi.json");
-  const provenance = readArtifact(directory, "openapi-provenance.json").value;
-  const coverage = readArtifact(directory, "openapi-coverage.json").value;
-
-  if (provenance?.source?.sha256 !== SOURCE_SHA256) {
-    throw new Error("Provenance source SHA-256 does not match the approved source");
-  }
-  if (
-    typeof provenance?.source?.basename !== "string" ||
-    provenance.source.basename !== basename(provenance.source.basename)
-  ) {
-    throw new Error("Provenance source must contain a basename, not a path");
-  }
-  if (provenance?.output?.basename !== "openapi.json") {
-    throw new Error("Provenance output basename must be openapi.json");
-  }
-  const actualOutputSha = byteHash(openApi.bytes);
-  if (provenance?.output?.sha256 !== actualOutputSha) {
-    throw new Error(
-      `OpenAPI output SHA-256 mismatch: expected ${provenance?.output?.sha256}, received ${actualOutputSha}`,
-    );
-  }
-  if (
-    provenance?.tool?.script !== "scripts/prepare-openapi.mjs" ||
-    provenance?.tool?.version !== PREPARATION_VERSION
-  ) {
-    throw new Error("Provenance tool version does not match the verifier");
-  }
-  const generatedAt = new Date(provenance.generatedAt);
-  if (
-    Number.isNaN(generatedAt.valueOf()) ||
-    generatedAt.toISOString() !== provenance.generatedAt
-  ) {
-    throw new Error("Provenance generatedAt must be an ISO-8601 timestamp");
-  }
-
-  verifyPreparedTransformations(openApi.value, provenance.transformations);
-  const counts = assertExpectedOpenApiCounts(openApi.value);
-  compareCoverage(coverage, buildCoverage(openApi.value));
+  const { counts } = verifyOpenApiArtifacts({
+    directory: process.cwd(),
+    sourcePath: process.env.OPENAPI_SOURCE_PATH,
+    expectedSourceSha256: SOURCE_SHA256,
+    expectedSourceBasename: SOURCE_BASENAME,
+    expectedOutputSha256: EXPECTED_OUTPUT_SHA256,
+    expectedCoverageSha256: EXPECTED_COVERAGE_SHA256,
+    expectedTransformationsSha256: EXPECTED_TRANSFORMATIONS_SHA256,
+    expectedGeneratedAt: APPROVED_GENERATED_AT,
+    expectedCounts: EXPECTED_OPENAPI_COUNTS,
+  });
 
   console.log(
     `OpenAPI verification passed: ${counts.operations} operations, ${counts.webhooks} webhooks`,

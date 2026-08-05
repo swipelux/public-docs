@@ -2,6 +2,15 @@ import { createHash } from "node:crypto";
 
 export const SOURCE_SHA256 =
   "ac2cb435a7099da53e6028bca98a4d57f0a1bf684cddfe64c438106a2997e3a7";
+export const SOURCE_BASENAME = "api-1 (23).json";
+export const EXPECTED_OUTPUT_SHA256 =
+  "1c2e1ada5892ec2f26612fe3badd2f567850f1fab3f0ed4eb5b71df84f9457f6";
+export const EXPECTED_COVERAGE_SHA256 =
+  "64c0f69ba49c489528c4398205dcce942c3ae3d9345b9200903908e1fc124a27";
+export const EXPECTED_TRANSFORMATIONS_SHA256 =
+  "9b8c0520465bc9d6b9691de73c783e78f4c120ca723cf3e3ab78d1c97db853de";
+// Task 2 approval commit 8e6a68d timestamp, normalized to UTC whole seconds.
+export const APPROVED_GENERATED_AT = "2026-08-05T03:31:23.000Z";
 export const HTTP_METHODS = new Set([
   "get",
   "post",
@@ -12,9 +21,9 @@ export const HTTP_METHODS = new Set([
   "options",
   "trace",
 ]);
-export const PREPARATION_VERSION = "1.0.0";
+export const PREPARATION_VERSION = "1.1.0";
 
-const EXPECTED_COUNTS = Object.freeze({
+export const EXPECTED_OPENAPI_COUNTS = Object.freeze({
   paths: 49,
   operations: 74,
   schemas: 87,
@@ -69,11 +78,22 @@ export function operationSlug(tag, operationId) {
     : `${tagSlug}/${slugSegment(operationId)}`;
 }
 
+function operationGroup(operation) {
+  const tags = Array.isArray(operation?.tags)
+    ? operation.tags.filter(
+        (tag) => typeof tag === "string" && tag.trim() !== "",
+      )
+    : [];
+  return [...tags].sort(compareStrings)[0] ?? "untagged";
+}
+
 function operationHref(operation) {
   const configuredHref = operation?.["x-mint"]?.href;
   if (configuredHref !== undefined) return configuredHref;
-  const tag = operation?.tags?.[0] ?? "untagged";
-  return `/api-reference/${operationSlug(tag, operation.operationId)}`;
+  return `/api-reference/${operationSlug(
+    operationGroup(operation),
+    operation.operationId,
+  )}`;
 }
 
 function webhookHref(operation) {
@@ -172,7 +192,28 @@ function parsePointer(pointer) {
   return pointer
     .slice(1)
     .split("/")
-    .map((segment) => segment.replaceAll("~1", "/").replaceAll("~0", "~"));
+    .map((segment) => {
+      let decoded = "";
+      for (let index = 0; index < segment.length; index += 1) {
+        const character = segment[index];
+        if (character !== "~") {
+          decoded += character;
+          continue;
+        }
+
+        const escape = segment[index + 1];
+        if (escape === "0") decoded += "~";
+        else if (escape === "1") decoded += "/";
+        else {
+          const invalidEscape = escape === undefined ? "~" : `~${escape}`;
+          throw new Error(
+            `Invalid JSON pointer escape ${invalidEscape} in ${pointer}`,
+          );
+        }
+        index += 1;
+      }
+      return decoded;
+    });
 }
 
 function pointerState(root, pointer) {
@@ -507,20 +548,21 @@ export function compareSourceToPrepared(source, prepared, transformations) {
 }
 
 function resolveInternalRef(spec, ref) {
-  if (ref === "#") return { exists: true, value: spec };
-  if (!ref.startsWith("#/")) return { exists: true, value: undefined };
+  if (!ref.startsWith("#")) return { exists: true, value: undefined };
   let pointer;
   try {
     pointer = decodeURIComponent(ref.slice(1));
   } catch {
-    return { exists: false, value: undefined };
+    throw new Error(`Invalid internal $ref URI fragment: ${ref}`);
   }
+  if (pointer === "") return { exists: true, value: spec };
+  if (!pointer.startsWith("/")) return { exists: true, value: undefined };
   return pointerState(spec, pointer);
 }
 
 function validateRefs(spec) {
   for (const { pointer, ref } of collectRefs(spec)) {
-    if (ref.startsWith("#/") && !resolveInternalRef(spec, ref).exists) {
+    if (ref.startsWith("#") && !resolveInternalRef(spec, ref).exists) {
       throw new Error(`Dangling internal $ref at ${pointer}: ${ref}`);
     }
   }
@@ -548,6 +590,50 @@ function validateOperationIds(spec) {
         }
         seen.set(operation.operationId, `${method.toUpperCase()} ${key}`);
       }
+    }
+  }
+}
+
+function referencedSecuritySchemes(security, location) {
+  if (security === undefined) return [];
+  if (!Array.isArray(security)) {
+    throw new Error(`Security requirements must be an array at ${location}`);
+  }
+
+  const references = [];
+  for (const requirement of security) {
+    if (!isPlainObject(requirement)) {
+      throw new Error(`Security requirement must be an object at ${location}`);
+    }
+    for (const name of Object.keys(requirement)) {
+      references.push({ name, location });
+    }
+  }
+  return references;
+}
+
+function assertSecuritySchemesUnreferenced(spec, schemeNames) {
+  const references = referencedSecuritySchemes(
+    spec.security,
+    "global security requirement",
+  );
+
+  for (const section of ["paths", "webhooks"]) {
+    for (const key of Object.keys(spec?.[section] ?? {}).sort()) {
+      for (const { method, operation } of httpOperations(spec[section][key])) {
+        references.push(
+          ...referencedSecuritySchemes(
+            operation.security,
+            `${method.toUpperCase()} ${key}`,
+          ),
+        );
+      }
+    }
+  }
+
+  for (const { name, location } of references) {
+    if (schemeNames.includes(name)) {
+      throw new Error(`Cannot remove ${name}: referenced by ${location}`);
     }
   }
 }
@@ -613,7 +699,7 @@ function validatePreparedHrefs(spec) {
   for (const path of Object.keys(spec.paths).sort()) {
     for (const { method, operation } of httpOperations(spec.paths[path])) {
       const expected = `/api-reference/${operationSlug(
-        operation.tags?.[0] ?? "untagged",
+        operationGroup(operation),
         operation.operationId,
       )}`;
       if (operation?.["x-mint"]?.href !== expected) {
@@ -681,25 +767,37 @@ export function openApiCounts(spec) {
   };
 }
 
-export function assertExpectedOpenApiCounts(spec) {
+export function assertOpenApiCounts(spec, expectedCounts) {
   const counts = openApiCounts(spec);
-  for (const [name, expected] of Object.entries(EXPECTED_COUNTS)) {
+  for (const name of ["paths", "operations", "schemas", "webhooks"]) {
+    const expected = expectedCounts?.[name];
+    if (!Number.isInteger(expected) || expected < 0) {
+      throw new Error(`Expected count for ${name} must be a non-negative integer`);
+    }
     if (counts[name] !== expected) {
       throw new Error(
         `Expected ${expected} ${name}, received ${counts[name]}`,
       );
     }
   }
-  if (buildCoverage(spec).webhooks.length !== EXPECTED_COUNTS.webhooks) {
+  if (buildCoverage(spec).webhooks.length !== expectedCounts.webhooks) {
     throw new Error("Each webhook must contain exactly one HTTP operation");
   }
   return counts;
 }
 
-export function prepareOpenApi(source, actualSha) {
-  if (actualSha !== SOURCE_SHA256) {
+export function assertExpectedOpenApiCounts(spec) {
+  return assertOpenApiCounts(spec, EXPECTED_OPENAPI_COUNTS);
+}
+
+export function prepareOpenApi(
+  source,
+  actualSha,
+  { expectedSourceSha256 = SOURCE_SHA256 } = {},
+) {
+  if (actualSha !== expectedSourceSha256) {
     throw new Error(
-      `Source SHA-256 mismatch: expected ${SOURCE_SHA256}, received ${actualSha}`,
+      `Source SHA-256 mismatch: expected ${expectedSourceSha256}, received ${actualSha}`,
     );
   }
 
@@ -711,6 +809,10 @@ export function prepareOpenApi(source, actualSha) {
       throw new Error(`Missing required source security scheme: ${name}`);
     }
   }
+  assertSecuritySchemesUnreferenced(sourceSnapshot, [
+    "serviceToken",
+    "uploadToken",
+  ]);
 
   const sourceCoverage = buildCoverage(sourceSnapshot);
   const spec = structuredClone(sourceSnapshot);
@@ -756,7 +858,7 @@ export function prepareOpenApi(source, actualSha) {
         throw new Error(`x-mint must be an object for ${method.toUpperCase()} ${path}`);
       }
       const href = `/api-reference/${operationSlug(
-        operation.tags?.[0] ?? "untagged",
+        operationGroup(operation),
         operation.operationId,
       )}`;
       addValue(
