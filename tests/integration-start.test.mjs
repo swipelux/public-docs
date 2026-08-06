@@ -331,6 +331,34 @@ function card(text, title, href) {
   ).test(text);
 }
 
+function assertStarterCredentialPolarity(text) {
+  assert.match(text, /hosted[\s\S]{0,160}built-in demo data only/i);
+  assert.match(text, /do not select[\s\S]{0,40}`?Go live`?/i);
+  assert.match(text, /hosted[\s\S]{0,220}never enter[\s\S]{0,80}API key/i);
+  assert.doesNotMatch(
+    text,
+    /\]\(https:\/\/neobank-starter\.vercel\.app\/?\)/i,
+    "Starter kit must not invite developers into the externally hosted credential form",
+  );
+
+  assert.match(
+    text,
+    /connected[- ]sandbox browser mode[\s\S]{0,180}intentionally insecure[\s\S]{0,100}local-only[\s\S]{0,100}disposable/i,
+  );
+  assert.match(text, /never[\s\S]{0,80}share[\s\S]{0,80}deploy/i);
+  assert.match(text, /shared or browser-hosted environment/i);
+  assert.doesNotMatch(
+    text,
+    /(?:browser|connected[- ]sandbox)[^.]{0,160}(?:(?:can|may|safe to) (?:be )?(?:shared|deployed|used in production)|shareable|deployable|production[- ]safe|production[- ]ready)/i,
+    "Browser mode must not be portrayed as shareable, deployable, or production-safe",
+  );
+
+  assert.match(
+    text,
+    /normal connected sandbox[\s\S]{0,180}all production[\s\S]{0,180}backend[\s\S]{0,180}secret manager/i,
+  );
+}
+
 test("publishes the four Get started pages in the intended order", () => {
   assertPages(PAGES);
   const integration = config.navigation.tabs.find((tab) => tab.tab === "Integration Docs");
@@ -356,9 +384,7 @@ test("publishes Starter kit as a focused resource outside Get started", () => {
   );
   assert.match(text, /built-in demo data/i);
   assert.match(text, /connected sandbox data/i);
-  assert.match(text, /never enter[\s\S]{0,100}API key[\s\S]{0,100}hosted demo/i);
-  assert.match(text, /browser[\s\S]{0,120}demo-only/i);
-  assert.match(text, /production credentials[\s\S]{0,120}backend[\s\S]{0,120}secret manager/i);
+  assertStarterCredentialPolarity(text);
   assert.match(text, /\]\(\/integration\/quickstart\)/);
   assert.match(text, /\]\(\/integration\/authentication\)/);
   assert.doesNotMatch(

@@ -11,12 +11,15 @@ Use `updatedAfter` only on list operations that define it. For those operations,
 
 Start each run at your saved checkpoint minus an overlap chosen for your system. Follow every cursor and collect current resource representations before advancing the checkpoint. This JavaScript-shaped loop uses the response fields returned by [`GET /v3/customers`](/api-reference/customers/get-v3-customers):
 
+For the first run, choose a deliberate RFC 3339 timestamp at or before the earliest data your integration must backfill. Do not initialize it to the current timestamp; that could skip records that already exist.
+
 ```js
-async function reconcileCustomers({ checkpoint, overlap, windowEnd }) {
+async function reconcileCustomers({ checkpoint, overlap }) {
   const updatedAfter = checkpointMinusOverlap(checkpoint, overlap);
   const resourcesById = new Map();
   let cursor;
   let hasMore;
+  const runStartedAt = new Date().toISOString();
 
   do {
     const query = new URLSearchParams({ updatedAfter });
@@ -39,7 +42,7 @@ async function reconcileCustomers({ checkpoint, overlap, windowEnd }) {
     await applyCurrentState(resource.id, resource);
   }
 
-  await saveCheckpoint(windowEnd);
+  await saveCheckpoint(runStartedAt);
 }
 ```
 
@@ -47,7 +50,7 @@ Deduplicate by resource ID across the complete window. Apply the current state f
 
 ## Advance the checkpoint after success
 
-Save the new checkpoint only after every page has been read and every resource update has succeeded. If any page or local apply fails, retain the prior checkpoint and retry the window with the same overlap. Repeated records are expected because the lower bound is inclusive and the windows overlap.
+Capture `runStartedAt` once immediately before the first API request. Save that exact timestamp only after every page has been read and every resource update has succeeded. If any page or local apply fails, retain the prior checkpoint and retry the window with the same overlap. Repeated records are expected because the lower bound is inclusive and the windows overlap.
 
 Choose overlap from your own processing and clock characteristics. The API does not prescribe one fixed duration.
 

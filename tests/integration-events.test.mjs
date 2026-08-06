@@ -198,6 +198,34 @@ function h2Headings(text) {
   return [...text.matchAll(/^## (.+)$/gm)].map((match) => match[1]);
 }
 
+function headingSections(text) {
+  const headings = [...text.matchAll(/^## (.+)$/gm)];
+  return headings.map((match, index) => ({
+    heading: match[1],
+    text: text.slice(match.index, headings[index + 1]?.index ?? text.length),
+  }));
+}
+
+function sectionTextMatching(text, pattern, label) {
+  const section = headingSections(text).find(({ heading }) => pattern.test(heading));
+  assert.ok(section, `Missing semantic section: ${label}`);
+  return section.text;
+}
+
+function assertSemanticSectionsInOrder(text, requirements) {
+  const headings = h2Headings(text);
+  let previousIndex = -1;
+
+  for (const [label, pattern] of requirements) {
+    const index = headings.findIndex(
+      (heading, candidateIndex) =>
+        candidateIndex > previousIndex && pattern.test(heading),
+    );
+    assert.notEqual(index, -1, `Missing or misplaced semantic section: ${label}`);
+    previousIndex = index;
+  }
+}
+
 function wordCount(text) {
   return (text.match(/\S+/g) ?? []).length;
 }
@@ -397,6 +425,84 @@ function assertSandboxSafetyBoundary(label, text) {
   );
 }
 
+function assertNoUnsupportedWebhookGuarantees(label, text) {
+  const unsupportedClaims = [
+    [
+      /\b(?:HMAC|webhook secret|signing secret|signature header|webhooks? (?:are|is) signed|signed webhooks?|(?:verify|validate)[^.]{0,40}(?:webhook )?signature|X-[A-Za-z0-9-]*Signature)\b/i,
+      "webhook signing or secret behavior",
+    ],
+    [
+      /\b(?:retry every|(?:retry|retries) (?:after|at) \d+|fixed (?:retry|backoff)|retry cadence|exponential backoff|backoff schedule)\b/i,
+      "fixed webhook retry timing",
+    ],
+    [
+      /\b(?:(?:events?|deliver(?:y|ies)) (?:are |is )?(?:always |strictly )?(?:ordered|delivered in order)|delivery ordering (?:is )?guaranteed)\b/i,
+      "webhook delivery ordering",
+    ],
+    [
+      /\b(?:exactly|at[ -]least)[ -]once\b/i,
+      "webhook delivery cardinality",
+    ],
+  ];
+
+  for (const [pattern, claim] of unsupportedClaims) {
+    assert.doesNotMatch(text, pattern, `${label} invents ${claim}`);
+  }
+}
+
+function assertSafeReconciliationCheckpoint(label, source) {
+  assert.doesNotMatch(
+    source,
+    /\bwindowEnd\b/,
+    `${label} must not accept a caller-supplied end-of-window checkpoint`,
+  );
+
+  const captures = [
+    ...source.matchAll(
+      /\bconst\s+runStartedAt\s*=\s*new Date\(\)\.toISOString\(\)\s*;/g,
+    ),
+  ];
+  assert.equal(captures.length, 1, `${label} must capture runStartedAt exactly once`);
+
+  const captureIndex = captures[0].index;
+  const captureEnd = captureIndex + captures[0][0].length;
+  const firstRequestIndex = source.search(/\bawait\s+fetch\s*\(/);
+  assert.notEqual(firstRequestIndex, -1, `${label} must make an API request`);
+  assert.ok(
+    captureIndex < firstRequestIndex,
+    `${label} must capture runStartedAt before the first API request`,
+  );
+  assert.doesNotMatch(
+    source.slice(captureEnd, firstRequestIndex),
+    /\bawait\b/,
+    `${label} must capture runStartedAt immediately before request work begins`,
+  );
+
+  const paginationEnd = source.indexOf("} while (hasMore);");
+  assert.ok(
+    paginationEnd > firstRequestIndex,
+    `${label} must complete pagination before saving the checkpoint`,
+  );
+
+  const saves = [
+    ...source.matchAll(/\bawait\s+saveCheckpoint\(\s*runStartedAt\s*\)\s*;/g),
+  ];
+  assert.equal(
+    saves.length,
+    1,
+    `${label} must save the exact runStartedAt timestamp once`,
+  );
+  assert.ok(
+    saves[0].index > paginationEnd,
+    `${label} must save the checkpoint after every page succeeds`,
+  );
+  assert.match(
+    source,
+    /for\s*\([^)]*resourcesById\.values\(\)[^)]*\)\s*\{[\s\S]*?await\s+applyCurrentState\([^;]+;\s*\}\s*await\s+saveCheckpoint\(\s*runStartedAt\s*\)\s*;/,
+    `${label} must save the checkpoint only after every local apply succeeds`,
+  );
+}
+
 function assertEnvironmentSemantics(label, text) {
   assert.match(
     text,
@@ -432,12 +538,12 @@ test("operational pages appear in navigation exactly once", () => {
 
 test("webhooks presents one complete crash-safe delivery workflow", () => {
   const text = requiredPage("integration/webhooks");
-  assert.deepEqual(h2Headings(text), [
-    "Register an endpoint",
-    "Process an event",
-    "Refetch current state",
-    "Replay a delivery",
-    "Recover missed changes",
+  assertSemanticSectionsInOrder(text, [
+    ["endpoint registration", /(?:register|create).*(?:endpoint|webhook)/i],
+    ["event processing", /(?:process|handle).*(?:event|delivery)/i],
+    ["current-resource refetch", /(?:refetch|read).*(?:current )?(?:state|resource)/i],
+    ["delivery replay", /replay.*(?:delivery|event)|(?:delivery|event).*replay/i],
+    ["missed-change recovery", /recover.*(?:missed|changes)|reconcil/i],
   ]);
 
   const examples = curlExamples(text, pageFile("integration/webhooks"));
@@ -452,7 +558,11 @@ test("webhooks presents one complete crash-safe delivery workflow", () => {
   assertCurlMatchesOpenApi(create[0], "webhook registration");
   assert.ok(text.includes(operationMarkdown("post", "/v3/webhooks")));
 
-  const register = sectionText(text, "Register an endpoint");
+  const register = sectionTextMatching(
+    text,
+    /(?:register|create).*(?:endpoint|webhook)/i,
+    "endpoint registration",
+  );
   assert.match(register, /data\.id[\s\S]{0,120}WEBHOOK_ID/i);
   assert.match(register, /data\.status[\s\S]{0,120}WEBHOOK_STATUS/i);
   assert.equal(
@@ -461,7 +571,33 @@ test("webhooks presents one complete crash-safe delivery workflow", () => {
     "Webhooks should link API reliability once for configuration writes",
   );
 
-  const process = sectionText(text, "Process an event");
+  const process = sectionTextMatching(
+    text,
+    /(?:process|handle).*(?:event|delivery)/i,
+    "event processing",
+  );
+  const subscriptionNames = enumValues(
+    requestBodySchema("post", "/v3/webhooks").properties.events.items,
+  );
+  const publishedPayloadNames = Object.keys(openapi.webhooks ?? {});
+  const namesWithoutPayloadPages = subscriptionNames.filter(
+    (name) => !publishedPayloadNames.includes(name),
+  );
+  assertExactSet(
+    namesWithoutPayloadPages,
+    ["api.deprecation", "transfer.created"],
+    "subscribable webhook names without published payload contracts",
+  );
+  assert.match(
+    process,
+    /API Reference[\s\S]{0,160}contract-backed payload pages[\s\S]{0,120}only[\s\S]{0,80}documented events/i,
+  );
+  assert.match(process, /`api\.deprecation`[\s\S]{0,120}`transfer\.created`/);
+  assert.match(
+    process,
+    /do not infer[\s\S]{0,120}(?:payload )?shapes?[\s\S]{0,160}contact Swipelux[\s\S]{0,120}before subscribing/i,
+  );
+  assert.doesNotMatch(process, /defines every supported payload/i);
   assert.ok(
     process.includes(
       "[`transfer.state_changed`](" + webhookHref("transfer.state_changed") + ")",
@@ -476,7 +612,11 @@ test("webhooks presents one complete crash-safe delivery workflow", () => {
   assert.match(process, /completed[\s\S]{0,100}(?:duplicate|deduplicat|no-op)/i);
   assert.match(process, /(?:incomplete|pending|failed)[\s\S]{0,140}(?:resume|crash)/i);
 
-  const refetch = sectionText(text, "Refetch current state");
+  const refetch = sectionTextMatching(
+    text,
+    /(?:refetch|read).*(?:current )?(?:state|resource)/i,
+    "current-resource refetch",
+  );
   assert.match(refetch, /`resource\.type`[\s\S]{0,100}`resource\.id`/i);
   assert.match(refetch, /authenticated[\s\S]{0,120}current state/i);
   assert.ok(refetch.includes(operationMarkdown("get", "/v3/transfers/{transferId}")));
@@ -487,26 +627,67 @@ test("webhooks presents one complete crash-safe delivery workflow", () => {
   assert.equal(transferRead.length, 1);
   assertCurlMatchesOpenApi(transferRead[0], "transfer refetch");
 
-  const replay = sectionText(text, "Replay a delivery");
+  const replay = sectionTextMatching(
+    text,
+    /replay.*(?:delivery|event)|(?:delivery|event).*replay/i,
+    "delivery replay",
+  );
   assert.ok(replay.includes(operationMarkdown("get", "/v3/webhooks/portal")));
   assert.match(replay, /delivery logs[\s\S]{0,100}retries[\s\S]{0,100}manual replay/i);
   assert.match(replay, /returned `url`[\s\S]{0,120}(?:store|open|use)/i);
   assert.deepEqual(responseSchema("get", "/v3/webhooks/portal").required, ["url"]);
 
-  const recover = sectionText(text, "Recover missed changes");
+  const recover = sectionTextMatching(
+    text,
+    /recover.*(?:missed|changes)|reconcil/i,
+    "missed-change recovery",
+  );
   assert.match(recover, /\]\(\/integration\/sync-and-reconciliation\)/);
   assert.ok(wordCount(text) <= 900, "Webhooks must stay at or below 900 words");
 });
 
+test("webhook copy rejects unsupported delivery guarantees", () => {
+  const integrationPages = [
+    ...new Set(
+      collectNavigationPages(config.navigation).filter((page) =>
+        page.startsWith("integration/"),
+      ),
+    ),
+  ];
+  for (const page of integrationPages) {
+    assertNoUnsupportedWebhookGuarantees(pageFile(page), requiredPage(page));
+  }
+
+  for (const badClaim of [
+    "Verify the HMAC with your webhook secret.",
+    "Webhooks are signed with a signature header.",
+    "Retry after 30 seconds.",
+    "Failed deliveries use exponential backoff.",
+    "Deliveries are strictly ordered.",
+    "Delivery is exactly-once.",
+    "Delivery is at-least-once.",
+  ]) {
+    assert.throws(
+      () => assertNoUnsupportedWebhookGuarantees("mutation fixture", badClaim),
+      { name: "AssertionError" },
+      `Expected unsupported webhook claim to fail: ${badClaim}`,
+    );
+  }
+});
+
 test("API reliability explains one idempotent write and one Problem response", () => {
   const text = requiredPage("integration/api-reliability");
-  assert.deepEqual(h2Headings(text), [
-    "Make writes idempotent",
-    "Retry after an uncertain response",
-    "Handle errors",
-    "Log correlation IDs",
-    "Next step",
+  assertSemanticSectionsInOrder(text, [
+    ["idempotent writes", /idempoten/i],
+    ["uncertain-response recovery", /uncertain|retry.*response/i],
+    ["error handling", /^Handle errors$/],
+    ["correlation logging", /correlation/i],
+    ["next developer action", /^Next(?: step|: .+)?$/i],
   ]);
+  assert.ok(
+    h2Headings(text).includes("Handle errors"),
+    "API reliability must retain the ## Handle errors anchor",
+  );
 
   const examples = curlExamples(text, pageFile("integration/api-reliability"));
   const write = examples.filter(
@@ -520,9 +701,17 @@ test("API reliability explains one idempotent write and one Problem response", (
   assertCurlMatchesOpenApi(write[0], "idempotent customer write");
   assert.ok(text.includes(operationMarkdown("post", "/v3/customers")));
 
-  const idempotency = sectionText(text, "Make writes idempotent");
+  const idempotency = sectionTextMatching(
+    text,
+    /idempoten/i,
+    "idempotent writes",
+  );
   assert.match(idempotency, /one (?:key|`Idempotency-Key`)[\s\S]{0,100}intended effect/i);
-  const uncertain = sectionText(text, "Retry after an uncertain response");
+  const uncertain = sectionTextMatching(
+    text,
+    /uncertain|retry.*response/i,
+    "uncertain-response recovery",
+  );
   assert.match(uncertain, /same key[\s\S]{0,100}identical (?:request and )?body/i);
   assert.match(
     uncertain,
@@ -532,16 +721,24 @@ test("API reliability explains one idempotent write and one Problem response", (
   const problem = openapi.paths["/v3/customers"].post.responses["409"].content[
     "application/problem+json"
   ].examples.requestInProgress.value;
-  const errors = sectionText(text, "Handle errors");
+  const errors = sectionTextMatching(text, /^Handle errors$/, "error handling");
   assert.ok(hasDeepEqual(jsonBlocks(errors), problem), "Use the exact OpenAPI Problem example");
   assert.match(errors, /`retryable`[\s\S]{0,140}unchanged retry[\s\S]{0,120}may succeed/i);
   assert.match(errors, /does not make every error retryable|not every error is retryable/i);
 
-  const correlation = sectionText(text, "Log correlation IDs");
+  const correlation = sectionTextMatching(
+    text,
+    /correlation/i,
+    "correlation logging",
+  );
   assert.match(correlation, /`correlationId`/);
   assert.match(correlation, /local request[\s\S]{0,120}customer[\s\S]{0,120}resource/i);
 
-  const next = sectionText(text, "Next step");
+  const next = sectionTextMatching(
+    text,
+    /^Next(?: step|: .+)?$/i,
+    "next developer action",
+  );
   assert.match(
     next,
     /\]\(\/integration\/(?:sync-and-reconciliation|webhooks|production-readiness)\)/,
@@ -555,6 +752,7 @@ test("sync and reconciliation follows every cursor before advancing a checkpoint
     (match) => match[1],
   );
   assert.equal(javascript.length, 1, "Sync needs one cursor-loop example");
+  assertSafeReconciliationCheckpoint("reconciliation example", javascript[0]);
   assert.match(javascript[0], /updatedAfter/);
   assert.match(javascript[0], /cursor/);
   assert.match(javascript[0], /data/);
@@ -574,6 +772,18 @@ test("sync and reconciliation follows every cursor before advancing a checkpoint
     /(?:page|window)[\s\S]{0,80}fails?[\s\S]{0,120}(?:retain|keep)[\s\S]{0,80}(?:prior|previous) checkpoint/i,
   );
   assert.match(text, /`updatedAfter`[\s\S]{0,100}inclusive[\s\S]{0,100}RFC 3339/i);
+  assert.match(
+    text,
+    /first run[\s\S]{0,160}deliberate[\s\S]{0,120}RFC 3339 timestamp/i,
+  );
+  assert.match(
+    text,
+    /at or before[\s\S]{0,120}earliest data[\s\S]{0,120}backfill/i,
+  );
+  assert.match(
+    text,
+    /do not initialize[\s\S]{0,140}(?:end-of-run|current) timestamp[\s\S]{0,140}skip/i,
+  );
   assert.doesNotMatch(text, /\b\d+\s*(?:seconds?|minutes?|hours?|days?)\b/i);
 
   for (const [method, path] of REPRESENTATIVE_SYNC_OPERATIONS) {
@@ -593,6 +803,54 @@ test("sync and reconciliation follows every cursor before advancing a checkpoint
   assert.match(tail, /\]\(\/integration\/webhooks\)/);
   assert.match(tail, /\]\(\/integration\/production-readiness\)/);
   assert.ok(wordCount(text) <= 800, "Sync must stay at or below 800 words");
+});
+
+test("reconciliation checkpoint guard fails closed on unsafe timestamp sources", () => {
+  const callerSuppliedWindowEnd = `
+async function reconcile({ windowEnd }) {
+  const runStartedAt = new Date().toISOString();
+  let hasMore;
+  do {
+    await fetch("https://platform.swipelux.com/v3/customers");
+    hasMore = false;
+  } while (hasMore);
+  for (const resource of resourcesById.values()) {
+    await applyCurrentState(resource.id, resource);
+  }
+  await saveCheckpoint(windowEnd);
+}
+`;
+  const timestampCapturedAfterPagination = `
+async function reconcile() {
+  let hasMore;
+  do {
+    await fetch("https://platform.swipelux.com/v3/customers");
+    hasMore = false;
+  } while (hasMore);
+  const runStartedAt = new Date().toISOString();
+  for (const resource of resourcesById.values()) {
+    await applyCurrentState(resource.id, resource);
+  }
+  await saveCheckpoint(runStartedAt);
+}
+`;
+
+  assert.throws(
+    () =>
+      assertSafeReconciliationCheckpoint(
+        "caller-supplied windowEnd mutation",
+        callerSuppliedWindowEnd,
+      ),
+    { name: "AssertionError" },
+  );
+  assert.throws(
+    () =>
+      assertSafeReconciliationCheckpoint(
+        "late timestamp mutation",
+        timestampCapturedAfterPagination,
+      ),
+    { name: "AssertionError" },
+  );
 });
 
 test("production readiness covers a controlled environment cutover", () => {
@@ -641,8 +899,35 @@ test("production readiness covers a controlled environment cutover", () => {
   ]) {
     assert.ok(text.includes(operationMarkdown(method, path)));
   }
+  assert.match(
+    text,
+    /expand(?:ing)? production (?:writes|traffic)[\s\S]{0,140}while[\s\S]{0,120}recovery paths?[\s\S]{0,80}(?:remain|stay) enabled/i,
+  );
+  assert.doesNotMatch(
+    text,
+    /expand(?:ing)? production (?:writes|traffic)[\s\S]{0,100}through[\s\S]{0,100}recovery paths?/i,
+    "Production writes expand while recovery remains enabled, not through recovery paths",
+  );
   assert.doesNotMatch(text, /\b\d+ generated webhook|event-to-read|event matrix/i);
   assert.ok(wordCount(text) <= 800, "Production readiness must stay at or below 800 words");
+});
+
+test("rules use periodic reconciliation and a direct refetch before operator actions", () => {
+  const text = requiredPage("integration/rules");
+  assert.match(text, /rules?[\s\S]{0,120}periodic reconciliation/i);
+  assert.match(
+    text,
+    /before[\s\S]{0,80}(?:each|an) operator action[\s\S]{0,140}(?:directly )?(?:refetch|read)[\s\S]{0,100}(?:current )?rule/i,
+  );
+  assert.match(
+    text,
+    /do not run[\s\S]{0,80}(?:the )?full reconciliation job[\s\S]{0,100}foreground[\s\S]{0,80}before (?:each|every) action/i,
+  );
+  assert.doesNotMatch(
+    text,
+    /reconciliation[\s\S]{0,120}before every operator action/i,
+    "Rules must not run the full reconciliation job in the foreground before each action",
+  );
 });
 
 test("sandbox guide links the exact six helpers while API Reference owns their catalogs", () => {
