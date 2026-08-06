@@ -460,28 +460,66 @@ function assertPublishedReconciliationCheckpoint(label, source) {
 
   const capture = captures[0];
   const timestampIdentifier = captures[0][1];
-  const escapedTimestamp = timestampIdentifier.replace(
-    /[.*+?^${}()|[\]\\]/g,
-    "\\$&",
-  );
   const checkpointWrites = [
     ...source.matchAll(
-      new RegExp(`\\bawait\\s+saveCheckpoint\\(\\s*${escapedTimestamp}\\s*\\)`, "g"),
+      /\b(?:(await)\s+)?((?:save|persist|write|store|commit)[A-Za-z_$\w]*checkpoint[A-Za-z_$\w]*)\s*\(\s*([A-Za-z_$][\w$]*)\s*\)/gi,
     ),
   ];
   assert.equal(
     checkpointWrites.length,
     1,
-    `${label} must save the captured timestamp once`,
+    `${label} must contain exactly one checkpoint write`,
   );
+  const checkpointWrite = checkpointWrites[0];
+  assert.equal(checkpointWrite[1]?.toLowerCase(), "await", `${label} must await the checkpoint write`);
+  assert.equal(
+    checkpointWrite[3],
+    timestampIdentifier,
+    `${label} must save the captured timestamp`,
+  );
+
+  const applyLoop = source.match(
+    /\bfor\s*\(\s*const\s+[A-Za-z_$][\w$]*\s+of\s+[A-Za-z_$][\w$]*\.values\(\)\s*\)\s*\{/,
+  );
+  assert.ok(applyLoop, `${label} must apply the deduplicated resources`);
+  const applyLoopStart = applyLoop.index;
+  const openingBrace = applyLoopStart + applyLoop[0].lastIndexOf("{");
+  let depth = 0;
+  let applyLoopEnd = -1;
+  for (let index = openingBrace; index < source.length; index += 1) {
+    if (source[index] === "{") depth += 1;
+    if (source[index] === "}") depth -= 1;
+    if (depth === 0) {
+      applyLoopEnd = index;
+      break;
+    }
+  }
+  assert.ok(applyLoopEnd >= 0, `${label} must close the resource apply loop`);
+
+  const currentStateWrites = [...source.matchAll(/\bapplyCurrentState\s*\(/g)];
+  assert.ok(currentStateWrites.length >= 1, `${label} must apply current state`);
+  for (const write of currentStateWrites) {
+    assert.ok(
+      write.index < checkpointWrite.index,
+      `${label} must not apply current state after the checkpoint`,
+    );
+  }
+  for (const request of source.matchAll(/\bfetch\s*\(/g)) {
+    assert.ok(
+      request.index < checkpointWrite.index,
+      `${label} must not make API requests after the checkpoint`,
+    );
+  }
 
   const steps = [
     ["capture the timestamp", capture.index],
     ["make the first request", source.indexOf("await fetch(")],
     ["advance the cursor", source.indexOf("cursor = nextCursor;")],
     ["finish pagination", source.indexOf("} while (hasMore);")],
-    ["apply current state", source.indexOf("await applyCurrentState(")],
-    ["save the checkpoint", checkpointWrites[0].index],
+    ["start applying current state", applyLoopStart],
+    ["apply current state", currentStateWrites[0].index],
+    ["finish applying current state", applyLoopEnd],
+    ["save the checkpoint", checkpointWrite.index],
   ];
   for (const [step, index] of steps) {
     assert.ok(index >= 0, `${label} must ${step}`);
@@ -838,14 +876,37 @@ test("published reconciliation example rejects unsafe checkpoint mutations", () 
       "  for (const resource of resourcesById.values()) {",
       "  await saveCheckpoint(runStartedAt);\n\n  for (const resource of resourcesById.values()) {",
     );
+  const additionalCheckpoint = source.replace(
+    "  await saveCheckpoint(runStartedAt);",
+    "  await saveCheckpoint(runStartedAt);\n  await saveCheckpoint(updatedAfter);",
+  );
+  const postCheckpointApply = source.replace(
+    "  await saveCheckpoint(runStartedAt);",
+    "  await saveCheckpoint(runStartedAt);\n  await applyCurrentState(\"late\", {});",
+  );
+  const checkpointInsideApplyLoop = source
+    .replace("\n  await saveCheckpoint(runStartedAt);", "")
+    .replace(
+      "    await applyCurrentState(resource.id, resource);",
+      "    await applyCurrentState(resource.id, resource);\n    await saveCheckpoint(runStartedAt);",
+    );
+  const unawaitedCheckpointBeforeApply = source.replace(
+    "  for (const resource of resourcesById.values()) {",
+    "  saveCheckpoint(runStartedAt);\n\n  for (const resource of resourcesById.values()) {",
+  );
   const postCheckpointLogging = source.replace(
     "await saveCheckpoint(runStartedAt);",
     'await saveCheckpoint(runStartedAt);\n  console.info("Reconciliation complete");',
   );
+  const renamedCheckpoint = source.replaceAll("saveCheckpoint", "persistCheckpoint");
 
   for (const [label, mutation] of [
     ["wrong timestamp", wrongTimestamp],
     ["checkpoint before apply", checkpointBeforeApply],
+    ["additional checkpoint", additionalCheckpoint],
+    ["state apply after checkpoint", postCheckpointApply],
+    ["checkpoint inside apply loop", checkpointInsideApplyLoop],
+    ["unawaited checkpoint before apply", unawaitedCheckpointBeforeApply],
   ]) {
     assert.notEqual(mutation, source, `${label} fixture must change the example`);
     assert.throws(
@@ -858,6 +919,9 @@ test("published reconciliation example rejects unsafe checkpoint mutations", () 
       "post-checkpoint logging",
       postCheckpointLogging,
     ),
+  );
+  assert.doesNotThrow(() =>
+    assertPublishedReconciliationCheckpoint("renamed checkpoint helper", renamedCheckpoint),
   );
 });
 

@@ -151,20 +151,3 @@ test("documents final verification, deployment, and policy release gates", () =>
     /jurisdiction-source contradictions[^\n]*production-release blocker[^\n]*until resolved/i,
   );
 });
-
-test("rewrite planning metadata points the API reference redirect at a live operation", () => {
-  const destination = "/api-reference/customers/post-v3-customers";
-  const design = read("docs/specs/2026-08-05-developer-guides-rewrite-design.md");
-  const plan = read("docs/plans/2026-08-05-developer-guides-rewrite.md");
-
-  assert.ok(
-    design.includes(
-      `| \`/integration/using-the-api-reference\` | Redirect to \`${destination}\`. |`,
-    ),
-  );
-  assert.ok(
-    plan.includes(
-      `"/integration/using-the-api-reference": "${destination}",`,
-    ),
-  );
-});

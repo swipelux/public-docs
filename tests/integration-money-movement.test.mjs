@@ -607,9 +607,20 @@ function assertExactOutFundingGate(text) {
   );
   assert.doesNotMatch(
     text,
-    /After every exact-out quote returns[\s\S]{0,160}(?:call|read|source-account balance gate)/i,
+    /\b(?:all|every|any)\s+exact-out quotes?\b[^.!?\n]{0,180}\b(?:source-account balance gate|source account|available balance)\b/i,
     "The source-account balance gate must not apply to every exact-out quote",
   );
+  const fiatGateSentences = text.match(
+    /[^.!?\n]*\bfiat-funded exact-out quotes?\b[^.!?\n]*(?:source-account balance gate|source account|available balance)[^.!?\n]*[.!?]?/gi,
+  ) ?? [];
+  assert.ok(fiatGateSentences.length >= 1, "The guide must explain the fiat-funded exemption");
+  for (const sentence of fiatGateSentences) {
+    assert.match(
+      sentence,
+      /\b(?:do not|don't|never|not)\b/i,
+      "Fiat-funded exact-out guidance must not require a source-account balance gate",
+    );
+  }
   const accountRead = text.indexOf(
     operationMarkdown("get", "/v3/customers/{customerId}/accounts/{accountId}"),
     stablecoinScope,
@@ -1005,10 +1016,19 @@ test("exact-out execution validation rejects a missing balance check", () => {
   assert.throws(() => assertExactOutFundingGate(mutated));
 });
 
-test("exact-out funding validation rejects an every exact-out balance gate", () => {
+test("exact-out funding validation rejects universal and fiat balance gates", () => {
   const text = readPage("integration/quotes-and-transfers");
-  const mutated = `${text}\nAfter every exact-out quote returns, use the source-account balance gate.\n`;
-  assert.throws(() => assertExactOutFundingGate(mutated));
+  for (const claim of [
+    "After every exact-out quote returns, use the source-account balance gate.",
+    "All exact-out quotes, including fiat-funded quotes, must use the source-account balance gate.",
+    "Fiat-funded exact-out quotes must use the source-account balance gate before execution.",
+  ]) {
+    assert.throws(
+      () => assertExactOutFundingGate(`${text}\n${claim}\n`),
+      { name: "AssertionError" },
+      `Expected universal exact-out claim to fail: ${claim}`,
+    );
+  }
 });
 
 test("automated rules covers prerequisites, target choice, current state, update, and archive", () => {
