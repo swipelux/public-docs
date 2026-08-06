@@ -174,13 +174,13 @@ const EXPECTED_NAVIGATION = {
   ],
 };
 
-const APPROVED_SYMBOL =
+const APPROVED_FAVICON_SYMBOL =
   '<svg xmlns="http://www.w3.org/2000/svg" width="65" height="64" fill="none"><path fill="#F4663E" d="M2.938 34.102a2.97 2.97 0 0 1 0-4.204L18.2 14.655a2.98 2.98 0 0 1 4.21 0l15.262 15.243a2.97 2.97 0 0 1 0 4.204L22.411 49.345a2.98 2.98 0 0 1-4.21 0L2.937 34.102Z"/><path fill="#FA9B51" d="M27.897 44.922a1.486 1.486 0 0 0 0 2.103l2.323 2.32a2.98 2.98 0 0 0 4.21 0l15.262-15.243a2.97 2.97 0 0 0 0-4.204L34.43 14.655a2.98 2.98 0 0 0-4.21 0l-2.323 2.32a1.485 1.485 0 0 0 0 2.103l10.834 10.82a2.97 2.97 0 0 1 0 4.204l-10.834 10.82Z"/><path fill="#FFDA99" d="M39.909 44.923a1.485 1.485 0 0 0 0 2.102l2.323 2.32a2.98 2.98 0 0 0 4.21 0l15.262-15.243a2.97 2.97 0 0 0 0-4.204L46.442 14.655a2.98 2.98 0 0 0-4.21 0l-2.323 2.32a1.485 1.485 0 0 0 0 2.102l10.834 10.82a2.97 2.97 0 0 1 0 4.205l-10.834 10.82Z"/></svg>';
 const LIGHT_DOCS_BACKGROUND = "#FFFFFF";
 const PUBLIC_DOCS_COLORS = {
-  primary: "#B8381D",
-  light: "#FA9B51",
-  dark: "#E2471D",
+  primary: "#252525",
+  light: "#FFFFFF",
+  dark: "#777777",
 };
 
 function relativeLuminance(hex) {
@@ -272,15 +272,35 @@ test("uses the approved Swipelux identity and site controls", () => {
   assert.deepEqual(config.contextual, { options: ["copy", "view"] });
 });
 
-test("keeps Mintlify's native layout instead of overriding its shell", () => {
+test("keeps Mintlify's native layout while styling components", () => {
+  assert.equal(existsSync(stylePath), true, "style.css must style docs components");
   assert.doesNotMatch(
     styleText,
-    /#(?:navbar|sidebar|sidebar-content|content-area|content|page-title|search-bar-entry)\b|(?:^|[\n,])\s*(?:body|mdx-content|\.mdx-content|card|\.card|callout|code-block|button|pagination-prev|pagination-next)\b/m,
-    "custom CSS must not override Mintlify's responsive shell or component layout",
+    /#(?:navbar|sidebar|sidebar-content|content-area|content|page-title|table-of-contents)\b|(?:^|[\n,])\s*(?:html|body|mdx-content|\.mdx-content)\b/m,
+    "custom CSS must not target Mintlify's shell or page typography",
   );
+  assert.doesNotMatch(
+    styleText,
+    /\b(?:min-|max-)?(?:inline-|block-)?(?:width|height)\s*:|\b(?:margin|padding)(?:-[a-z]+)?\s*:|\bposition\s*:|\bdisplay\s*:|\b(?:grid|flex)(?:-[a-z]+)?\s*:|\boverflow(?:-[a-z]+)?\s*:|\b(?:font-size|line-height|letter-spacing)\s*:/,
+    "component styling must not change layout, spacing, overflow, or type sizing",
+  );
+
+  for (const selector of [
+    "#search-bar-entry",
+    "button",
+    "card",
+    "callout",
+    "code-block",
+  ]) {
+    assert.match(
+      styleText,
+      new RegExp(`${selector.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\$&")}\\s*(?:,|\\{)`),
+      `${selector} should keep the approved component styling`,
+    );
+  }
 });
 
-test("uses an accessible Swipelux orange for docs UI text and controls", () => {
+test("uses an accessible mpanel primary color for docs UI text and controls", () => {
   const ratio = contrastRatio(config.colors.primary, LIGHT_DOCS_BACKGROUND);
   assert.ok(
     ratio >= 4.5,
@@ -417,15 +437,40 @@ test("removes the starter quickstart page", () => {
   assert.equal(existsSync(resolve(projectRoot, "quickstart.mdx")), false);
 });
 
-test("uses the same approved three-path symbol for every brand asset", () => {
-  for (const path of ["favicon.svg", "logo/light.svg", "logo/dark.svg"]) {
-    const svg = read(path).trim();
-    assert.equal(svg, APPROVED_SYMBOL, `${path} must match the approved symbol`);
-    assert.equal((svg.match(/<path\b/g) ?? []).length, 3);
-    assert.deepEqual(
-      [...svg.matchAll(/\bfill="(#[A-F0-9]{6})"/g)].map((match) => match[1]),
-      ["#F4663E", "#FA9B51", "#FFDA99"],
+test("uses mpanel logo treatment without changing the compact symbol", () => {
+  const favicon = read("favicon.svg").trim();
+  const lightLogo = read("logo/light.svg").trim();
+  const darkLogo = read("logo/dark.svg").trim();
+
+  assert.equal(favicon, APPROVED_FAVICON_SYMBOL);
+  const paths = (svg) =>
+    [...svg.matchAll(/<path\b[^>]*\bd="([^"]+)"[^>]*>/g)].map(
+      (match) => match[1],
     );
+  assert.deepEqual(paths(lightLogo), paths(favicon));
+  assert.deepEqual(paths(darkLogo), paths(favicon));
+
+  assert.deepEqual(
+    [...lightLogo.matchAll(/\bfill="(#[A-F0-9]{6})"/g)].map(
+      (match) => match[1],
+    ),
+    ["#252525", "#777777", "#A4A4A4"],
+  );
+  assert.deepEqual(
+    [...darkLogo.matchAll(/\bfill="(#[A-F0-9]{6})"/g)].map(
+      (match) => match[1],
+    ),
+    ["#FFFFFF", "#FFFFFF", "#FFFFFF"],
+  );
+  assert.deepEqual(
+    [...darkLogo.matchAll(/\bopacity="([0-9.]+)"/g)].map(
+      (match) => match[1],
+    ),
+    ["0.65", "0.4"],
+  );
+
+  for (const svg of [favicon, lightLogo, darkLogo]) {
+    assert.equal((svg.match(/<path\b/g) ?? []).length, 3);
     assert.doesNotMatch(svg, /Mintlify|Starter Kit|<text\b/i);
   }
 });
