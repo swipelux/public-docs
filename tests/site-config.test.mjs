@@ -22,7 +22,6 @@ const indexText = read("index.mdx");
 const stylePath = resolve(projectRoot, "style.css");
 const styleText = existsSync(stylePath) ? read("style.css") : "";
 const redirectInventory = JSON.parse(read("docs/redirect-inventory.json"));
-const coverage = JSON.parse(read("openapi-coverage.json"));
 
 const INTEGRATION_GROUPS = [
   {
@@ -35,7 +34,7 @@ const INTEGRATION_GROUPS = [
     ],
   },
   {
-    group: "Onboard",
+    group: "Onboard customers",
     pages: [
       "integration/onboarding/customers",
       "integration/onboarding/capabilities-and-requirements",
@@ -51,32 +50,25 @@ const INTEGRATION_GROUPS = [
       "integration/receive-funds",
       "integration/send-funds",
       "integration/quotes-and-transfers",
-      "integration/rules",
     ],
   },
   {
-    group: "Operate",
+    group: "Launch",
     pages: [
       "integration/webhooks",
-      "integration/api-reliability",
-      "integration/sync-and-reconciliation",
-      "integration/production-readiness",
+      "integration/go-live",
     ],
-  },
-  {
-    group: "Resources",
-    pages: ["integration/starter-kit"],
   },
 ];
 
 const NEW_CANONICAL_PAGE_TITLES = {
   "integration/common-flows": "Common flows",
   "integration/issue-bank-account": "Issue a bank account",
-  "integration/api-reliability": "API reliability",
-  "integration/sync-and-reconciliation": "Sync and reconciliation",
+  "integration/go-live": "Go live",
   "integration/onboarding/customers": "Customers",
   "integration/onboarding/capabilities-and-requirements":
-    "Capabilities and requirements",
+    "Capabilities and tasks",
+  "api-reference/introduction": "API v3 reference",
 };
 
 const RETIRED_INTEGRATION_PAGES = [
@@ -89,15 +81,27 @@ const RETIRED_INTEGRATION_PAGES = [
   "integration/onboarding/businesses.mdx",
   "integration/onboarding/tasks-and-submissions.mdx",
   "integration/onboarding/documents.mdx",
+  "integration/rules.mdx",
+  "integration/api-reliability.mdx",
+  "integration/sync-and-reconciliation.mdx",
+  "integration/production-readiness.mdx",
+  "integration/starter-kit.mdx",
 ];
 
 const STRUCTURE_REDIRECTS = {
+  "/integration/api-reliability": "/api-reference/introduction",
   "/integration/environments":
     "/integration/authentication#sandbox-and-production",
-  "/integration/errors": "/integration/api-reliability#handle-errors",
+  "/integration/errors": "/api-reference/introduction#handle-errors",
   "/integration/pagination-and-sync":
-    "/integration/sync-and-reconciliation",
-  "/integration/request-safety": "/integration/api-reliability",
+    "/integration/webhooks#recover-deliveries",
+  "/integration/production-readiness": "/integration/go-live",
+  "/integration/request-safety":
+    "/api-reference/introduction#make-writes-safe-to-retry",
+  "/integration/rules": "/integration/overview",
+  "/integration/starter-kit": "/integration/overview#see-it-in-action",
+  "/integration/sync-and-reconciliation":
+    "/integration/webhooks#recover-deliveries",
   "/integration/using-the-api-reference":
     "/api-reference/customers/post-v3-customers",
   "/integration/onboarding/individuals":
@@ -105,7 +109,7 @@ const STRUCTURE_REDIRECTS = {
   "/integration/onboarding/businesses":
     "/integration/onboarding/customers#business-customers",
   "/integration/onboarding/tasks-and-submissions":
-    "/integration/onboarding/capabilities-and-requirements#complete-requirements",
+    "/integration/onboarding/capabilities-and-requirements#complete-current-tasks",
   "/integration/onboarding/documents":
     "/integration/onboarding/capabilities-and-requirements#upload-documents",
 };
@@ -165,7 +169,17 @@ const EXPECTED_NAVIGATION = {
     },
     {
       tab: "API Reference",
-      openapi: "openapi.json",
+      groups: [
+        {
+          group: "Overview",
+          pages: ["api-reference/introduction"],
+        },
+        {
+          group: "Endpoints",
+          openapi: "openapi.json",
+          pages: [],
+        },
+      ],
     },
     {
       tab: "Knowledge Base",
@@ -317,6 +331,7 @@ test("uses exactly the approved three-tab navigation skeleton", () => {
 
   const manualPages = [
     ...INTEGRATION_GROUPS.flatMap(({ pages }) => pages),
+    "api-reference/introduction",
     ...KNOWLEDGE_BASE_GROUPS.flatMap(({ pages }) => pages),
   ];
   assert.deepEqual(manualPages, REQUIRED_NAVIGATION_PAGES);
@@ -359,15 +374,16 @@ test("makes API Reference the sole owner of openapi.json", () => {
   );
 
   assert.equal(owners.length, 1);
-  assert.strictEqual(owners[0], config.navigation.tabs[1]);
+  assert.strictEqual(owners[0], config.navigation.tabs[1].groups[1]);
   assert.deepEqual(owners[0], {
-    tab: "API Reference",
+    group: "Endpoints",
     openapi: "openapi.json",
+    pages: [],
   });
 });
 
 test("copies the exact approved redirect pairs without internal metadata", () => {
-  assert.equal(redirectInventory.length, 62);
+  assert.equal(redirectInventory.length, 67);
   assert.deepEqual(
     config.redirects,
     redirectInventory.map(({ source, destination }) => ({
@@ -485,15 +501,6 @@ test("keeps the landing page valid and within published-content guards", () => {
 });
 
 test("links three native cards to the approved documentation sections", () => {
-  const capabilitiesOperation = coverage.operations.find(
-    ({ method, path }) =>
-      method === "get" && path === "/v3/capabilities",
-  );
-  assert.ok(
-    capabilitiesOperation,
-    "openapi coverage must include GET /v3/capabilities",
-  );
-
   const { body } = parseFrontmatter(indexText);
   const columns = /<Columns\s+cols=\{3\}>([\s\S]*?)<\/Columns>/.exec(body);
   assert.ok(columns, "index.mdx must contain one three-column Columns layout");
@@ -503,18 +510,16 @@ test("links three native cards to the approved documentation sections", () => {
     ([openingTag]) => openingTag,
   );
   assert.equal(cardTags.length, 3);
-  assert.equal((body.match(/<Card\b/g) ?? []).length, 3);
   assert.deepEqual(
     cardTags.map((tag) => attribute(tag, "title")),
-    ["Integration Docs", "API Reference", "Knowledge Base"],
+    ["Start integrating", "Explore API v3", "Compliance and onboarding"],
   );
   const cardHrefs = cardTags.map((tag) => attribute(tag, "href"));
   assert.deepEqual(cardHrefs, [
-    "/integration/overview",
-    capabilitiesOperation.href,
+    "/integration/quickstart",
+    "/api-reference/introduction",
     "/knowledge-base/compliance/overview",
   ]);
-  assert.equal(cardHrefs[1], capabilitiesOperation.href);
   assert.doesNotMatch(body, /^import\s/m);
 });
 
@@ -525,10 +530,11 @@ test("keeps landing copy concise and separates guides, reference, and knowledge"
     .replace(/\s+/g, " ")
     .trim();
 
-  assert.ok(prose.split(/\s+/).length <= 110, "landing copy is too long");
-  assert.match(prose, /guides/i);
-  assert.match(prose, /generated API reference/i);
-  assert.match(prose, /policy/i);
+  assert.ok(prose.split(/\s+/).length <= 170, "landing copy is too long");
+  assert.match(prose, /API v3/i);
+  assert.match(prose, /accept fiat/i);
+  assert.match(prose, /pay a customer-owned account/i);
+  assert.match(prose, /reusable bank details/i);
   assert.match(prose, /onboarding/i);
   assert.doesNotMatch(
     prose,

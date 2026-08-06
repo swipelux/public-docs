@@ -1,29 +1,31 @@
 ---
 title: "Issue a bank account"
-description: "Create a settlement wallet, issue a bank account, and monitor provisioning."
+description: "Provision reusable bank details and settle matched deposits into a customer wallet."
 ---
 
-Issue reusable bank details for a customer and route matched deposits into an issued settlement wallet. Keep the account hidden until a current read returns details that are safe to present.
+Use an issued bank account when the customer needs reusable bank details. For one-time funding instructions tied to a specific amount, use [Receive funds](/integration/receive-funds) instead.
+
+```mermaid
+flowchart TD
+  A["Ready bank capability"] --> B["Ready settlement wallet"]
+  B --> C["Create issued bank account"]
+  C --> D["Monitor provisioning"]
+  D --> E["Display complete bank details"]
+```
 
 ## Before you start
 
-You need a customer ID, a ready bank capability for the intended method and currency, and a ready settlement wallet owned by that customer. Read the capability again if its state may have changed; a requested capability is not enough. See [Capabilities and requirements](/integration/onboarding/capabilities-and-requirements) for the readiness flow.
-
-Keep the capability ID and settlement wallet ID with the customer record that produced them. Do not reuse IDs across customers, and do not choose a method only from a static list in your application. The current capability resource determines whether this issuance path can proceed.
-
-Use [API reliability](/integration/api-reliability) for the create request's idempotency key.
+You need a customer ID, a ready bank capability for the intended method and currency, and a ready issued wallet owned by the same customer. Complete open work through [Capabilities and tasks](/integration/onboarding/capabilities-and-requirements).
 
 ## 1. Create or select the settlement wallet
 
-Choose an issued wallet whose currency and network fit the settlement flow. If you need to create one, follow [Accounts and wallets](/integration/accounts#create-the-account).
+Create an issued wallet through [Accounts and wallets](/integration/accounts#create-the-account), then read it again. Continue only when its current status permits settlement.
 
-Store the wallet's response-derived `data.id` as `SETTLEMENT_WALLET_ID`. Read the wallet again and continue only when its current `data.status` is `ready`. Do not substitute an external wallet: `settlement.accountId` identifies the issued wallet that receives settled funds.
-
-Keep this wallet ID after issuance. The bank account response also returns its settlement relationship, which lets you confirm later reads still point to the intended wallet.
+Store its response-derived `data.id` as `SETTLEMENT_WALLET_ID`. Do not use an external wallet for `settlement.accountId`.
 
 ## 2. Create the issued bank account
 
-Send a complete ACH/USD body to [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts). The same API Reference operation lists the request variants for other supported methods.
+Use [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) with a unique `Idempotency-Key`:
 
 ```json
 {
@@ -35,30 +37,26 @@ Send a complete ACH/USD body to [`POST /v3/customers/{customerId}/accounts`](/ap
   "settlement": {
     "accountId": "${SETTLEMENT_WALLET_ID}"
   },
-  "label": "USD pay-in account"
+  "label": "USD account"
 }
 ```
 
-Store `data.id`, `data.status`, `data.openTaskIds`, and `data.details` from the response. Keep the bank account ID as the stable identifier for later reads. Do not treat a successful create response as proof that routing details already exist.
+Store the returned `data.id` as `BANK_ACCOUNT_ID`. Also retain `data.status`, `data.openTaskIds`, `data.details`, and the settlement relationship.
 
-The bank account ID and settlement wallet ID serve different jobs. Use the bank account ID to read provisioning and display details. Use the settlement wallet ID to identify where matched deposits are credited.
+The bank account ID and wallet ID have different roles. Read provisioning and bank details through the bank account ID. Use the settlement wallet ID to identify where deposits are credited.
 
 ## 3. Monitor provisioning
 
-Read the current account with [`GET /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts-by-account-id). The account's `data.details` may be `null` or otherwise absent while provisioning continues, so keep your interface in a pending state.
+Read [`GET /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts-by-account-id) after creation and after each relevant webhook.
 
-Use the current `data.status`, `data.openTaskIds`, and `statusReason` to choose the next action. If tasks are open, fetch their current requirements through [Capabilities and requirements](/integration/onboarding/capabilities-and-requirements#complete-requirements). Refetch the account after each completed action; never infer readiness from elapsed time.
+Keep the customer interface pending while `details` is absent. If `openTaskIds` is not empty, complete the latest tasks and refetch the account. Do not infer readiness from elapsed time.
 
-If the latest account read returns `statusReason.code` as `awaiting_assignment`, create the first pay-in for the same customer, capability, and settlement wallet through [Receive funds](/integration/receive-funds). Then refetch the bank account before presenting reusable details. Use this branch only when the latest reason code requests assignment; other issued accounts can complete provisioning without it.
+If the latest `statusReason.code` is `awaiting_assignment`, create the first pay-in for the same customer, capability, and settlement wallet through [Receive funds](/integration/receive-funds), then read the bank account again. Follow this branch only when the current account requests it.
 
 ## 4. Present bank details safely
 
-Only present details returned by the latest account read. Display the method-specific coordinates together so the sender does not combine stale and current values.
+Display only the complete details returned by the latest account read. When `details.referenceRequired` is true, show the exact `details.reference` and make it copyable. When it is false, do not invent a reference.
 
-When `details.referenceRequired` is `true`, present the exact `details.reference` and make it copyable. When it is false, do not invent a reference. These account details are reusable; transfer-specific pay-in instructions follow a separate workflow.
+These bank details are reusable. Do not replace them with funding coordinates from a quoted pay-in, which belong only to that transfer.
 
-If a later read changes the available details, replace the complete displayed set. Do not merge fields from responses with different update times. Keep the account status visible so your support and operations views can explain why details are not yet shown.
-
-## Next step
-
-Persist the issued bank account ID, wire current account reads into your customer view, and use [Receive funds](/integration/receive-funds) when you need one-time quoted funding instructions instead.
+Next, add [Webhooks](/integration/webhooks) so provisioning updates reach your application without keeping the customer on a polling screen.

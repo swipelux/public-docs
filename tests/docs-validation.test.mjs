@@ -1284,11 +1284,11 @@ test("normalizes index source pages to public routes", () => {
 });
 
 test("commits the complete approved page and frozen source inventories", () => {
-  assert.equal(REQUIRED_NAVIGATION_PAGES.length, 39);
-  assert.equal(REQUIRED_PUBLISHED_PAGES.length, 40);
+  assert.equal(REQUIRED_NAVIGATION_PAGES.length, 36);
+  assert.equal(REQUIRED_PUBLISHED_PAGES.length, 37);
   assert.equal(FROZEN_SOURCE_PAGES.length, 59);
   assert.equal(Object.keys(FROZEN_MIGRATION_DECISIONS).length, 59);
-  assert.equal(EXPECTED_REDIRECT_SOURCES.length, 62);
+  assert.equal(EXPECTED_REDIRECT_SOURCES.length, 67);
   assert.equal(new Set(FROZEN_SOURCE_PAGES).size, FROZEN_SOURCE_PAGES.length);
   assert.equal(
     new Set(EXPECTED_REDIRECT_SOURCES).size,
@@ -1362,7 +1362,7 @@ test("rejects omitting any approved non-Terms source page", () => {
 test("validates the committed redirect inventory", () => {
   const { inventory, marker } = committedRedirectState();
 
-  assert.equal(inventory.length, 62);
+  assert.equal(inventory.length, 67);
   assert.ok(["current", "final"].includes(marker.phase));
   assert.equal(assertRedirectRepositoryState(marker, inventory), marker.phase);
 });
@@ -1406,7 +1406,7 @@ test("keeps the approved legacy route destinations", () => {
   assert.equal(destinations.get("/reference/rates"), rates.href);
   assert.equal(
     destinations.get("/reference/v3-reason-codes"),
-    "/integration/api-reliability#handle-errors",
+    "/api-reference/introduction#handle-errors",
   );
   assert.equal(
     destinations.get("/reference/webhooks"),

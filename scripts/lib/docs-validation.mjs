@@ -23,12 +23,9 @@ export const REQUIRED_NAVIGATION_PAGES = Object.freeze([
   "integration/receive-funds",
   "integration/send-funds",
   "integration/quotes-and-transfers",
-  "integration/rules",
   "integration/webhooks",
-  "integration/api-reliability",
-  "integration/sync-and-reconciliation",
-  "integration/production-readiness",
-  "integration/starter-kit",
+  "integration/go-live",
+  "api-reference/introduction",
   "knowledge-base/compliance/overview",
   "knowledge-base/compliance/regulatory-perimeter",
   "knowledge-base/compliance/supported-business-models",
@@ -236,7 +233,7 @@ const FROZEN_MIGRATION_DECISION_ROWS = Object.freeze([
   ],
   [
     "content/get-started/starter-kit.mdx",
-    "/integration/starter-kit",
+    "/integration/overview#see-it-in-action",
     "contract-rewrite",
     "not-applicable",
   ],
@@ -345,7 +342,7 @@ const FROZEN_MIGRATION_DECISION_ROWS = Object.freeze([
   ],
   [
     "content/reference/v3-reason-codes.mdx",
-    "/integration/api-reliability#handle-errors",
+    "/api-reference/introduction#handle-errors",
     "contract-rewrite",
     "not-applicable",
   ],
@@ -446,12 +443,19 @@ const LEGACY_REDIRECT_SOURCES = Object.freeze(
 );
 
 export const STRUCTURE_REDIRECTS = Object.freeze({
+  "/integration/api-reliability": "/api-reference/introduction",
   "/integration/environments":
     "/integration/authentication#sandbox-and-production",
-  "/integration/errors": "/integration/api-reliability#handle-errors",
+  "/integration/errors": "/api-reference/introduction#handle-errors",
   "/integration/pagination-and-sync":
-    "/integration/sync-and-reconciliation",
-  "/integration/request-safety": "/integration/api-reliability",
+    "/integration/webhooks#recover-deliveries",
+  "/integration/production-readiness": "/integration/go-live",
+  "/integration/request-safety":
+    "/api-reference/introduction#make-writes-safe-to-retry",
+  "/integration/rules": "/integration/overview",
+  "/integration/starter-kit": "/integration/overview#see-it-in-action",
+  "/integration/sync-and-reconciliation":
+    "/integration/webhooks#recover-deliveries",
   "/integration/using-the-api-reference":
     "/api-reference/customers/post-v3-customers",
   "/integration/onboarding/individuals":
@@ -459,7 +463,7 @@ export const STRUCTURE_REDIRECTS = Object.freeze({
   "/integration/onboarding/businesses":
     "/integration/onboarding/customers#business-customers",
   "/integration/onboarding/tasks-and-submissions":
-    "/integration/onboarding/capabilities-and-requirements#complete-requirements",
+    "/integration/onboarding/capabilities-and-requirements#complete-current-tasks",
   "/integration/onboarding/documents":
     "/integration/onboarding/capabilities-and-requirements#upload-documents",
 });
@@ -513,7 +517,8 @@ export const APPROVED_REDIRECT_DESTINATIONS = Object.freeze({
     "/api-reference/customers/post-v3-customers",
   "/get-started/authentication": "/integration/authentication",
   "/get-started/sandbox": "/integration/sandbox",
-  "/get-started/starter-kit": "/integration/starter-kit",
+  "/get-started/starter-kit":
+    "/integration/overview#see-it-in-action",
   "/individual-onboarding":
     "/knowledge-base/individual-onboarding/overview",
   "/individual-onboarding/api-reference":
@@ -540,7 +545,7 @@ export const APPROVED_REDIRECT_DESTINATIONS = Object.freeze({
   "/reference/v3-fee-schedule": "/integration/quotes-and-transfers",
   "/reference/v3-method-coverage": "/integration/overview",
   "/reference/v3-reason-codes":
-    "/integration/api-reliability#handle-errors",
+    "/api-reference/introduction#handle-errors",
   "/reference/webhooks": "/integration/webhooks",
   "/send": "/integration/send-funds",
   "/send/first-party-payouts": "/integration/send-funds",
@@ -973,14 +978,19 @@ export function validateNavigation(config, options = {}) {
     navigation,
     (value) => Object.hasOwn(value, "openapi"),
   );
+  const apiOpenapiOwners =
+    apiTabs.length === 1
+      ? findObjects(apiTabs[0], (value) => Object.hasOwn(value, "openapi"))
+      : [];
   if (
     apiTabs.length !== 1 ||
-    apiTabs[0]?.openapi !== "openapi.json" ||
     openapiOwners.length !== 1 ||
-    openapiOwners[0] !== apiTabs[0]
+    apiOpenapiOwners.length !== 1 ||
+    apiOpenapiOwners[0] !== openapiOwners[0] ||
+    openapiOwners[0]?.openapi !== "openapi.json"
   ) {
     errors.push(
-      "docs.json: top-level API Reference tab must use openapi.json; navigation must contain exactly one openapi reference",
+      "docs.json: top-level API Reference tab must contain openapi.json; navigation must contain exactly one openapi reference",
     );
   }
 

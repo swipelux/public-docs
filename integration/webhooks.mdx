@@ -1,23 +1,31 @@
 ---
 title: "Webhooks"
-description: "Register an endpoint, process events durably, refetch current state, and recover missed changes."
+description: "Verify deliveries, persist events before acknowledging them, and process current resource state safely."
 ---
 
-Use webhooks to react quickly to resource changes while keeping the API as your current-state read path. Register endpoints and refetch resources from your backend with `X-API-Key`.
+Use webhooks to react to asynchronous changes. Delivery is at least once, so duplicate, delayed, and out of order events are normal.
 
-## Register an endpoint
+```mermaid
+flowchart TD
+  A["Receive raw request"] --> B["Verify Svix signature"]
+  B --> C["Persist unique event ID"]
+  C --> D["Return 2xx"]
+  D --> E["Process asynchronously"]
+  E --> F["Refetch current API resource"]
+```
 
-Create one endpoint with [`POST /v3/webhooks`](/api-reference/webhooks/post-v3-webhooks). This example subscribes only to transfer state changes:
+## Register only the events you need
+
+Create an endpoint with [`POST /v3/webhooks`](/api-reference/webhooks/post-v3-webhooks). Subscribe only to documented events that drive your integration. This example uses [`transfer.state_changed`](/api-reference/webhooks/transfer-state-changed).
 
 ```bash
 export API_BASE='https://platform.swipelux.com'
 export SWIPELUX_API_KEY='replace-with-your-api-key'
-export WEBHOOK_CREATE_KEY='webhook-endpoint-2026-08-05'
 
 curl --request POST \
   "${API_BASE}/v3/webhooks" \
   --header "X-API-Key: ${SWIPELUX_API_KEY}" \
-  --header "Idempotency-Key: ${WEBHOOK_CREATE_KEY}" \
+  --header "Idempotency-Key: webhook-endpoint-001" \
   --header "Content-Type: application/json" \
   --data @- <<'JSON'
 {
@@ -27,46 +35,54 @@ curl --request POST \
 JSON
 ```
 
-Store response `data.id` as `WEBHOOK_ID` and `data.status` as `WEBHOOK_STATUS`. Use the ID for later endpoint changes and confirm that the status is suitable before relying on delivery. Follow [API reliability](/integration/api-reliability) for the idempotency rule on configuration writes.
+Store response `data.id` as `WEBHOOK_ID`. Open the portal returned by [`GET /v3/webhooks/portal`](/api-reference/webhooks/get-v3-webhooks-portal), retrieve this endpoint's signing secret, and store it separately from your API key in a secret manager.
 
-## Process an event
+## Verify before parsing
 
-For each documented event, use the event's API Reference page for its payload fields. Payloads for `api.deprecation` and `transfer.created` are not documented. Do not infer their fields; contact Swipelux before subscribing to either event.
+Swipelux delivers new webhook integrations through Svix. Verify the raw request body with your endpoint signing secret and these headers:
 
-This is the exact representative [`transfer.state_changed`](/api-reference/webhooks/transfer-state-changed) envelope:
+- `svix-id`
+- `svix-timestamp`
+- `svix-signature`
 
-```json
-{
-  "id": "evt_abc123",
-  "type": "transfer.state_changed",
-  "createdAt": "2026-07-04T12:00:00.000Z",
-  "attempt": 1,
-  "resource": {
-    "type": "transfer",
-    "id": "tr_abc123"
-  },
-  "data": {
-    "object": {
-      "id": "tr_abc123",
-      "customerId": "cus_abc123",
-      "state": "processing",
-      "createdAt": "2026-07-04T12:00:00.000Z",
-      "updatedAt": "2026-07-04T12:30:00.000Z"
-    },
-    "previous": {
-      "state": "awaiting_funds"
-    }
-  }
+Do not parse JSON or cause side effects before verification succeeds.
+
+```javascript
+import { Webhook } from "svix";
+
+const verifier = new Webhook(process.env.SWIPELUX_WEBHOOK_SECRET);
+
+export async function handleSwipeluxWebhook(request) {
+  const rawBody = await request.text();
+  const event = verifier.verify(rawBody, {
+    "svix-id": request.headers.get("svix-id"),
+    "svix-timestamp": request.headers.get("svix-timestamp"),
+    "svix-signature": request.headers.get("svix-signature"),
+  });
+
+  await webhookInbox.insertIfAbsent({
+    id: event.id,
+    payload: event,
+    status: "pending",
+  });
+
+  return new Response(null, { status: 204 });
 }
 ```
 
-Persist the event `id` as the unique key in a durable inbox before you run side effects. If that inbox record is already completed, treat the duplicate delivery as a no-op. If a pending or failed record remains after a crash, resume the incomplete work instead of discarding it.
+Reject requests with missing or invalid signatures. Keep the raw body available until verification completes.
 
-After the inbox write, process the event and mark the record completed only when its required work has finished. Keep enough local context to retry your own incomplete processing safely.
+## Persist, acknowledge, then process
+
+Put a uniqueness constraint on the envelope `id`. Persist the verified envelope, return `2xx` promptly, then process it asynchronously.
+
+If the event ID already exists, acknowledge the delivery without repeating completed side effects. Resume pending or failed local work through your own retry queue. Do not use the envelope `attempt` field as a deduplication key or transport retry counter.
 
 ## Refetch current state
 
-Use `resource.type` and `resource.id` as locators, then make an authenticated read for current state. For the representative transfer event, use `resource.id` as `TRANSFER_ID` and call [`GET /v3/transfers/{transferId}`](/api-reference/money-movement/get-v3-transfers-by-transfer-id):
+Webhook order is not an authoritative resource history. Use `resource.type` and `resource.id` to locate the object, then fetch its current state before updating your system.
+
+For a transfer event, call [`GET /v3/transfers/{transferId}`](/api-reference/money-movement/get-v3-transfers-by-transfer-id):
 
 ```bash
 curl --request GET \
@@ -74,16 +90,12 @@ curl --request GET \
   --header "X-API-Key: ${SWIPELUX_API_KEY}"
 ```
 
-Drive customer-visible status and downstream decisions from this response. Use the event projection to locate the resource, not as a replacement for the authenticated current-state read.
+Drive customer-visible status and downstream actions from the current API response. Design side effects to remain safe if two workers process related events in a different order.
 
-## Replay a delivery
+## Recover deliveries
 
-Call [`GET /v3/webhooks/portal`](/api-reference/webhooks/get-v3-webhooks-portal) when an operator needs documented delivery logs, retries, or manual replay. The response contains the returned `url`; open it for that operator workflow and keep the webhook ID with your incident record.
+Use [`GET /v3/webhooks/portal`](/api-reference/webhooks/get-v3-webhooks-portal) to open delivery logs, retry failed deliveries, or start a manual replay.
 
-When a replay reaches your endpoint, send it through the same durable inbox. Completed event IDs remain deduplicated, while incomplete records resume their work.
+Every replay must pass through the same signature verification and durable inbox. To recover after downtime, replay the affected window and refetch each referenced resource. Completed event IDs remain no-ops; incomplete records resume asynchronously.
 
-## Recover missed changes
-
-Webhook handling is the fast path. Reconciliation is the recovery path when an event is delayed, missed, or cannot be completed. Run the checkpoint-and-cursor workflow in [Sync and reconciliation](/integration/sync-and-reconciliation), then apply each resource's current state through the same local update path.
-
-Next, implement that reconciliation job and test it alongside endpoint replay before you [go live](/integration/production-readiness).
+Next, verify duplicate and out-of-order deliveries in sandbox, then complete the [Go live](/integration/go-live) checklist.

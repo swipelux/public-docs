@@ -694,7 +694,7 @@ test("preserves every entity, industry, source, and purpose classification conce
   assert.match(text, /current task requirements determine/i);
   assert.ok(
     text.includes(
-      "[Tasks and submissions](/integration/onboarding/capabilities-and-requirements#complete-requirements)",
+      "[Capabilities and tasks](/integration/onboarding/capabilities-and-requirements#complete-current-tasks)",
     ),
   );
 
@@ -1200,7 +1200,7 @@ test("replaces the legacy individual API list with the exact current workflow ma
   assert.match(text, /refetch[\s\S]{0,120}after each event or action/i);
   for (const link of [
     "[individual onboarding guide](/integration/onboarding/customers#individual-customers)",
-    "[Tasks and submissions](/integration/onboarding/capabilities-and-requirements#complete-requirements)",
+    "[Capabilities and tasks](/integration/onboarding/capabilities-and-requirements#complete-current-tasks)",
     "[Integration Documents guide](/integration/onboarding/capabilities-and-requirements#upload-documents)",
   ]) {
     assert.ok(text.includes(link), "missing integration link " + link);

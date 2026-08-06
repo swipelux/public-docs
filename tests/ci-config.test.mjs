@@ -10,6 +10,7 @@ const projectRoot = fileURLToPath(new URL("../", import.meta.url));
 const workflowPath = resolve(projectRoot, ".github/workflows/docs.yml");
 const read = (path) => readFileSync(resolve(projectRoot, path), "utf8");
 const packageJson = JSON.parse(read("package.json"));
+const redirectInventory = JSON.parse(read("docs/redirect-inventory.json"));
 
 function loadWorkflow() {
   assert.ok(existsSync(workflowPath), ".github/workflows/docs.yml must exist");
@@ -116,7 +117,10 @@ test("documents final verification, deployment, and policy release gates", () =>
 
   assert.match(readme, /Redirect verification is complete/i);
   assert.match(readme, /committed[^\n]*phase[^\n]*`?final`?/i);
-  assert.match(readme, /62 redirects[^\n]*verified/i);
+  assert.match(
+    readme,
+    new RegExp(`${redirectInventory.length} redirects[^\\n]*verified`, "i"),
+  );
   assert.match(readme, /\bnvm install\b/);
   assert.match(readme, /\bnvm use\b/);
   assert.match(readme, /\bnpm ci\b/);

@@ -57,7 +57,7 @@ npm run check
 
 `npm run check` runs the repository tests, verifies the generated OpenAPI and documentation artifacts, validates the Mintlify site, checks links, and runs accessibility checks. It prepares no source data, so regenerate `openapi.json` first when the source contract changes.
 
-Redirect verification is complete. The committed phase in `docs/redirect-verification-phase.json` is `final`, and all 62 redirects in `docs/redirect-inventory.json` are verified. `npm run check` validates the committed marker and inventory.
+Redirect verification is complete. The committed phase in `docs/redirect-verification-phase.json` is `final`, and all 67 redirects in `docs/redirect-inventory.json` are verified. `npm run check` validates the committed marker and inventory.
 
 ## CI and production deployment
 
