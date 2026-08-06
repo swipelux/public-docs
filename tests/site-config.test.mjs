@@ -19,6 +19,8 @@ const projectRoot = fileURLToPath(new URL("../", import.meta.url));
 const read = (path) => readFileSync(resolve(projectRoot, path), "utf8");
 const config = JSON.parse(read("docs.json"));
 const indexText = read("index.mdx");
+const stylePath = resolve(projectRoot, "style.css");
+const styleText = existsSync(stylePath) ? read("style.css") : "";
 const redirectInventory = JSON.parse(read("docs/redirect-inventory.json"));
 const coverage = JSON.parse(read("openapi-coverage.json"));
 
@@ -174,7 +176,12 @@ const EXPECTED_NAVIGATION = {
 
 const APPROVED_SYMBOL =
   '<svg xmlns="http://www.w3.org/2000/svg" width="65" height="64" fill="none"><path fill="#F4663E" d="M2.938 34.102a2.97 2.97 0 0 1 0-4.204L18.2 14.655a2.98 2.98 0 0 1 4.21 0l15.262 15.243a2.97 2.97 0 0 1 0 4.204L22.411 49.345a2.98 2.98 0 0 1-4.21 0L2.937 34.102Z"/><path fill="#FA9B51" d="M27.897 44.922a1.486 1.486 0 0 0 0 2.103l2.323 2.32a2.98 2.98 0 0 0 4.21 0l15.262-15.243a2.97 2.97 0 0 0 0-4.204L34.43 14.655a2.98 2.98 0 0 0-4.21 0l-2.323 2.32a1.485 1.485 0 0 0 0 2.103l10.834 10.82a2.97 2.97 0 0 1 0 4.204l-10.834 10.82Z"/><path fill="#FFDA99" d="M39.909 44.923a1.485 1.485 0 0 0 0 2.102l2.323 2.32a2.98 2.98 0 0 0 4.21 0l15.262-15.243a2.97 2.97 0 0 0 0-4.204L46.442 14.655a2.98 2.98 0 0 0-4.21 0l-2.323 2.32a1.485 1.485 0 0 0 0 2.102l10.834 10.82a2.97 2.97 0 0 1 0 4.205l-10.834 10.82Z"/></svg>';
-const LIGHT_DOCS_BACKGROUND = "#FFFFFF";
+const LIGHT_DOCS_BACKGROUND = "#FAFAFA";
+const MPANEL_COLORS = {
+  primary: "#252525",
+  light: "#FFFFFF",
+  dark: "#777777",
+};
 
 function relativeLuminance(hex) {
   assert.match(hex, /^#[A-F0-9]{6}$/i, `${hex} must be a six-digit hex color`);
@@ -246,13 +253,64 @@ test("uses the approved Swipelux identity and site controls", () => {
     light: "/logo/light.svg",
     dark: "/logo/dark.svg",
   });
-  assert.deepEqual(config.colors, {
-    primary: "#B8381D",
-    light: "#FA9B51",
-    dark: "#E2471D",
+  assert.equal(config.theme, "palm");
+  assert.deepEqual(config.colors, MPANEL_COLORS);
+  assert.deepEqual(config.appearance, { default: "light", strict: true });
+  assert.deepEqual(config.fonts, {
+    family: "Geist",
+    weight: 400,
+  });
+  assert.deepEqual(config.icons, { library: "lucide" });
+  assert.deepEqual(config.background, {
+    color: { light: "#FAFAFA", dark: "#252525" },
   });
   assert.deepEqual(config.api?.playground, { display: "none" });
   assert.deepEqual(config.contextual, { options: ["copy", "view"] });
+});
+
+test("mirrors the mpanel visual foundation with stable Mintlify hooks", () => {
+  assert.equal(existsSync(stylePath), true, "style.css must define the docs UI layer");
+  for (const [token, value] of [
+    ["--swipelux-content-primary", "#424242"],
+    ["--swipelux-content-secondary", "#777777"],
+    ["--swipelux-content-tertiary", "#a4a4a4"],
+    ["--swipelux-surface", "#ffffff"],
+    ["--swipelux-surface-muted", "#fafafa"],
+    ["--swipelux-surface-sunken", "#f0f0f0"],
+    ["--swipelux-line", "#eaeaeb"],
+    ["--swipelux-accent-primary", "#252525"],
+    ["--swipelux-accent-hover", "#3d3d43"],
+    ["--swipelux-radius-control", "12px"],
+    ["--swipelux-radius-card", "16px"],
+  ]) {
+    assert.match(
+      styleText,
+      new RegExp(`${token}:\\s*${value.replace("#", "\\#")}\\s*;`, "i"),
+      `${token} must stay aligned with mpanel`,
+    );
+  }
+
+  for (const selector of [
+    "#navbar",
+    "#sidebar",
+    "#sidebar-content",
+    "#page-title",
+    "#search-bar-entry",
+    "mdx-content",
+    ".mdx-content",
+    "card",
+    ".card",
+    "callout",
+    "code-block",
+  ]) {
+    assert.match(
+      styleText,
+      new RegExp(`${selector.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\$&")}\\s*(?:,|\\{)`),
+      `${selector} needs an explicit mpanel-aligned style`,
+    );
+  }
+
+  assert.doesNotMatch(styleText, /gradient|#[Ff]4663[Ee]|#[Ff][Aa]9[Bb]51|#[Ee]2471[Dd]/);
 });
 
 test("uses an accessible primary docs UI color on the light background", () => {
