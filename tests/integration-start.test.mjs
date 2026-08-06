@@ -331,6 +331,19 @@ function card(text, title, href) {
   ).test(text);
 }
 
+function proseSentences(text) {
+  return text
+    .split(/(?<=[.!?])(?:[ \t]+|\n+)|\n+/)
+    .map((sentence) => sentence.trim())
+    .filter(Boolean);
+}
+
+function affirmingSentence(sentences, pattern, message) {
+  const sentence = sentences.find((candidate) => pattern.test(candidate));
+  assert.ok(sentence, message);
+  return sentence;
+}
+
 function assertStarterCredentialPolarity(text) {
   assert.doesNotMatch(
     text,
@@ -339,6 +352,7 @@ function assertStarterCredentialPolarity(text) {
   );
 
   const paragraphs = text.split(/\n\s*\n/);
+  const sentences = proseSentences(text);
   const hostedWarning = paragraphs.find((paragraph) => /hosted/i.test(paragraph));
   assert.ok(hostedWarning, "Hosted starter needs a credential warning");
   assert.match(
@@ -361,13 +375,25 @@ function assertStarterCredentialPolarity(text) {
     browserDemo,
     /(?:local[^.]{0,80}browser|browser[^.]{0,80}(?:local|your (?:computer|machine)))/i,
   );
-  assert.match(
-    browserDemo,
-    /\bexpos(?:e|es)\b[^.!?\n]{0,100}\bsandbox key\b[^.!?\n]{0,100}\b(?:browser code|browser runtime|client-side code)\b|\bsandbox key\b[^.!?\n]{0,60}\b(?:is\s+)?exposed\b[^.!?\n]{0,100}\b(?:browser code|browser runtime|client-side code)\b/i,
+  const browserCode = String.raw`(?:browser\s+(?:code|runtime(?:\s+code)?)|client-side\s+code)`;
+  const browserCredentialSentences = sentences.filter(
+    (sentence) =>
+      /sandbox key/i.test(sentence) && new RegExp(browserCode, "i").test(sentence),
   );
   assert.doesNotMatch(
-    browserDemo,
-    /(?:\bnever\b|\b(?:do|does|did|is|are|was|were|can|could|will|would|should|must)(?:n't|\s+not)\b)[^.!?\n]{0,40}\bexpos(?:e|es|ed|ing)\b/i,
+    browserCredentialSentences.join("\n"),
+    new RegExp(
+      String.raw`(?:\bnever\b|\b(?:do|does|did|is|are|was|were|can|could|will|would|should|must)(?:n't|\s+not)\b)[^.!?\n]{0,40}\bexpos(?:e|es|ed|ing)\b|\b${browserCode}\b[^.!?\n]{0,40}\b(?:cannot|can't|(?:does?|did|can|could|will|would|should|must)(?:n't|\s+not))\s+(?:access|have\s+access\s+to)\s+(?:(?:the\s+)?sandbox key|it)\b`,
+      "i",
+    ),
+    "Connected sandbox must affirmatively expose its sandbox key to browser code",
+  );
+  affirmingSentence(
+    sentences,
+    new RegExp(
+      String.raw`(?:\bexpos(?:e|es|ed|ing)\b[^.!?\n]{0,80}\bsandbox key\b[^.!?\n]{0,40}\bto\s+${browserCode}\b|\bsandbox key\b[^.!?\n]{0,40}\b(?:is\s+)?exposed\b[^.!?\n]{0,40}\bto\s+${browserCode}\b|\b${browserCode}\b[^.!?\n]{0,40}\b(?:has|have)\s+access\s+to\s+(?:the\s+)?sandbox key\b|\bsandbox key\b[^.!?\n]{0,80}\b${browserCode}\b[^.!?\n]{0,40}\b(?:has|have)\s+access\s+to\s+it\b)`,
+      "i",
+    ),
     "Connected sandbox must affirmatively expose its sandbox key to browser code",
   );
   assert.match(browserDemo, /(?:must not|never)[^.]{0,80}share/i);
@@ -382,33 +408,42 @@ function assertStarterCredentialPolarity(text) {
     "Browser mode must not be portrayed as shareable, deployable, or production-safe",
   );
 
-  const backendGuidance = paragraphs.find(
-    (paragraph) =>
-      /shared sandbox/i.test(paragraph) &&
-      /(?:all|every) production/i.test(paragraph) &&
-      /backend/i.test(paragraph),
-  );
-  assert.ok(
-    backendGuidance,
-    "Shared sandbox and production integrations must use a backend",
+  const backendScopeSentences = sentences.filter(
+    (sentence) =>
+      /shared sandbox environments?/i.test(sentence) &&
+      /(?:all|every) production integrations?/i.test(sentence) &&
+      /backend/i.test(sentence),
   );
   assert.doesNotMatch(
-    backendGuidance,
+    backendScopeSentences.join("\n"),
     /(?:\bnever\b|\b(?:do|does|did|can|could|will|would|should|must)(?:n't|\s+not)\b)[^.!?\n]{0,40}\b(?:use|requir(?:e|es|ed|ing))\b[^.!?\n]{0,80}\b(?:a\s+)?backend\b|\b(?:a\s+)?backend\b[^.!?\n]{0,40}\b(?:is|are|was|were|will|would|should|must)(?:n't|\s+not)\s+required\b/i,
     "Shared sandbox and production integrations must affirmatively use or require a backend",
   );
-  assert.match(
-    backendGuidance,
-    /\b(?:use|uses|using|require|requires)\b[^.!?\n]{0,80}\b(?:a\s+)?backend\b|\b(?:a\s+)?backend\b[^.!?\n]{0,40}\b(?:is|are)\s+required\b/i,
+  affirmingSentence(
+    sentences,
+    /(?:\b(?:use|uses|using)\s+(?:a\s+)?backend\s+for\s+shared sandbox environments?[^.!?\n]{0,40}\b(?:all|every)\s+production integrations?\b|\b(?:a\s+)?backend\b[^.!?\n]{0,30}\b(?:is|are)\s+(?:used|required)\s+for\s+shared sandbox environments?[^.!?\n]{0,40}\b(?:all|every)\s+production integrations?\b|\bshared sandbox environments?[^.!?\n]{0,40}\b(?:all|every)\s+production integrations?\b[^.!?\n]{0,40}\b(?:use|uses|require|requires)\s+(?:a\s+)?backend\b)/i,
+    "Shared sandbox and production integrations must use a backend",
+  );
+
+  const secretManagerSentences = sentences.filter(
+    (sentence) =>
+      /(?:API keys?|credentials?)/i.test(sentence) &&
+      /secret manager/i.test(sentence),
   );
   assert.doesNotMatch(
-    backendGuidance,
+    secretManagerSentences.join("\n"),
     /(?:\bnever\b|\b(?:do|does|did|can|could|will|would|should|must)(?:n't|\s+not)\b)[^.!?\n]{0,40}\b(?:keep|manage|store)\b[^.!?\n]{0,100}\b(?:API keys?|credentials?)\b|\b(?:API keys?|credentials?)\b[^.!?\n]{0,80}\b(?:are|were|will|would|should|must)(?:n't|\s+not)\s+(?:kept|managed|stored)\b/i,
     "API keys or credentials must affirmatively be kept in a secret manager",
   );
-  assert.match(
-    backendGuidance,
-    /\b(?:keep|manage|store)\b[^.!?\n]{0,100}\b(?:API keys?|credentials?)\b[^.!?\n]{0,100}\bsecret manager\b|\b(?:API keys?|credentials?)\b[^.!?\n]{0,80}\b(?:are|must be|should be)\s+(?:kept|managed|stored)\b[^.!?\n]{0,100}\bsecret manager\b/i,
+  assert.doesNotMatch(
+    secretManagerSentences.join("\n"),
+    /\b(?:API keys?|credentials?)\b[^.!?\n]{0,80}\b(?:outside|not\s+(?:in|inside))\s+(?:a\s+)?secret manager\b/i,
+    "API keys or credentials must be kept inside a secret manager",
+  );
+  affirmingSentence(
+    sentences,
+    /(?:\b(?:keep|manage|store)\b[^.!?\n]{0,60}\b(?:API keys?|credentials?)\b[^.!?\n]{0,40}\b(?:in|inside)\s+(?:a\s+)?secret manager\b|\b(?:API keys?|credentials?)\b[^.!?\n]{0,60}\b(?:are|must be|should be)\s+(?:kept|managed|stored)\b[^.!?\n]{0,40}\b(?:in|inside)\s+(?:a\s+)?secret manager\b)/i,
+    "API keys or credentials must affirmatively be kept in a secret manager",
   );
 }
 
@@ -424,6 +459,10 @@ A backend is required for shared sandbox environments and all production integra
     "Do not use a production key in connected sandbox mode.",
     "",
   );
+  const browserAccessSafeWording = safeAlternativeWording.replace(
+    "Connected sandbox mode runs in a browser on your local computer and exposes the sandbox key to browser runtime code.",
+    "Connected sandbox mode runs in a browser on your local computer. The sandbox key stays in the browser runtime, and browser runtime code has access to it.",
+  );
   const negatedBrowserExposure = safeAlternativeWording.replace(
     "exposes the sandbox key to browser runtime code",
     "does not expose the sandbox key to browser runtime code",
@@ -436,16 +475,35 @@ A backend is required for shared sandbox environments and all production integra
     "Store API keys in a secret manager.",
     "Do not store API keys in a secret manager.",
   );
+  const outsideSecretManagerStorage = safeAlternativeWording.replace(
+    "Store API keys in a secret manager.",
+    "Store API keys outside a secret manager.",
+  );
+  const serverOnlyBrowserExposure = safeAlternativeWording.replace(
+    "Connected sandbox mode runs in a browser on your local computer and exposes the sandbox key to browser runtime code.",
+    "Connected sandbox mode runs in a browser on your local computer. Connected sandbox mode exposes the sandbox key to server code; browser runtime code cannot access it.",
+  );
+  const unrelatedBackendGuidance = safeAlternativeWording.replace(
+    "A backend is required for shared sandbox environments and all production integrations.",
+    "Use a backend for local demos. Shared sandbox environments and all production integrations run directly in browser code.",
+  );
   const hostedCardMutation = `${safeAlternativeWording}
 <Card title="Open hosted starter" href={"https://neobank-starter.vercel.app"} />
 `;
   assert.notEqual(missingProductionKeyProhibition, safeAlternativeWording);
+  assert.notEqual(browserAccessSafeWording, safeAlternativeWording);
   assert.notEqual(negatedBrowserExposure, safeAlternativeWording);
   assert.notEqual(negatedBackendRequirement, safeAlternativeWording);
   assert.notEqual(negatedSecretManagerStorage, safeAlternativeWording);
+  assert.notEqual(outsideSecretManagerStorage, safeAlternativeWording);
+  assert.notEqual(serverOnlyBrowserExposure, safeAlternativeWording);
+  assert.notEqual(unrelatedBackendGuidance, safeAlternativeWording);
 
   assert.doesNotThrow(() =>
     assertStarterCredentialPolarity(safeAlternativeWording),
+  );
+  assert.doesNotThrow(() =>
+    assertStarterCredentialPolarity(browserAccessSafeWording),
   );
   assert.throws(
     () => assertStarterCredentialPolarity(missingProductionKeyProhibition),
@@ -455,6 +513,9 @@ A backend is required for shared sandbox environments and all production integra
     negatedBrowserExposure,
     negatedBackendRequirement,
     negatedSecretManagerStorage,
+    outsideSecretManagerStorage,
+    serverOnlyBrowserExposure,
+    unrelatedBackendGuidance,
   ]) {
     assert.throws(
       () => assertStarterCredentialPolarity(invertedMutation),

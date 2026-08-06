@@ -506,15 +506,38 @@ function matchingParenthesis(source, openIndex) {
   return -1;
 }
 
+function normalizeCallCallee(calleeSource) {
+  const normalized = calleeSource
+    .replace(/\s*(?:\?\.|\.)\s*/g, ".")
+    .replace(
+      /\s*\[\s*(["'])([A-Za-z_$][\w$]*)\1\s*\]/g,
+      (_match, _quote, member) => `.${member}`,
+    )
+    .replace(/\s/g, "");
+
+  if (/^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*$/.test(normalized)) {
+    return normalized;
+  }
+
+  assert.doesNotMatch(
+    calleeSource,
+    /(?:checkpoint|cursor)/i,
+    "Checkpoint and cursor static member calls must use normalizable names",
+  );
+  return undefined;
+}
+
 function callExpressions(source) {
   const calls = [];
   const pattern =
-    /(?<![\w$])(?:(await)\s+)?([A-Za-z_$][\w$]*(?:\s*\.\s*[A-Za-z_$][\w$]*)*)\s*\(/g;
+    /(?<![\w$])(?:(await)\s+)?([A-Za-z_$][\w$]*(?:(?:\s*(?:\?\.|\.)\s*[A-Za-z_$][\w$]*)|(?:\s*\[\s*(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')\s*\]))*)\s*\(/g;
 
   for (const match of source.matchAll(pattern)) {
     const openIndex = match.index + match[0].lastIndexOf("(");
     const closeIndex = matchingParenthesis(source, openIndex);
     assert.notEqual(closeIndex, -1, "Call must have balanced parentheses");
+    const callee = normalizeCallCallee(match[2]);
+    if (!callee) continue;
 
     let endIndex = closeIndex + 1;
     while (/\s/.test(source[endIndex] ?? "")) endIndex += 1;
@@ -523,7 +546,7 @@ function callExpressions(source) {
     calls.push({
       arguments: source.slice(openIndex + 1, closeIndex),
       awaited: Boolean(match[1]),
-      callee: match[2].replace(/\s/g, ""),
+      callee,
       endIndex,
       index: match.index,
     });
@@ -1028,6 +1051,42 @@ async function reconcile({ requestedEnd }) {
   await checkpointStore.write(capturedAt);
 }
 `;
+  const duplicateDoubleQuotedComputedCheckpointWrite = `
+async function reconcile() {
+  const capturedAt = new Date().toISOString();
+  const page = await requestPage();
+  await updateLocalResource(page.data[0]);
+  await checkpointStore["write"](capturedAt);
+  await checkpointStore.write(capturedAt);
+}
+`;
+  const duplicateSingleQuotedComputedCheckpointWrite = `
+async function reconcile() {
+  const capturedAt = new Date().toISOString();
+  const page = await requestPage();
+  await updateLocalResource(page.data[0]);
+  await checkpointStore['write'](capturedAt);
+  await checkpointStore.write(capturedAt);
+}
+`;
+  const duplicateOptionalCheckpointWrite = `
+async function reconcile() {
+  const capturedAt = new Date().toISOString();
+  const page = await requestPage();
+  await updateLocalResource(page.data[0]);
+  await checkpointStore?.write(capturedAt);
+  await checkpointStore.write(capturedAt);
+}
+`;
+  const unnormalizableStaticCheckpointWrite = `
+async function reconcile() {
+  const capturedAt = new Date().toISOString();
+  const page = await requestPage();
+  await updateLocalResource(page.data[0]);
+  await checkpointStore["write-now"](capturedAt);
+  await checkpointStore.write(capturedAt);
+}
+`;
   const unawaitedThenAwaitedCheckpointWrite = `
 async function reconcile({ requestedEnd }) {
   const capturedAt = new Date().toISOString();
@@ -1078,6 +1137,19 @@ async function reconcile() {
     ["unawaited checkpoint after audit mutation", unawaitedCheckpointAfterAudit],
     ["audit after wrong checkpoint mutation", auditAfterWrongCheckpoint],
     ["duplicate checkpoint write mutation", duplicateCheckpointWrite],
+    [
+      "duplicate double-quoted computed checkpoint mutation",
+      duplicateDoubleQuotedComputedCheckpointWrite,
+    ],
+    [
+      "duplicate single-quoted computed checkpoint mutation",
+      duplicateSingleQuotedComputedCheckpointWrite,
+    ],
+    ["duplicate optional checkpoint mutation", duplicateOptionalCheckpointWrite],
+    [
+      "unnormalizable static checkpoint mutation",
+      unnormalizableStaticCheckpointWrite,
+    ],
     [
       "unawaited then awaited checkpoint mutation",
       unawaitedThenAwaitedCheckpointWrite,
