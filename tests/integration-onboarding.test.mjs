@@ -272,7 +272,12 @@ test("every onboarding operation link, security scheme, and request remains cont
 
 test("customers starts from the intended outcome and stores caller mappings", () => {
   const text = readPage("integration/onboarding/customers");
-  assert.match(text.slice(text.indexOf("---", 3) + 3, text.indexOf("## ")), /pay-in|payout|issued bank account/i);
+  const intro = text.slice(text.indexOf("---", 3) + 3, text.indexOf("## "));
+  assert.match(intro, /pay-in|payout|issued bank account/i);
+  assert.match(
+    intro,
+    /capabilit[^.]*account[^.]*transfer[^.]*scoped[^.]*customer|scoped[^.]*customer[^.]*capabilit[^.]*account[^.]*transfer/i,
+  );
   assertHeadingOrder(text, [
     "Individual customers",
     "Business customers",

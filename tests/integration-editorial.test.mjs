@@ -138,6 +138,26 @@ function body(text) {
   return text.replace(/^---\n[\s\S]*?\n---\n/, "");
 }
 
+function frontmatterDescription(text) {
+  return text.match(/^---\n[\s\S]*?^description:\s*["']([^"']+)["']\s*$[\s\S]*?^---$/m)?.[1];
+}
+
+function firstProseBlock(text) {
+  return body(text)
+    .trim()
+    .split(/\n\s*\n/)
+    .find((block) =>
+      !/^(?:#{1,6}\s|<|```|~~~|-\s|\d+\.\s)/.test(block.trim()),
+    );
+}
+
+function normalizeProse(text) {
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
 function finalBlock(text) {
   const blocks = body(text).trim().split(/\n\s*\n/);
   let start = blocks.length - 1;
@@ -331,6 +351,18 @@ for (const page of PAGES) {
       hasConcreteNextAction(text),
       true,
       `${page}.mdx must end with a linked next developer action`,
+    );
+  });
+
+  test(`${page}.mdx does not repeat its rendered description as the opening paragraph`, () => {
+    const text = readPage(page);
+    const description = frontmatterDescription(text);
+    const opening = firstProseBlock(text);
+    if (!description || !opening) return;
+    assert.notEqual(
+      normalizeProse(opening),
+      normalizeProse(description),
+      `${page}.mdx repeats the description verbatim above its first section`,
     );
   });
 
