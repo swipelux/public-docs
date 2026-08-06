@@ -332,9 +332,6 @@ function card(text, title, href) {
 }
 
 function assertStarterCredentialPolarity(text) {
-  assert.match(text, /hosted[\s\S]{0,160}built-in demo data only/i);
-  assert.match(text, /do not select[\s\S]{0,40}`?Go live`?/i);
-  assert.match(text, /hosted[\s\S]{0,220}never enter[\s\S]{0,80}API key/i);
   assert.doesNotMatch(
     text,
     /\]\(https:\/\/neobank-starter\.vercel\.app\/?\)/i,
@@ -342,6 +339,17 @@ function assertStarterCredentialPolarity(text) {
   );
 
   const paragraphs = text.split(/\n\s*\n/);
+  const hostedWarning = paragraphs.find((paragraph) => /hosted/i.test(paragraph));
+  assert.ok(hostedWarning, "Hosted starter needs a credential warning");
+  assert.match(
+    hostedWarning,
+    /(?:do not|never)[^.]{0,80}(?:choose|select|use)[^.]{0,40}`?Go live`?/i,
+  );
+  assert.match(
+    hostedWarning,
+    /(?:do not|must not|never)[^.]{0,100}(?:enter|expose|provide|supply|use)[^.]{0,60}(?:an? |any )?API key/i,
+  );
+
   const browserDemo = paragraphs.find(
     (paragraph) =>
       /connected[- ]sandbox/i.test(paragraph) &&
@@ -349,16 +357,20 @@ function assertStarterCredentialPolarity(text) {
       /browser/i.test(paragraph),
   );
   assert.ok(browserDemo, "Connected sandbox mode needs a browser credential warning");
-  assert.match(browserDemo, /\b(?:private|personal|single-developer)\b/i);
-  assert.match(browserDemo, /\b(?:disposable|temporary|throwaway)\b/i);
-  assert.match(browserDemo, /\bdemo\b/i);
-  assert.match(browserDemo, /(?:local[^.]{0,80}browser|browser[^.]{0,80}local)/i);
   assert.match(
     browserDemo,
-    /sandbox key[^.]{0,120}(?:browser code|browser runtime|client-side code)/i,
+    /(?:local[^.]{0,80}browser|browser[^.]{0,80}(?:local|your (?:computer|machine)))/i,
+  );
+  assert.match(
+    browserDemo,
+    /(?:sandbox key[^.]{0,120}(?:browser code|browser runtime|client-side code)|(?:browser code|browser runtime|client-side code)[^.]{0,120}sandbox key)/i,
   );
   assert.match(browserDemo, /(?:must not|never)[^.]{0,80}share/i);
   assert.match(browserDemo, /(?:must not|never)[^.]{0,80}deploy/i);
+  assert.match(
+    browserDemo,
+    /(?:do not|must not|never)[^.]{0,100}(?:enter|expose|provide|supply|use)[^.]{0,60}(?:a )?production (?:API )?key/i,
+  );
   assert.doesNotMatch(
     text,
     /(?:browser|connected[- ]sandbox)[^.]{0,160}(?:(?:can|may|safe to) (?:be )?(?:shared|deployed|used in production)|shareable|deployable|production[- ]safe|production[- ]ready)/i,
@@ -375,8 +387,38 @@ function assertStarterCredentialPolarity(text) {
     backendGuidance,
     "Shared sandbox and production integrations must use a backend",
   );
-  assert.match(backendGuidance, /secret manager/i);
+  assert.match(
+    backendGuidance,
+    /(?:\buse\b|\bmust\b|\brequir(?:e|es|ed)\b)[^.]{0,120}\bbackend\b|\bbackend\b[^.]{0,80}\brequir(?:e|es|ed)\b/i,
+  );
+  assert.match(
+    backendGuidance,
+    /\b(?:keep|manage|put|store)\b[^.]{0,100}\b(?:API keys?|credentials?)\b[^.]{0,100}\bsecret manager\b/i,
+  );
 }
+
+test("starter credential guard enforces outcomes without preferred adjectives", () => {
+  const safeAlternativeWording = `
+The hosted starter displays built-in data only. Do not choose \`Go live\`, and never enter an API key there.
+
+Connected sandbox mode runs in a browser on your local computer and exposes the sandbox key to browser runtime code. Never share or deploy this mode. Do not use a production key in connected sandbox mode.
+
+A backend is required for shared sandbox environments and all production integrations. Store API keys in a secret manager.
+`;
+  const missingProductionKeyProhibition = safeAlternativeWording.replace(
+    "Do not use a production key in connected sandbox mode.",
+    "",
+  );
+  assert.notEqual(missingProductionKeyProhibition, safeAlternativeWording);
+
+  assert.doesNotThrow(() =>
+    assertStarterCredentialPolarity(safeAlternativeWording),
+  );
+  assert.throws(
+    () => assertStarterCredentialPolarity(missingProductionKeyProhibition),
+    { name: "AssertionError" },
+  );
+});
 
 test("publishes the four Get started pages in the intended order", () => {
   assertPages(PAGES);
@@ -401,8 +443,8 @@ test("publishes Starter kit as a focused resource outside Get started", () => {
     text,
     /git clone https:\/\/github\.com\/swipelux\/neobank-starter[\s\S]{0,120}cd neobank-starter[\s\S]{0,120}npm install[\s\S]{0,120}npm run dev/,
   );
-  assert.match(text, /built-in demo data/i);
-  assert.match(text, /connected sandbox data/i);
+  assert.match(text, /built-in (?:demo )?data/i);
+  assert.match(text, /connected sandbox (?:data|mode)/i);
   assertStarterCredentialPolarity(text);
   assert.match(text, /\]\(\/integration\/quickstart\)/);
   assert.match(text, /\]\(\/integration\/authentication\)/);

@@ -49,7 +49,9 @@ const PROHIBITED_PATTERNS = [
 ];
 
 function withoutFencedCode(text) {
-  return text.replace(/```[\s\S]*?```|~~~[\s\S]*?~~~/g, "");
+  return text
+    .replace(/```[\s\S]*?```|~~~[\s\S]*?~~~/g, "")
+    .replace(/\{\/\*[\s\S]*?\*\/\}/g, "");
 }
 
 function normalizeReferenceLabel(label) {
@@ -180,7 +182,8 @@ function hasActionableCanonicalLink(text) {
 }
 
 function hasConcreteNextAction(text) {
-  const content = body(text).trim();
+  const visibleText = withoutFencedCode(text);
+  const content = body(visibleText).trim();
   const tail = content.slice(Math.max(0, content.length - 1400));
 
   const nextHeading = [...tail.matchAll(/^## (?:Next step|Next: .+)$/gm)].at(-1);
@@ -194,7 +197,7 @@ function hasConcreteNextAction(text) {
     return true;
   }
 
-  return hasActionableCanonicalLink(finalBlock(text));
+  return hasActionableCanonicalLink(finalBlock(visibleText));
 }
 
 test("derives every canonical Integration page from docs.json", () => {
@@ -232,6 +235,19 @@ test("editorial guards reject representative link, action, and JSON mutations", 
     ),
     false,
     "A link inside fenced code is not a next action",
+  );
+  assert.equal(
+    hasConcreteNextAction(
+      "{/* Continue with [Quickstart](/integration/quickstart). */}",
+    ),
+    false,
+    "A link inside an MDX comment is not a next action",
+  );
+  assert.doesNotThrow(() =>
+    assertCanonicalPublicLinks(
+      "commented route fixture",
+      "{/* Read the [retired guide](/integration/errors). */}",
+    ),
   );
   assert.equal(
     hasConcreteNextAction(
@@ -274,11 +290,13 @@ test("editorial guards reject representative link, action, and JSON mutations", 
   for (const card of [
     '<CardGroup><Card href="/integration/quickstart">Open Quickstart</Card></CardGroup>',
     "<CardGroup><Card href='/integration/quickstart'>Open Quickstart</Card></CardGroup>",
+    '<CardGroup><Card href={"/integration/quickstart"}>Open Quickstart</Card></CardGroup>',
+    "<CardGroup><Card href={'/integration/quickstart'}>Open Quickstart</Card></CardGroup>",
   ]) {
     assert.equal(
       hasConcreteNextAction(card),
       true,
-      "Quoted MDX hrefs remain actionable",
+      "Visible MDX hrefs remain actionable",
     );
   }
 });
