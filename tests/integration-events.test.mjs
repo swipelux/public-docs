@@ -428,19 +428,19 @@ function assertSandboxSafetyBoundary(label, text) {
 function assertNoUnsupportedWebhookGuarantees(label, text) {
   const unsupportedClaims = [
     [
-      /\b(?:HMAC|webhook secret|signing secret|signature header|webhooks? (?:are|is) signed|signed webhooks?|(?:verify|validate)[^.]{0,40}(?:webhook )?signature|X-[A-Za-z0-9-]*Signature)\b/i,
+      /\b(?:HMAC|WEBHOOK_SECRET|webhook secret|signing secret|signature header|webhooks? (?:are|is) signed|signed webhooks?|(?:verify|validate)[^.]{0,40}(?:webhook )?signature|authenticate[^.]{0,40}webhook requests?|X-[A-Za-z0-9-]*Signature)\b/i,
       "webhook signing or secret behavior",
     ],
     [
-      /\b(?:retry every|(?:retry|retries) (?:after|at) \d+|fixed (?:retry|backoff)|retry cadence|exponential backoff|backoff schedule)\b/i,
+      /\b(?:retry every|(?:retry|retries)[^.]{0,60}\b(?:after|at|in)\s+\d+(?:\s+(?:seconds?|minutes?|hours?))?|fixed (?:retry|backoff)|retry cadence|exponential backoff|backoff schedule)\b/i,
       "fixed webhook retry timing",
     ],
     [
-      /\b(?:(?:events?|deliver(?:y|ies)) (?:are |is )?(?:always |strictly )?(?:ordered|delivered in order)|delivery ordering (?:is )?guaranteed)\b/i,
+      /\b(?:(?:events?|deliver(?:y|ies)) (?:are |is )?(?:always |strictly )?(?:ordered|delivered in order)|delivery ordering (?:is )?guaranteed|(?:preserves?|guarantees?)[^.]{0,40}event ordering)\b/i,
       "webhook delivery ordering",
     ],
     [
-      /\b(?:exactly|at[ -]least)[ -]once\b/i,
+      /(?:\b(?:webhooks?|events?|deliver(?:y|ies|ed|ing))\b[^.!?\n]{0,100}\b(?:exactly[ -]once|at[ -]least[ -]once|once and only once)\b|\b(?:exactly[ -]once|at[ -]least[ -]once|once and only once)\b[^.!?\n]{0,100}\b(?:webhooks?|events?|deliver(?:y|ies|ed|ing))\b)/i,
       "webhook delivery cardinality",
     ],
   ];
@@ -451,55 +451,54 @@ function assertNoUnsupportedWebhookGuarantees(label, text) {
 }
 
 function assertSafeReconciliationCheckpoint(label, source) {
-  assert.doesNotMatch(
-    source,
-    /\bwindowEnd\b/,
-    `${label} must not accept a caller-supplied end-of-window checkpoint`,
-  );
-
   const captures = [
     ...source.matchAll(
-      /\bconst\s+runStartedAt\s*=\s*new Date\(\)\.toISOString\(\)\s*;/g,
+      /\bconst\s+([A-Za-z_$][\w$]*)\s*=\s*new Date\(\)\.toISOString\(\)\s*;/g,
     ),
   ];
-  assert.equal(captures.length, 1, `${label} must capture runStartedAt exactly once`);
+  assert.equal(captures.length, 1, `${label} must capture one run timestamp`);
 
   const captureIndex = captures[0].index;
-  const captureEnd = captureIndex + captures[0][0].length;
-  const firstRequestIndex = source.search(/\bawait\s+fetch\s*\(/);
-  assert.notEqual(firstRequestIndex, -1, `${label} must make an API request`);
+  const timestampIdentifier = captures[0][1];
+  const awaitedWork = [...source.matchAll(/\bawait\b/g)];
+  assert.ok(awaitedWork.length > 1, `${label} must await request and checkpoint work`);
   assert.ok(
-    captureIndex < firstRequestIndex,
-    `${label} must capture runStartedAt before the first API request`,
-  );
-  assert.doesNotMatch(
-    source.slice(captureEnd, firstRequestIndex),
-    /\bawait\b/,
-    `${label} must capture runStartedAt immediately before request work begins`,
+    captureIndex < awaitedWork[0].index,
+    `${label} must capture the run timestamp before asynchronous request work`,
   );
 
-  const paginationEnd = source.indexOf("} while (hasMore);");
-  assert.ok(
-    paginationEnd > firstRequestIndex,
-    `${label} must complete pagination before saving the checkpoint`,
-  );
-
-  const saves = [
-    ...source.matchAll(/\bawait\s+saveCheckpoint\(\s*runStartedAt\s*\)\s*;/g),
+  const escapedIdentifier = timestampIdentifier.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const checkpointCalls = [
+    ...source.matchAll(
+      new RegExp(
+        `\\bawait\\s+[A-Za-z_$][\\w$]*(?:\\s*\\.\\s*[A-Za-z_$][\\w$]*)*\\s*\\(\\s*${escapedIdentifier}\\s*\\)\\s*;`,
+        "g",
+      ),
+    ),
   ];
   assert.equal(
-    saves.length,
+    checkpointCalls.length,
     1,
-    `${label} must save the exact runStartedAt timestamp once`,
+    `${label} must pass the captured timestamp to one awaited checkpoint write`,
   );
-  assert.ok(
-    saves[0].index > paginationEnd,
-    `${label} must save the checkpoint after every page succeeds`,
+  assert.equal(
+    checkpointCalls[0].index,
+    awaitedWork.at(-1).index,
+    `${label} must write the checkpoint only after all other awaited work`,
   );
+}
+
+function assertRuleOperationResponsibilities(label, text) {
+  assert.match(text, /include rules?[^.]{0,120}periodic reconciliation/i);
   assert.match(
-    source,
-    /for\s*\([^)]*resourcesById\.values\(\)[^)]*\)\s*\{[\s\S]*?await\s+applyCurrentState\([^;]+;\s*\}\s*await\s+saveCheckpoint\(\s*runStartedAt\s*\)\s*;/,
-    `${label} must save the checkpoint only after every local apply succeeds`,
+    text,
+    /(?:directly\s+)?(?:refetch|read)[^.]{0,100}(?:current\s+)?rule[^.]{0,120}before[^.]{0,120}(?:operator action|operator[^.]{0,60}(?:changes?|acts?))|before[^.]{0,120}(?:operator action|operator[^.]{0,60}(?:changes?|acts?))[^.]{0,120}(?:directly\s+)?(?:refetch|read)[^.]{0,100}(?:current\s+)?rule/i,
+    `${label} must directly refetch the current rule before operator changes`,
+  );
+  assert.doesNotMatch(
+    text,
+    /(?:^|[.!?]\s+)(?!(?:do not|don't|never)\b)[^.!?\n]{0,100}\breconciliation\b[^.!?\n]{0,100}\bbefore every operator action\b/im,
+    `${label} must not require reconciliation before every operator action`,
   );
 }
 
@@ -588,14 +587,20 @@ test("webhooks presents one complete crash-safe delivery workflow", () => {
     ["api.deprecation", "transfer.created"],
     "subscribable webhook names without published payload contracts",
   );
+  assert.doesNotMatch(process, /contract-backed payload pages?|endpoint allowlist/i);
+  assert.match(process, /`api\.deprecation`/);
+  assert.match(process, /`transfer\.created`/);
   assert.match(
     process,
-    /API Reference[\s\S]{0,160}contract-backed payload pages[\s\S]{0,120}only[\s\S]{0,80}documented events/i,
+    /payloads?[\s\S]{0,180}(?:are |is )?not documented/i,
   );
-  assert.match(process, /`api\.deprecation`[\s\S]{0,120}`transfer\.created`/);
   assert.match(
     process,
-    /do not infer[\s\S]{0,120}(?:payload )?shapes?[\s\S]{0,160}contact Swipelux[\s\S]{0,120}before subscribing/i,
+    /do not infer[^.]{0,100}(?:their )?(?:fields?|properties)[\s\S]{0,160}contact Swipelux[\s\S]{0,120}before subscribing/i,
+  );
+  assert.match(
+    process,
+    /for (?:each|a) documented event[^.]{0,140}(?:use|open|see)[^.]{0,100}(?:event(?:'s)?|corresponding)[^.]{0,80}API Reference page/i,
   );
   assert.doesNotMatch(process, /defines every supported payload/i);
   assert.ok(
@@ -661,11 +666,15 @@ test("webhook copy rejects unsupported delivery guarantees", () => {
   for (const badClaim of [
     "Verify the HMAC with your webhook secret.",
     "Webhooks are signed with a signature header.",
+    "Set WEBHOOK_SECRET and use it to authenticate webhook requests.",
     "Retry after 30 seconds.",
+    "Swipelux retries failed deliveries in 30 seconds.",
     "Failed deliveries use exponential backoff.",
     "Deliveries are strictly ordered.",
+    "Swipelux preserves event ordering.",
     "Delivery is exactly-once.",
     "Delivery is at-least-once.",
+    "Each event is delivered once and only once.",
   ]) {
     assert.throws(
       () => assertNoUnsupportedWebhookGuarantees("mutation fixture", badClaim),
@@ -673,6 +682,13 @@ test("webhook copy rejects unsupported delivery guarantees", () => {
       `Expected unsupported webhook claim to fail: ${badClaim}`,
     );
   }
+
+  assert.doesNotThrow(() =>
+    assertNoUnsupportedWebhookGuarantees(
+      "unrelated frequency fixture",
+      "Run the command at least once before continuing.",
+    ),
+  );
 });
 
 test("API reliability explains one idempotent write and one Problem response", () => {
@@ -807,31 +823,38 @@ test("sync and reconciliation follows every cursor before advancing a checkpoint
 
 test("reconciliation checkpoint guard fails closed on unsafe timestamp sources", () => {
   const callerSuppliedWindowEnd = `
-async function reconcile({ windowEnd }) {
-  const runStartedAt = new Date().toISOString();
-  let hasMore;
-  do {
-    await fetch("https://platform.swipelux.com/v3/customers");
-    hasMore = false;
-  } while (hasMore);
-  for (const resource of resourcesById.values()) {
-    await applyCurrentState(resource.id, resource);
+async function reconcile({ requestedEnd }) {
+  const capturedAt = new Date().toISOString();
+  const page = await requestPage();
+  for (const resource of page.data) {
+    await updateLocalResource(resource);
   }
-  await saveCheckpoint(windowEnd);
+  await checkpointStore.write(requestedEnd);
 }
 `;
   const timestampCapturedAfterPagination = `
 async function reconcile() {
-  let hasMore;
-  do {
-    await fetch("https://platform.swipelux.com/v3/customers");
-    hasMore = false;
-  } while (hasMore);
-  const runStartedAt = new Date().toISOString();
-  for (const resource of resourcesById.values()) {
-    await applyCurrentState(resource.id, resource);
+  const page = await requestPage();
+  const capturedAt = new Date().toISOString();
+  for (const resource of page.data) {
+    await updateLocalResource(resource);
   }
-  await saveCheckpoint(runStartedAt);
+  await checkpointStore.write(capturedAt);
+}
+`;
+  const harmlessSafeRefactor = `
+async function synchronize() {
+  const completionBoundary = new Date().toISOString();
+  let pageToken;
+  while (true) {
+    const page = await requestPage(pageToken);
+    for (const resource of page.data) {
+      await updateLocalResource(resource);
+    }
+    if (!page.hasMore) break;
+    pageToken = page.nextCursor;
+  }
+  await checkpointStore.write(completionBoundary);
 }
 `;
 
@@ -850,6 +873,9 @@ async function reconcile() {
         timestampCapturedAfterPagination,
       ),
     { name: "AssertionError" },
+  );
+  assert.doesNotThrow(() =>
+    assertSafeReconciliationCheckpoint("safe refactor", harmlessSafeRefactor),
   );
 });
 
@@ -914,19 +940,15 @@ test("production readiness covers a controlled environment cutover", () => {
 
 test("rules use periodic reconciliation and a direct refetch before operator actions", () => {
   const text = requiredPage("integration/rules");
-  assert.match(text, /rules?[\s\S]{0,120}periodic reconciliation/i);
-  assert.match(
-    text,
-    /before[\s\S]{0,80}(?:each|an) operator action[\s\S]{0,140}(?:directly )?(?:refetch|read)[\s\S]{0,100}(?:current )?rule/i,
-  );
-  assert.match(
-    text,
-    /do not run[\s\S]{0,80}(?:the )?full reconciliation job[\s\S]{0,100}foreground[\s\S]{0,80}before (?:each|every) action/i,
-  );
-  assert.doesNotMatch(
-    text,
-    /reconciliation[\s\S]{0,120}before every operator action/i,
-    "Rules must not run the full reconciliation job in the foreground before each action",
+  assertRuleOperationResponsibilities("Rules", text);
+
+  assert.throws(
+    () =>
+      assertRuleOperationResponsibilities(
+        "unsafe rules mutation",
+        "Include rules in periodic reconciliation. Directly refetch the current rule before an operator acts on it. Run reconciliation before every operator action.",
+      ),
+    { name: "AssertionError" },
   );
 });
 

@@ -48,19 +48,54 @@ const PROHIBITED_PATTERNS = [
   [/\bStage [A-D]\b|\bTask \d+\b/i, "implementation-stage language"],
 ];
 
+function withoutFencedCode(text) {
+  return text.replace(/```[\s\S]*?```|~~~[\s\S]*?~~~/g, "");
+}
+
+function normalizeReferenceLabel(label) {
+  return label.trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+function referenceDefinitions(text) {
+  const definitions = new Map();
+  for (const match of withoutFencedCode(text).matchAll(
+    /^\s{0,3}\[([^\]]+)\]:[ \t]*(?:\n[ \t]+)?(?:<([^>]+)>|(\S+))/gm,
+  )) {
+    definitions.set(normalizeReferenceLabel(match[1]), match[2] ?? match[3]);
+  }
+  return definitions;
+}
+
+function linkUsages(text) {
+  const source = withoutFencedCode(text);
+  const definitions = referenceDefinitions(source);
+  const usages = [
+    ...[
+      ...source.matchAll(/(?<!!)\[([^\]]+)\]\(\s*(?:<([^>]+)>|([^\s)]+))/g),
+    ].map((match) => ({ label: match[1], href: match[2] ?? match[3] })),
+    ...[
+      ...source.matchAll(
+        /\bhref\s*=\s*(?:"([^"]+)"|'([^']+)'|\{\s*"([^"]+)"\s*\}|\{\s*'([^']+)'\s*\})/g,
+      ),
+    ].map((match) => ({
+      label: "",
+      href: match[1] ?? match[2] ?? match[3] ?? match[4],
+    })),
+  ];
+
+  for (const match of source.matchAll(/(?<!!)\[([^\]]+)\]\[([^\]]*)\]/g)) {
+    const reference = normalizeReferenceLabel(match[2] || match[1]);
+    const href = definitions.get(reference);
+    if (href) usages.push({ label: match[1], href });
+  }
+
+  return usages;
+}
+
 function links(text) {
   return [
-    ...[
-      ...text.matchAll(/\[[^\]]+\]\(\s*(?:<([^>]+)>|([^\s)]+))/g),
-    ].map((match) => match[1] ?? match[2]),
-    ...[...text.matchAll(/\bhref=(?:"([^"]+)"|'([^']+)')/g)].map(
-      (match) => match[1] ?? match[2],
-    ),
-    ...[
-      ...text.matchAll(
-        /^\s{0,3}\[[^\]]+\]:[ \t]*(?:\n[ \t]+)?(?:<([^>]+)>|(\S+))/gm,
-      ),
-    ].map((match) => match[1] ?? match[2]),
+    ...linkUsages(text).map(({ href }) => href),
+    ...referenceDefinitions(text).values(),
   ];
 }
 
@@ -84,7 +119,7 @@ function assertCanonicalPublicLinks(label, text) {
 function assertJsonFileReferencesExist(label, text) {
   const references = [
     ...text.matchAll(
-      /(?:^|[\s"'`=(])@((?:(?:\.\.?\/)|\/)?[A-Za-z0-9][A-Za-z0-9._/-]*\.json)\b/g,
+      /(?:^|[\s"'`=(])@((?:(?:(?:\.\.?\/)+)|\/)?[A-Za-z0-9][A-Za-z0-9._/-]*\.json)\b/g,
     ),
   ].map((match) => match[1]);
 
@@ -102,27 +137,42 @@ function body(text) {
 }
 
 function finalBlock(text) {
-  return body(text).trim().split(/\n\s*\n/).at(-1) ?? "";
+  const blocks = body(text).trim().split(/\n\s*\n/);
+  let start = blocks.length - 1;
+  while (start > 0 && isReferenceDefinitionBlock(blocks[start])) start -= 1;
+  return blocks.slice(start).join("\n\n");
+}
+
+function isReferenceDefinitionBlock(block) {
+  return block
+    .trim()
+    .split("\n")
+    .every(
+      (line) =>
+        /^\s{0,3}\[[^\]]+\]:/.test(line) ||
+        (/^[ \t]+/.test(line) && line.trim().length > 0),
+    );
 }
 
 function hasActionableCanonicalLink(text) {
-  const hasCanonicalLink = links(text).some((href) =>
+  const source = withoutFencedCode(text);
+  const hasCanonicalLink = linkUsages(source).some(({ href }) =>
     /^\/(?:integration|api-reference)(?:[\/#?]|$)/.test(href),
   );
   if (!hasCanonicalLink) return false;
 
-  const proseOutsideLinks = text
-    .replace(/```[\s\S]*?```/g, "")
+  const proseOutsideLinks = source
     .replace(/^#{1,6} .+$/gm, "")
     .replace(/\[[^\]]+\]\([^)]+\)/g, "")
     .replace(/\[[^\]]+\]\[[^\]]*\]/g, "")
-    .replace(/^\s{0,3}\[[^\]]+\]:\s*(?:<[^>]+>|\S+)/gm, "")
+    .replace(/^\s{0,3}\[[^\]]+\]:[ \t]*(?:\n[ \t]+)?(?:<[^>]+>|\S+).*$/gm, "")
     .replace(/<[^>]+>/g, "");
   if (!/[A-Za-z]{2,}/.test(proseOutsideLinks)) return false;
 
-  const readableText = text
+  const readableText = source
     .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
     .replace(/\[([^\]]+)\]\[[^\]]*\]/g, "$1")
+    .replace(/^\s{0,3}\[[^\]]+\]:[ \t]*(?:\n[ \t]+)?(?:<[^>]+>|\S+).*$/gm, "")
     .replace(/<[^>]+>/g, "");
   return /\b(?:add|apply|build|choose|complete|configure|connect|continue|create|follow|implement|inspect|issue|keep|monitor|open|persist|prepare|read|register|review|run|send|start|store|take|test|use|verify|wire)\b/i.test(
     readableText,
@@ -167,6 +217,36 @@ test("editorial guards reject representative link, action, and JSON mutations", 
       ),
     { name: "AssertionError" },
   );
+  for (const expression of [
+    '<Card href={"/integration/errors"}>Old guide</Card>',
+    "<Card href={'/integration/errors'}>Old guide</Card>",
+  ]) {
+    assert.throws(
+      () => assertCanonicalPublicLinks("static MDX mutation", expression),
+      { name: "AssertionError" },
+    );
+  }
+  assert.equal(
+    hasConcreteNextAction(
+      "## Next step\n\n```md\nRun the [Quickstart](/integration/quickstart).\n```",
+    ),
+    false,
+    "A link inside fenced code is not a next action",
+  );
+  assert.equal(
+    hasConcreteNextAction(
+      "## Next step\n\nRead the guide.\n\n[guide]: /integration/quickstart",
+    ),
+    false,
+    "An unused reference definition is not a next action",
+  );
+  assert.equal(
+    hasConcreteNextAction(
+      "## Next step\n\nContinue with the [Quickstart][guide].\n\n[guide]: /integration/quickstart",
+    ),
+    true,
+    "A used reference link remains actionable",
+  );
   assert.throws(
     () =>
       assertJsonFileReferencesExist(
@@ -175,9 +255,32 @@ test("editorial guards reject representative link, action, and JSON mutations", 
       ),
     { name: "AssertionError" },
   );
+  assert.throws(
+    () =>
+      assertJsonFileReferencesExist(
+        "parent traversal JSON mutation",
+        "curl --data @../../missing.json https://example.com",
+      ),
+    { name: "AssertionError" },
+  );
   assert.doesNotThrow(() =>
     assertJsonFileReferencesExist("existing JSON fixture", "curl --data @docs.json"),
   );
+  assert.equal(
+    hasConcreteNextAction("Continue with the [Quickstart](/integration/quickstart)."),
+    true,
+    "Inline links remain actionable",
+  );
+  for (const card of [
+    '<CardGroup><Card href="/integration/quickstart">Open Quickstart</Card></CardGroup>',
+    "<CardGroup><Card href='/integration/quickstart'>Open Quickstart</Card></CardGroup>",
+  ]) {
+    assert.equal(
+      hasConcreteNextAction(card),
+      true,
+      "Quoted MDX hrefs remain actionable",
+    );
+  }
 });
 
 for (const page of PAGES) {

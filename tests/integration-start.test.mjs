@@ -341,22 +341,41 @@ function assertStarterCredentialPolarity(text) {
     "Starter kit must not invite developers into the externally hosted credential form",
   );
 
-  assert.match(
-    text,
-    /connected[- ]sandbox browser mode[\s\S]{0,180}intentionally insecure[\s\S]{0,100}local-only[\s\S]{0,100}disposable/i,
+  const paragraphs = text.split(/\n\s*\n/);
+  const browserDemo = paragraphs.find(
+    (paragraph) =>
+      /connected[- ]sandbox/i.test(paragraph) &&
+      /sandbox key/i.test(paragraph) &&
+      /browser/i.test(paragraph),
   );
-  assert.match(text, /never[\s\S]{0,80}share[\s\S]{0,80}deploy/i);
-  assert.match(text, /shared or browser-hosted environment/i);
+  assert.ok(browserDemo, "Connected sandbox mode needs a browser credential warning");
+  assert.match(browserDemo, /\b(?:private|personal|single-developer)\b/i);
+  assert.match(browserDemo, /\b(?:disposable|temporary|throwaway)\b/i);
+  assert.match(browserDemo, /\bdemo\b/i);
+  assert.match(browserDemo, /(?:local[^.]{0,80}browser|browser[^.]{0,80}local)/i);
+  assert.match(
+    browserDemo,
+    /sandbox key[^.]{0,120}(?:browser code|browser runtime|client-side code)/i,
+  );
+  assert.match(browserDemo, /(?:must not|never)[^.]{0,80}share/i);
+  assert.match(browserDemo, /(?:must not|never)[^.]{0,80}deploy/i);
   assert.doesNotMatch(
     text,
     /(?:browser|connected[- ]sandbox)[^.]{0,160}(?:(?:can|may|safe to) (?:be )?(?:shared|deployed|used in production)|shareable|deployable|production[- ]safe|production[- ]ready)/i,
     "Browser mode must not be portrayed as shareable, deployable, or production-safe",
   );
 
-  assert.match(
-    text,
-    /normal connected sandbox[\s\S]{0,180}all production[\s\S]{0,180}backend[\s\S]{0,180}secret manager/i,
+  const backendGuidance = paragraphs.find(
+    (paragraph) =>
+      /shared sandbox/i.test(paragraph) &&
+      /(?:all|every) production/i.test(paragraph) &&
+      /backend/i.test(paragraph),
   );
+  assert.ok(
+    backendGuidance,
+    "Shared sandbox and production integrations must use a backend",
+  );
+  assert.match(backendGuidance, /secret manager/i);
 }
 
 test("publishes the four Get started pages in the intended order", () => {
