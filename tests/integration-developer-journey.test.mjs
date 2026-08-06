@@ -113,6 +113,10 @@ test("homepage and overview lead with outcomes and the product demo", () => {
   ]) {
     assert.match(homepage, new RegExp(`title=["']${title}["']`));
   }
+  assert.match(
+    homepage,
+    /<Card\b(?=[^>]*title=["']Issue a bank account["'])(?=[^>]*icon=["']building-columns["'])[^>]*>/,
+  );
   assert.match(homepage, /https:\/\/demo\.swipelux\.com/);
   assert.match(homepage, /https:\/\/github\.com\/swipelux\/neobank-starter/);
 
