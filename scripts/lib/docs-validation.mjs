@@ -212,7 +212,7 @@ const FROZEN_MIGRATION_DECISION_ROWS = Object.freeze([
   ],
   [
     "content/get-started/api-reference.mdx",
-    "/api-reference",
+    "/api-reference/customers/post-v3-customers",
     "contract-rewrite",
     "not-applicable",
   ],
@@ -309,7 +309,7 @@ const FROZEN_MIGRATION_DECISION_ROWS = Object.freeze([
   ],
   [
     "content/reference/endpoint-map.mdx",
-    "/api-reference",
+    "/api-reference/customers/post-v3-customers",
     "contract-rewrite",
     "not-applicable",
   ],
@@ -452,7 +452,8 @@ export const STRUCTURE_REDIRECTS = Object.freeze({
   "/integration/pagination-and-sync":
     "/integration/sync-and-reconciliation",
   "/integration/request-safety": "/integration/api-reliability",
-  "/integration/using-the-api-reference": "/api-reference",
+  "/integration/using-the-api-reference":
+    "/api-reference/customers/post-v3-customers",
   "/integration/onboarding/individuals":
     "/integration/onboarding/customers#individual-customers",
   "/integration/onboarding/businesses":
@@ -508,7 +509,8 @@ export const APPROVED_REDIRECT_DESTINATIONS = Object.freeze({
   "/concepts/wallets": "/integration/accounts",
   "/concepts/webhooks": "/integration/webhooks",
   "/get-started": "/integration/overview",
-  "/get-started/api-reference": "/api-reference",
+  "/get-started/api-reference":
+    "/api-reference/customers/post-v3-customers",
   "/get-started/authentication": "/integration/authentication",
   "/get-started/sandbox": "/integration/sandbox",
   "/get-started/starter-kit": "/integration/starter-kit",
@@ -530,7 +532,8 @@ export const APPROVED_REDIRECT_DESTINATIONS = Object.freeze({
   "/receive": "/integration/receive-funds",
   "/receive/pooled-payins": "/integration/receive-funds",
   "/receive/virtual-accounts": "/integration/receive-funds",
-  "/reference/endpoint-map": "/api-reference",
+  "/reference/endpoint-map":
+    "/api-reference/customers/post-v3-customers",
   "/reference/rates": "/api-reference/money-movement/get-v3-rates",
   "/reference/supported-rails": "/integration/overview",
   "/reference/v3-blockchain-networks": "/integration/accounts",
@@ -1087,7 +1090,6 @@ export function validateRedirectInventory(inventory, options = {}) {
       const destinationPath = destination.split("#", 1)[0];
       if (
         knownDestinations &&
-        destinationPath !== "/api-reference" &&
         !knownDestinations.has(destinationPath)
       ) {
         errors.push(`${location}: unknown destination ${destination}`);

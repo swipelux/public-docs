@@ -100,6 +100,7 @@ function knownRedirectDestinations() {
   return new Set([
     "/",
     ...REQUIRED_NAVIGATION_PAGES.map((page) => `/${page}`),
+    "/api-reference/customers/post-v3-customers",
     "/api-reference/money-movement/get-v3-rates",
   ]);
 }
@@ -167,6 +168,7 @@ function createCompleteCliFixture({
   writeFixtureJson(fixture, "openapi.json", {});
   writeFixtureJson(fixture, "openapi-coverage.json", {
     operations: [
+      { href: "/api-reference/customers/post-v3-customers" },
       { href: "/api-reference/money-movement/get-v3-rates" },
     ],
     webhooks: [],
@@ -957,6 +959,20 @@ test("rejects redirects to unknown destinations", () => {
   assertHasError(errors, /unknown destination \/unknown/i);
 });
 
+test("does not treat bare /api-reference as an implicit destination", () => {
+  const errors = validateRedirectInventory(
+    [redirect("/old", "/api-reference")],
+    {
+      expectedSources: ["/old"],
+      knownDestinations: new Set([
+        "/api-reference/customers/post-v3-customers",
+      ]),
+    },
+  );
+
+  assertHasError(errors, /unknown destination \/api-reference/i);
+});
+
 test("rejects duplicate redirect sources", () => {
   const errors = validateRedirectInventory(
     [redirect(), redirect()],
@@ -1365,6 +1381,10 @@ test("keeps the approved legacy route destinations", () => {
 
   assert.equal(destinations.get("/get-started"), "/integration/overview");
   assert.equal(
+    destinations.get("/get-started/api-reference"),
+    "/api-reference/customers/post-v3-customers",
+  );
+  assert.equal(
     destinations.get("/compliance/merchant-onboarding"),
     "/knowledge-base/business-onboarding/overview",
   );
@@ -1394,12 +1414,33 @@ test("keeps the approved legacy route destinations", () => {
   );
   assert.equal(
     destinations.get("/reference/endpoint-map"),
-    "/api-reference",
+    "/api-reference/customers/post-v3-customers",
+  );
+  assert.equal(
+    destinations.get("/integration/using-the-api-reference"),
+    "/api-reference/customers/post-v3-customers",
   );
   assert.equal(
     inventory.some(({ source }) => source.startsWith("/t-c")),
     false,
   );
+});
+
+test("keeps generic-reference migration rows on the customer-creation entry point", () => {
+  const ledger = committedLedger();
+  for (const sourcePath of [
+    "content/get-started/api-reference.mdx",
+    "content/reference/endpoint-map.mdx",
+  ]) {
+    const expectedDestination = "/api-reference/customers/post-v3-customers";
+    assert.equal(
+      FROZEN_MIGRATION_DECISIONS[sourcePath].destination,
+      expectedDestination,
+    );
+    const row = ledger.find((entry) => entry.sourcePath === sourcePath);
+    assert.equal(row?.destination, expectedDestination);
+    assert.match(row?.notes ?? "", /customer-creation API Reference entry point/i);
+  }
 });
 
 test("validates complete ledger and redirect coverage", () => {

@@ -371,6 +371,11 @@ test("capability onboarding follows discovery, request, requirements, and readin
   assert.match(text, /current requirement[^.]*type|answer type[^.]*current requirement/i);
   assert.match(text, /refetch|read the capability again/i);
   assert.match(text, /continue only when[^.]*current (?:status|state)/i);
+  assert.match(
+    text,
+    /each operation above links to its complete API Reference schema/i,
+  );
+  assert.doesNotMatch(text, /\]\(\/api-reference\)/);
 });
 
 test("capability request, document upload, and text submission examples validate", () => {

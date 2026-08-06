@@ -96,7 +96,8 @@ const STRUCTURE_REDIRECTS = {
   "/integration/pagination-and-sync":
     "/integration/sync-and-reconciliation",
   "/integration/request-safety": "/integration/api-reliability",
-  "/integration/using-the-api-reference": "/api-reference",
+  "/integration/using-the-api-reference":
+    "/api-reference/customers/post-v3-customers",
   "/integration/onboarding/individuals":
     "/integration/onboarding/customers#individual-customers",
   "/integration/onboarding/businesses":

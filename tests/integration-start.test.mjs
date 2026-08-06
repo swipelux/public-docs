@@ -797,7 +797,11 @@ test("quickstart follows the customer-first shared setup before outcome branches
     assert.equal(card(text, title, href), true, `Missing ${title} next-step card`);
   }
   assert.match(text, /\/integration\/webhooks/);
-  assert.match(text, /\/api-reference/);
+  assert.match(
+    text,
+    /each request above already links to its complete API Reference schema and status page/i,
+  );
+  assert.doesNotMatch(text, /\]\(\/api-reference\)/);
 });
 
 test("quickstart keeps one customer-owned payout path and delegates third-party payouts", () => {

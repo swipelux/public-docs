@@ -351,11 +351,11 @@ const RELATED_API_WORKFLOW_LINES = new Map([
   ],
   [
     "knowledge-base/compliance/screening-and-monitoring",
-    "Related API workflows: [individual onboarding](/integration/onboarding/individuals) and [business onboarding](/integration/onboarding/businesses).",
+    "Related API workflows: [individual onboarding](/integration/onboarding/customers#individual-customers) and [business onboarding](/integration/onboarding/customers#business-customers).",
   ],
   [
     "knowledge-base/compliance/governance-retention-and-privacy",
-    "Related API workflows: [individual onboarding](/integration/onboarding/individuals) and [business onboarding](/integration/onboarding/businesses).",
+    "Related API workflows: [individual onboarding](/integration/onboarding/customers#individual-customers) and [business onboarding](/integration/onboarding/customers#business-customers).",
   ],
 ]);
 
@@ -697,11 +697,17 @@ test("overview separates onboarding policy topics from implementation workflows"
     ["Jurisdiction Framework", "/knowledge-base/compliance/jurisdictions-and-availability"],
     ["Transaction Limits", "/knowledge-base/compliance/transaction-limits"],
     ["KYC Verification", "/knowledge-base/individual-onboarding/overview"],
-    ["Individual onboarding API workflow", "/integration/onboarding/individuals"],
+    [
+      "Individual onboarding API workflow",
+      "/integration/onboarding/customers#individual-customers",
+    ],
     ["Wallet Architecture", "/knowledge-base/compliance/custody-and-wallet-controls"],
     ["Payment Methods", "/knowledge-base/compliance/payment-methods"],
     ["Merchant Onboarding", "/knowledge-base/business-onboarding/overview"],
-    ["Business onboarding API workflow", "/integration/onboarding/businesses"],
+    [
+      "Business onboarding API workflow",
+      "/integration/onboarding/customers#business-customers",
+    ],
     ["Travel Rule", "/knowledge-base/compliance/travel-rule"],
     ["Screening and Monitoring", "/knowledge-base/compliance/screening-and-monitoring"],
     ["Governance", "/knowledge-base/compliance/governance-retention-and-privacy"],
@@ -718,14 +724,16 @@ test("overview separates onboarding policy topics from implementation workflows"
   for (const topic of [
     {
       heading: "End-User Identity Verification (KYC)",
-      implementationHref: "/integration/onboarding/individuals",
+      implementationHref:
+        "/integration/onboarding/customers#individual-customers",
       implementationLabel: "Individual onboarding API workflow",
       policyHref: "/knowledge-base/individual-onboarding/overview",
       policyLabel: "KYC Verification",
     },
     {
       heading: "Merchant Onboarding (KYB)",
-      implementationHref: "/integration/onboarding/businesses",
+      implementationHref:
+        "/integration/onboarding/customers#business-customers",
       implementationLabel: "Business onboarding API workflow",
       policyHref: "/knowledge-base/business-onboarding/overview",
       policyLabel: "Merchant Onboarding",
@@ -921,16 +929,16 @@ test("preserves the responsibility matrix, five-year retention, deletion, and pr
 test("uses current Integration Docs links without turning policy pages into API reference", (t) => {
   if (!requirePages(t)) return;
   const expectedLinks = new Map([
-    ["knowledge-base/compliance/overview", ["/knowledge-base/individual-onboarding/overview", "/integration/onboarding/individuals", "/knowledge-base/business-onboarding/overview", "/integration/onboarding/businesses"]],
-    ["knowledge-base/compliance/regulatory-perimeter", ["/integration/onboarding/individuals", "/integration/onboarding/businesses", "/integration/accounts"]],
-    ["knowledge-base/compliance/supported-business-models", ["/integration/onboarding/businesses"]],
-    ["knowledge-base/compliance/jurisdictions-and-availability", ["/integration/onboarding/individuals", "/integration/receive-funds", "/integration/send-funds"]],
-    ["knowledge-base/compliance/transaction-limits", ["/integration/onboarding/individuals", "/integration/onboarding/businesses"]],
+    ["knowledge-base/compliance/overview", ["/knowledge-base/individual-onboarding/overview", "/integration/onboarding/customers#individual-customers", "/knowledge-base/business-onboarding/overview", "/integration/onboarding/customers#business-customers"]],
+    ["knowledge-base/compliance/regulatory-perimeter", ["/integration/onboarding/customers#individual-customers", "/integration/onboarding/customers#business-customers", "/integration/accounts"]],
+    ["knowledge-base/compliance/supported-business-models", ["/integration/onboarding/customers#business-customers"]],
+    ["knowledge-base/compliance/jurisdictions-and-availability", ["/integration/onboarding/customers#individual-customers", "/integration/receive-funds", "/integration/send-funds"]],
+    ["knowledge-base/compliance/transaction-limits", ["/integration/onboarding/customers#individual-customers", "/integration/onboarding/customers#business-customers"]],
     ["knowledge-base/compliance/custody-and-wallet-controls", ["/integration/accounts", "/integration/send-funds"]],
     ["knowledge-base/compliance/payment-methods", ["/integration/receive-funds", "/integration/send-funds", "/integration/recipients"]],
     ["knowledge-base/compliance/travel-rule", ["/integration/recipients", "/integration/send-funds"]],
-    ["knowledge-base/compliance/screening-and-monitoring", ["/integration/onboarding/individuals", "/integration/onboarding/businesses"]],
-    ["knowledge-base/compliance/governance-retention-and-privacy", ["/integration/onboarding/individuals", "/integration/onboarding/businesses"]],
+    ["knowledge-base/compliance/screening-and-monitoring", ["/integration/onboarding/customers#individual-customers", "/integration/onboarding/customers#business-customers"]],
+    ["knowledge-base/compliance/governance-retention-and-privacy", ["/integration/onboarding/customers#individual-customers", "/integration/onboarding/customers#business-customers"]],
   ]);
 
   for (const page of PAGES) {
