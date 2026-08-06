@@ -177,10 +177,10 @@ const EXPECTED_NAVIGATION = {
 const APPROVED_SYMBOL =
   '<svg xmlns="http://www.w3.org/2000/svg" width="65" height="64" fill="none"><path fill="#F4663E" d="M2.938 34.102a2.97 2.97 0 0 1 0-4.204L18.2 14.655a2.98 2.98 0 0 1 4.21 0l15.262 15.243a2.97 2.97 0 0 1 0 4.204L22.411 49.345a2.98 2.98 0 0 1-4.21 0L2.937 34.102Z"/><path fill="#FA9B51" d="M27.897 44.922a1.486 1.486 0 0 0 0 2.103l2.323 2.32a2.98 2.98 0 0 0 4.21 0l15.262-15.243a2.97 2.97 0 0 0 0-4.204L34.43 14.655a2.98 2.98 0 0 0-4.21 0l-2.323 2.32a1.485 1.485 0 0 0 0 2.103l10.834 10.82a2.97 2.97 0 0 1 0 4.204l-10.834 10.82Z"/><path fill="#FFDA99" d="M39.909 44.923a1.485 1.485 0 0 0 0 2.102l2.323 2.32a2.98 2.98 0 0 0 4.21 0l15.262-15.243a2.97 2.97 0 0 0 0-4.204L46.442 14.655a2.98 2.98 0 0 0-4.21 0l-2.323 2.32a1.485 1.485 0 0 0 0 2.102l10.834 10.82a2.97 2.97 0 0 1 0 4.205l-10.834 10.82Z"/></svg>';
 const LIGHT_DOCS_BACKGROUND = "#FAFAFA";
-const MPANEL_COLORS = {
+const PUBLIC_DOCS_COLORS = {
   primary: "#252525",
   light: "#FFFFFF",
-  dark: "#777777",
+  dark: "#737373",
 };
 
 function relativeLuminance(hex) {
@@ -254,11 +254,17 @@ test("uses the approved Swipelux identity and site controls", () => {
     dark: "/logo/dark.svg",
   });
   assert.equal(config.theme, "palm");
-  assert.deepEqual(config.colors, MPANEL_COLORS);
+  assert.deepEqual(config.colors, PUBLIC_DOCS_COLORS);
   assert.deepEqual(config.appearance, { default: "light", strict: true });
   assert.deepEqual(config.fonts, {
-    family: "Geist",
-    weight: 400,
+    heading: {
+      family: "Geist",
+      weight: 500,
+    },
+    body: {
+      family: "Geist",
+      weight: 400,
+    },
   });
   assert.deepEqual(config.icons, { library: "lucide" });
   assert.deepEqual(config.background, {
@@ -272,7 +278,7 @@ test("mirrors the mpanel visual foundation with stable Mintlify hooks", () => {
   assert.equal(existsSync(stylePath), true, "style.css must define the docs UI layer");
   for (const [token, value] of [
     ["--swipelux-content-primary", "#424242"],
-    ["--swipelux-content-secondary", "#777777"],
+    ["--swipelux-content-secondary", "#737373"],
     ["--swipelux-content-tertiary", "#a4a4a4"],
     ["--swipelux-surface", "#ffffff"],
     ["--swipelux-surface-muted", "#fafafa"],
@@ -311,14 +317,38 @@ test("mirrors the mpanel visual foundation with stable Mintlify hooks", () => {
   }
 
   assert.doesNotMatch(styleText, /gradient|#[Ff]4663[Ee]|#[Ff][Aa]9[Bb]51|#[Ee]2471[Dd]/);
+
+  assert.match(
+    styleText,
+    /^@import url\("https:\/\/fonts\.googleapis\.com\/css2\?family=Geist:wght@400;500&family=JetBrains\+Mono:wght@400;500&display=swap"\);/,
+    "Geist 400/500 and JetBrains Mono 400/500 must be loaded explicitly",
+  );
+
+  const bodyCopyRule = /mdx-content p,[\s\S]*?\.mdx-content td\s*\{([\s\S]*?)\}/.exec(
+    styleText,
+  );
+  assert.ok(bodyCopyRule, "published MDX body copy needs an explicit style rule");
+  assert.match(bodyCopyRule[1], /font-size:\s*14px\s*!important\s*;/);
+  assert.match(bodyCopyRule[1], /line-height:\s*20px\s*!important\s*;/);
 });
 
-test("uses an accessible primary docs UI color on the light background", () => {
-  const ratio = contrastRatio(config.colors.primary, LIGHT_DOCS_BACKGROUND);
-  assert.ok(
-    ratio >= 4.5,
-    `${config.colors.primary} has ${ratio.toFixed(2)}:1 contrast against ${LIGHT_DOCS_BACKGROUND}; expected at least 4.5:1`,
-  );
+test("uses accessible primary and secondary docs UI colors", () => {
+  const secondary = /--swipelux-content-secondary:\s*(#[A-F0-9]{6})\s*;/i.exec(
+    styleText,
+  )?.[1];
+  assert.ok(secondary, "style.css must define the secondary content color");
+
+  for (const [color, background] of [
+    [config.colors.primary, LIGHT_DOCS_BACKGROUND],
+    [secondary, LIGHT_DOCS_BACKGROUND],
+    [secondary, "#FFFFFF"],
+  ]) {
+    const ratio = contrastRatio(color, background);
+    assert.ok(
+      ratio >= 4.5,
+      `${color} has ${ratio.toFixed(2)}:1 contrast against ${background}; expected at least 4.5:1`,
+    );
+  }
 });
 
 test("uses exactly the approved three-tab navigation skeleton", () => {
