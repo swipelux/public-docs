@@ -605,19 +605,34 @@ function assertExactOutFundingGate(text) {
     /After a stablecoin-funded exact-out quote returns/i,
     "The source-account balance gate must apply only to stablecoin-funded exact-out quotes",
   );
-  assert.doesNotMatch(
-    text,
-    /\b(?:all|every|any)\s+exact-out quotes?\b[^.!?\n]{0,180}\b(?:source-account balance gate|source account|available balance)\b/i,
-    "The source-account balance gate must not apply to every exact-out quote",
-  );
+  const exactOutGateSentences = text.match(
+    /[^.!?\n]*\bexact-out quotes?\b[^.!?\n]*(?:source-account balance gate|source account|available balance)[^.!?\n]*[.!?]?/gi,
+  ) ?? [];
+  for (const sentence of exactOutGateSentences) {
+    const universalScope =
+      /\b(?:all|every|any|each)\s+exact-out quotes?\b/i.test(sentence) ||
+      /\bexact-out quotes?\b[^.!?\n]{0,80}\balways\b/i.test(sentence);
+    const negatedUniversalScope =
+      /\b(?:not|never)\s+(?:all|every|any|each)\s+exact-out quotes?\b/i.test(sentence) ||
+      /\bexact-out quotes?\b[^.!?\n]{0,80}\b(?:do not|don't|never)\s+always\b/i.test(
+        sentence,
+      );
+    assert.ok(
+      !universalScope || negatedUniversalScope,
+      "The source-account balance gate must not apply to every exact-out quote",
+    );
+  }
   const fiatGateSentences = text.match(
     /[^.!?\n]*\bfiat-funded exact-out quotes?\b[^.!?\n]*(?:source-account balance gate|source account|available balance)[^.!?\n]*[.!?]?/gi,
   ) ?? [];
   assert.ok(fiatGateSentences.length >= 1, "The guide must explain the fiat-funded exemption");
   for (const sentence of fiatGateSentences) {
-    assert.match(
-      sentence,
-      /\b(?:do not|don't|never|not)\b/i,
+    const scopedExemption =
+      /\b(?:do not|don't|never)\s+(?:use|apply|require|need|check)\b/i.test(sentence) ||
+      /\b(?:are|is)\s+not\s+(?:subject to|required to use|gated by)\b/i.test(sentence) ||
+      /\b(?:are|is)\s+exempt\b/i.test(sentence);
+    assert.ok(
+      scopedExemption,
       "Fiat-funded exact-out guidance must not require a source-account balance gate",
     );
   }
@@ -1021,7 +1036,11 @@ test("exact-out funding validation rejects universal and fiat balance gates", ()
   for (const claim of [
     "After every exact-out quote returns, use the source-account balance gate.",
     "All exact-out quotes, including fiat-funded quotes, must use the source-account balance gate.",
+    "Exact-out quotes always use the source-account balance gate.",
+    "Each exact-out quote must use the source-account balance gate.",
     "Fiat-funded exact-out quotes must use the source-account balance gate before execution.",
+    "Fiat-funded exact-out quotes must not skip the source-account balance gate.",
+    "Fiat-funded exact-out quotes must use the source-account balance gate; this is not optional.",
   ]) {
     assert.throws(
       () => assertExactOutFundingGate(`${text}\n${claim}\n`),
@@ -1029,6 +1048,11 @@ test("exact-out funding validation rejects universal and fiat balance gates", ()
       `Expected universal exact-out claim to fail: ${claim}`,
     );
   }
+  assert.doesNotThrow(() =>
+    assertExactOutFundingGate(
+      `${text}\nNot all exact-out quotes use the source-account balance gate.\n`,
+    ),
+  );
 });
 
 test("automated rules covers prerequisites, target choice, current state, update, and archive", () => {

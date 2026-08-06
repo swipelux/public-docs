@@ -462,7 +462,7 @@ function assertPublishedReconciliationCheckpoint(label, source) {
   const timestampIdentifier = captures[0][1];
   const checkpointWrites = [
     ...source.matchAll(
-      /\b(?:(await)\s+)?((?:save|persist|write|store|commit)[A-Za-z_$\w]*checkpoint[A-Za-z_$\w]*)\s*\(\s*([A-Za-z_$][\w$]*)\s*\)/gi,
+      /\b(?:(await)\s+)?([A-Za-z_$][\w$]*checkpoint[A-Za-z_$\w]*)\s*\(\s*([A-Za-z_$][\w$]*)\s*\)/gi,
     ),
   ];
   assert.equal(
@@ -880,9 +880,17 @@ test("published reconciliation example rejects unsafe checkpoint mutations", () 
     "  await saveCheckpoint(runStartedAt);",
     "  await saveCheckpoint(runStartedAt);\n  await saveCheckpoint(updatedAfter);",
   );
+  const additionalUpdateCheckpoint = source.replace(
+    "  await saveCheckpoint(runStartedAt);",
+    "  await saveCheckpoint(runStartedAt);\n  await updateCheckpoint(runStartedAt);",
+  );
   const postCheckpointApply = source.replace(
     "  await saveCheckpoint(runStartedAt);",
     "  await saveCheckpoint(runStartedAt);\n  await applyCurrentState(\"late\", {});",
+  );
+  const postCheckpointFetch = source.replace(
+    "  await saveCheckpoint(runStartedAt);",
+    "  await saveCheckpoint(runStartedAt);\n  await fetch(\"https://platform.swipelux.com/v3/customers\");",
   );
   const checkpointInsideApplyLoop = source
     .replace("\n  await saveCheckpoint(runStartedAt);", "")
@@ -890,23 +898,26 @@ test("published reconciliation example rejects unsafe checkpoint mutations", () 
       "    await applyCurrentState(resource.id, resource);",
       "    await applyCurrentState(resource.id, resource);\n    await saveCheckpoint(runStartedAt);",
     );
-  const unawaitedCheckpointBeforeApply = source.replace(
-    "  for (const resource of resourcesById.values()) {",
-    "  saveCheckpoint(runStartedAt);\n\n  for (const resource of resourcesById.values()) {",
+  const unawaitedCheckpoint = source.replace(
+    "  await saveCheckpoint(runStartedAt);",
+    "  saveCheckpoint(runStartedAt);",
   );
   const postCheckpointLogging = source.replace(
     "await saveCheckpoint(runStartedAt);",
     'await saveCheckpoint(runStartedAt);\n  console.info("Reconciliation complete");',
   );
   const renamedCheckpoint = source.replaceAll("saveCheckpoint", "persistCheckpoint");
+  const updatedCheckpoint = source.replaceAll("saveCheckpoint", "updateCheckpoint");
 
   for (const [label, mutation] of [
     ["wrong timestamp", wrongTimestamp],
     ["checkpoint before apply", checkpointBeforeApply],
     ["additional checkpoint", additionalCheckpoint],
+    ["additional update checkpoint", additionalUpdateCheckpoint],
     ["state apply after checkpoint", postCheckpointApply],
+    ["request after checkpoint", postCheckpointFetch],
     ["checkpoint inside apply loop", checkpointInsideApplyLoop],
-    ["unawaited checkpoint before apply", unawaitedCheckpointBeforeApply],
+    ["unawaited checkpoint", unawaitedCheckpoint],
   ]) {
     assert.notEqual(mutation, source, `${label} fixture must change the example`);
     assert.throws(
@@ -922,6 +933,9 @@ test("published reconciliation example rejects unsafe checkpoint mutations", () 
   );
   assert.doesNotThrow(() =>
     assertPublishedReconciliationCheckpoint("renamed checkpoint helper", renamedCheckpoint),
+  );
+  assert.doesNotThrow(() =>
+    assertPublishedReconciliationCheckpoint("updated checkpoint helper", updatedCheckpoint),
   );
 });
 
