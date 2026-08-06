@@ -4,13 +4,13 @@ export const SOURCE_SHA256 =
   "ac2cb435a7099da53e6028bca98a4d57f0a1bf684cddfe64c438106a2997e3a7";
 export const SOURCE_BASENAME = "api-1 (23).json";
 export const EXPECTED_OUTPUT_SHA256 =
-  "f121192b2ff9886be50e321243eb0c9632638b35118a7f1f2b4ad94e007f8a12";
+  "c9fa2d865ea2c9fb97ba0d336645288009c17f7ea9efc53fe25ef5f8d500000f";
 export const EXPECTED_COVERAGE_SHA256 =
   "d13317b85a855551763d82dd4cba87f702f67b058b6e2500ab2746a837483a1d";
 export const EXPECTED_TRANSFORMATIONS_SHA256 =
-  "9409d356b658b2dce95fb2f3ef32f66912571d15decc4d095af3034cbb9a3d48";
-// Task 11 webhook-route preparation timestamp, normalized to UTC whole seconds.
-export const APPROVED_GENERATED_AT = "2026-08-05T17:54:33.000Z";
+  "a2aacaa4e9746f573cd7850dede566ecb8cec18b45a37d9f1fa62bf66e9d7006";
+// Public API label preparation timestamp, normalized to UTC whole seconds.
+export const APPROVED_GENERATED_AT = "2026-08-06T23:05:51.000Z";
 export const HTTP_METHODS = new Set([
   "get",
   "post",
@@ -21,7 +21,7 @@ export const HTTP_METHODS = new Set([
   "options",
   "trace",
 ]);
-export const PREPARATION_VERSION = "1.2.1";
+export const PREPARATION_VERSION = "1.2.2";
 
 export const EXPECTED_OPENAPI_COUNTS = Object.freeze({
   paths: 49,
@@ -406,6 +406,14 @@ function refsOutsideTransformations(spec, transformations) {
 
 function expectedTransformationReasons(spec) {
   const expected = new Map([
+    [
+      "/info/title",
+      "Use the product-facing API title in the public reference.",
+    ],
+    [
+      "/x-tagGroups/0/name",
+      "Use the product-facing API group label in the public reference.",
+    ],
     [
       "/components/securitySchemes/serviceToken",
       "Remove non-public service-token authentication from the public contract.",
@@ -844,6 +852,21 @@ export function prepareOpenApi(
   const sourceCoverage = buildCoverage(sourceSnapshot);
   const spec = structuredClone(sourceSnapshot);
   const transformations = [];
+
+  addReplacement(
+    spec,
+    transformations,
+    "/info/title",
+    "Swipelux API",
+    "Use the product-facing API title in the public reference.",
+  );
+  addReplacement(
+    spec,
+    transformations,
+    "/x-tagGroups/0/name",
+    "API",
+    "Use the product-facing API group label in the public reference.",
+  );
 
   addDeletion(
     spec,

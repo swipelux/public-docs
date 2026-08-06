@@ -344,7 +344,7 @@ test("surfaces the demo and starter as product references", () => {
     assert.match(text, /https:\/\/demo\.swipelux\.com/);
     assert.match(text, /https:\/\/github\.com\/swipelux\/neobank-starter/);
     assert.match(text, /product and UI references/i);
-    assert.match(text, /(?:do not replace|supported production integration|API v3 contract)/i);
+    assert.match(text, /(?:do not replace|supported production integration|API contract)/i);
   }
   assert.throws(() => readPage("integration/starter-kit"), /ENOENT/);
 });

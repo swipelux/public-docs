@@ -105,7 +105,7 @@ test("homepage and overview lead with outcomes and the product demo", () => {
   assert.match(homepage, /^title: "Build with Swipelux"$/m);
   for (const title of [
     "Start integrating",
-    "Explore API v3",
+    "Explore API",
     "Compliance and onboarding",
     "Receive funds",
     "Send funds",

@@ -1,6 +1,6 @@
 # Swipelux public docs
 
-This repository contains the Mintlify source for Swipelux Integration Docs, the generated API v3 reference, and the compliance and onboarding Knowledge Base.
+This repository contains the Mintlify source for Swipelux Integration Docs, the generated API Reference, and the compliance and onboarding Knowledge Base.
 
 ## Prerequisites
 

@@ -68,7 +68,7 @@ const NEW_CANONICAL_PAGE_TITLES = {
   "integration/onboarding/customers": "Customers",
   "integration/onboarding/capabilities-and-requirements":
     "Capabilities and tasks",
-  "api-reference/introduction": "API v3 reference",
+  "api-reference/introduction": "API reference",
 };
 
 const RETIRED_INTEGRATION_PAGES = [
@@ -512,7 +512,7 @@ test("links three native cards to the approved documentation sections", () => {
   assert.equal(cardTags.length, 3);
   assert.deepEqual(
     cardTags.map((tag) => attribute(tag, "title")),
-    ["Start integrating", "Explore API v3", "Compliance and onboarding"],
+    ["Start integrating", "Explore API", "Compliance and onboarding"],
   );
   const cardHrefs = cardTags.map((tag) => attribute(tag, "href"));
   assert.deepEqual(cardHrefs, [
@@ -531,7 +531,7 @@ test("keeps landing copy concise and separates guides, reference, and knowledge"
     .trim();
 
   assert.ok(prose.split(/\s+/).length <= 170, "landing copy is too long");
-  assert.match(prose, /API v3/i);
+  assert.match(prose, /Swipelux API/i);
   assert.match(prose, /accept fiat/i);
   assert.match(prose, /pay a customer-owned account/i);
   assert.match(prose, /reusable bank details/i);
