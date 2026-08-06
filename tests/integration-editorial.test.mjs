@@ -51,7 +51,7 @@ const PROHIBITED_PATTERNS = [
 function withoutFencedCode(text) {
   return text
     .replace(/```[\s\S]*?```|~~~[\s\S]*?~~~/g, "")
-    .replace(/\{\/\*[\s\S]*?\*\/\}/g, "");
+    .replace(/\{\s*\/\*[\s\S]*?\*\/\s*\}/g, "");
 }
 
 function normalizeReferenceLabel(label) {
@@ -242,6 +242,13 @@ test("editorial guards reject representative link, action, and JSON mutations", 
     ),
     false,
     "A link inside an MDX comment is not a next action",
+  );
+  assert.equal(
+    hasConcreteNextAction(
+      "{ /* Continue with [Quickstart](/integration/quickstart). */ }",
+    ),
+    false,
+    "A link inside a spaced MDX comment is not a next action",
   );
   assert.doesNotThrow(() =>
     assertCanonicalPublicLinks(

@@ -334,7 +334,7 @@ function card(text, title, href) {
 function assertStarterCredentialPolarity(text) {
   assert.doesNotMatch(
     text,
-    /\]\(https:\/\/neobank-starter\.vercel\.app\/?\)/i,
+    /https:\/\/neobank-starter\.vercel\.app/i,
     "Starter kit must not invite developers into the externally hosted credential form",
   );
 
@@ -363,7 +363,12 @@ function assertStarterCredentialPolarity(text) {
   );
   assert.match(
     browserDemo,
-    /(?:sandbox key[^.]{0,120}(?:browser code|browser runtime|client-side code)|(?:browser code|browser runtime|client-side code)[^.]{0,120}sandbox key)/i,
+    /\bexpos(?:e|es)\b[^.!?\n]{0,100}\bsandbox key\b[^.!?\n]{0,100}\b(?:browser code|browser runtime|client-side code)\b|\bsandbox key\b[^.!?\n]{0,60}\b(?:is\s+)?exposed\b[^.!?\n]{0,100}\b(?:browser code|browser runtime|client-side code)\b/i,
+  );
+  assert.doesNotMatch(
+    browserDemo,
+    /(?:\bnever\b|\b(?:do|does|did|is|are|was|were|can|could|will|would|should|must)(?:n't|\s+not)\b)[^.!?\n]{0,40}\bexpos(?:e|es|ed|ing)\b/i,
+    "Connected sandbox must affirmatively expose its sandbox key to browser code",
   );
   assert.match(browserDemo, /(?:must not|never)[^.]{0,80}share/i);
   assert.match(browserDemo, /(?:must not|never)[^.]{0,80}deploy/i);
@@ -387,13 +392,23 @@ function assertStarterCredentialPolarity(text) {
     backendGuidance,
     "Shared sandbox and production integrations must use a backend",
   );
-  assert.match(
+  assert.doesNotMatch(
     backendGuidance,
-    /(?:\buse\b|\bmust\b|\brequir(?:e|es|ed)\b)[^.]{0,120}\bbackend\b|\bbackend\b[^.]{0,80}\brequir(?:e|es|ed)\b/i,
+    /(?:\bnever\b|\b(?:do|does|did|can|could|will|would|should|must)(?:n't|\s+not)\b)[^.!?\n]{0,40}\b(?:use|requir(?:e|es|ed|ing))\b[^.!?\n]{0,80}\b(?:a\s+)?backend\b|\b(?:a\s+)?backend\b[^.!?\n]{0,40}\b(?:is|are|was|were|will|would|should|must)(?:n't|\s+not)\s+required\b/i,
+    "Shared sandbox and production integrations must affirmatively use or require a backend",
   );
   assert.match(
     backendGuidance,
-    /\b(?:keep|manage|put|store)\b[^.]{0,100}\b(?:API keys?|credentials?)\b[^.]{0,100}\bsecret manager\b/i,
+    /\b(?:use|uses|using|require|requires)\b[^.!?\n]{0,80}\b(?:a\s+)?backend\b|\b(?:a\s+)?backend\b[^.!?\n]{0,40}\b(?:is|are)\s+required\b/i,
+  );
+  assert.doesNotMatch(
+    backendGuidance,
+    /(?:\bnever\b|\b(?:do|does|did|can|could|will|would|should|must)(?:n't|\s+not)\b)[^.!?\n]{0,40}\b(?:keep|manage|store)\b[^.!?\n]{0,100}\b(?:API keys?|credentials?)\b|\b(?:API keys?|credentials?)\b[^.!?\n]{0,80}\b(?:are|were|will|would|should|must)(?:n't|\s+not)\s+(?:kept|managed|stored)\b/i,
+    "API keys or credentials must affirmatively be kept in a secret manager",
+  );
+  assert.match(
+    backendGuidance,
+    /\b(?:keep|manage|store)\b[^.!?\n]{0,100}\b(?:API keys?|credentials?)\b[^.!?\n]{0,100}\bsecret manager\b|\b(?:API keys?|credentials?)\b[^.!?\n]{0,80}\b(?:are|must be|should be)\s+(?:kept|managed|stored)\b[^.!?\n]{0,100}\bsecret manager\b/i,
   );
 }
 
@@ -409,13 +424,45 @@ A backend is required for shared sandbox environments and all production integra
     "Do not use a production key in connected sandbox mode.",
     "",
   );
+  const negatedBrowserExposure = safeAlternativeWording.replace(
+    "exposes the sandbox key to browser runtime code",
+    "does not expose the sandbox key to browser runtime code",
+  );
+  const negatedBackendRequirement = safeAlternativeWording.replace(
+    "A backend is required for shared sandbox environments and all production integrations.",
+    "Do not use a backend for shared sandbox environments and all production integrations.",
+  );
+  const negatedSecretManagerStorage = safeAlternativeWording.replace(
+    "Store API keys in a secret manager.",
+    "Do not store API keys in a secret manager.",
+  );
+  const hostedCardMutation = `${safeAlternativeWording}
+<Card title="Open hosted starter" href={"https://neobank-starter.vercel.app"} />
+`;
   assert.notEqual(missingProductionKeyProhibition, safeAlternativeWording);
+  assert.notEqual(negatedBrowserExposure, safeAlternativeWording);
+  assert.notEqual(negatedBackendRequirement, safeAlternativeWording);
+  assert.notEqual(negatedSecretManagerStorage, safeAlternativeWording);
 
   assert.doesNotThrow(() =>
     assertStarterCredentialPolarity(safeAlternativeWording),
   );
   assert.throws(
     () => assertStarterCredentialPolarity(missingProductionKeyProhibition),
+    { name: "AssertionError" },
+  );
+  for (const invertedMutation of [
+    negatedBrowserExposure,
+    negatedBackendRequirement,
+    negatedSecretManagerStorage,
+  ]) {
+    assert.throws(
+      () => assertStarterCredentialPolarity(invertedMutation),
+      { name: "AssertionError" },
+    );
+  }
+  assert.throws(
+    () => assertStarterCredentialPolarity(hostedCardMutation),
     { name: "AssertionError" },
   );
 });

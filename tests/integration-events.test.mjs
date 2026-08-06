@@ -506,15 +506,15 @@ function matchingParenthesis(source, openIndex) {
   return -1;
 }
 
-function awaitedCallExpressions(source) {
+function callExpressions(source) {
   const calls = [];
   const pattern =
-    /\bawait\s+([A-Za-z_$][\w$]*(?:\s*\.\s*[A-Za-z_$][\w$]*)*)\s*\(/g;
+    /(?<![\w$])(?:(await)\s+)?([A-Za-z_$][\w$]*(?:\s*\.\s*[A-Za-z_$][\w$]*)*)\s*\(/g;
 
   for (const match of source.matchAll(pattern)) {
     const openIndex = match.index + match[0].lastIndexOf("(");
     const closeIndex = matchingParenthesis(source, openIndex);
-    assert.notEqual(closeIndex, -1, "Awaited call must have balanced parentheses");
+    assert.notEqual(closeIndex, -1, "Call must have balanced parentheses");
 
     let endIndex = closeIndex + 1;
     while (/\s/.test(source[endIndex] ?? "")) endIndex += 1;
@@ -522,7 +522,8 @@ function awaitedCallExpressions(source) {
 
     calls.push({
       arguments: source.slice(openIndex + 1, closeIndex),
-      callee: match[1].replace(/\s/g, ""),
+      awaited: Boolean(match[1]),
+      callee: match[2].replace(/\s/g, ""),
       endIndex,
       index: match.index,
     });
@@ -549,6 +550,26 @@ function withoutJavaScriptComments(source) {
     .replace(/\/\/[^\n]*/g, "");
 }
 
+function isCapturedTimestampArgument(argumentSource, timestampIdentifier) {
+  const argument = withoutJavaScriptComments(argumentSource).trim();
+  if (argument === timestampIdentifier) return true;
+  if (!argument.startsWith("{") || !argument.endsWith("}")) return false;
+
+  const objectBody = argument
+    .slice(1, -1)
+    .trim()
+    .replace(/,\s*$/, "")
+    .trim();
+  const escapedIdentifier = timestampIdentifier.replace(
+    /[.*+?^${}()|[\]\\]/g,
+    "\\$&",
+  );
+  const propertyName = String.raw`(?:[A-Za-z_$][\w$]*|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')`;
+  return new RegExp(
+    `^(?:${escapedIdentifier}|${propertyName}\\s*:\\s*${escapedIdentifier})$`,
+  ).test(objectBody);
+}
+
 function assertSafeReconciliationCheckpoint(label, source) {
   const captures = [
     ...source.matchAll(
@@ -566,18 +587,25 @@ function assertSafeReconciliationCheckpoint(label, source) {
     `${label} must capture the run timestamp before asynchronous request work`,
   );
 
-  const escapedIdentifier = timestampIdentifier.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const checkpointCalls = awaitedCallExpressions(source).filter(({ callee }) =>
+  const checkpointCalls = callExpressions(source).filter(({ callee }) =>
     isCheckpointWriter(callee),
   );
   assert.equal(
     checkpointCalls.length,
     1,
-    `${label} must contain exactly one awaited checkpoint write`,
+    `${label} must contain exactly one checkpoint write`,
   );
-  assert.match(
-    checkpointCalls[0].arguments,
-    new RegExp(`\\b${escapedIdentifier}\\b`),
+  assert.equal(
+    checkpointCalls[0].awaited,
+    true,
+    `${label} must await the checkpoint write`,
+  );
+  assert.equal(
+    isCapturedTimestampArgument(
+      checkpointCalls[0].arguments,
+      timestampIdentifier,
+    ),
+    true,
     `${label} must pass the captured timestamp to the checkpoint write`,
   );
   assert.equal(
@@ -1000,6 +1028,26 @@ async function reconcile({ requestedEnd }) {
   await checkpointStore.write(capturedAt);
 }
 `;
+  const unawaitedThenAwaitedCheckpointWrite = `
+async function reconcile({ requestedEnd }) {
+  const capturedAt = new Date().toISOString();
+  const page = await requestPage();
+  await updateLocalResource(page.data[0]);
+  checkpointStore.write(requestedEnd);
+  await checkpointStore.write(capturedAt);
+}
+`;
+  const ambiguousCheckpointObject = `
+async function reconcile({ requestedEnd }) {
+  const capturedAt = new Date().toISOString();
+  const page = await requestPage();
+  await updateLocalResource(page.data[0]);
+  await checkpointStore.write({
+    updatedAfter: requestedEnd,
+    observedAt: capturedAt,
+  });
+}
+`;
   const executableWorkAfterCheckpoint = `
 async function reconcile() {
   const capturedAt = new Date().toISOString();
@@ -1030,6 +1078,11 @@ async function reconcile() {
     ["unawaited checkpoint after audit mutation", unawaitedCheckpointAfterAudit],
     ["audit after wrong checkpoint mutation", auditAfterWrongCheckpoint],
     ["duplicate checkpoint write mutation", duplicateCheckpointWrite],
+    [
+      "unawaited then awaited checkpoint mutation",
+      unawaitedThenAwaitedCheckpointWrite,
+    ],
+    ["ambiguous checkpoint object mutation", ambiguousCheckpointObject],
     ["work after checkpoint mutation", executableWorkAfterCheckpoint],
   ]) {
     assert.throws(
