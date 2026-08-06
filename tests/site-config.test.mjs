@@ -24,48 +24,98 @@ const coverage = JSON.parse(read("openapi-coverage.json"));
 
 const INTEGRATION_GROUPS = [
   {
-    group: "Start",
+    group: "Get started",
     pages: [
       "integration/overview",
       "integration/quickstart",
-      "integration/starter-kit",
       "integration/authentication",
-      "integration/environments",
-      "integration/using-the-api-reference",
-      "integration/request-safety",
-      "integration/errors",
-      "integration/pagination-and-sync",
+      "integration/sandbox",
     ],
   },
   {
-    group: "Onboarding",
+    group: "Onboard",
     pages: [
-      "integration/onboarding/individuals",
-      "integration/onboarding/businesses",
-      "integration/onboarding/tasks-and-submissions",
-      "integration/onboarding/documents",
+      "integration/onboarding/customers",
+      "integration/onboarding/capabilities-and-requirements",
     ],
   },
   {
-    group: "Accounts and money movement",
+    group: "Build money flows",
     pages: [
+      "integration/common-flows",
       "integration/accounts",
+      "integration/issue-bank-account",
       "integration/recipients",
-      "integration/quotes-and-transfers",
       "integration/receive-funds",
       "integration/send-funds",
+      "integration/quotes-and-transfers",
       "integration/rules",
     ],
   },
   {
-    group: "Events and launch",
+    group: "Operate",
     pages: [
       "integration/webhooks",
-      "integration/sandbox",
+      "integration/api-reliability",
+      "integration/sync-and-reconciliation",
       "integration/production-readiness",
     ],
   },
+  {
+    group: "Resources",
+    pages: ["integration/starter-kit"],
+  },
 ];
+
+const NEW_CANONICAL_PAGE_TITLES = {
+  "integration/common-flows": "Common flows",
+  "integration/issue-bank-account": "Issue a bank account",
+  "integration/api-reliability": "API reliability",
+  "integration/sync-and-reconciliation": "Sync and reconciliation",
+  "integration/onboarding/customers": "Customers",
+  "integration/onboarding/capabilities-and-requirements":
+    "Capabilities and requirements",
+};
+
+const RETIRED_INTEGRATION_PAGES = [
+  "integration/environments.mdx",
+  "integration/errors.mdx",
+  "integration/pagination-and-sync.mdx",
+  "integration/request-safety.mdx",
+  "integration/using-the-api-reference.mdx",
+  "integration/onboarding/individuals.mdx",
+  "integration/onboarding/businesses.mdx",
+  "integration/onboarding/tasks-and-submissions.mdx",
+  "integration/onboarding/documents.mdx",
+];
+
+const STRUCTURE_REDIRECTS = {
+  "/integration/environments":
+    "/integration/authentication#sandbox-and-production",
+  "/integration/errors": "/integration/api-reliability#handle-errors",
+  "/integration/pagination-and-sync":
+    "/integration/sync-and-reconciliation",
+  "/integration/request-safety": "/integration/api-reliability",
+  "/integration/using-the-api-reference":
+    "/api-reference/customers/post-v3-customers",
+  "/integration/onboarding/individuals":
+    "/integration/onboarding/customers#individual-customers",
+  "/integration/onboarding/businesses":
+    "/integration/onboarding/customers#business-customers",
+  "/integration/onboarding/tasks-and-submissions":
+    "/integration/onboarding/capabilities-and-requirements#complete-requirements",
+  "/integration/onboarding/documents":
+    "/integration/onboarding/capabilities-and-requirements#upload-documents",
+};
+
+const PUBLIC_GUIDE_WRITING = `## Public guide writing
+
+- Lead with the developer outcome, then introduce API resources.
+- Give each Integration page one primary job and one happy path.
+- Keep complete schemas, enums, status catalogs, and error catalogs in API Reference.
+- Do not expose documentation-generation files, source precedence, migration notes, provider names, or internal review language.
+- State shared rules once and link to their canonical guide instead of repeating boilerplate.
+- End workflow pages with the next developer action.`;
 
 const KNOWLEDGE_BASE_GROUPS = [
   {
@@ -228,6 +278,36 @@ test("uses exactly the approved three-tab navigation skeleton", () => {
   assert.deepEqual(collectNavigationPages(config.navigation), manualPages);
 });
 
+test("publishes the new canonical Integration pages and removes retired files", () => {
+  for (const [page, expectedTitle] of Object.entries(NEW_CANONICAL_PAGE_TITLES)) {
+    const path = `${page}.mdx`;
+    assert.equal(existsSync(resolve(projectRoot, path)), true, `${path} must exist`);
+    const text = read(path);
+    assert.deepEqual(validateFrontmatter(path, text), []);
+    assert.deepEqual(validatePublishedText(path, text), []);
+
+    const { attributes } = parseFrontmatter(text);
+    assert.equal(attributes.title, expectedTitle);
+  }
+
+  for (const path of RETIRED_INTEGRATION_PAGES) {
+    assert.equal(
+      existsSync(resolve(projectRoot, path)),
+      false,
+      `${path} must be removed after its redirect is encoded`,
+    );
+  }
+});
+
+test("keeps the paired public guide writing rules identical", () => {
+  for (const path of ["AGENTS.md", "CLAUDE.md"]) {
+    assert.ok(
+      read(path).includes(PUBLIC_GUIDE_WRITING),
+      `${path} must contain the approved Public guide writing section`,
+    );
+  }
+});
+
 test("makes API Reference the sole owner of openapi.json", () => {
   const owners = findObjects(config.navigation, (value) =>
     Object.hasOwn(value, "openapi"),
@@ -242,7 +322,7 @@ test("makes API Reference the sole owner of openapi.json", () => {
 });
 
 test("copies the exact approved redirect pairs without internal metadata", () => {
-  assert.equal(redirectInventory.length, 53);
+  assert.equal(redirectInventory.length, 62);
   assert.deepEqual(
     config.redirects,
     redirectInventory.map(({ source, destination }) => ({
@@ -258,6 +338,13 @@ test("copies the exact approved redirect pairs without internal metadata", () =>
   );
   for (const redirect of config.redirects) {
     assert.deepEqual(Object.keys(redirect).sort(), ["destination", "source"]);
+  }
+
+  const destinations = new Map(
+    redirectInventory.map(({ source, destination }) => [source, destination]),
+  );
+  for (const [source, destination] of Object.entries(STRUCTURE_REDIRECTS)) {
+    assert.equal(destinations.get(source), destination);
   }
 });
 

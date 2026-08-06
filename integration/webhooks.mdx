@@ -1,43 +1,39 @@
 ---
 title: "Webhooks"
-description: "Configure webhook endpoints, process the defined event envelopes safely, and recover missed changes."
+description: "Register an endpoint, process events durably, refetch current state, and recover missed changes."
 ---
 
-Webhooks notify your integration about committed resource changes. Call webhook configuration operations from your backend with `X-API-Key`. Do not expose `X-API-Key` to a browser or client.
+Use webhooks to react quickly to resource changes while keeping the API as your current-state read path. Register endpoints and refetch resources from your backend with `X-API-Key`.
 
-## Configure endpoints
+## Register an endpoint
 
-- [`POST /v3/webhooks`](/api-reference/webhooks/post-v3-webhooks) creates an endpoint. The request requires a destination `url` and an `events` allowlist.
-- [`GET /v3/webhooks`](/api-reference/webhooks/get-v3-webhooks) lists the authenticated merchant's configured endpoints and their current `active` or `archived` status.
-- [`PATCH /v3/webhooks/{webhookId}`](/api-reference/webhooks/patch-v3-webhooks-by-webhook-id) updates the destination URL, the event allowlist, or both.
-- [`DELETE /v3/webhooks/{webhookId}`](/api-reference/webhooks/delete-v3-webhooks-by-webhook-id) archives the endpoint.
+Create one endpoint with [`POST /v3/webhooks`](/api-reference/webhooks/post-v3-webhooks). This example subscribes only to transfer state changes:
 
-## Generated event contracts
+```bash
+export API_BASE='https://platform.swipelux.com'
+export SWIPELUX_API_KEY='replace-with-your-api-key'
+export WEBHOOK_CREATE_KEY='webhook-endpoint-2026-08-05'
 
-The generated webhook reference defines these 12 payload contracts:
+curl --request POST \
+  "${API_BASE}/v3/webhooks" \
+  --header "X-API-Key: ${SWIPELUX_API_KEY}" \
+  --header "Idempotency-Key: ${WEBHOOK_CREATE_KEY}" \
+  --header "Content-Type: application/json" \
+  --data @- <<'JSON'
+{
+  "url": "https://example.com/webhooks/swipelux",
+  "events": ["transfer.state_changed"]
+}
+JSON
+```
 
-| Event | Generated payload page |
-| --- | --- |
-| [`customer.created`](/api-reference/webhooks/customer-created) | Customer creation committed |
-| [`customer.updated`](/api-reference/webhooks/customer-updated) | Customer facts, metadata, or related-party changes committed |
-| [`customer.archived`](/api-reference/webhooks/customer-archived) | Customer archive cascade committed |
-| [`capability.created`](/api-reference/webhooks/capability-created) | Capability created |
-| [`capability.status_changed`](/api-reference/webhooks/capability-status-changed) | Capability public status changed |
-| [`application.status_changed`](/api-reference/webhooks/application-status-changed) | Institution application status changed |
-| [`recipient.status_changed`](/api-reference/webhooks/recipient-status-changed) | Recipient status changed |
-| [`destination.status_changed`](/api-reference/webhooks/destination-status-changed) | Recipient destination status changed |
-| [`account.created`](/api-reference/webhooks/account-created) | Account created |
-| [`account.status_changed`](/api-reference/webhooks/account-status-changed) | Account status or default-account state changed |
-| [`account.details_changed`](/api-reference/webhooks/account-details-changed) | Issued bank-account routing details changed |
-| [`transfer.state_changed`](/api-reference/webhooks/transfer-state-changed) | Transfer public state changed |
+Store response `data.id` as `WEBHOOK_ID` and `data.status` as `WEBHOOK_STATUS`. Use the ID for later endpoint changes and confirm that the status is suitable before relying on delivery. Follow [API reliability](/integration/api-reliability) for the idempotency rule on configuration writes.
 
-For both create (`POST`) and update (`PATCH`) requests, the current open-enum `events` allowlist consists of the 12 generated names above plus `api.deprecation` and `transfer.created`. Names can be added over time, and unknown names are rejected at write time against the current catalog. The generated event reference has no webhook payload page for `api.deprecation` or `transfer.created`; do not infer a payload shape for either name.
+## Process an event
 
-## Canonical envelope
+For each documented event, use the event's API Reference page for its payload fields. Payloads for `api.deprecation` and `transfer.created` are not documented. Do not infer their fields; contact Swipelux before subscribing to either event.
 
-Every generated event schema requires `id`, `type`, `createdAt`, `attempt`, `resource`, and `data`. The stable event `id` is the deduplication key. `resource.type` and `resource.id` identify the changed resource. The `attempt` value is always `1` and remains unchanged by delivery retries.
-
-This is the exact generated example for a transfer state change:
+This is the exact representative [`transfer.state_changed`](/api-reference/webhooks/transfer-state-changed) envelope:
 
 ```json
 {
@@ -64,93 +60,30 @@ This is the exact generated example for a transfer state change:
 }
 ```
 
-`data.object` is required for every generated event. `data.previous` is also required for [`capability.status_changed`](/api-reference/webhooks/capability-status-changed), [`application.status_changed`](/api-reference/webhooks/application-status-changed), [`recipient.status_changed`](/api-reference/webhooks/recipient-status-changed), [`destination.status_changed`](/api-reference/webhooks/destination-status-changed), [`account.status_changed`](/api-reference/webhooks/account-status-changed), [`account.details_changed`](/api-reference/webhooks/account-details-changed), and [`transfer.state_changed`](/api-reference/webhooks/transfer-state-changed).
+Persist the event `id` as the unique key in a durable inbox before you run side effects. If that inbox record is already completed, treat the duplicate delivery as a no-op. If a pending or failed record remains after a crash, resume the incomplete work instead of discarding it.
 
-## Process events safely
+After the inbox write, process the event and mark the record completed only when its required work has finished. Keep enough local context to retry your own incomplete processing safely.
 
-This workflow applies only to the 12 generated event contracts above. `api.deprecation` and `transfer.created` have no generated payload schema, so do not process them with this canonical envelope workflow until a generated contract is published.
+## Refetch current state
 
-Treat `data.object` as a partial or redacted locator and advisory projection, not the authority for current state.
+Use `resource.type` and `resource.id` as locators, then make an authenticated read for current state. For the representative transfer event, use `resource.id` as `TRANSFER_ID` and call [`GET /v3/transfers/{transferId}`](/api-reference/money-movement/get-v3-transfers-by-transfer-id):
 
-1. Parse the required envelope fields.
-2. Persist a `pending` record in a durable inbox keyed by event `id`.
-3. Only completed records are no-ops. Stale, failed, or otherwise incomplete records remain resumable; if a crash occurs after pending insertion but before processing, resume the record instead of discarding it.
-4. Refetch or reconcile authenticated current state with the event-specific operation below. If the current read cannot be resolved, retain the inbox item for recovery and do not perform destructive downstream actions from the projection alone.
-5. For local effects, commit the local effects and `completed` status atomically when possible.
-6. For external effects, write a durable outbox or retry record, use idempotent downstream handling, and complete the inbox item only after the durable handoff.
+```bash
+curl --request GET \
+  "${API_BASE}/v3/transfers/${TRANSFER_ID}" \
+  --header "X-API-Key: ${SWIPELUX_API_KEY}"
+```
 
-The public contract does not guarantee exactly-once delivery, and this inbox and outbox workflow does not claim it.
+Drive customer-visible status and downstream decisions from this response. Use the event projection to locate the resource, not as a replacement for the authenticated current-state read.
 
-## Reconcile current state by event
+## Replay a delivery
 
-Use `resource.id` as the changed resource identifier. For nested resources, keep the required parent identifiers in your own resource mapping. Scoped list operations provide recovery when a direct read is unavailable or cannot be constructed.
+Call [`GET /v3/webhooks/portal`](/api-reference/webhooks/get-v3-webhooks-portal) when an operator needs documented delivery logs, retries, or manual replay. The response contains the returned `url`; open it for that operator workflow and keep the webhook ID with your incident record.
 
-| Event | Authenticated current read or recovery operation | Required context |
-| --- | --- | --- |
-| [`customer.created`](/api-reference/webhooks/customer-created) | [`GET /v3/customers/{customerId}`](/api-reference/customers/get-v3-customers-by-customer-id) | Map `resource.id` to `customerId`. |
-| [`customer.updated`](/api-reference/webhooks/customer-updated) | [`GET /v3/customers/{customerId}`](/api-reference/customers/get-v3-customers-by-customer-id) | Map `resource.id` to `customerId`. |
-| [`customer.archived`](/api-reference/webhooks/customer-archived) | [`GET /v3/customers`](/api-reference/customers/get-v3-customers) with `updatedAfter` | This is a terminal transition. Customer detail returns `404` after archive, so reconcile through the list recovery window. |
-| [`capability.created`](/api-reference/webhooks/capability-created) | [`GET /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id) or [`GET /v3/customers/{customerId}/capabilities`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities) with `updatedAfter` | Use stored `customerId`; map `resource.id` to `capabilityId`. |
-| [`capability.status_changed`](/api-reference/webhooks/capability-status-changed) | [`GET /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id) or [`GET /v3/customers/{customerId}/capabilities`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities) with `updatedAfter` | Use stored `customerId`; map `resource.id` to `capabilityId`. |
-| [`application.status_changed`](/api-reference/webhooks/application-status-changed) | [`GET /v3/customers/{customerId}/capabilities/{capabilityId}/applications`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id-applications) with `updatedAfter` | Use stored `customerId` and `capabilityId`; no direct application detail read is documented. Locate `resource.id` in the scoped results. |
-| [`recipient.status_changed`](/api-reference/webhooks/recipient-status-changed) | [`GET /v3/customers/{customerId}/recipients/{recipientId}`](/api-reference/recipients/get-v3-customers-by-customer-id-recipients-by-recipient-id) or [`GET /v3/customers/{customerId}/recipients`](/api-reference/recipients/get-v3-customers-by-customer-id-recipients) with `updatedAfter` | Use stored `customerId`; map `resource.id` to `recipientId`. |
-| [`destination.status_changed`](/api-reference/webhooks/destination-status-changed) | [`GET /v3/customers/{customerId}/recipients/{recipientId}/destinations/{destinationId}`](/api-reference/recipients/get-v3-customers-by-customer-id-recipients-by-recipient-id-destinations-by-destination-id) or [`GET /v3/customers/{customerId}/recipients/{recipientId}/destinations`](/api-reference/recipients/get-v3-customers-by-customer-id-recipients-by-recipient-id-destinations) with `updatedAfter` | Use stored `customerId` and `recipientId`; map `resource.id` to `destinationId`. |
-| [`account.created`](/api-reference/webhooks/account-created) | [`GET /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts-by-account-id) or [`GET /v3/customers/{customerId}/accounts`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts) with `updatedAfter` | Use stored `customerId`; map `resource.id` to `accountId`. |
-| [`account.status_changed`](/api-reference/webhooks/account-status-changed) | [`GET /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts-by-account-id) or [`GET /v3/customers/{customerId}/accounts`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts) with `updatedAfter` | Use stored `customerId`; map `resource.id` to `accountId`. |
-| [`account.details_changed`](/api-reference/webhooks/account-details-changed) | [`GET /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts-by-account-id) or [`GET /v3/customers/{customerId}/accounts`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts) with `updatedAfter` | Use stored `customerId`; map `resource.id` to `accountId`. |
-| [`transfer.state_changed`](/api-reference/webhooks/transfer-state-changed) | [`GET /v3/transfers/{transferId}`](/api-reference/money-movement/get-v3-transfers-by-transfer-id) | Map `resource.id` to `transferId`. |
-
-Some projections include a parent identifier, but `data.object` remains advisory. Confirm parent mappings through authenticated reads or your stored relationships before applying downstream changes.
-
-## Use the delivery portal
-
-Use [`GET /v3/webhooks/portal`](/api-reference/webhooks/get-v3-webhooks-portal) only for documented delivery logs, retries, and manual replay. The response contains the portal `url`.
+When a replay reaches your endpoint, send it through the same durable inbox. Completed event IDs remain deduplicated, while incomplete records resume their work.
 
 ## Recover missed changes
 
-`updatedAfter` is an inclusive RFC 3339 lower bound explicitly documented for missed-webhook recovery on the list operations below.
+Webhook handling is the fast path. Reconciliation is the recovery path when an event is delayed, missed, or cannot be completed. Run the checkpoint-and-cursor workflow in [Sync and reconciliation](/integration/sync-and-reconciliation), then apply each resource's current state through the same local update path.
 
-1. Start from your last successful checkpoint with an overlap window chosen by your system.
-2. Query the applicable list operations with `updatedAfter`.
-3. Follow every cursor page.
-4. Deduplicate returned records by resource id and reconcile them with the event matrix above. Use the scoped list result when the contract has no successful direct current read, including customer archives and applications.
-5. Advance the checkpoint only after the complete overlap window succeeds.
-
-| Resource window | Operation |
-| --- | --- |
-| Customers | [`GET /v3/customers`](/api-reference/customers/get-v3-customers) |
-| Customer related parties | [`GET /v3/customers/{customerId}/related-parties`](/api-reference/customers/get-v3-customers-by-customer-id-related-parties) |
-| Capability catalog changes | [`GET /v3/capabilities`](/api-reference/capabilities/get-v3-capabilities) |
-| Customer capabilities | [`GET /v3/customers/{customerId}/capabilities`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities) |
-| Capability applications | [`GET /v3/customers/{customerId}/capabilities/{capabilityId}/applications`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id-applications) |
-| All merchant tasks | [`GET /v3/tasks`](/api-reference/tasks/list-tasks) |
-| Customer tasks | [`GET /v3/customers/{customerId}/tasks`](/api-reference/tasks/list-customer-tasks) |
-| Task history | [`GET /v3/customers/{customerId}/tasks/{taskId}/history`](/api-reference/tasks/list-customer-task-history) |
-| Task submissions | [`GET /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/list-customer-task-submissions) |
-| Customer documents | [`GET /v3/customers/{customerId}/documents`](/api-reference/documents/get-v3-customers-by-customer-id-documents) |
-| Customer accounts | [`GET /v3/customers/{customerId}/accounts`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts) |
-| Customer recipients | [`GET /v3/customers/{customerId}/recipients`](/api-reference/recipients/get-v3-customers-by-customer-id-recipients) |
-| Recipient destinations | [`GET /v3/customers/{customerId}/recipients/{recipientId}/destinations`](/api-reference/recipients/get-v3-customers-by-customer-id-recipients-by-recipient-id-destinations) |
-| Customer rules | [`GET /v3/customers/{customerId}/rules`](/api-reference/rules/get-v3-customers-by-customer-id-rules) |
-| Transfers | [`GET /v3/transfers`](/api-reference/money-movement/get-v3-transfers) |
-| Transfer tasks | [`GET /v3/transfers/{transferId}/tasks`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-tasks) |
-
-See [Pagination and sync](/integration/pagination-and-sync) for the checkpoint and overlap-window pattern.
-
-## Replay configuration writes safely
-
-Follow [Request safety](/integration/request-safety). Generate a fresh key for each intended configuration change.
-
-- [`POST /v3/webhooks`](/api-reference/webhooks/post-v3-webhooks) requires `Idempotency-Key`. After transport uncertainty, reuse the same key only with the identical body. On a replay, the documented successful response includes `Idempotency-Replayed: true`.
-- [`PATCH /v3/webhooks/{webhookId}`](/api-reference/webhooks/patch-v3-webhooks-by-webhook-id) requires `Idempotency-Key`. After transport uncertainty, reuse the same key only with the identical body. On a replay, the documented successful response includes `Idempotency-Replayed: true`.
-- [`DELETE /v3/webhooks/{webhookId}`](/api-reference/webhooks/delete-v3-webhooks-by-webhook-id) requires `Idempotency-Key`. After transport uncertainty, reuse the same key only with the identical request. On a replay, the documented successful response includes `Idempotency-Replayed: true`.
-
-## Contract boundary
-
-The public contract does not define webhook signing, HMAC, signature headers, or verification secrets.
-
-The public contract does not document retry counts, retry timing, or backoff.
-
-The public contract does not guarantee at-least-once or exactly-once delivery.
-
-The public contract does not guarantee event ordering or any other delivery or security guarantee. Do not assume one.
+Next, implement that reconciliation job and test it alongside endpoint replay before you [go live](/integration/production-readiness).

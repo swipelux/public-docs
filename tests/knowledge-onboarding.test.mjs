@@ -632,7 +632,11 @@ test("preserves business KYB scope without presenting legacy fields as current r
     text,
     /policy classification concepts, not a fixed set of current request values/i,
   );
-  assert.ok(text.includes("[business onboarding guide](/integration/onboarding/businesses)"));
+  assert.ok(
+    text.includes(
+      "[business onboarding guide](/integration/onboarding/customers#business-customers)",
+    ),
+  );
 });
 
 test("preserves every entity, industry, source, and purpose classification concept", (t) => {
@@ -689,7 +693,9 @@ test("preserves every entity, industry, source, and purpose classification conce
   assert.match(text, /not current request\s+enums/i);
   assert.match(text, /current task requirements determine/i);
   assert.ok(
-    text.includes("[Tasks and submissions](/integration/onboarding/tasks-and-submissions)"),
+    text.includes(
+      "[Tasks and submissions](/integration/onboarding/capabilities-and-requirements#complete-requirements)",
+    ),
   );
 
   assert.deepEqual(
@@ -884,7 +890,7 @@ test("derives current document upload instructions from the authoritative contra
   ]);
   assert.ok(
     documentRequirements.includes(
-      "[Integration Documents guide](/integration/onboarding/documents)",
+      "[Integration Documents guide](/integration/onboarding/capabilities-and-requirements#upload-documents)",
     ),
   );
   assert.match(documentRequirements, /current task can narrow/i);
@@ -1080,7 +1086,11 @@ test("preserves individual KYC scope and all three policy levels", (t) => {
     "- Financial-profile information, including expected activity and source of funds, when required",
   ]);
   assert.match(text, /policy tiers, not current API status values/i);
-  assert.ok(text.includes("[individual onboarding guide](/integration/onboarding/individuals)"));
+  assert.ok(
+    text.includes(
+      "[individual onboarding guide](/integration/onboarding/customers#individual-customers)",
+    ),
+  );
 });
 
 test("preserves simplified, standard, and enhanced KYC requirements and triggers", (t) => {
@@ -1189,9 +1199,9 @@ test("replaces the legacy individual API list with the exact current workflow ma
   assert.match(text, /upload documents only when the current task asks/i);
   assert.match(text, /refetch[\s\S]{0,120}after each event or action/i);
   for (const link of [
-    "[individual onboarding guide](/integration/onboarding/individuals)",
-    "[Tasks and submissions](/integration/onboarding/tasks-and-submissions)",
-    "[Integration Documents guide](/integration/onboarding/documents)",
+    "[individual onboarding guide](/integration/onboarding/customers#individual-customers)",
+    "[Tasks and submissions](/integration/onboarding/capabilities-and-requirements#complete-requirements)",
+    "[Integration Documents guide](/integration/onboarding/capabilities-and-requirements#upload-documents)",
   ]) {
     assert.ok(text.includes(link), "missing integration link " + link);
   }

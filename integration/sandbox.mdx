@@ -1,37 +1,170 @@
 ---
 title: "Sandbox"
-description: "Use the six documented sandbox helpers to simulate supported states without moving real funds."
+description: "Simulate onboarding, funding, and transfer outcomes while you build your integration."
 ---
 
-Sandbox and production use the same API host, `https://platform.swipelux.com`. The API key selects the environment. No real funds move.
+Sandbox uses the same base URL, `https://platform.swipelux.com`; the sandbox API key selects the environment. Keep the key on your backend, and do not expose `X-API-Key` in browser or client code.
 
-Call sandbox helpers from your backend with `X-API-Key`. Do not expose `X-API-Key` to a browser or client. Do not assume automatic sequencing or production equivalence; call only the helper needed for the state you are testing and read the returned resource.
+Helpers simulate outcomes without moving real funds. They do not replace production compliance or onboarding.
 
-## Sandbox operations
+```bash
+export API_BASE='https://platform.swipelux.com'
+export SWIPELUX_SANDBOX_API_KEY='replace-with-your-sandbox-key'
+```
 
-- [`POST /v3/sandbox/accounts/{accountId}/topup`](/api-reference/sandbox/post-v3-sandbox-accounts-by-account-id-topup) credits an issued sandbox wallet account. The request requires `amount` and `currency`. The response returns a transfer with `data.type` set to `wallet_to_wallet` and `data.state` set to `completed`.
-- [`POST /v3/sandbox/transfers/{transferId}/state`](/api-reference/sandbox/post-v3-sandbox-transfers-by-transfer-id-state) requires `state`. The optional `stateDetail` requires `code` and may include `message`; it applies only when forcing a payin transfer to `failed` and is ignored for completed states and payout transfers. The response returns the current transfer.
-- [`POST /v3/sandbox/tasks`](/api-reference/sandbox/post-v3-sandbox-tasks) requires `scope` and at least one `items` entry. Each item requires `type` and `request`. A customer scope requires `type` and `customerId`; a capability scope requires `type`, `customerId`, and `capabilityId`; a transfer scope requires `type`, `customerId`, and `transferId`. If supplied, `subject` requires `type`, `name`, and `relatedPartyId`, which may be null. If supplied, `deadline` requires `type` and `outcome`. The response returns the created task.
-- [`POST /v3/sandbox/tasks/{taskId}/review`](/api-reference/sandbox/post-v3-sandbox-tasks-by-task-id-review) requires `outcome`. Optional `items` entries require `key` and `verdict`; a supplied `rejection` requires `code` and `message`. The response returns the reviewed task.
-- [`POST /v3/sandbox/customers/{customerId}/verification`](/api-reference/sandbox/post-v3-sandbox-customers-by-customer-id-verification) requires `status` and accepts an optional `reason`. The response `data` contains `customerId`, `customerType`, `status`, `previousStatus`, and `reason`.
-- [`POST /v3/sandbox/customers/{customerId}/capabilities/{capabilityId}/status`](/api-reference/sandbox/post-v3-sandbox-customers-by-customer-id-capabilities-by-capability-id-status) requires `status`. The response returns the current capability.
+## Test customer verification
 
-## Request vocabularies
+Simulate an approved or rejected verification decision with [`POST /v3/sandbox/customers/{customerId}/verification`](/api-reference/sandbox/post-v3-sandbox-customers-by-customer-id-verification):
 
-- **Transfer target states:** `completed`, `failed`
-- **Task scope types:** `customer`, `capability`, `transfer`
-- **Task categories:** `intake`, `information_request`, `correction_required`, `verification`, `terms_of_service`, `periodic_review`, `transaction_rfi`, `issue_resolution`, `other`
-- **Task subject types:** `person`, `entity`
-- **Task item types:** `document`, `profile`, `questionnaire`, `explanation`, `attestation`
-- **Deadline types:** `reminder`, `final_notice`, `auto_reject`, `provider_sla`
-- **Deadline outcomes:** `auto_rejected`, `none`
-- **Review outcomes:** `accepted`, `rejected`
-- **Review item verdicts:** `accepted`, `rejected`
-- **Verification decisions:** `approved`, `rejected`
-- **Capability target statuses:** `ready`, `rejected`, `restricted`
+```bash
+curl --request POST \
+  "${API_BASE}/v3/sandbox/customers/${CUSTOMER_ID}/verification" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Content-Type: application/json" \
+  --data @- <<'JSON'
+{
+  "status": "approved"
+}
+JSON
+```
 
-## Request safety
+Read the returned customer verification state before testing the next action.
 
-None of these six operations declare `Idempotency-Key`. None of their responses document `Idempotency-Replayed`. Do not add either behavior to sandbox requests unless the generated operation page changes.
+## Test capability readiness
 
-Use [Environments](/integration/environments) for environment selection and [Request safety](/integration/request-safety) for operation-specific header rules.
+Set a requested capability to a sandbox target status with [`POST /v3/sandbox/customers/{customerId}/capabilities/{capabilityId}/status`](/api-reference/sandbox/post-v3-sandbox-customers-by-customer-id-capabilities-by-capability-id-status):
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/sandbox/customers/${CUSTOMER_ID}/capabilities/${CAPABILITY_ID}/status" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Content-Type: application/json" \
+  --data @- <<'JSON'
+{
+  "status": "ready"
+}
+JSON
+```
+
+Use this as a test control, then refetch the capability before continuing.
+
+## Test requirements
+
+Create a capability-scoped task with [`POST /v3/sandbox/tasks`](/api-reference/sandbox/post-v3-sandbox-tasks):
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/sandbox/tasks" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Content-Type: application/json" \
+  --data @- <<JSON
+{
+  "scope": {
+    "type": "capability",
+    "customerId": "${CUSTOMER_ID}",
+    "capabilityId": "${CAPABILITY_ID}"
+  },
+  "items": [
+    {
+      "type": "explanation",
+      "request": "Explain the source of funds."
+    }
+  ]
+}
+JSON
+```
+
+Store `data.id` as `TASK_ID`, `data.revision` as `TASK_REVISION`, and the current `data.requirements[0].id` as `REQUIREMENT_ID`. Complete every current requirement through [Capabilities and requirements](/integration/onboarding/capabilities-and-requirements), then submit this example with [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission):
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/tasks/${TASK_ID}/submissions" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: sandbox-task-submission-001" \
+  --header "Content-Type: application/json" \
+  --data @- <<JSON
+{
+  "taskRevision": ${TASK_REVISION},
+  "answers": [
+    {
+      "requirementId": "${REQUIREMENT_ID}",
+      "answer": {
+        "type": "text",
+        "value": "Sandbox requirement completed."
+      }
+    }
+  ]
+}
+JSON
+```
+
+After the submission is current, accept or reject the task with [`POST /v3/sandbox/tasks/{taskId}/review`](/api-reference/sandbox/post-v3-sandbox-tasks-by-task-id-review):
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/sandbox/tasks/${TASK_ID}/review" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Content-Type: application/json" \
+  --data @- <<'JSON'
+{
+  "outcome": "accepted"
+}
+JSON
+```
+
+## Fund a sandbox wallet
+
+Credit an issued sandbox wallet with [`POST /v3/sandbox/accounts/{accountId}/topup`](/api-reference/sandbox/post-v3-sandbox-accounts-by-account-id-topup):
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/sandbox/accounts/${ACCOUNT_ID}/topup" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Content-Type: application/json" \
+  --data @- <<'JSON'
+{
+  "amount": "250.00",
+  "currency": "USDC"
+}
+JSON
+```
+
+Store `data.id` as `TRANSFER_ID` if you want to inspect or update the simulated funding result.
+
+## Complete or fail a transfer
+
+Set a sandbox transfer outcome with [`POST /v3/sandbox/transfers/{transferId}/state`](/api-reference/sandbox/post-v3-sandbox-transfers-by-transfer-id-state).
+
+Complete a transfer:
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/sandbox/transfers/${TRANSFER_ID}/state" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Content-Type: application/json" \
+  --data @- <<'JSON'
+{
+  "state": "completed"
+}
+JSON
+```
+
+Fail a pay-in transfer with a test detail:
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/sandbox/transfers/${TRANSFER_ID}/state" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Content-Type: application/json" \
+  --data @- <<'JSON'
+{
+  "state": "failed",
+  "stateDetail": {
+    "code": "sandbox_review",
+    "message": "Sandbox transfer failed."
+  }
+}
+JSON
+```
+
+Next, use these scenarios while building the [pay-in](/integration/receive-funds), [payout](/integration/send-funds), or [issued bank account](/integration/issue-bank-account) flow.

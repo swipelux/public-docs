@@ -12,26 +12,23 @@ export const SOURCE_COMMIT =
 export const REQUIRED_NAVIGATION_PAGES = Object.freeze([
   "integration/overview",
   "integration/quickstart",
-  "integration/starter-kit",
   "integration/authentication",
-  "integration/environments",
-  "integration/using-the-api-reference",
-  "integration/request-safety",
-  "integration/errors",
-  "integration/pagination-and-sync",
-  "integration/onboarding/individuals",
-  "integration/onboarding/businesses",
-  "integration/onboarding/tasks-and-submissions",
-  "integration/onboarding/documents",
+  "integration/sandbox",
+  "integration/onboarding/customers",
+  "integration/onboarding/capabilities-and-requirements",
+  "integration/common-flows",
   "integration/accounts",
+  "integration/issue-bank-account",
   "integration/recipients",
-  "integration/quotes-and-transfers",
   "integration/receive-funds",
   "integration/send-funds",
+  "integration/quotes-and-transfers",
   "integration/rules",
   "integration/webhooks",
-  "integration/sandbox",
+  "integration/api-reliability",
+  "integration/sync-and-reconciliation",
   "integration/production-readiness",
+  "integration/starter-kit",
   "knowledge-base/compliance/overview",
   "knowledge-base/compliance/regulatory-perimeter",
   "knowledge-base/compliance/supported-business-models",
@@ -215,7 +212,7 @@ const FROZEN_MIGRATION_DECISION_ROWS = Object.freeze([
   ],
   [
     "content/get-started/api-reference.mdx",
-    "/integration/using-the-api-reference",
+    "/api-reference/customers/post-v3-customers",
     "contract-rewrite",
     "not-applicable",
   ],
@@ -270,25 +267,25 @@ const FROZEN_MIGRATION_DECISION_ROWS = Object.freeze([
   ],
   [
     "content/onboarding/businesses.mdx",
-    "/integration/onboarding/businesses",
+    "/integration/onboarding/customers#business-customers",
     "contract-rewrite",
     "not-applicable",
   ],
   [
     "content/onboarding/index.mdx",
-    "/integration/onboarding/individuals",
+    "/integration/onboarding/customers#individual-customers",
     "contract-rewrite",
     "not-applicable",
   ],
   [
     "content/onboarding/individuals.mdx",
-    "/integration/onboarding/individuals",
+    "/integration/onboarding/customers#individual-customers",
     "contract-rewrite",
     "not-applicable",
   ],
   [
     "content/onboarding/shareholders-and-documents.mdx",
-    "/integration/onboarding/documents",
+    "/integration/onboarding/capabilities-and-requirements#upload-documents",
     "contract-rewrite",
     "not-applicable",
   ],
@@ -312,7 +309,7 @@ const FROZEN_MIGRATION_DECISION_ROWS = Object.freeze([
   ],
   [
     "content/reference/endpoint-map.mdx",
-    "/integration/using-the-api-reference",
+    "/api-reference/customers/post-v3-customers",
     "contract-rewrite",
     "not-applicable",
   ],
@@ -348,7 +345,7 @@ const FROZEN_MIGRATION_DECISION_ROWS = Object.freeze([
   ],
   [
     "content/reference/v3-reason-codes.mdx",
-    "/integration/errors",
+    "/integration/api-reliability#handle-errors",
     "contract-rewrite",
     "not-applicable",
   ],
@@ -442,10 +439,35 @@ function isRedirectSourcePage(sourcePath) {
   return REDIRECT_SOURCE_ROOTS.has(route.split("/")[1]);
 }
 
-export const EXPECTED_REDIRECT_SOURCES = Object.freeze(
+const LEGACY_REDIRECT_SOURCES = Object.freeze(
   FROZEN_SOURCE_PAGES.filter(isRedirectSourcePage)
     .map(sourcePathToRoute)
     .sort(compareStrings),
+);
+
+export const STRUCTURE_REDIRECTS = Object.freeze({
+  "/integration/environments":
+    "/integration/authentication#sandbox-and-production",
+  "/integration/errors": "/integration/api-reliability#handle-errors",
+  "/integration/pagination-and-sync":
+    "/integration/sync-and-reconciliation",
+  "/integration/request-safety": "/integration/api-reliability",
+  "/integration/using-the-api-reference":
+    "/api-reference/customers/post-v3-customers",
+  "/integration/onboarding/individuals":
+    "/integration/onboarding/customers#individual-customers",
+  "/integration/onboarding/businesses":
+    "/integration/onboarding/customers#business-customers",
+  "/integration/onboarding/tasks-and-submissions":
+    "/integration/onboarding/capabilities-and-requirements#complete-requirements",
+  "/integration/onboarding/documents":
+    "/integration/onboarding/capabilities-and-requirements#upload-documents",
+});
+
+export const EXPECTED_REDIRECT_SOURCES = Object.freeze(
+  [...LEGACY_REDIRECT_SOURCES, ...Object.keys(STRUCTURE_REDIRECTS)].sort(
+    compareStrings,
+  ),
 );
 
 export const APPROVED_REDIRECT_DESTINATIONS = Object.freeze({
@@ -487,38 +509,44 @@ export const APPROVED_REDIRECT_DESTINATIONS = Object.freeze({
   "/concepts/wallets": "/integration/accounts",
   "/concepts/webhooks": "/integration/webhooks",
   "/get-started": "/integration/overview",
-  "/get-started/api-reference": "/integration/using-the-api-reference",
+  "/get-started/api-reference":
+    "/api-reference/customers/post-v3-customers",
   "/get-started/authentication": "/integration/authentication",
   "/get-started/sandbox": "/integration/sandbox",
   "/get-started/starter-kit": "/integration/starter-kit",
   "/individual-onboarding":
     "/knowledge-base/individual-onboarding/overview",
   "/individual-onboarding/api-reference":
-    "/integration/onboarding/individuals",
+    "/integration/onboarding/customers#individual-customers",
   "/individual-onboarding/status-workflow":
     "/knowledge-base/individual-onboarding/status-and-workflow",
   "/individual-onboarding/verification-levels":
     "/knowledge-base/individual-onboarding/verification-levels",
-  "/onboarding": "/integration/onboarding/individuals",
-  "/onboarding/businesses": "/integration/onboarding/businesses",
-  "/onboarding/individuals": "/integration/onboarding/individuals",
+  "/onboarding": "/integration/onboarding/customers#individual-customers",
+  "/onboarding/businesses":
+    "/integration/onboarding/customers#business-customers",
+  "/onboarding/individuals":
+    "/integration/onboarding/customers#individual-customers",
   "/onboarding/shareholders-and-documents":
-    "/integration/onboarding/documents",
+    "/integration/onboarding/capabilities-and-requirements#upload-documents",
   "/receive": "/integration/receive-funds",
   "/receive/pooled-payins": "/integration/receive-funds",
   "/receive/virtual-accounts": "/integration/receive-funds",
-  "/reference/endpoint-map": "/integration/using-the-api-reference",
+  "/reference/endpoint-map":
+    "/api-reference/customers/post-v3-customers",
   "/reference/rates": "/api-reference/money-movement/get-v3-rates",
   "/reference/supported-rails": "/integration/overview",
   "/reference/v3-blockchain-networks": "/integration/accounts",
   "/reference/v3-fee-schedule": "/integration/quotes-and-transfers",
   "/reference/v3-method-coverage": "/integration/overview",
-  "/reference/v3-reason-codes": "/integration/errors",
+  "/reference/v3-reason-codes":
+    "/integration/api-reliability#handle-errors",
   "/reference/webhooks": "/integration/webhooks",
   "/send": "/integration/send-funds",
   "/send/first-party-payouts": "/integration/send-funds",
   "/send/recipient-payouts": "/integration/send-funds",
   "/transfers": "/integration/quotes-and-transfers",
+  ...STRUCTURE_REDIRECTS,
 });
 
 function compareStrings(left, right) {
@@ -825,6 +853,20 @@ export function validatePublishedText(path, text, options = {}) {
   }
 
   const normalized = normalizePath(path).split("#", 1)[0];
+  if (normalized.startsWith("integration/")) {
+    for (const pattern of [
+      /openapi-coverage\.json/i,
+      /openapi-provenance\.json/i,
+      /x-mint\.href/i,
+      /the committed contract defines/i,
+      /the generated schema says/i,
+    ]) {
+      if (pattern.test(value)) {
+        errors.push(`${path}: internal documentation implementation detail`);
+      }
+    }
+  }
+
   const checkCodeFences =
     options.checkCodeFences ?? getFileCategory(normalized) === "page";
   if (checkCodeFences) errors.push(...validateCodeFences(path, value));
@@ -1044,8 +1086,14 @@ export function validateRedirectInventory(inventory, options = {}) {
     }
     if (typeof destination !== "string" || !destination.startsWith("/")) {
       errors.push(`${location}: destination must be a root-relative route`);
-    } else if (knownDestinations && !knownDestinations.has(destination)) {
-      errors.push(`${location}: unknown destination ${destination}`);
+    } else {
+      const destinationPath = destination.split("#", 1)[0];
+      if (
+        knownDestinations &&
+        !knownDestinations.has(destinationPath)
+      ) {
+        errors.push(`${location}: unknown destination ${destination}`);
+      }
     }
     if (typeof reason !== "string" || reason.trim() === "") {
       errors.push(`${location}: reason must be a non-empty string`);

@@ -23,6 +23,15 @@ This repository contains the Mintlify source for Swipelux public documentation. 
 - Add a language tag to every code block.
 - Format file names, commands, paths, and code references as code.
 
+## Public guide writing
+
+- Lead with the developer outcome, then introduce API resources.
+- Give each Integration page one primary job and one happy path.
+- Keep complete schemas, enums, status catalogs, and error catalogs in API Reference.
+- Do not expose documentation-generation files, source precedence, migration notes, provider names, or internal review language.
+- State shared rules once and link to their canonical guide instead of repeating boilerplate.
+- End workflow pages with the next developer action.
+
 ## Verification
 
 - Use Node.js 24.15.0 and Mintlify CLI 4.2.775.

@@ -1,25 +1,34 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
+import { isDeepStrictEqual } from "node:util";
 
-import { collectNavigationPages } from "../scripts/lib/docs-validation.mjs";
 import { assertPages, readPage } from "./helpers/content.mjs";
+import { createOpenApiValidator } from "./helpers/openapi-validation.mjs";
 
 const PAGES = [
+  "integration/common-flows",
   "integration/accounts",
+  "integration/issue-bank-account",
   "integration/recipients",
-  "integration/quotes-and-transfers",
   "integration/receive-funds",
   "integration/send-funds",
+  "integration/quotes-and-transfers",
   "integration/rules",
 ];
 
-const PAGE_OPERATIONS = new Map([
+const CORRECTED_PAGES = [
+  "integration/accounts",
+  "integration/issue-bank-account",
+  "integration/quotes-and-transfers",
+  "integration/rules",
+];
+
+const REQUIRED_OPERATIONS = new Map([
   [
     "integration/accounts",
     [
       ["post", "/v3/customers/{customerId}/accounts"],
-      ["get", "/v3/customers/{customerId}/accounts"],
       ["get", "/v3/customers/{customerId}/accounts/{accountId}"],
       ["get", "/v3/customers/{customerId}/accounts/{accountId}/fees"],
       ["put", "/v3/customers/{customerId}/accounts/{accountId}/fees"],
@@ -28,10 +37,16 @@ const PAGE_OPERATIONS = new Map([
     ],
   ],
   [
+    "integration/issue-bank-account",
+    [
+      ["post", "/v3/customers/{customerId}/accounts"],
+      ["get", "/v3/customers/{customerId}/accounts/{accountId}"],
+    ],
+  ],
+  [
     "integration/recipients",
     [
       ["post", "/v3/customers/{customerId}/recipients"],
-      ["get", "/v3/customers/{customerId}/recipients"],
       ["get", "/v3/customers/{customerId}/recipients/{recipientId}"],
       ["patch", "/v3/customers/{customerId}/recipients/{recipientId}"],
       ["delete", "/v3/customers/{customerId}/recipients/{recipientId}"],
@@ -41,10 +56,6 @@ const PAGE_OPERATIONS = new Map([
       ],
       [
         "get",
-        "/v3/customers/{customerId}/recipients/{recipientId}/destinations",
-      ],
-      [
-        "get",
         "/v3/customers/{customerId}/recipients/{recipientId}/destinations/{destinationId}",
       ],
       [
@@ -54,42 +65,50 @@ const PAGE_OPERATIONS = new Map([
     ],
   ],
   [
-    "integration/quotes-and-transfers",
-    [
-      ["post", "/v3/quotes"],
-      ["get", "/v3/quotes/{quoteId}"],
-      ["post", "/v3/transfers"],
-      ["get", "/v3/transfers"],
-      ["get", "/v3/transfers/{transferId}"],
-      ["get", "/v3/transfers/{transferId}/tasks"],
-      ["get", "/v3/transfers/{transferId}/instructions"],
-      ["post", "/v3/transfers/{transferId}/cancel"],
-    ],
-  ],
-  [
     "integration/receive-funds",
     [
       ["post", "/v3/quotes"],
       ["post", "/v3/transfers"],
-      ["get", "/v3/transfers"],
-      ["get", "/v3/transfers/{transferId}"],
       ["get", "/v3/transfers/{transferId}/instructions"],
+      ["get", "/v3/transfers/{transferId}"],
     ],
   ],
   [
     "integration/send-funds",
     [
+      ["post", "/v3/customers/{customerId}/accounts"],
+      ["get", "/v3/customers/{customerId}/accounts/{accountId}"],
+      ["post", "/v3/customers/{customerId}/recipients"],
+      [
+        "post",
+        "/v3/customers/{customerId}/recipients/{recipientId}/destinations",
+      ],
+      [
+        "get",
+        "/v3/customers/{customerId}/recipients/{recipientId}/destinations/{destinationId}",
+      ],
       ["post", "/v3/quotes"],
       ["post", "/v3/transfers"],
       ["get", "/v3/transfers/{transferId}"],
+    ],
+  ],
+  [
+    "integration/quotes-and-transfers",
+    [
+      ["get", "/v3/customers/{customerId}/accounts/{accountId}"],
+      ["post", "/v3/quotes"],
+      ["get", "/v3/quotes/{quoteId}"],
+      ["post", "/v3/transfers"],
+      ["get", "/v3/transfers/{transferId}"],
+      ["get", "/v3/transfers/{transferId}/tasks"],
       ["get", "/v3/transfers/{transferId}/instructions"],
     ],
   ],
   [
     "integration/rules",
     [
-      ["post", "/v3/customers/{customerId}/rules"],
       ["get", "/v3/customers/{customerId}/rules"],
+      ["post", "/v3/customers/{customerId}/rules"],
       ["get", "/v3/customers/{customerId}/rules/{ruleId}"],
       ["patch", "/v3/customers/{customerId}/rules/{ruleId}"],
       ["delete", "/v3/customers/{customerId}/rules/{ruleId}"],
@@ -97,87 +116,204 @@ const PAGE_OPERATIONS = new Map([
   ],
 ]);
 
-const WRITE_OPERATIONS = new Map([
-  [
-    "integration/accounts",
-    [
-      ["post", "/v3/customers/{customerId}/accounts"],
-      ["put", "/v3/customers/{customerId}/accounts/{accountId}/fees"],
-      ["patch", "/v3/customers/{customerId}/accounts/{accountId}"],
-      ["delete", "/v3/customers/{customerId}/accounts/{accountId}"],
-    ],
-  ],
-  [
-    "integration/recipients",
-    [
-      ["post", "/v3/customers/{customerId}/recipients"],
-      ["patch", "/v3/customers/{customerId}/recipients/{recipientId}"],
-      ["delete", "/v3/customers/{customerId}/recipients/{recipientId}"],
-      [
-        "post",
-        "/v3/customers/{customerId}/recipients/{recipientId}/destinations",
-      ],
-      [
-        "delete",
-        "/v3/customers/{customerId}/recipients/{recipientId}/destinations/{destinationId}",
-      ],
-    ],
-  ],
-  [
-    "integration/quotes-and-transfers",
-    [
-      ["post", "/v3/quotes"],
-      ["post", "/v3/transfers"],
-      ["post", "/v3/transfers/{transferId}/cancel"],
-    ],
-  ],
-  [
-    "integration/receive-funds",
-    [
-      ["post", "/v3/quotes"],
-      ["post", "/v3/transfers"],
-    ],
-  ],
-  [
-    "integration/send-funds",
-    [
-      ["post", "/v3/quotes"],
-      ["post", "/v3/transfers"],
-    ],
-  ],
-  [
-    "integration/rules",
-    [
-      ["post", "/v3/customers/{customerId}/rules"],
-      ["patch", "/v3/customers/{customerId}/rules/{ruleId}"],
-      ["delete", "/v3/customers/{customerId}/rules/{ruleId}"],
-    ],
-  ],
-]);
+const BODY_VARIABLES = Object.freeze({
+  CUSTOMER_ID: "cus_7F3pL2nQ9xA5mW8kR1sT4v",
+  CAPABILITY_ID: "ach_pooled",
+  STABLECOIN_CAPABILITY_ID: "stablecoin_transfers",
+  SETTLEMENT_WALLET_ID: "acc_3eG7xN2pQ4rT8mA1sL6dVc",
+  SOURCE_WALLET_ID: "acc_6dV8xN2pQ4rT7mA9sL1kBc",
+  CUSTOMER_BANK_ACCOUNT_ID: "acc_7mA9sL1kBc6dV8xN2pQ4rT",
+  RECIPIENT_DESTINATION_ID: "dst_2pQ4rT7mA9sL1kBc6dV8xN",
+  WALLET_DESTINATION_ID: "dst_8xN2pQ4rT7mA9sL1kBc6dV",
+  QUOTE_ID: "quo_6dV8xN2pQ4rT7mA9sL1kBc",
+  RULE_TRIGGER_ACCOUNT_ID: "acc_2pQ4rT7mA9sL1kBc6dV8xN",
+  RULE_TARGET_ACCOUNT_ID: "acc_9sL1kBc6dV8xN2pQ4rT7mA",
+});
+
+const EXAMPLES = Object.freeze({
+  issuedWallet: {
+    origin: "issued",
+    type: "wallet",
+    currency: "USDC",
+    network: "base",
+    label: "Settlement wallet",
+  },
+  issuedBank: {
+    origin: "issued",
+    type: "bank",
+    method: "ach",
+    country: "US",
+    currency: "USD",
+    settlement: { accountId: "${SETTLEMENT_WALLET_ID}" },
+    label: "USD pay-in account",
+  },
+  externalWallet: {
+    origin: "external",
+    type: "wallet",
+    currency: "USDC",
+    network: "polygon",
+    details: { address: "0x4997b0a68bebc1b0d80a93567ba7002be92b8b11" },
+    label: "Customer Polygon wallet",
+  },
+  externalBank: {
+    origin: "external",
+    type: "bank",
+    methods: ["ach", "wire"],
+    country: "US",
+    currency: "USD",
+    details: {
+      routingNumber: "021000021",
+      accountNumber: "123456789",
+      accountType: "checking",
+      bankName: "JPMorgan Chase Bank",
+      accountHolderName: "Swipelux Inc.",
+    },
+    label: "Customer operating account",
+  },
+  feeRule: {
+    breakdown: { developer: { fixed: "1.00", bips: 50 } },
+  },
+  individualRecipient: {
+    type: "individual",
+    relationship: "contractor",
+    firstName: "Jason",
+    lastName: "Swipelux",
+    email: "jason@swipelux.com",
+    phone: "+14155551234",
+    address: {
+      streetLine1: "1 Market Street",
+      city: "San Francisco",
+      state: "CA",
+      postalCode: "94105",
+      country: "US",
+    },
+    label: "Jason contractor",
+  },
+  bankDestination: {
+    type: "ach",
+    currency: "USD",
+    details: {
+      routingNumber: "021000021",
+      accountNumber: "123456789",
+      accountType: "checking",
+      bankName: "JPMorgan Chase",
+      accountHolderName: "Jason Swipelux",
+      country: "US",
+    },
+  },
+  walletDestination: {
+    type: "wallet",
+    currency: "USDC",
+    ownership: { type: "self_custodied" },
+    details: {
+      network: "base",
+      address: "0x1111111111111111111111111111111111111111",
+    },
+  },
+  payInQuote: {
+    customerId: "${CUSTOMER_ID}",
+    capabilityId: "${CAPABILITY_ID}",
+    externalId: "payin-order-123",
+    in: { amount: "150.00", currency: "USD" },
+    destinationId: "${SETTLEMENT_WALLET_ID}",
+    out: { currency: "USDC" },
+  },
+  firstPartyPayoutQuote: {
+    customerId: "${CUSTOMER_ID}",
+    capabilityId: "${CAPABILITY_ID}",
+    in: {
+      amount: "150.00",
+      currency: "USDC",
+      accountId: "${SOURCE_WALLET_ID}",
+    },
+    destinationId: "${CUSTOMER_BANK_ACCOUNT_ID}",
+    out: { currency: "USD" },
+  },
+  thirdPartyPayoutQuote: {
+    customerId: "${CUSTOMER_ID}",
+    capabilityId: "${CAPABILITY_ID}",
+    in: {
+      amount: "150.00",
+      currency: "USDC",
+      accountId: "${SOURCE_WALLET_ID}",
+    },
+    destinationId: "${RECIPIENT_DESTINATION_ID}",
+    out: { currency: "USD" },
+  },
+  exactInQuote: {
+    customerId: "${CUSTOMER_ID}",
+    capabilityId: "${STABLECOIN_CAPABILITY_ID}",
+    in: {
+      amount: "1.234567",
+      currency: "USDC",
+      accountId: "${SOURCE_WALLET_ID}",
+    },
+    destinationId: "${WALLET_DESTINATION_ID}",
+    out: { currency: "USDC" },
+  },
+  exactOutQuote: {
+    customerId: "${CUSTOMER_ID}",
+    capabilityId: "${CAPABILITY_ID}",
+    in: { currency: "USDC", accountId: "${SOURCE_WALLET_ID}" },
+    destinationId: "${RECIPIENT_DESTINATION_ID}",
+    out: { amount: "100.00", currency: "USD" },
+  },
+  transfer: { quoteId: "${QUOTE_ID}" },
+  ruleCreate: {
+    trigger: {
+      type: "funds_received",
+      accountId: "${RULE_TRIGGER_ACCOUNT_ID}",
+    },
+    action: {
+      type: "transfer",
+      target: { type: "account", id: "${RULE_TARGET_ACCOUNT_ID}" },
+    },
+    label: "Treasury consolidation",
+  },
+  ruleUpdate: {
+    status: "paused",
+    label: "Paused while destination changes",
+  },
+});
+
+const BODY_CASES = [
+  ["integration/accounts", "post", "/v3/customers/{customerId}/accounts", EXAMPLES.issuedWallet],
+  ["integration/accounts", "post", "/v3/customers/{customerId}/accounts", EXAMPLES.issuedBank],
+  ["integration/accounts", "post", "/v3/customers/{customerId}/accounts", EXAMPLES.externalWallet],
+  ["integration/accounts", "post", "/v3/customers/{customerId}/accounts", EXAMPLES.externalBank],
+  ["integration/accounts", "put", "/v3/customers/{customerId}/accounts/{accountId}/fees", EXAMPLES.feeRule],
+  ["integration/issue-bank-account", "post", "/v3/customers/{customerId}/accounts", EXAMPLES.issuedBank],
+  ["integration/recipients", "post", "/v3/customers/{customerId}/recipients", EXAMPLES.individualRecipient],
+  ["integration/recipients", "post", "/v3/customers/{customerId}/recipients/{recipientId}/destinations", EXAMPLES.bankDestination],
+  ["integration/recipients", "post", "/v3/customers/{customerId}/recipients/{recipientId}/destinations", EXAMPLES.walletDestination],
+  ["integration/receive-funds", "post", "/v3/quotes", EXAMPLES.payInQuote],
+  ["integration/receive-funds", "post", "/v3/transfers", EXAMPLES.transfer],
+  ["integration/send-funds", "post", "/v3/customers/{customerId}/accounts", EXAMPLES.externalBank],
+  ["integration/send-funds", "post", "/v3/customers/{customerId}/recipients", EXAMPLES.individualRecipient],
+  ["integration/send-funds", "post", "/v3/customers/{customerId}/recipients/{recipientId}/destinations", EXAMPLES.bankDestination],
+  ["integration/send-funds", "post", "/v3/quotes", EXAMPLES.firstPartyPayoutQuote],
+  ["integration/send-funds", "post", "/v3/quotes", EXAMPLES.thirdPartyPayoutQuote],
+  ["integration/send-funds", "post", "/v3/transfers", EXAMPLES.transfer],
+  ["integration/quotes-and-transfers", "post", "/v3/quotes", EXAMPLES.exactInQuote],
+  ["integration/quotes-and-transfers", "post", "/v3/quotes", EXAMPLES.exactOutQuote],
+  ["integration/quotes-and-transfers", "post", "/v3/transfers", EXAMPLES.transfer],
+  ["integration/rules", "post", "/v3/customers/{customerId}/rules", EXAMPLES.ruleCreate],
+  ["integration/rules", "patch", "/v3/customers/{customerId}/rules/{ruleId}", EXAMPLES.ruleUpdate],
+];
 
 const config = JSON.parse(readFileSync("docs.json", "utf8"));
 const coverage = JSON.parse(readFileSync("openapi-coverage.json", "utf8"));
 const openapi = JSON.parse(readFileSync("openapi.json", "utf8"));
+const openApiValidator = createOpenApiValidator(openapi);
 
-function pageFile(page) {
-  return `${page}.mdx`;
-}
-
-function requiredPage(page) {
-  assert.ok(existsSync(pageFile(page)), `Missing page: ${pageFile(page)}`);
-  return readPage(page);
-}
-
-function resolveOpenApiReference(value) {
+function resolveReference(value) {
   let resolved = value;
   const visited = new Set();
-
   while (resolved?.$ref) {
     const reference = resolved.$ref;
     assert.match(reference, /^#\//, `Unsupported OpenAPI reference ${reference}`);
     assert.ok(!visited.has(reference), `Circular OpenAPI reference ${reference}`);
     visited.add(reference);
-
     resolved = reference
       .slice(2)
       .split("/")
@@ -185,2008 +321,807 @@ function resolveOpenApiReference(value) {
       .reduce((current, segment) => current?.[segment], openapi);
     assert.ok(resolved, `Missing OpenAPI reference ${reference}`);
   }
-
   return resolved;
 }
 
 function openApiOperation(method, path) {
-  const pathItem = openapi.paths[path];
+  const pathItem = openapi.paths?.[path];
   assert.ok(pathItem, `Missing OpenAPI path ${path}`);
-  const operationObject = pathItem[method];
-  assert.ok(
-    operationObject,
-    `Missing OpenAPI operation ${method.toUpperCase()} ${path}`,
-  );
-  return { operationObject, pathItem };
+  const operation = pathItem[method];
+  assert.ok(operation, `Missing OpenAPI operation ${method.toUpperCase()} ${path}`);
+  return operation;
 }
 
-function coveredOperation(method, path) {
+function coverageOperation(method, path) {
   const matches = coverage.operations.filter(
     (candidate) => candidate.method === method && candidate.path === path,
   );
-  assert.equal(
-    matches.length,
-    1,
-    `Expected one coverage operation for ${method.toUpperCase()} ${path}`,
-  );
-  const { operationObject } = openApiOperation(method, path);
-  assert.equal(
-    operationObject["x-mint"]?.href,
-    matches[0].href,
-    `${method.toUpperCase()} ${path} coverage href must match x-mint.href`,
-  );
+  assert.equal(matches.length, 1, `Expected one coverage entry for ${method.toUpperCase()} ${path}`);
+  assert.equal(openApiOperation(method, path)["x-mint"]?.href, matches[0].href);
   return matches[0];
 }
 
-function operationParameters(method, path) {
-  const { operationObject, pathItem } = openApiOperation(method, path);
-  return [...(pathItem.parameters ?? []), ...(operationObject.parameters ?? [])].map(
-    resolveOpenApiReference,
-  );
-}
-
-function idempotencyParameter(method, path) {
-  return operationParameters(method, path).find(
-    (parameter) =>
-      parameter.in === "header" &&
-      parameter.name.toLowerCase() === "idempotency-key",
-  );
-}
-
-function requestBody(method, path) {
-  const { operationObject } = openApiOperation(method, path);
-  return resolveOpenApiReference(operationObject.requestBody);
-}
-
-function requestBodySchema(method, path) {
-  const body = requestBody(method, path);
-  assert.ok(body, `Missing request body for ${method.toUpperCase()} ${path}`);
-  const schema = body.content?.["application/json"]?.schema;
-  assert.ok(
-    schema,
-    `Missing application/json request schema for ${method.toUpperCase()} ${path}`,
-  );
-  return resolveOpenApiReference(schema);
-}
-
-function responseObject(method, path, status) {
-  const { operationObject } = openApiOperation(method, path);
-  const response = resolveOpenApiReference(operationObject.responses?.[status]);
-  assert.ok(response, `Missing ${status} response for ${method.toUpperCase()} ${path}`);
-  return response;
-}
-
-function responseSchema(method, path, status = "200") {
-  const response = responseObject(method, path, status);
-  const schema = response.content?.["application/json"]?.schema;
-  assert.ok(
-    schema,
-    `Missing application/json schema for ${method.toUpperCase()} ${path} ${status}`,
-  );
-  return resolveOpenApiReference(schema);
-}
-
-function responseDataSchema(method, path, status = "200") {
-  const envelope = responseSchema(method, path, status);
-  assert.ok(
-    envelope.required?.includes("data"),
-    `${method.toUpperCase()} ${path} ${status} must require data`,
-  );
-  return resolveOpenApiReference(envelope.properties?.data);
-}
-
-function responseHeader(method, path, status, headerName) {
-  const response = responseObject(method, path, status);
-  const match = Object.entries(response.headers ?? {}).find(
-    ([name]) => name.toLowerCase() === headerName.toLowerCase(),
-  );
-  return match ? resolveOpenApiReference(match[1]) : undefined;
-}
-
-function successStatuses(method, path) {
-  const { operationObject } = openApiOperation(method, path);
-  return Object.keys(operationObject.responses).filter((status) => {
-    const numeric = Number(status);
-    return Number.isInteger(numeric) && numeric >= 200 && numeric < 300;
-  });
-}
-
-function documentsReplayHeader(method, path) {
-  return successStatuses(method, path).some(
-    (status) => responseHeader(method, path, status, "Idempotency-Replayed") !== undefined,
-  );
-}
-
-function enumValues(schema, seen = new Set()) {
-  if (!schema || typeof schema !== "object" || seen.has(schema)) return [];
-  seen.add(schema);
-  const resolved = resolveOpenApiReference(schema);
-  const values = [
-    ...(resolved.enum ?? []),
-    ...(Object.hasOwn(resolved, "const") ? [resolved.const] : []),
-  ];
-  for (const key of ["oneOf", "anyOf", "allOf"]) {
-    for (const branch of resolved[key] ?? []) {
-      values.push(...enumValues(branch, seen));
-    }
-  }
-  return [...new Set(values)];
-}
-
-function problemCodes(method, path, status) {
-  const response = responseObject(method, path, status);
-  const media = response.content?.["application/problem+json"];
-  assert.ok(
-    media,
-    `Missing application/problem+json for ${method.toUpperCase()} ${path} ${status}`,
-  );
-  const schema = resolveOpenApiReference(media.schema);
-  return [
-    ...enumValues(schema.properties?.code),
-    ...Object.values(media.examples ?? {}).map((example) => example.value?.code),
-  ].filter((value, index, values) => value && values.indexOf(value) === index);
-}
-
-function assertExactSet(actual, expected, label) {
-  assert.ok(Array.isArray(actual), `${label} must be an array`);
-  assert.equal(new Set(actual).size, actual.length, `${label} has duplicates`);
-  assert.deepEqual(
-    actual.toSorted(),
-    expected.toSorted(),
-    `${label} must contain exactly the expected values`,
-  );
-}
-
-function unique(values) {
-  return [...new Set(values)];
-}
-
-function schemaVariants(schema) {
-  const resolved = resolveOpenApiReference(schema);
-  return (resolved.oneOf ?? resolved.anyOf ?? []).map(resolveOpenApiReference);
-}
-
-function assertDescriptionFragments(description, label, fragments) {
-  assert.equal(typeof description, "string", `${label} must have a description`);
-  for (const fragment of fragments) {
-    assert.match(description, fragment, `${label} must document ${fragment}`);
-  }
-}
-
 function operationMarkdown(method, path) {
-  const { href } = coveredOperation(method, path);
-  return `[\`${method.toUpperCase()} ${path}\`](${href})`;
+  return `[\`${method.toUpperCase()} ${path}\`](${coverageOperation(method, path).href})`;
 }
 
-function assertRequiredOperationLinks(page, operations) {
-  const text = requiredPage(page);
-  for (const [method, path] of operations) {
+function operationLinks(text) {
+  return [...text.matchAll(/\[`([A-Z]+) ([^`]+)`\]\((\/api-reference\/[^)]+)\)/g)].map(
+    (match) => ({ method: match[1].toLowerCase(), path: match[2], href: match[3] }),
+  );
+}
+
+function assertOperationLinksMatchOpenApi(page, text) {
+  for (const { method, path, href } of operationLinks(text)) {
+    assert.equal(
+      coverageOperation(method, path).href,
+      href,
+      `${page}.mdx must bind ${method.toUpperCase()} ${path} to its generated href`,
+    );
+  }
+  for (const match of text.matchAll(/\[[^\]]+\]\((\/api-reference\/[^)]+)\)/g)) {
     assert.ok(
-      text.includes(operationMarkdown(method, path)),
-      `${pageFile(page)} must bind ${method.toUpperCase()} ${path} to its coverage href`,
+      operationLinks(text).some(({ href }) => href === match[1]),
+      `${page}.mdx must label ${match[1]} with its method and path`,
     );
   }
 }
 
-function linkedOperationLabels(text) {
-  return [
-    ...text.matchAll(
-      /\[\`(GET|POST|PATCH|PUT|DELETE|HEAD|OPTIONS|TRACE) (\/v3\/[^`]+)\`\]\(([^)]+)\)/g,
-    ),
-  ].map((match) => ({
-    end: match.index + match[0].length,
-    href: match[3],
-    method: match[1].toLowerCase(),
-    path: match[2],
-    start: match.index,
-  }));
+function responseSchema(method, path, status) {
+  const response = resolveReference(openApiOperation(method, path).responses?.[status]);
+  assert.ok(response, `Missing ${status} response for ${method.toUpperCase()} ${path}`);
+  const schema = response.content?.["application/json"]?.schema;
+  assert.ok(schema, `Missing JSON schema for ${method.toUpperCase()} ${path} ${status}`);
+  return schema;
 }
 
-function assertEveryOperationLabelIsCoverageLinked(label, text) {
-  const links = linkedOperationLabels(text);
-  const labels = [
-    ...text.matchAll(
-      /\`(GET|POST|PATCH|PUT|DELETE|HEAD|OPTIONS|TRACE) (\/v3\/[^`]+)\`/g,
+function expandSchemas(schema, seen = new Set()) {
+  const resolved = resolveReference(schema);
+  if (!resolved || typeof resolved !== "object" || seen.has(resolved)) return [];
+  seen.add(resolved);
+  return [
+    resolved,
+    ...(resolved.items ? expandSchemas(resolved.items, seen) : []),
+    ...["oneOf", "anyOf", "allOf"].flatMap((key) =>
+      (resolved[key] ?? []).flatMap((branch) => expandSchemas(branch, seen)),
     ),
   ];
+}
 
-  for (const match of labels) {
-    assert.ok(
-      links.some(
-        (link) => match.index >= link.start && match.index + match[0].length <= link.end,
+function schemasAtPath(schema, path) {
+  let candidates = [schema];
+  for (const segment of path.split(".")) {
+    candidates = candidates.flatMap((candidate) =>
+      expandSchemas(candidate).flatMap((expanded) =>
+        expanded.properties?.[segment] ? [expanded.properties[segment]] : [],
       ),
-      `${label} has an unlinked operation label: ${match[0]}`,
     );
   }
+  return candidates.flatMap((candidate) => expandSchemas(candidate));
+}
 
-  for (const link of links) {
-    const expected = coveredOperation(link.method, link.path);
-    assert.equal(
-      link.href,
-      expected.href,
-      `${label} links ${link.method.toUpperCase()} ${link.path} to the wrong href`,
+function assertResponseFields(method, path, status, fields) {
+  const schema = responseSchema(method, path, status);
+  for (const field of fields) {
+    assert.ok(
+      schemasAtPath(schema, field).length > 0,
+      `${method.toUpperCase()} ${path} ${status} must expose ${field}`,
     );
   }
 }
 
-function proseSemanticUnits(text) {
-  const units = [];
-  let current = [];
-  const flush = () => {
-    if (current.length > 0) units.push(current.join("\n").trim());
-    current = [];
-  };
-
-  for (const rawLine of text
-    .replace(/```[^\n]*\n[\s\S]*?```/g, "")
-    .split("\n")) {
-    const line = rawLine.trimEnd();
-    if (line.trim() === "") {
-      flush();
-      continue;
-    }
-    if (/^\s*(?:[-*+]|\d+[.)])\s+/.test(line)) {
-      flush();
-      current.push(line.trim());
-      continue;
-    }
-    current.push(line.trim());
-  }
-  flush();
-  return units;
-}
-
-function assertOperationSafetyAssociationsInText(label, text, operations) {
-  const units = proseSemanticUnits(text);
-
-  for (const [method, path] of operations) {
-    const markdown = operationMarkdown(method, path);
-    const safetyUnits = units.filter(
-      (unit) =>
-        unit.includes(markdown) && unit.includes("`Idempotency-Key`"),
-    );
-    assert.equal(
-      safetyUnits.length,
-      1,
-      `${label} must contain exactly one safety semantic unit for ${method.toUpperCase()} ${path}`,
-    );
-    const [safetyUnit] = safetyUnits;
-    assert.deepEqual(
-      linkedOperationLabels(safetyUnit).map(({ method: linkedMethod, path: linkedPath }) => [
-        linkedMethod,
-        linkedPath,
-      ]),
-      [[method, path]],
-      `${label} safety semantic unit for ${method.toUpperCase()} ${path} must contain only that operation link`,
-    );
-    assert.match(
-      safetyUnit,
-      /requires `Idempotency-Key`/i,
-      `${label} must state that Idempotency-Key is required for ${method.toUpperCase()} ${path}`,
-    );
-    assert.match(
-      safetyUnit,
-      /after transport uncertainty/i,
-      `${label} must limit key reuse to transport uncertainty for ${method.toUpperCase()} ${path}`,
-    );
-    assert.match(
-      safetyUnit,
-      /reuse the same key only/i,
-      `${label} must limit reuse of the same key for ${method.toUpperCase()} ${path}`,
-    );
-    const replayInput = requestBody(method, path) ? "body" : "request";
-    assert.match(
-      safetyUnit,
-      new RegExp(`identical ${replayInput}\\b`, "i"),
-      `${label} must replay the identical ${replayInput} for ${method.toUpperCase()} ${path}`,
-    );
-
-    if (documentsReplayHeader(method, path)) {
-      assert.match(
-        safetyUnit,
-        /on (?:an? )?replay[\s\S]*`Idempotency-Replayed: true`/i,
-        `${label} must associate Idempotency-Replayed: true specifically with a replay of ${method.toUpperCase()} ${path}`,
-      );
-    } else {
-      assert.match(
-        safetyUnit,
-        /does not document `Idempotency-Replayed`/i,
-        `${label} must not borrow Idempotency-Replayed for ${method.toUpperCase()} ${path}`,
-      );
-    }
-  }
+function responseEnum(method, path, status, field) {
+  return [
+    ...new Set(
+      schemasAtPath(responseSchema(method, path, status), field).flatMap(
+        (schema) => schema.enum ?? (Object.hasOwn(schema, "const") ? [schema.const] : []),
+      ),
+    ),
+  ];
 }
 
 function jsonBlocks(text) {
   return [...text.matchAll(/```json\n([\s\S]*?)```/g)].map((match, index) => {
-    assert.doesNotThrow(
-      () => JSON.parse(match[1]),
-      `JSON block ${index + 1} must contain valid JSON`,
-    );
-    return JSON.parse(match[1]);
-  });
-}
-
-function hasDeepEqual(values, expected) {
-  return values.some((value) => {
     try {
-      assert.deepEqual(value, expected);
-      return true;
-    } catch {
-      return false;
+      return JSON.parse(match[1]);
+    } catch (error) {
+      assert.fail(`JSON block ${index + 1} is invalid: ${error.message}`);
     }
   });
 }
 
-function labeledCodeValues(text, label) {
-  const prefix = `- **${label}:**`;
-  const lines = text.split("\n").filter((line) => line.startsWith(prefix));
-  assert.equal(lines.length, 1, `Expected one ${label} vocabulary line`);
-  return [...lines[0].matchAll(/`([^`]+)`/g)].map((match) => match[1]);
-}
-
-function internalLinks(text) {
-  return [
-    ...[...text.matchAll(/\[[^\]]+\]\(([^)]+)\)/g)].map((match) => match[1]),
-    ...[...text.matchAll(/\bhref=(?:"([^"]+)"|'([^']+)')/g)].map(
-      (match) => match[1] ?? match[2],
-    ),
-  ].filter((href) => href.startsWith("/"));
-}
-
-function assertSharedFinancialSafetyGuidance(label, text) {
-  const units = proseSemanticUnits(text);
-  const safetyLink = "[Request safety](/integration/request-safety)";
-  const guidance = units.filter((unit) => unit.includes(safetyLink));
-  assert.equal(
-    guidance.length,
-    1,
-    `${label} must contain one shared Request safety guidance unit`,
-  );
-  assert.match(
-    guidance[0],
-    /(?:each|every|all) (?:write|operation)[\s\S]*requires `Idempotency-Key`/i,
-    `${label} must state that each write requires Idempotency-Key`,
-  );
-  assert.match(
-    guidance[0],
-    /fresh key[\s\S]*each intended effect/i,
-    `${label} must require a fresh key per intended effect`,
-  );
-}
-
-function assertAccountScopeGuidance(label, text) {
-  assert.match(text, /customer-scoped/i, `${label} must describe accounts as customer-scoped`);
-  assert.match(text, /`issued` accounts?[\s\S]{0,100}platform-issued/i);
-  assert.match(text, /`external` accounts?[\s\S]{0,100}customer-owned/i);
-  assert.doesNotMatch(
-    text,
-    /(?:all customer-scoped accounts? are|accounts? belong to a customer and represent) customer-owned/i,
-    `${label} must not say that every customer-scoped account is customer-owned`,
-  );
-}
-
-function assertAccountReferenceGuidance(label, text, { transferInstructions = false } = {}) {
-  const units = proseSemanticUnits(text);
-  const accountUnits = units.filter((unit) => unit.includes("`details.referenceRequired`"));
-  assert.equal(accountUnits.length, 1, `${label} must have one account-reference unit`);
-  const [accountUnit] = accountUnits;
-  assert.match(accountUnit, /(?:is|when)[\s\S]{0,80}`true`/i);
-  assert.match(accountUnit, /sender must include/i);
-  assert.match(accountUnit, /exact `details\.reference`/i);
-  assert.match(accountUnit, /funds may remain unmatched/i);
-  assert.doesNotMatch(accountUnit, /`reference\.required`/);
-
-  if (transferInstructions) {
-    const instructionUnits = units.filter((unit) => unit.includes("`reference.required`"));
-    assert.equal(
-      instructionUnits.length,
-      1,
-      `${label} must keep one transfer-instruction reference unit`,
+function materializeBody(value) {
+  if (Array.isArray(value)) return value.map(materializeBody);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [key, materializeBody(item)]),
     );
-    assert.doesNotMatch(instructionUnits[0], /`details\.referenceRequired`/);
   }
+  if (typeof value === "string") {
+    const variable = /^\$\{([A-Z_][A-Z0-9_]*)\}$/.exec(value)?.[1];
+    if (variable && Object.hasOwn(BODY_VARIABLES, variable)) return BODY_VARIABLES[variable];
+  }
+  return value;
 }
 
-function assertAccountFeeGuidance(label, text) {
-  assert.match(text, /pay-in fee configuration/i, `${label} must identify pay-in fees`);
-  assert.match(
-    text,
-    /`fixed`[\s\S]{0,160}account currency[\s\S]{0,120}major-unit/i,
-    `${label} must define fixed fees in account-currency major units`,
+function assertRepresentativeBody(page, method, path, expected) {
+  const blocks = jsonBlocks(readPage(page));
+  assert.ok(
+    blocks.some((body) => isDeepStrictEqual(body, expected)),
+    `${page}.mdx must include the representative ${method.toUpperCase()} ${path} body`,
   );
-  assert.match(
-    text,
-    /`?50`? bips[\s\S]{0,80}`?0\.50%`?/i,
-    `${label} must explain the 50-bips conversion`,
+  const validation = openApiValidator.validateRequestBody(
+    method,
+    path,
+    materializeBody(expected),
   );
-  assert.doesNotMatch(text, /payout fee configuration/i);
+  assert.equal(
+    validation.valid,
+    true,
+    `${page}.mdx ${method.toUpperCase()} ${path} body must match OpenAPI: ${JSON.stringify(validation.errors)}`,
+  );
 }
 
-function assertQuoteSnapshotGuidance(label, text) {
-  const units = proseSemanticUnits(text);
-  const quoteUnits = units.filter((unit) => unit.includes("executable snapshot"));
-  assert.equal(quoteUnits.length, 1, `${label} must have one executable quote snapshot unit`);
-  for (const field of ["`in`", "`out`", "`rate`", "`fees`"]) {
-    assert.ok(quoteUnits[0].includes(field), `${label} quote snapshot must include ${field}`);
-  }
-  assert.match(quoteUnits[0], /together/i);
-  assert.match(quoteUnits[0], /do not recompute[\s\S]{0,120}rate`? alone/i);
+function assertWriteHeaders(method, path) {
+  const required = openApiValidator.requiredParameterNames(method, path, "header");
+  assert.ok(required.includes("Idempotency-Key"), `${method.toUpperCase()} ${path} must require Idempotency-Key`);
+  const validation = openApiValidator.validateParameter(
+    method,
+    path,
+    "header",
+    "Idempotency-Key",
+    "stage-c-money-movement-0001",
+  );
+  assert.equal(validation.valid, true, JSON.stringify(validation.errors));
+}
 
-  const transferUnits = units.filter(
-    (unit) => unit.includes("Transfer") && unit.includes("`amounts.settled`"),
+function headingOrder(text, headings) {
+  const positions = headings.map((heading) => text.indexOf(`## ${heading}`));
+  assert.ok(positions.every((position) => position >= 0), `Missing heading from ${headings.join(", ")}`);
+  assert.deepEqual(positions, positions.toSorted((left, right) => left - right));
+}
+
+function textOrder(text, values) {
+  const positions = values.map((value) => text.indexOf(value));
+  assert.ok(positions.every((position) => position >= 0), `Missing sequence item from ${values.join(", ")}`);
+  assert.deepEqual(positions, positions.toSorted((left, right) => left - right));
+}
+
+function hasCard(text, title, href) {
+  return new RegExp(
+    `<Card\\b(?=[^>]*\\btitle=["']${title}["'])(?=[^>]*\\bhref=["']${href}["'])[^>]*>`,
+  ).test(text);
+}
+
+function linkCount(text, href) {
+  return [...text.matchAll(/\]\(([^)]+)\)/g)].filter(
+    (match) => match[1] === href || match[1].startsWith(`${href}#`),
+  ).length;
+}
+
+function proseWordCount(text) {
+  const prose = text
+    .replace(/^---\n[\s\S]*?\n---\n/, "")
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\[[^\]]+\]\([^)]+\)/g, (match) => match.slice(1, match.indexOf("]")))
+    .replace(/[|#*_>`]/g, " ");
+  return prose.match(/[\p{L}\p{N}][\p{L}\p{N}'-]*/gu)?.length ?? 0;
+}
+
+function sectionText(text, heading) {
+  const start = text.indexOf(`## ${heading}`);
+  assert.ok(start >= 0, `Missing section ${heading}`);
+  const next = text.indexOf("\n## ", start + heading.length + 3);
+  return text.slice(start, next >= 0 ? next : undefined);
+}
+
+function matchPosition(text, pattern, message) {
+  const match = text.match(pattern);
+  assert.ok(match, message);
+  return match.index;
+}
+
+function assertAccountOwnershipSemantics(text) {
+  assert.match(text, /customer-scoped|scoped to (?:one|a) customer/i);
+  assert.match(text, /`issued` resources[\s\S]{0,100}platform-issued[\s\S]{0,100}custodial/i);
+  assert.match(text, /`external` resources[\s\S]{0,100}(?:record|represent)[\s\S]{0,100}customer-owned endpoints/i);
+  assert.doesNotMatch(
+    text,
+    /(?:all|every) accounts? (?:are|is) customer-owned|Use accounts for endpoints the customer owns|customer-owned wallet and bank accounts/i,
   );
-  assert.equal(transferUnits.length, 1, `${label} must have one transfer amount semantics unit`);
-  const [transferUnit] = transferUnits;
+}
+
+function assertResponseDerivedQuoteCapabilityIds(pages, read = readPage) {
+  let quoteExampleCount = 0;
+  for (const page of pages) {
+    for (const body of jsonBlocks(read(page))) {
+      if (!Object.hasOwn(body, "capabilityId")) continue;
+      quoteExampleCount += 1;
+      assert.equal(typeof body.capabilityId, "string", `${page}.mdx capabilityId must be a string`);
+      assert.match(
+        body.capabilityId,
+        /^\$\{[A-Z0-9_]*CAPABILITY_ID\}$/,
+        `${page}.mdx quote capabilityId must come from a capability response`,
+      );
+    }
+  }
+  assert.ok(quoteExampleCount > 0, "Expected public quote request examples");
+}
+
+function assertAwaitingAssignmentFlow(text) {
+  const branch = matchPosition(
+    text,
+    /If the latest account read returns `statusReason\.code` (?:as|equal to) `awaiting_assignment`/i,
+    "The pooled assignment branch must depend on the latest statusReason.code",
+  );
+  const firstPayIn = matchPosition(text, /first pay-in/i, "The assignment branch must create the first pay-in");
+  const sameResources = matchPosition(
+    text,
+    /same customer, capability, and settlement wallet/i,
+    "The first pay-in must reuse the bank account's customer, capability, and settlement wallet",
+  );
+  const receiveFunds = text.indexOf("[Receive funds](/integration/receive-funds)", branch);
+  const refetch = matchPosition(
+    text,
+    /then refetch the bank account/i,
+    "The assignment branch must refetch the bank account",
+  );
+  const present = matchPosition(
+    text,
+    /before presenting reusable details/i,
+    "The assignment branch must refetch before presenting reusable details",
+  );
+  assert.ok(receiveFunds >= 0, "The assignment branch must link Receive funds");
+  const positions = [branch, firstPayIn, sameResources, receiveFunds, refetch, present];
+  assert.deepEqual(positions, positions.toSorted((left, right) => left - right));
+  assert.doesNotMatch(text, /all issued (?:bank )?accounts? (?:require|must|need)[^.]*first pay-in/i);
+  assert.doesNotMatch(text, /poll indefinitely|keep polling|poll until/i);
+}
+
+function assertQuoteCompatibility(text) {
+  const compatibility = sectionText(text, "Check resource compatibility");
   assert.match(
-    transferUnit,
-    /`amounts\.in`[\s\S]{0,100}`amounts\.out`[\s\S]{0,140}(?:executed quote|quoted legs)/i,
-    `${label} must identify the quote-derived transfer legs`,
+    compatibility,
+    /current capability is `ready`[\s\S]{0,120}belongs to the customer[\s\S]{0,100}(?:flow|movement)/i,
   );
   assert.match(
-    transferUnit,
-    /`fees`[\s\S]{0,100}applied fee snapshot/i,
-    `${label} must identify fees as the applied snapshot`,
+    compatibility,
+    /source is an active `issued` custodial account[\s\S]{0,120}status is `ready`[\s\S]{0,120}input currency/i,
   );
   assert.match(
-    transferUnit,
-    /`amounts\.settled`[\s\S]{0,120}(?:actually delivered|amount actually delivered)[\s\S]{0,120}(?:present|appears)[\s\S]{0,80}(?:once|when)[\s\S]{0,80}completed/i,
-    `${label} must distinguish the actual settled amount`,
+    compatibility,
+    /stablecoin[\s\S]{0,120}source and destination[\s\S]{0,100}same currency and network/i,
+  );
+  assert.match(
+    compatibility,
+    /fiat payout destination[\s\S]{0,120}(?:current and )?`ready`[\s\S]{0,120}output currency and method/i,
+  );
+}
+
+function assertExactOutFundingGate(text) {
+  const stablecoinScope = matchPosition(
+    text,
+    /After a stablecoin-funded exact-out quote returns/i,
+    "The source-account balance gate must apply only to stablecoin-funded exact-out quotes",
+  );
+  const exactOutGateSentences = text.match(
+    /[^.!?\n]*\bexact-out quotes?\b[^.!?\n]*(?:source-account balance gate|source account|available balance)[^.!?\n]*[.!?]?/gi,
+  ) ?? [];
+  for (const sentence of exactOutGateSentences) {
+    const universalScope =
+      /\b(?:all|every|any|each)\s+exact-out quotes?\b/i.test(sentence) ||
+      /\bexact-out quotes?\b[^.!?\n]{0,80}\balways\b/i.test(sentence);
+    const negatedUniversalScope =
+      /\b(?:not|never)\s+(?:all|every|any|each)\s+exact-out quotes?\b/i.test(sentence) ||
+      /\bexact-out quotes?\b[^.!?\n]{0,80}\b(?:do not|don't|never)\s+always\b/i.test(
+        sentence,
+      );
+    assert.ok(
+      !universalScope || negatedUniversalScope,
+      "The source-account balance gate must not apply to every exact-out quote",
+    );
+  }
+  const fiatGateSentences = text.match(
+    /[^.!?\n]*\bfiat-funded exact-out quotes?\b[^.!?\n]*(?:source-account balance gate|source account|available balance)[^.!?\n]*[.!?]?/gi,
+  ) ?? [];
+  assert.ok(fiatGateSentences.length >= 1, "The guide must explain the fiat-funded exemption");
+  for (const sentence of fiatGateSentences) {
+    const scopedExemption =
+      /\b(?:do not|don't|never)\s+(?:use|apply|require|need|check)\b/i.test(sentence) ||
+      /\b(?:are|is)\s+not\s+(?:subject to|required to use|gated by)\b/i.test(sentence) ||
+      /\b(?:are|is)\s+exempt\b/i.test(sentence);
+    assert.ok(
+      scopedExemption,
+      "Fiat-funded exact-out guidance must not require a source-account balance gate",
+    );
+  }
+  const accountRead = text.indexOf(
+    operationMarkdown("get", "/v3/customers/{customerId}/accounts/{accountId}"),
+    stablecoinScope,
+  );
+  const availableBalance = matchPosition(
+    text,
+    /current source account[\s\S]{0,140}`balances\[\]\.available`/i,
+    "Exact-out guidance must read the current available source balance",
+  );
+  const comparison = matchPosition(
+    text,
+    /compare[\s\S]{0,140}`data\.in\.amount`/i,
+    "Exact-out guidance must compare balance with returned data.in.amount",
+  );
+  const insufficient = matchPosition(
+    text,
+    /If (?:that|the available) balance is insufficient[\s\S]{0,160}(?:fund|change|choose another) (?:the )?source/i,
+    "Exact-out guidance must handle an insufficient source balance",
+  );
+  const requote = matchPosition(
+    text,
+    /after (?:the )?resources? change[\s\S]{0,120}(?:create|get) a new quote/i,
+    "Exact-out guidance must require a new quote after resources change",
+  );
+  const fiatExemption = matchPosition(
+    text,
+    /Fiat-funded exact-out quotes do not use this source-account balance gate[\s\S]{0,120}`in\.accountId`[\s\S]{0,80}ignored for fiat funding/i,
+    "Fiat-funded exact-out quotes must be exempt because in.accountId is ignored",
+  );
+  const execute = text.indexOf("## Execute before expiry");
+  assert.ok(accountRead >= 0, "Exact-out guidance must link the current account read");
+  assert.ok(execute >= 0, "Missing transfer execution section");
+  const positions = [
+    stablecoinScope,
+    accountRead,
+    availableBalance,
+    comparison,
+    insufficient,
+    requote,
+    fiatExemption,
+    execute,
+  ];
+  assert.deepEqual(positions, positions.toSorted((left, right) => left - right));
+}
+
+function assertRuleReplacementSemantics(text) {
+  const list = text.indexOf(operationMarkdown("get", "/v3/customers/{customerId}/rules"));
+  const create = text.indexOf("## Create the rule");
+  assert.ok(list >= 0 && list < create, "List current rules before rule creation");
+  assert.doesNotMatch(text, /capabilit/i);
+  assert.match(
+    text,
+    /pause[\s\S]{0,100}temporarily suspends[\s\S]{0,100}same rule[\s\S]{0,100}remains non-archived/i,
+  );
+  assert.match(
+    text,
+    /replace a rule on the same trigger[\s\S]{0,140}archive the existing rule first[\s\S]{0,140}create the replacement/i,
   );
   assert.doesNotMatch(
-    transferUnit,
-    /`amounts` and `fees` are applied snapshots/i,
-    `${label} must not classify amounts.settled as a quote snapshot`,
+    text,
+    /(?:pause|paused|pausing)[^.\n]{0,120}before[^.\n]{0,100}(?:create|creating)[^.\n]{0,60}replacement/i,
   );
 }
 
-function assertQuoteTransferIdentityGuidance(label, text) {
-  assert.match(
-    text,
-    /`externalId`[\s\S]{0,160}non-unique[\s\S]{0,160}(?:not|does not provide) idempotency/i,
-    `${label} must distinguish externalId from idempotency`,
-  );
-  assert.match(
-    text,
-    /`quote_already_executed`[\s\S]{0,160}(?:returns|includes)[\s\S]{0,80}existing `transferId`/i,
-    `${label} must explain the existing transferId`,
-  );
-}
-
-function assertRecipientWalletGuidance(label, text) {
-  assert.match(
-    text,
-    /ownership[\s\S]{0,120}declaration only[\s\S]{0,140}(?:not verified|verification is not performed)[\s\S]{0,100}(?:create|creation)/i,
-    `${label} must describe wallet ownership as unverified declaration`,
-  );
-  assert.match(
-    text,
-    /`self_custodied`[\s\S]{0,120}(?:forbids|must not include|omit) `custodianName`/i,
-    `${label} must forbid custodianName for self-custodied wallets`,
-  );
-  assert.match(
-    text,
-    /`custodial`[\s\S]{0,120}(?:requires|provide) (?:a )?non-empty `custodianName`/i,
-    `${label} must require a non-empty custodianName for custodial wallets`,
-  );
-  assert.match(
-    text,
-    /ready bank destinations?[\s\S]{0,140}fiat quote targets?[\s\S]{0,140}other quote checks/i,
-    `${label} must limit fiat targets to ready bank destinations`,
-  );
-  assert.match(
-    text,
-    /compatible ready wallet destinations?[\s\S]{0,160}stablecoin-move quote targets?[\s\S]{0,160}same network and (?:asset|currency)/i,
-    `${label} must limit wallet targets to compatible ready destinations`,
-  );
-}
-
-function assertRuleMatchingGuidance(label, text) {
-  assert.match(
-    text,
-    /matching occurs?[\s\S]{0,100}account credit[\s\S]{0,100}not[\s\S]{0,80}deposit rail/i,
-    `${label} must place matching at account credit`,
-  );
-  assert.match(
-    text,
-    /fiat[\s\S]{0,140}issued bank[\s\S]{0,140}settlement wallet/i,
-    `${label} must explain issued-bank settlement`,
-  );
-  assert.match(
-    text,
-    /stablecoin deposits[\s\S]{0,120}internal transfers[\s\S]{0,80}alike/i,
-    `${label} must cover stablecoin deposits and internal transfers`,
-  );
-}
-
-test("publishes all money-movement pages once with valid guarded MDX", () => {
+test("publishes the complete money-movement guide set in navigation order", () => {
   assertPages(PAGES);
+  const integration = config.navigation.tabs.find((tab) => tab.tab === "Integration Docs");
+  const group = integration?.groups.find((candidate) => candidate.group === "Build money flows");
+  assert.deepEqual(group?.pages, PAGES);
 
-  const navigationPages = collectNavigationPages(config.navigation);
-  for (const page of PAGES) {
-    assert.equal(
-      navigationPages.filter((candidate) => candidate === page).length,
-      1,
-      `${page} must appear in navigation exactly once`,
-    );
+  const common = readPage("integration/common-flows");
+  assert.match(common, /^title: "Common flows"$/m);
+  const issue = readPage("integration/issue-bank-account");
+  assert.match(issue, /^title: "Issue a bank account"$/m);
+});
+
+test("binds every required operation to its generated API Reference href", () => {
+  for (const page of PAGES) assertOperationLinksMatchOpenApi(page, readPage(page));
+  for (const [page, operations] of REQUIRED_OPERATIONS) {
     const text = readPage(page);
-    assert.doesNotMatch(text, /^\s*import\s/m, `${page} must use built-in MDX only`);
-    assert.equal(
-      [...text.matchAll(/```(?:bash|sh|shell)\n/g)].length,
-      0,
-      `${page} must use contract JSON examples instead of shell`,
-    );
-  }
-});
-
-test("semantic checks reject swapped links and inverted idempotency claims", () => {
-  const accountCreate = coveredOperation(
-    "post",
-    "/v3/customers/{customerId}/accounts",
-  );
-  const transferCreate = coveredOperation("post", "/v3/transfers");
-  assert.notEqual(accountCreate.href, transferCreate.href);
-
-  assert.throws(
-    () =>
-      assertEveryOperationLabelIsCoverageLinked(
-        "swapped link fixture",
-        `[\`POST /v3/customers/{customerId}/accounts\`](${transferCreate.href})`,
-      ),
-    /wrong href/,
-  );
-
-  const quoteSafety = operationMarkdown("post", "/v3/quotes");
-  const cancelSafety = operationMarkdown(
-    "post",
-    "/v3/transfers/{transferId}/cancel",
-  );
-  const safeQuoteUnit = `- ${quoteSafety} requires \`Idempotency-Key\`. After transport uncertainty, reuse the same key only with the identical body. On a replay, the documented successful response includes \`Idempotency-Replayed: true\`.`;
-  const safeCancelUnit = `- ${cancelSafety} requires \`Idempotency-Key\`. After transport uncertainty, reuse the same key only with the identical request. This operation does not document \`Idempotency-Replayed\`.`;
-  const swappedSafety = [
-    safeQuoteUnit.replace(
-      /On a replay[\s\S]*$/,
-      "This operation does not document `Idempotency-Replayed`.",
-    ),
-    safeCancelUnit.replace(
-      /This operation does not document[\s\S]*$/,
-      "On a replay, the documented successful response includes `Idempotency-Replayed: true`.",
-    ),
-  ].join("\n\n");
-  assert.throws(
-    () =>
-      assertOperationSafetyAssociationsInText("swapped safety fixture", swappedSafety, [
-        ["post", "/v3/quotes"],
-        ["post", "/v3/transfers/{transferId}/cancel"],
-      ]),
-    /Idempotency-Replayed/,
-  );
-
-  assert.deepEqual(proseSemanticUnits("- first safety item\n- second safety item"), [
-    "- first safety item",
-    "- second safety item",
-  ]);
-
-  const wrongBody = [
-    safeQuoteUnit.replace("identical body", "identical request"),
-    safeCancelUnit,
-  ].join("\n");
-  assert.throws(
-    () =>
-      assertOperationSafetyAssociationsInText("wrong body fixture", wrongBody, [
-        ["post", "/v3/quotes"],
-        ["post", "/v3/transfers/{transferId}/cancel"],
-      ]),
-    /identical body/,
-  );
-
-  const wrongRequest = [
-    safeQuoteUnit,
-    safeCancelUnit.replace("identical request", "identical body"),
-  ].join("\n");
-  assert.throws(
-    () =>
-      assertOperationSafetyAssociationsInText(
-        "wrong request fixture",
-        wrongRequest,
-        [
-          ["post", "/v3/quotes"],
-          ["post", "/v3/transfers/{transferId}/cancel"],
-        ],
-      ),
-    /identical request/,
-  );
-
-  const wrongReplay = [
-    safeQuoteUnit.replace("On a replay", "On the initial response"),
-    safeCancelUnit,
-  ].join("\n");
-  assert.throws(
-    () =>
-      assertOperationSafetyAssociationsInText(
-        "wrong replay fixture",
-        wrongReplay,
-        [
-          ["post", "/v3/quotes"],
-          ["post", "/v3/transfers/{transferId}/cancel"],
-        ],
-      ),
-    /Idempotency-Replayed/,
-  );
-
-  assert.throws(
-    () =>
-      assertOperationSafetyAssociationsInText(
-        "optional key fixture",
-        [safeQuoteUnit.replace("requires", "accepts optional"), safeCancelUnit].join("\n"),
-        [
-          ["post", "/v3/quotes"],
-          ["post", "/v3/transfers/{transferId}/cancel"],
-        ],
-      ),
-    /required/,
-  );
-
-  assert.throws(
-    () =>
-      assertOperationSafetyAssociationsInText(
-        "any failure fixture",
-        [
-          safeQuoteUnit.replace("After transport uncertainty", "After any failure"),
-          safeCancelUnit,
-        ].join("\n"),
-        [
-          ["post", "/v3/quotes"],
-          ["post", "/v3/transfers/{transferId}/cancel"],
-        ],
-      ),
-    /transport uncertainty/,
-  );
-
-  assert.throws(
-    () =>
-      assertOperationSafetyAssociationsInText(
-        "changed body fixture",
-        [safeQuoteUnit.replace("identical body", "changed body"), safeCancelUnit].join(
-          "\n",
-        ),
-        [
-          ["post", "/v3/quotes"],
-          ["post", "/v3/transfers/{transferId}/cancel"],
-        ],
-      ),
-    /identical body/,
-  );
-
-  assert.throws(
-    () =>
-      assertSharedFinancialSafetyGuidance(
-        "reused key fixture",
-        "Follow [Request safety](/integration/request-safety). Each write requires `Idempotency-Key`. Reuse one key for every intended effect.",
-      ),
-    /fresh key/,
-  );
-});
-
-test("polarity checks reject inversions of every critical Task 7 claim", () => {
-  const accountScope =
-    "Accounts are customer-scoped. `issued` accounts are platform-issued. `external` accounts are customer-owned.";
-  assertAccountScopeGuidance("account scope fixture", accountScope);
-  assert.throws(
-    () =>
-      assertAccountScopeGuidance(
-        "all customer-owned fixture",
-        "All customer-scoped accounts are customer-owned. `issued` accounts are customer-owned. `external` accounts are customer-owned.",
-      ),
-    /platform-issued|must not say/,
-  );
-
-  const accountReference =
-    "When `details.referenceRequired` is `true`, the sender must include the exact `details.reference` or funds may remain unmatched.";
-  assertAccountReferenceGuidance("account reference fixture", accountReference);
-  assert.throws(
-    () =>
-      assertAccountReferenceGuidance(
-        "wrong reference path fixture",
-        accountReference.replace("`details.referenceRequired`", "`reference.required`"),
-      ),
-    /account-reference unit/,
-  );
-  assert.throws(
-    () =>
-      assertAccountReferenceGuidance(
-        "matched without reference fixture",
-        accountReference.replace("funds may remain unmatched", "funds will still be matched"),
-      ),
-    /may remain unmatched/,
-  );
-
-  const accountFees =
-    "This is pay-in fee configuration. `fixed` uses the account currency in major-unit form. `50` bips means `0.50%`.";
-  assertAccountFeeGuidance("account fee fixture", accountFees);
-  assert.throws(
-    () =>
-      assertAccountFeeGuidance(
-        "payout fee fixture",
-        accountFees.replace("pay-in", "payout"),
-      ),
-    /pay-in/,
-  );
-  assert.throws(
-    () =>
-      assertAccountFeeGuidance(
-        "wrong bips fixture",
-        accountFees.replace("`0.50%`", "`50%`"),
-    ),
-    /50-bips/,
-  );
-  assert.throws(
-    () =>
-      assertAccountFeeGuidance(
-        "wrong fee currency fixture",
-        accountFees.replace("account currency", "fee currency"),
-      ),
-    /account-currency major units/,
-  );
-  assert.throws(
-    () =>
-      assertAccountFeeGuidance(
-        "minor-unit fee fixture",
-        accountFees.replace("major-unit", "minor-unit"),
-      ),
-    /account-currency major units/,
-  );
-
-  const quoteSnapshots = [
-    "The returned Quote's `in`, `out`, `rate`, and `fees` together form the executable snapshot. Do not recompute executable amounts from `rate` alone.",
-    "A Transfer's `amounts.in` and `amounts.out` record the executed quote legs, while `fees` is the applied fee snapshot. `amounts.settled` records the amount actually delivered and is present once completed.",
-  ].join("\n\n");
-  assertQuoteSnapshotGuidance("snapshot fixture", quoteSnapshots);
-  assert.throws(
-    () =>
-      assertQuoteSnapshotGuidance(
-        "recomputed quote fixture",
-        quoteSnapshots.replace("Do not recompute", "Recompute"),
-      ),
-    /do not recompute/,
-  );
-  assert.throws(
-    () =>
-      assertQuoteSnapshotGuidance(
-        "rate-only quote fixture",
-        quoteSnapshots.replace("`in`, `out`, `rate`, and `fees`", "`rate` and `fees`"),
-    ),
-    /must include `in`|must include `out`/,
-  );
-  assert.throws(
-    () =>
-      assertQuoteSnapshotGuidance(
-        "estimated transfer fixture",
-        quoteSnapshots.replace("applied fee snapshot", "live fee estimate"),
-      ),
-    /applied snapshot/,
-  );
-  assert.throws(
-    () =>
-      assertQuoteSnapshotGuidance(
-        "settled quote fixture",
-        quoteSnapshots.replace("amount actually delivered", "quoted output amount"),
-      ),
-    /actual settled amount/,
-  );
-  assert.throws(
-    () =>
-      assertQuoteSnapshotGuidance(
-        "always-settled fixture",
-        quoteSnapshots.replace("is present once completed", "is always present"),
-      ),
-    /actual settled amount/,
-  );
-
-  const quoteIdentity = [
-    "`externalId` is non-unique and does not provide idempotency.",
-    "`quote_already_executed` returns the existing `transferId`.",
-  ].join("\n\n");
-  assertQuoteTransferIdentityGuidance("quote identity fixture", quoteIdentity);
-  assert.throws(
-    () =>
-      assertQuoteTransferIdentityGuidance(
-        "unique external id fixture",
-        quoteIdentity.replace("non-unique", "unique"),
-      ),
-    /externalId/,
-  );
-  assert.throws(
-    () =>
-      assertQuoteTransferIdentityGuidance(
-        "idempotent external id fixture",
-        quoteIdentity.replace("does not provide idempotency", "provides idempotency"),
-    ),
-    /externalId/,
-  );
-  assert.throws(
-    () =>
-      assertQuoteTransferIdentityGuidance(
-        "new transfer id fixture",
-        quoteIdentity.replace("existing `transferId`", "new `transferId`"),
-      ),
-    /existing transferId/,
-  );
-
-  const recipientWallets = [
-    "Wallet ownership is a declaration only; verification is not performed at creation. `self_custodied` must not include `custodianName`. `custodial` requires a non-empty `custodianName`.",
-    "Ready bank destinations can be fiat quote targets when other quote checks pass. Compatible ready wallet destinations can be stablecoin-move quote targets when they use the same network and asset.",
-  ].join("\n\n");
-  assertRecipientWalletGuidance("recipient wallet fixture", recipientWallets);
-  assert.throws(
-    () =>
-      assertRecipientWalletGuidance(
-        "verified ownership fixture",
-        recipientWallets.replace(
-          "a declaration only; verification is not performed at creation",
-          "verified at creation",
-        ),
-      ),
-    /unverified declaration/,
-  );
-  assert.throws(
-    () =>
-      assertRecipientWalletGuidance(
-        "self-custodied custodian fixture",
-        recipientWallets.replace("must not include", "must include"),
-      ),
-    /forbid custodianName/,
-  );
-  assert.throws(
-    () =>
-      assertRecipientWalletGuidance(
-        "optional custodian fixture",
-        recipientWallets.replace("requires a non-empty", "allows an optional"),
-      ),
-    /require a non-empty/,
-  );
-  assert.throws(
-    () =>
-      assertRecipientWalletGuidance(
-        "any-status target fixture",
-        recipientWallets.replace("Ready bank destinations", "Bank destinations at any current status"),
-    ),
-    /ready bank destinations/,
-  );
-  assert.throws(
-    () =>
-      assertRecipientWalletGuidance(
-        "any-status wallet target fixture",
-        recipientWallets.replace(
-          "Compatible ready wallet destinations",
-          "Wallet destinations at any current status",
-        ),
-      ),
-    /compatible ready destinations/,
-  );
-
-  const ruleMatching =
-    "Matching occurs on the account credit, not on the deposit rail. Fiat settled from an issued bank reaches the settlement wallet. Stablecoin deposits and internal transfers are caught alike.";
-  assertRuleMatchingGuidance("rule matching fixture", ruleMatching);
-  assert.throws(
-    () =>
-      assertRuleMatchingGuidance(
-        "deposit rail fixture",
-        ruleMatching.replace(
-          "on the account credit, not on the deposit rail",
-          "on the deposit rail, not on the account credit",
-        ),
-      ),
-    /account credit/,
-  );
-  assert.throws(
-    () =>
-      assertRuleMatchingGuidance(
-        "fiat-only fixture",
-        ruleMatching.replace(
-          "Stablecoin deposits and internal transfers are caught alike.",
-          "Only fiat deposits are caught.",
-        ),
-      ),
-    /stablecoin deposits/,
-  );
-});
-
-test("links every operation label to its exact coverage and x-mint href", () => {
-  for (const [page, operations] of PAGE_OPERATIONS) {
-    assertRequiredOperationLinks(page, operations);
-    assertEveryOperationLabelIsCoverageLinked(pageFile(page), requiredPage(page));
-  }
-});
-
-test("documents exact account unions, settlement, states, examples, and lifecycle", () => {
-  const path = "/v3/customers/{customerId}/accounts";
-  const create = openApiOperation("post", path).operationObject;
-  assert.equal(requestBody("post", path).required, true);
-  const schema = requestBodySchema("post", path);
-  assertExactSet(
-    schema.oneOf.map((variant) => variant.title),
-    [
-      "Issued wallet account",
-      "External wallet account",
-      "Issued ACH account",
-      "Issued wire account",
-      "Issued SEPA account",
-      "Issued SWIFT account",
-      "Issued UAEFTS account",
-      "Issued Faster Payments account",
-      "Issued SEPA Instant account",
-      "Issued IPP account",
-      "External ACH/wire account",
-      "External SEPA account",
-      "External SWIFT account",
-    ],
-    "account create variants",
-  );
-  assertExactSet(
-    unique(schema.oneOf.flatMap((variant) => enumValues(variant.properties.origin))),
-    ["issued", "external"],
-    "account origins",
-  );
-  assertExactSet(
-    unique(schema.oneOf.flatMap((variant) => enumValues(variant.properties.type))),
-    ["wallet", "bank"],
-    "account types",
-  );
-
-  const issuedBanks = schema.oneOf.filter(
-    (variant) =>
-      enumValues(variant.properties.origin).includes("issued") &&
-      enumValues(variant.properties.type).includes("bank"),
-  );
-  assert.equal(issuedBanks.length, 8);
-  for (const variant of issuedBanks) {
-    assert.ok(variant.required.includes("settlement"), `${variant.title} requires settlement`);
-    assertExactSet(
-      variant.properties.settlement.required,
-      ["accountId"],
-      `${variant.title} settlement required fields`,
-    );
-    assertDescriptionFragments(
-      variant.properties.settlement.properties.accountId.description,
-      `${variant.title} settlement account`,
-      [/issued customer wallet account/i, /receives settled funds/i],
-    );
-  }
-
-  const account = resolveOpenApiReference(openapi.components.schemas.Account);
-  assertExactSet(enumValues(account.properties.type), ["wallet", "bank"], "account type response");
-  assertExactSet(enumValues(account.properties.origin), ["issued", "external"], "account origin response");
-  assertExactSet(
-    enumValues(account.properties.status),
-    [
-      "provisioning",
-      "in_review",
-      "ready",
-      "action_required",
-      "suspended",
-      "rejected",
-      "archived",
-    ],
-    "account status response",
-  );
-  assertDescriptionFragments(
-    account.properties.statusReason.description,
-    "account statusReason",
-    [
-      /absent on `ready` and `archived`/i,
-      /`awaiting_assignment`[\s\S]*pooled account[\s\S]*first payin/i,
-      /tolerate unknown future codes/i,
-    ],
-  );
-  assertExactSet(
-    account.properties.statusReason.required,
-    ["code", "message", "actor", "retryable"],
-    "account statusReason fields",
-  );
-  assertExactSet(
-    enumValues(account.properties.statusReason.properties.actor),
-    ["customer", "developer", "provider", "network", "swipelux"],
-    "account statusReason actors",
-  );
-
-  const responseAccount = responseDataSchema("post", path, "201");
-  assertExactSet(enumValues(responseAccount.properties.status), enumValues(account.properties.status), "account create response status");
-
-  const text = requiredPage("integration/accounts");
-  assertAccountScopeGuidance("integration/accounts.mdx", text);
-  assertExactSet(
-    labeledCodeValues(text, "Account types"),
-    ["wallet", "bank"],
-    "published account types",
-  );
-  assertExactSet(
-    labeledCodeValues(text, "Account origins"),
-    ["issued", "external"],
-    "published account origins",
-  );
-  assertExactSet(
-    labeledCodeValues(text, "Account statuses"),
-    enumValues(account.properties.status),
-    "published account statuses",
-  );
-  assertExactSet(
-    labeledCodeValues(text, "Account statusReason codes"),
-    [
-      "account_holder_name_mismatch",
-      "awaiting_assignment",
-      "provider_provisioning",
-      "provisioning_failed",
-      "temporarily_unsupported",
-      "verification_pending",
-    ],
-    "published account statusReason codes",
-  );
-  assert.match(
-    text,
-    /issued bank accounts?[\s\S]{0,160}`settlement\.accountId`[\s\S]{0,160}issued customer wallet account[\s\S]{0,120}receives settled funds/i,
-  );
-  assert.match(text, /no universal account payload/i);
-  assert.match(text, /current account[\s\S]{0,160}GET \/v3\/customers/i);
-  assert.match(text, /`status=archived`[\s\S]{0,160}in-flight transfers?[\s\S]{0,160}terminal state/i);
-  assert.match(
-    text,
-    /`awaiting_assignment`[\s\S]{0,180}pooled issued bank[\s\S]{0,180}(?:unavailable|receives? concrete details)[\s\S]{0,180}first pay-?in/i,
-  );
-
-  const examples = create.requestBody.content["application/json"].examples;
-  const blocks = jsonBlocks(text);
-  for (const key of ["issuedWallet", "issuedAch", "externalWallet", "externalAch"]) {
-    assert.ok(hasDeepEqual(blocks, examples[key].value), `accounts must include ${key} contract example`);
-  }
-});
-
-test("derives issued-bank references from account responses and keeps transfer references separate", () => {
-  const responseAccounts = [
-    [
-      "account create response",
-      responseDataSchema("post", "/v3/customers/{customerId}/accounts", "201"),
-    ],
-    [
-      "account list item",
-      resolveOpenApiReference(
-        responseDataSchema("get", "/v3/customers/{customerId}/accounts").items,
-      ),
-    ],
-    [
-      "account detail response",
-      responseDataSchema("get", "/v3/customers/{customerId}/accounts/{accountId}"),
-    ],
-  ];
-
-  for (const [label, account] of responseAccounts) {
-    assert.ok(account.required.includes("details"), `${label} must require details`);
-    const details = account.properties.details;
-    assert.equal(details.nullable, true, `${label} details must be nullable`);
-    const variants = schemaVariants(details);
-    assert.equal(variants.length, 5, `${label} must expose five details variants`);
-    const referenceVariants = variants.filter(
-      (variant) => variant.properties?.referenceRequired,
-    );
-    assert.equal(
-      referenceVariants.length,
-      4,
-      `${label} must expose references on all four bank details variants`,
-    );
-    for (const variant of referenceVariants) {
-      assert.equal(variant.properties.reference.type, "string");
-      assert.equal(variant.properties.referenceRequired.type, "boolean");
-    }
-  }
-
-  const account = resolveOpenApiReference(openapi.components.schemas.Account);
-  const describedReferenceVariants = schemaVariants(account.properties.details).filter(
-    (variant) => variant.properties?.referenceRequired,
-  );
-  assert.equal(describedReferenceVariants.length, 4);
-  for (const variant of describedReferenceVariants) {
-    assertDescriptionFragments(
-      variant.properties.reference.description,
-      "account details.reference",
-      [/sender must include/i, /funds to match this issued account/i],
-    );
-    assertDescriptionFragments(
-      variant.properties.referenceRequired.description,
-      "account details.referenceRequired",
-      [/omitting `reference`/i, /leave inbound funds unmatched/i],
-    );
-  }
-
-  const instructionData = responseDataSchema(
-    "get",
-    "/v3/transfers/{transferId}/instructions",
-  );
-  const bankInstruction = schemaVariants(
-    instructionData.properties.instructions,
-  ).find((variant) => enumValues(variant.properties.type).includes("bank"));
-  assert.ok(bankInstruction, "transfer instructions must include a bank variant");
-  const instructionReference = bankInstruction.properties.reference;
-  assert.equal(instructionReference.type, "object");
-  assertExactSet(
-    instructionReference.required,
-    ["value", "required"],
-    "transfer instruction reference fields",
-  );
-  assert.equal(instructionReference.properties.value.type, "string");
-  assert.equal(instructionReference.properties.required.type, "boolean");
-
-  assertAccountReferenceGuidance(
-    "integration/accounts.mdx",
-    requiredPage("integration/accounts"),
-    { transferInstructions: true },
-  );
-  assertAccountReferenceGuidance(
-    "integration/receive-funds.mdx",
-    requiredPage("integration/receive-funds"),
-    { transferInstructions: true },
-  );
-});
-
-test("documents exact account fee read-back and replacement semantics", () => {
-  const path = "/v3/customers/{customerId}/accounts/{accountId}/fees";
-  const account = resolveOpenApiReference(openapi.components.schemas.Account);
-  assert.ok(account.required.includes("fees"));
-  const accountFees = account.properties.fees;
-  assertDescriptionFragments(accountFees.description, "account fees", [
-    /pay-in fee configuration/i,
-    /account currency/i,
-    /major-unit/i,
-  ]);
-  assertExactSet(accountFees.required, ["breakdown"], "account fee fields");
-  const configuredDeveloper = accountFees.properties.breakdown.properties.developer;
-  assert.equal(configuredDeveloper.nullable, true);
-  assertDescriptionFragments(
-    configuredDeveloper.properties.fixed.description,
-    "account fixed fee",
-    [/account currency/i, /major-unit decimal string/i],
-  );
-  assertDescriptionFragments(
-    configuredDeveloper.properties.bips.description,
-    "account bips fee",
-    [/basis points/i, /`?50`? means `?0\.50%`?/i],
-  );
-
-  const get = openApiOperation("get", path).operationObject;
-  assertDescriptionFragments(
-    get.description,
-    "account fee read operation",
-    [/read-back mirror of the PUT shape/i, /`breakdown\.developer` is `null`/i],
-  );
-  const readBack = responseDataSchema("get", path);
-  assertExactSet(readBack.required, ["accountId", "breakdown"], "account fee read-back fields");
-  assertExactSet(readBack.properties.breakdown.required, ["developer"], "account fee read-back breakdown fields");
-  const readDeveloper = readBack.properties.breakdown.properties.developer;
-  assert.equal(readDeveloper.nullable, true);
-  assertExactSet(readDeveloper.required, ["fixed", "bips"], "account fee read-back developer fields");
-  assert.equal(readDeveloper.properties.fixed.pattern, "^\\d+(?:\\.\\d{1,2})?$");
-  assert.equal(readDeveloper.properties.bips.minimum, 0);
-  assert.equal(readDeveloper.properties.bips.maximum, 9999);
-  assertDescriptionFragments(
-    readDeveloper.properties.fixed.description,
-    "account fee read fixed",
-    [/account currency/i, /major-unit decimal string/i],
-  );
-  assertDescriptionFragments(
-    readDeveloper.properties.bips.description,
-    "account fee read bips",
-    [/`?50`? means `?0\.50%`?/i, /below 10000/i],
-  );
-  assert.deepEqual(
-    get.responses["200"].content["application/json"].examples.unconfigured.value,
-    {
-      data: {
-        accountId: "acc_3eG7xN2pQ4rT8mA1sL6dVc",
-        breakdown: { developer: null },
-      },
-    },
-  );
-
-  const put = openApiOperation("put", path).operationObject;
-  assert.equal(requestBody("put", path).required, true);
-  assertDescriptionFragments(
-    put.description,
-    "account fee replace operation",
-    [/replaces developer fees/i, /major-unit decimal strings/i, /no wildcard|do not carry wildcard/i],
-  );
-  const request = requestBodySchema("put", path);
-  assertExactSet(request.required, ["breakdown"], "account fee request fields");
-  assertExactSet(request.properties.breakdown.required, ["developer"], "account fee request breakdown fields");
-  const developer = request.properties.breakdown.properties.developer;
-  assertExactSet(developer.required, ["fixed", "bips"], "account fee request developer fields");
-  assert.equal(developer.properties.fixed.pattern, "^\\d+(?:\\.\\d{1,2})?$");
-  assert.equal(developer.properties.bips.minimum, 0);
-  assert.equal(developer.properties.bips.maximum, 9999);
-  assertDescriptionFragments(
-    developer.properties.bips.description,
-    "account fee request bips",
-    [/basis points/i, /`?50`? means `?0\.50%`?/i],
-  );
-  for (const properties of [
-    request.properties,
-    request.properties.breakdown.properties,
-    developer.properties,
-  ]) {
-    assert.equal(properties.currency, undefined);
-    assert.equal(properties.wildcard, undefined);
-  }
-  assertExactSet(problemCodes("put", path, "422"), ["developer_fee_invalid"], "account fee 422 codes");
-  assertDescriptionFragments(
-    responseObject("put", path, "422").description,
-    "account fee 422 response",
-    [/positive developer fee/i, /settlement network/i, /developer settlement wallet/i],
-  );
-
-  const text = requiredPage("integration/accounts");
-  assertAccountFeeGuidance("integration/accounts.mdx", text);
-  assert.match(text, /read-back mirror[\s\S]{0,120}`breakdown\.developer`[\s\S]{0,100}`null`[\s\S]{0,100}no rule/i);
-  assert.match(text, /required shape[\s\S]{0,160}`breakdown\.developer\.fixed`[\s\S]{0,160}`breakdown\.developer\.bips`/i);
-  assert.match(text, /major-unit decimal string[\s\S]{0,120}at most 2 decimal places/i);
-  assert.match(text, /`bips`[\s\S]{0,100}(?:0\.\.9999|0 through 9999)/i);
-  assert.match(text, /no wildcard[\s\S]{0,120}fee-level currency/i);
-  assert.match(text, /positive developer fee[\s\S]{0,180}settlement network[\s\S]{0,180}developer settlement wallet/i);
-  assert.match(text, /`422 developer_fee_invalid`/);
-  assert.ok(
-    hasDeepEqual(
-      jsonBlocks(text),
-      put.requestBody.content["application/json"].examples.developer.value,
-    ),
-    "accounts must include the contract account-fee request example",
-  );
-});
-
-test("documents exact recipient and destination unions and terminal archive behavior", () => {
-  const recipientPath = "/v3/customers/{customerId}/recipients";
-  const destinationPath =
-    "/v3/customers/{customerId}/recipients/{recipientId}/destinations";
-  const recipientCreate = openApiOperation("post", recipientPath).operationObject;
-  const recipientSchema = requestBodySchema("post", recipientPath);
-  assertExactSet(
-    recipientSchema.oneOf.map((variant) => variant.title),
-    ["Individual recipient", "Business recipient"],
-    "recipient create variants",
-  );
-  assertExactSet(
-    recipientSchema.oneOf.flatMap((variant) => enumValues(variant.properties.type)),
-    ["individual", "business"],
-    "recipient types",
-  );
-  const individual = recipientSchema.oneOf.find((variant) => variant.title === "Individual recipient");
-  const business = recipientSchema.oneOf.find((variant) => variant.title === "Business recipient");
-  assertExactSet(individual.required, ["type", "relationship", "firstName", "lastName"], "individual recipient fields");
-  assertExactSet(business.required, ["type", "relationship", "companyName"], "business recipient fields");
-
-  const destinationCreate = openApiOperation("post", destinationPath).operationObject;
-  const destinationSchema = requestBodySchema("post", destinationPath);
-  assertExactSet(
-    destinationSchema.oneOf.flatMap((variant) => enumValues(variant.properties.type)),
-    ["sepa", "swift", "ach", "wire", "spei", "pse", "transfers_3_0", "wallet"],
-    "recipient destination types",
-  );
-  const walletRequest = schemaVariants(destinationSchema).find((variant) =>
-    enumValues(variant.properties.type).includes("wallet"),
-  );
-  assert.ok(walletRequest, "destination create must include a wallet variant");
-  assert.ok(walletRequest.required.includes("ownership"));
-  assertDescriptionFragments(
-    walletRequest.properties.ownership.description,
-    "wallet ownership declaration",
-    [/declaration only/i, /verification is not performed at create time/i],
-  );
-  const ownershipVariants = schemaVariants(walletRequest.properties.ownership);
-  const selfCustodied = ownershipVariants.find((variant) =>
-    enumValues(variant.properties.type).includes("self_custodied"),
-  );
-  const custodial = ownershipVariants.find((variant) =>
-    enumValues(variant.properties.type).includes("custodial"),
-  );
-  assert.ok(selfCustodied);
-  assert.ok(custodial);
-  assertExactSet(selfCustodied.required, ["type"], "self-custodied ownership fields");
-  assertExactSet(
-    selfCustodied.not.required,
-    ["custodianName"],
-    "self-custodied forbidden fields",
-  );
-  assertExactSet(
-    custodial.required,
-    ["type", "custodianName"],
-    "custodial ownership fields",
-  );
-  assert.equal(custodial.properties.custodianName.type, "string");
-  assert.equal(custodial.properties.custodianName.minLength, 1);
-
-  const recipient = resolveOpenApiReference(openapi.components.schemas.Recipient);
-  assertExactSet(
-    unique(recipient.oneOf.flatMap((variant) => enumValues(variant.properties.status))),
-    ["active", "rejected", "archived"],
-    "recipient statuses",
-  );
-  const destination = resolveOpenApiReference(openapi.components.schemas.Destination);
-  assertExactSet(
-    unique(destination.oneOf.flatMap((variant) => enumValues(variant.properties.status))),
-    ["in_review", "ready", "action_required", "archived"],
-    "destination statuses",
-  );
-  for (const variant of destination.oneOf) {
-    assertDescriptionFragments(variant.properties.status.description, `${variant.title} status`, [
-      /`ready` means lifecycle checks passed/i,
-      /ready bank destinations can be fiat quote targets/i,
-      /ready wallet destinations can be stablecoin-move targets/i,
-      /same network and asset/i,
-    ]);
-    const statusReason = variant.properties.statusReason;
-    assertDescriptionFragments(
-      statusReason.description,
-      `${variant.title} statusReason`,
-      [/present exactly when status is action_required/i, /omitted otherwise/i],
-    );
-    const reason = resolveOpenApiReference(statusReason.allOf[0]);
-    assertExactSet(reason.required, ["code", "message", "actor", "retryable"], `${variant.title} statusReason fields`);
-  }
-
-  assertExactSet(problemCodes("post", destinationPath, "422"), ["recipient_address_required"], "destination create 422 codes");
-
-  const text = requiredPage("integration/recipients");
-  assertRecipientWalletGuidance("integration/recipients.mdx", text);
-  assertExactSet(labeledCodeValues(text, "Recipient types"), ["individual", "business"], "published recipient types");
-  assertExactSet(labeledCodeValues(text, "Recipient statuses"), ["active", "rejected", "archived"], "published recipient statuses");
-  assertExactSet(
-    labeledCodeValues(text, "Destination types"),
-    ["sepa", "swift", "ach", "wire", "spei", "pse", "transfers_3_0", "wallet"],
-    "published destination types",
-  );
-  assertExactSet(
-    labeledCodeValues(text, "Destination statuses"),
-    ["in_review", "ready", "action_required", "archived"],
-    "published destination statuses",
-  );
-  assert.match(text, /first-party[\s\S]{0,120}customer accounts?[\s\S]{0,180}third-party[\s\S]{0,120}recipient destinations?/i);
-  assert.match(text, /no universal recipient or destination payload/i);
-  assert.match(text, /archive is terminal[\s\S]{0,120}reject later updates/i);
-  assert.match(text, /`updatedAfter`[\s\S]{0,180}archived transitions/i);
-  assert.match(text, /`recipient_address_required`/);
-
-  const blocks = jsonBlocks(text);
-  for (const example of [
-    recipientCreate.requestBody.content["application/json"].examples.individual.value,
-    recipientCreate.requestBody.content["application/json"].examples.business.value,
-    destinationCreate.requestBody.content["application/json"].examples.ach.value,
-    destinationCreate.requestBody.content["application/json"].examples.wallet.value,
-  ]) {
-    assert.ok(hasDeepEqual(blocks, example), "recipients must use contract request examples");
-  }
-});
-
-test("derives quote pricing, execution, expiry, enums, and problem codes from schemas", () => {
-  const quotePath = "/v3/quotes";
-  const transferPath = "/v3/transfers";
-  const quoteCreate = openApiOperation("post", quotePath).operationObject;
-  const transferCreate = openApiOperation("post", transferPath).operationObject;
-  const quoteRequest = requestBodySchema("post", quotePath);
-  assert.equal(requestBody("post", quotePath).required, true);
-  assertExactSet(
-    quoteRequest.required,
-    ["customerId", "capabilityId", "in", "destinationId", "out"],
-    "quote request required fields",
-  );
-  assertDescriptionFragments(
-    quoteRequest.description,
-    "quote request",
-    [
-      /exactly one of `in\.amount` or `out\.amount`/i,
-      /same-network, same-currency/i,
-      /cross-chain bridging and asset swaps are not supported/i,
-    ],
-  );
-  assert.ok(!quoteRequest.required.includes("externalId"));
-  assertDescriptionFragments(
-    quoteRequest.properties.externalId.description,
-    "quote externalId",
-    [/merchant-supplied opaque reference/i, /not required to be unique/i],
-  );
-
-  const quote = resolveOpenApiReference(openapi.components.schemas.Quote);
-  assertExactSet(enumValues(quote.properties.mode), ["exact_in", "exact_out"], "quote modes");
-  assertExactSet(
-    enumValues(quote.properties.direction),
-    ["fiat_to_stablecoin", "stablecoin_to_fiat", "stablecoin_move"],
-    "quote directions",
-  );
-  assertExactSet(enumValues(quote.properties.status), ["active", "executed", "expired", "failed"], "quote statuses");
-  assert.ok(quote.required.includes("expiresAt"));
-
-  const quoteFees = quoteRequest.properties.fees;
-  assert.ok(!quoteRequest.required.includes("fees"));
-  assertDescriptionFragments(
-    quoteFees.description,
-    "quote fee override",
-    [
-      /optional quote-level developer fee override/i,
-      /overrides account fees for this quote only/i,
-      /`stablecoin_transfers` wallet move[\s\S]*zero fees only/i,
-      /`422 amount_not_deliverable`/i,
-    ],
-  );
-  assertExactSet(quoteFees.required, ["breakdown"], "quote fee override fields");
-  assertExactSet(quoteFees.properties.breakdown.required, ["developer"], "quote fee override breakdown fields");
-  const quoteFeeDeveloper = quoteFees.properties.breakdown.properties.developer;
-  assertExactSet(quoteFeeDeveloper.required, ["fixed", "bips"], "quote fee override developer fields");
-  assert.equal(quoteFeeDeveloper.properties.fixed.pattern, "^\\d+(\\.\\d{1,2})?$");
-  assert.equal(quoteFeeDeveloper.properties.bips.minimum, 0);
-  assert.equal(quoteFeeDeveloper.properties.bips.maximum, 9999);
-
-  const quoteResponse = responseDataSchema("post", quotePath, "201");
-  for (const field of ["in", "out", "rate", "fees"]) {
-    assert.ok(quoteResponse.required.includes(field), `quote response must require ${field}`);
-  }
-  const quoteFeeLine = quoteResponse.properties.fees.items;
-  assertExactSet(quoteFeeLine.required, ["beneficiary", "amount", "currency"], "quote fee-line fields");
-  assertExactSet(enumValues(quoteFeeLine.properties.beneficiary), ["developer", "service"], "quote fee beneficiaries");
-  assertExactSet(quoteFeeLine.properties.rule.required, ["fixed", "bips"], "quote fee rule fields");
-
-  const transferRequest = requestBodySchema("post", transferPath);
-  assertExactSet(transferRequest.required, ["quoteId"], "transfer request required fields");
-  assert.ok(!transferRequest.required.includes("externalId"));
-  assertDescriptionFragments(
-    transferRequest.properties.externalId.description,
-    "transfer externalId",
-    [/correlation reference/i, /not required to be unique/i, /independent of the quote's externalId/i],
-  );
-  const transfer = resolveOpenApiReference(openapi.components.schemas.Transfer);
-  assertExactSet(
-    enumValues(transfer.properties.state),
-    ["awaiting_funds", "processing", "action_required", "completed", "failed", "canceled"],
-    "transfer states",
-  );
-  assertExactSet(
-    enumValues(transfer.properties.direction),
-    ["fiat_to_stablecoin", "stablecoin_to_fiat", "stablecoin_move"],
-    "transfer directions",
-  );
-  const transferResponse = responseDataSchema("post", transferPath, "201");
-  assert.ok(transferResponse.required.includes("amounts"));
-  assertExactSet(enumValues(transferResponse.properties.state), enumValues(transfer.properties.state), "transfer create response states");
-  assert.ok(transferResponse.required.includes("fees"));
-  assertExactSet(
-    transferResponse.properties.amounts.required,
-    ["in", "out"],
-    "transfer applied amount fields",
-  );
-  assert.ok(!transferResponse.properties.amounts.required.includes("settled"));
-  assertDescriptionFragments(
-    transferResponse.properties.amounts.properties.settled.description,
-    "transfer settled amount",
-    [/actually delivered amount/i, /present once completed/i],
-  );
-  assertDescriptionFragments(
-    transferResponse.properties.fees.description,
-    "transfer fees",
-    [/applied fee snapshot/i, /same shape as the quote fee lines/i],
-  );
-  assert.deepEqual(transferResponse.properties.fees.items, quoteFeeLine);
-
-  const transferConflictMedia = responseObject("post", transferPath, "409").content[
-    "application/problem+json"
-  ];
-  const transferConflict = resolveOpenApiReference(transferConflictMedia.schema);
-  assert.equal(transferConflict.properties.transferId.type, "string");
-  assertDescriptionFragments(
-    transferConflict.properties.transferId.description,
-    "quote_already_executed transferId",
-    [/existing transfer/i, /consumed the quote/i, /present on `quote_already_executed`/i],
-  );
-  const quoteAlreadyExecuted = Object.values(transferConflictMedia.examples).find(
-    (example) => example.value?.code === "quote_already_executed",
-  );
-  assert.ok(quoteAlreadyExecuted, "transfer 409 examples must include quote_already_executed");
-  assert.match(quoteAlreadyExecuted.value.transferId, /^tr_[a-zA-Z0-9]+$/);
-
-  assertExactSet(
-    problemCodes("post", quotePath, "422"),
-    [
-      "account_method_not_supported",
-      "amount_not_deliverable",
-      "developer_fee_invalid",
-      "quote_direction_invalid",
-      "recipient_destination_invalid",
-    ],
-    "quote create 422 codes",
-  );
-  assertExactSet(problemCodes("post", quotePath, "503"), ["rail_temporarily_unavailable"], "quote create 503 codes");
-  assertExactSet(
-    problemCodes("post", transferPath, "409"),
-    [
-      "account_unavailable",
-      "account_not_ready",
-      "capability_not_ready",
-      "idempotency_conflict",
-      "insufficient_balance",
-      "quote_already_executed",
-      "quote_destination_missing",
-      "quote_expired",
-      "rail_not_ready",
-    ],
-    "transfer create 409 codes",
-  );
-
-  const text = requiredPage("integration/quotes-and-transfers");
-  assertQuoteSnapshotGuidance("integration/quotes-and-transfers.mdx", text);
-  assertQuoteTransferIdentityGuidance("integration/quotes-and-transfers.mdx", text);
-  assertExactSet(labeledCodeValues(text, "Quote modes"), ["exact_in", "exact_out"], "published quote modes");
-  assertExactSet(labeledCodeValues(text, "Quote statuses"), ["active", "executed", "expired", "failed"], "published quote statuses");
-  assertExactSet(
-    labeledCodeValues(text, "Transfer directions"),
-    ["fiat_to_stablecoin", "stablecoin_to_fiat", "stablecoin_move"],
-    "published transfer directions",
-  );
-  assertExactSet(
-    labeledCodeValues(text, "Transfer states"),
-    enumValues(transfer.properties.state),
-    "published transfer states",
-  );
-  assertExactSet(
-    labeledCodeValues(text, "Quote 422 codes"),
-    problemCodes("post", quotePath, "422"),
-    "published quote 422 codes",
-  );
-  assertExactSet(
-    labeledCodeValues(text, "Transfer 409 codes"),
-    problemCodes("post", transferPath, "409"),
-    "published transfer 409 codes",
-  );
-  assert.match(text, /prices? the movement[\s\S]{0,180}executes? the selected quote[\s\S]{0,160}without intentionally re-pricing/i);
-  assert.match(text, /before `expiresAt`[\s\S]{0,180}checks still pass/i);
-  assert.match(text, /does not define a fixed quote lifetime/i);
-  assert.match(text, /no universal quote payload/i);
-  assert.match(text, /current quote[\s\S]{0,160}current transfer/i);
-  assert.match(text, /optional quote-level[\s\S]{0,100}(?:`fees`|developer fee override)[\s\S]{0,180}overrides account fees[\s\S]{0,120}quote only/i);
-  assert.ok(text.includes("[account fees](/integration/accounts#configure-account-developer-fees)"));
-  assert.match(text, /`stablecoin_transfers`[\s\S]{0,180}zero fees only[\s\S]{0,180}non-zero[\s\S]{0,140}`422 amount_not_deliverable`/i);
-
-  const blocks = jsonBlocks(text);
-  assert.ok(
-    hasDeepEqual(
-      blocks,
-      quoteCreate.requestBody.content["application/json"].examples.stablecoinMove.value,
-    ),
-    "quotes and transfers must include the contract stablecoinMove quote example",
-  );
-  assert.ok(
-    hasDeepEqual(
-      blocks,
-      transferCreate.requestBody.content["application/json"].examples.quoted.value,
-    ),
-    "quotes and transfers must include the contract quoted transfer example",
-  );
-});
-
-test("uses transfer-scoped task details and exact StatusReason vocabularies", () => {
-  const transfer = responseDataSchema("get", "/v3/transfers/{transferId}");
-  assert.ok(transfer.required.includes("openTaskIds"));
-  assertDescriptionFragments(
-    transfer.properties.openTaskIds.description,
-    "transfer openTaskIds",
-    [/transfer-scoped tasks/i, /`action_required` or `in_review`/i, /empty when nothing is open/i],
-  );
-  assertDescriptionFragments(
-    transfer.properties.state.description,
-    "transfer state",
-    [
-      /`processing` covers funds received through settlement/i,
-      /`action_required`[\s\S]*open transfer tasks/i,
-      /`canceled`[\s\S]*unfunded deposit window expires/i,
-      /closed enum/i,
-    ],
-  );
-  assert.ok(transfer.required.includes("stateDetail"));
-  assert.equal(transfer.properties.stateDetail.nullable, true);
-  assertDescriptionFragments(
-    transfer.properties.stateDetail.description,
-    "transfer stateDetail",
-    [/nullable on happy-path states/i, /required for action_required/i, /non-terminal blocking\/failure states/i],
-  );
-
-  const statusReason = transfer.properties.stateDetail;
-  assertExactSet(statusReason.required, ["code", "message", "actor", "retryable"], "transfer StatusReason fields");
-  assertExactSet(
-    enumValues(statusReason.properties.actor),
-    ["customer", "developer", "provider", "network", "swipelux"],
-    "transfer StatusReason actors",
-  );
-
-  const taskPage = responseSchema("get", "/v3/transfers/{transferId}/tasks");
-  assertExactSet(taskPage.required, ["data", "nextCursor", "hasMore"], "transfer task page fields");
-  assert.equal(taskPage.properties.data.type, "array");
-  const task = resolveOpenApiReference(taskPage.properties.data.items);
-  for (const field of ["revision", "requirements", "status", "scope", "subject"]) {
-    assert.ok(task.required.includes(field), `transfer task details must require ${field}`);
-  }
-  assertExactSet(
-    enumValues(task.properties.status),
-    ["action_required", "in_review", "satisfied", "rejected", "canceled"],
-    "transfer task statuses",
-  );
-
-  const examples = openApiOperation(
-    "get",
-    "/v3/transfers/{transferId}",
-  ).operationObject.responses["200"].content["application/json"].examples;
-  assert.deepEqual(examples.failed.value.data.stateDetail, {
-    code: "network_rejected",
-    message:
-      "The payment network rejected this transfer. Create a new quote to retry, or contact support with the transfer id.",
-    actor: "network",
-    retryable: false,
-  });
-  assert.deepEqual(examples.canceled.value.data.stateDetail, {
-    code: "deposit_window_expired",
-    message:
-      "The funding window expired before funds were received. Create a new quote and transfer to retry.",
-    actor: "customer",
-    retryable: false,
-  });
-
-  const text = requiredPage("integration/quotes-and-transfers");
-  assertExactSet(
-    labeledCodeValues(text, "Task statuses"),
-    enumValues(task.properties.status),
-    "published transfer task statuses",
-  );
-  assertExactSet(
-    labeledCodeValues(text, "StatusReason fields"),
-    ["code", "message", "actor", "retryable"],
-    "published StatusReason fields",
-  );
-  assertExactSet(
-    labeledCodeValues(text, "StatusReason actors"),
-    enumValues(statusReason.properties.actor),
-    "published StatusReason actors",
-  );
-  assert.match(text, /`action_required`[\s\S]{0,180}open transfer tasks/i);
-  assert.match(text, /`openTaskIds`[\s\S]{0,180}GET \/v3\/transfers\/\{transferId\}\/tasks/i);
-  assert.match(text, /current task details[\s\S]{0,180}`revision`[\s\S]{0,180}`requirements`/i);
-  assert.match(text, /no universal task submission payload/i);
-  assert.match(text, /examples?[\s\S]{0,100}`network_rejected`[\s\S]{0,160}`deposit_window_expired`[\s\S]{0,180}not an exhaustive/i);
-  assert.match(text, /`processing`[\s\S]{0,140}funds received through settlement/i);
-  assert.match(text, /`canceled`[\s\S]{0,140}unfunded deposit window[\s\S]{0,100}expires/i);
-  assert.match(text, /`stateDetail`[\s\S]{0,160}nullable on happy-path states[\s\S]{0,180}required for `action_required`[\s\S]{0,180}non-terminal blocking(?:\/| or )failure states/i);
-});
-
-test("keeps funding instructions conditional and cancellation contract-limited", () => {
-  const instructions = resolveOpenApiReference(
-    openapi.components.schemas.TransferInstructions,
-  );
-  assertExactSet(
-    instructions.oneOf.flatMap((variant) => enumValues(variant.properties.type)),
-    ["bank", "code", "redirect"],
-    "transfer instruction types",
-  );
-  const bank = instructions.oneOf.find((variant) => variant.title === "Bank instructions");
-  assertExactSet(
-    enumValues(bank.properties.method),
-    [
-      "ach",
-      "wire",
-      "rtp",
-      "sepa",
-      "swift",
-      "spei",
-      "transfers_3_0",
-      "uaefts",
-      "faster_payments",
-    ],
-    "bank instruction methods",
-  );
-
-  const instructionPath = "/v3/transfers/{transferId}/instructions";
-  const instructionOperation = openApiOperation("get", instructionPath).operationObject;
-  assertDescriptionFragments(
-    instructionOperation.description,
-    "transfer instruction operation",
-    [
-      /typed deposit instructions/i,
-      /payout-side transfers[\s\S]*have no instructions/i,
-      /404[\s\S]*`transfer_has_no_instructions`/i,
-    ],
-  );
-  assert.match(
-    responseObject("get", instructionPath, "404").description,
-    /`transfer_has_no_instructions`/,
-  );
-  const instructionData = responseDataSchema("get", instructionPath);
-  assertExactSet(
-    instructionData.required,
-    ["transferId", "instructions"],
-    "instruction response data fields",
-  );
-  assertExactSet(
-    instructionData.properties.instructions.anyOf.flatMap((variant) =>
-      enumValues(variant.properties.type),
-    ),
-    ["bank", "code", "redirect"],
-    "instruction response types",
-  );
-
-  const cancelPath = "/v3/transfers/{transferId}/cancel";
-  const cancel = openApiOperation("post", cancelPath).operationObject;
-  assertDescriptionFragments(
-    cancel.description,
-    "transfer cancellation operation",
-    [/`409 transfer_not_cancelable`/i, /no current transfer state is cancelable/i],
-  );
-  assert.deepEqual(successStatuses("post", cancelPath), []);
-  assertDescriptionFragments(
-    responseObject("post", cancelPath, "409").description,
-    "transfer cancellation response",
-    [/not cancelable/i, /`transfer_not_cancelable`/i],
-  );
-
-  const text = requiredPage("integration/quotes-and-transfers");
-  assert.match(text, /applicable inbound transfers?[\s\S]{0,180}(?:`bank`|bank)[\s\S]{0,120}`code`[\s\S]{0,120}`redirect`/i);
-  assert.match(text, /payout-side transfers?[\s\S]{0,180}`transfer_has_no_instructions`/i);
-  assert.match(text, /no current transfer state is cancelable/i);
-  assert.match(text, /`transfer_not_cancelable`/);
-});
-
-test("derives deposit reference and local-amount guidance from instruction responses", () => {
-  const instructionData = responseDataSchema(
-    "get",
-    "/v3/transfers/{transferId}/instructions",
-  );
-  const variants = instructionData.properties.instructions.anyOf;
-  const bank = variants.find((variant) => enumValues(variant.properties.type).includes("bank"));
-  assert.ok(bank);
-  assertDescriptionFragments(
-    bank.properties.reference.properties.required.description,
-    "transfer instruction reference.required",
-    [/deposit must carry this reference to be matched/i, /pooled accounts match deposits by reference/i, /named virtual accounts match by account number/i],
-  );
-  assertDescriptionFragments(
-    bank.properties.localAmount.description,
-    "transfer instruction localAmount",
-    [/local settlement currency/i, /rail settles in a currency different/i, /quoted in amount/i],
-  );
-
-  for (const page of [
-    "integration/quotes-and-transfers",
-    "integration/receive-funds",
-  ]) {
-    const text = requiredPage(page);
-    assert.match(
-      text,
-      /`reference\.required`[\s\S]{0,140}(?:true|`true`)[\s\S]{0,180}exact (?:returned )?(?:`reference\.value`|reference)[\s\S]{0,160}(?:accompany|included with) the deposit/i,
-      `${page} must explain required deposit references`,
-    );
-    assert.match(
-      text,
-      /pooled accounts?[\s\S]{0,100}match[\s\S]{0,80}reference[\s\S]{0,160}named virtual accounts?[\s\S]{0,100}account number/i,
-      `${page} must distinguish pooled and named matching`,
-    );
-    assert.match(
-      text,
-      /`localAmount`[\s\S]{0,140}local settlement currency[\s\S]{0,180}rail currency[\s\S]{0,180}quoted input/i,
-      `${page} must explain localAmount`,
-    );
-  }
-});
-
-test("documents receiving funds through compatible inbound and settlement paths", () => {
-  const quoteCreate = openApiOperation("post", "/v3/quotes").operationObject;
-  const transfer = resolveOpenApiReference(openapi.components.schemas.Transfer);
-  assertExactSet(enumValues(transfer.properties.origin), ["quoted", "inbound_deposit"], "transfer origins");
-  assertDescriptionFragments(
-    transfer.properties.instructions.description,
-    "transfer instructions",
-    [/deposit instructions/i, /null for payout-side transfers/i, /funded from the source account/i],
-  );
-
-  const text = requiredPage("integration/receive-funds");
-  assert.match(text, /`fiat_to_stablecoin`/);
-  assert.match(text, /source[\s\S]{0,80}`external`[\s\S]{0,180}destination[\s\S]{0,100}customer account/i);
-  assert.match(text, /issued bank account[\s\S]{0,180}settlement wallet account/i);
-  assert.match(text, /`origin`[\s\S]{0,100}`inbound_deposit`/i);
-  assert.match(text, /current transfer[\s\S]{0,180}`state`/i);
-  assert.match(text, /funding instructions[\s\S]{0,180}only when[\s\S]{0,120}applicable/i);
-  assert.match(text, /no universal inbound payload/i);
-  assert.ok(
-    hasDeepEqual(
-      jsonBlocks(text),
-      quoteCreate.requestBody.content["application/json"].examples.fiatToStablecoin.value,
-    ),
-    "receive funds must include the contract fiatToStablecoin quote example",
-  );
-});
-
-test("documents first-party accounts and third-party payout destinations with compatibility checks", () => {
-  const quoteCreate = openApiOperation("post", "/v3/quotes").operationObject;
-  const quoteRequest = requestBodySchema("post", "/v3/quotes");
-  assertDescriptionFragments(
-    quoteRequest.properties.in.properties.accountId.description,
-    "quote source account",
-    [
-      /stablecoin-funded quotes/i,
-      /active issued custodial account/i,
-      /owned by the request customer/i,
-      /scoped default issued account is used when omitted/i,
-      /ignored for fiat-funded quotes/i,
-    ],
-  );
-  assert.equal(
-    quoteRequest.properties.destinationId.pattern,
-    "^(?:acc|dst)_[a-zA-Z0-9]+$",
-  );
-  assert.match(quoteRequest.properties.destinationId.description, /same network and currency/i);
-  assert.match(quoteRequest.properties.destinationId.description, /raw inline addresses are not accepted/i);
-
-  const text = requiredPage("integration/send-funds");
-  assert.match(text, /source[\s\S]{0,160}active issued custodial account/i);
-  assert.match(text, /first-party[\s\S]{0,120}`acc_`[\s\S]{0,120}customer account/i);
-  assert.match(text, /third-party[\s\S]{0,120}`dst_`[\s\S]{0,120}recipient destination/i);
-  assert.match(text, /`stablecoin_to_fiat`[\s\S]{0,180}(?:external bank account|bank destination)/i);
-  assert.match(text, /`stablecoin_move`[\s\S]{0,180}same network and currency/i);
-  assert.match(text, /raw inline addresses are not accepted/i);
-  assert.match(text, /current transfer[\s\S]{0,160}(?:state|tasks)/i);
-  assert.match(text, /no universal payout payload/i);
-  assert.match(text, /payout-side transfers?[\s\S]{0,160}(?:have no|do not have) funding instructions/i);
-  assert.match(text, /GET \/v3\/transfers\/\{transferId\}\/instructions[\s\S]{0,160}`transfer_has_no_instructions`/i);
-  assert.ok(
-    hasDeepEqual(
-      jsonBlocks(text),
-      quoteCreate.requestBody.content["application/json"].examples
-        .stablecoinToFiatDestination.value,
-    ),
-    "send funds must include the contract third-party payout quote example",
-  );
-});
-
-test("documents the exact custodial-wallet sweep rule shape and lifecycle", () => {
-  const createPath = "/v3/customers/{customerId}/rules";
-  const detailPath = "/v3/customers/{customerId}/rules/{ruleId}";
-  const rulesTag = openapi.tags.find((tag) => tag.name === "rules");
-  assert.ok(rulesTag, "OpenAPI must define the rules tag");
-  assertDescriptionFragments(rulesTag.description, "rules tag", [
-    /match at the account credit, not at the deposit rail/i,
-    /fiat deposits settle into the issued bank account's settlement wallet account/i,
-    /stablecoin deposits/i,
-    /internal transfers alike/i,
-  ]);
-  const create = openApiOperation("post", createPath).operationObject;
-  const schema = requestBodySchema("post", createPath);
-  assertExactSet(schema.required, ["trigger", "action"], "rule request fields");
-  assertExactSet(schema.properties.trigger.required, ["type", "accountId"], "rule trigger fields");
-  assertExactSet(enumValues(schema.properties.trigger.properties.type), ["funds_received"], "rule trigger types");
-  assertDescriptionFragments(
-    schema.properties.trigger.properties.accountId.description,
-    "rule trigger account",
-    [/custodial wallet account/i, /watched by this rule/i],
-  );
-  assertExactSet(schema.properties.action.required, ["type", "target"], "rule action fields");
-  assertExactSet(enumValues(schema.properties.action.properties.type), ["transfer"], "rule action types");
-  assertExactSet(
-    enumValues(schema.properties.action.properties.target.properties.type),
-    ["account", "destination"],
-    "rule target types",
-  );
-  assertDescriptionFragments(
-    schema.properties.action.properties.target.description,
-    "rule target",
-    [
-      /`account` for another custodial wallet account/i,
-      /`destination` for a recipient destination/i,
-      /non-custodial wallet destinations/i,
-    ],
-  );
-
-  const rule = responseDataSchema("post", createPath, "201");
-  assertExactSet(enumValues(rule.properties.status), ["active", "paused", "archived"], "rule statuses");
-  const update = requestBodySchema("patch", detailPath);
-  assertExactSet(enumValues(update.properties.status), ["active", "paused"], "rule update statuses");
-  assertDescriptionFragments(
-    openApiOperation("delete", detailPath).operationObject.description,
-    "rule archive operation",
-    [/archiving is terminal/i, /frees the trigger account/i, /archived rule stays readable/i],
-  );
-  assert.match(create.responses["409"].description, /`rule_already_exists`/);
-  assert.match(openApiOperation("patch", detailPath).operationObject.description, /`rule_archived`/);
-
-  const text = requiredPage("integration/rules");
-  assertRuleMatchingGuidance("integration/rules.mdx", text);
-  assertExactSet(labeledCodeValues(text, "Rule statuses"), ["active", "paused", "archived"], "published rule statuses");
-  assert.match(text, /exact trigger[\s\S]{0,100}`funds_received`[\s\S]{0,140}custodial wallet account/i);
-  assert.match(text, /fiat deposits[\s\S]{0,180}issued bank account[\s\S]{0,180}settlement wallet account/i);
-  assert.match(text, /target[\s\S]{0,120}`account`[\s\S]{0,120}custodial wallet account[\s\S]{0,160}`destination`[\s\S]{0,120}recipient destination/i);
-  assert.match(text, /one non-archived rule[\s\S]{0,140}trigger account/i);
-  assert.match(text, /`rule_already_exists`[\s\S]{0,160}`conflictingRuleId`/i);
-  assert.match(text, /archiv(?:e|ing) is terminal[\s\S]{0,160}frees the trigger account[\s\S]{0,160}stays readable/i);
-
-  const blocks = jsonBlocks(text);
-  for (const key of ["sweep", "consolidation"]) {
-    assert.ok(hasDeepEqual(blocks, create.requestBody.content["application/json"].examples[key].value), `rules must include ${key} contract example`);
-  }
-});
-
-test("keeps idempotency and replay behavior operation-specific", () => {
-  for (const [page, operations] of WRITE_OPERATIONS) {
     for (const [method, path] of operations) {
-      const parameter = idempotencyParameter(method, path);
-      assert.ok(parameter, `${method.toUpperCase()} ${path} must declare Idempotency-Key`);
-      assert.equal(parameter.required, true);
-      assert.equal(parameter.schema.minLength, 1);
-      assert.equal(parameter.schema.maxLength, 255);
-      assertDescriptionFragments(
-        parameter.description,
-        `${method.toUpperCase()} ${path} idempotency parameter`,
-        [/required for effectful v3 requests/i, /reuse the same key/i],
-      );
-
-      if (documentsReplayHeader(method, path)) {
-        for (const status of successStatuses(method, path)) {
-          const header = responseHeader(method, path, status, "Idempotency-Replayed");
-          assert.ok(header, `${method.toUpperCase()} ${path} ${status} must document replay header`);
-          assertExactSet(enumValues(header.schema), ["true"], `${method.toUpperCase()} ${path} replay header values`);
-          assertDescriptionFragments(
-            header.description,
-            `${method.toUpperCase()} ${path} ${status} replay header`,
-            [/present with value `true`/i, /when an idempotent request is replayed/i],
-          );
-        }
-      } else {
-        assert.deepEqual(
-          [method, path],
-          ["post", "/v3/transfers/{transferId}/cancel"],
-          `unexpected write operation without Idempotency-Replayed: ${method.toUpperCase()} ${path}`,
-        );
-      }
-    }
-    const text = requiredPage(page);
-    assertSharedFinancialSafetyGuidance(pageFile(page), text);
-    assertOperationSafetyAssociationsInText(pageFile(page), text, operations);
-  }
-
-  for (const operations of PAGE_OPERATIONS.values()) {
-    for (const [method, path] of operations.filter(([method]) => method === "get")) {
-      assert.equal(
-        idempotencyParameter(method, path),
-        undefined,
-        `${method.toUpperCase()} ${path} must not borrow Idempotency-Key`,
-      );
+      assert.ok(text.includes(operationMarkdown(method, path)), `${page}.mdx must link ${method.toUpperCase()} ${path}`);
     }
   }
 });
 
-test("keeps credentials backend-only and rejects legacy or fabricated guidance", () => {
-  for (const page of PAGES) {
-    const text = requiredPage(page);
-    assert.match(text, /backend/i, `${page} must state the backend boundary`);
-    assert.match(text, /`X-API-Key`/, `${page} must name X-API-Key`);
-    assert.match(text, /do not expose[\s\S]{0,100}(?:browser|client)/i, `${page} must forbid client exposure`);
-    assert.doesNotMatch(text, /\bBearer\b|serviceToken|uploadToken|client credentials/i);
-    assert.doesNotMatch(text, /\bKYC\b|\bKYB\b|walletId|beneficiaryId|bankAccountId|\/wallets\b/i);
-    assert.doesNotMatch(text, /https?:\/\/(?:api|wallet|sandbox|docs)\.swipelux\.com/i);
-    assert.doesNotMatch(text, /\bsk\.(?:live|sbx)\.[A-Za-z0-9_-]{8,}\b/i);
-    assert.doesNotMatch(
-      text,
-      /guaranteed|always completes?|completes? within|settles? within|instant(?:ly)? completes?|FIFO|strict ordering/i,
-    );
-    assert.doesNotMatch(
-      text,
-      /(?:fee|limit)s? (?:is|are|of) (?:US\$|\$|€|£)?\d|\d+(?:\.\d+)?% (?:fee|limit)/i,
-    );
-    assert.doesNotMatch(text, /raw inline (?:wallet )?addresses? (?:are|is) accepted/i);
+test("operation-link validation rejects a swapped generated href", () => {
+  const page = "integration/accounts";
+  const text = readPage(page);
+  const account = operationMarkdown("post", "/v3/customers/{customerId}/accounts");
+  const quoteHref = coverageOperation("post", "/v3/quotes").href;
+  const mutated = text.replace(
+    account,
+    `[\`POST /v3/customers/{customerId}/accounts\`](${quoteHref})`,
+  );
+  assert.notEqual(mutated, text, "Account operation fixture must exist");
+  assert.throws(() => assertOperationLinksMatchOpenApi(page, mutated), /must bind POST/);
+});
+
+test("keeps every representative request body and write header OpenAPI-valid", () => {
+  for (const [page, method, path, body] of BODY_CASES) {
+    assertRepresentativeBody(page, method, path, body);
+    assertWriteHeaders(method, path);
+  }
+  for (const operations of REQUIRED_OPERATIONS.values()) {
+    for (const [method, path] of operations) {
+      if (["post", "patch", "put", "delete"].includes(method)) assertWriteHeaders(method, path);
+    }
   }
 });
 
-test("uses root-relative extensionless internal links", () => {
+test("uses response-derived capability IDs in public quote request examples", () => {
+  assertResponseDerivedQuoteCapabilityIds(CORRECTED_PAGES);
+});
+
+test("quote capability validation rejects a literal capability ID", () => {
+  const page = "integration/quotes-and-transfers";
+  const text = readPage(page);
+  const mutated = text.replace(
+    /"capabilityId": "\$\{[A-Z0-9_]*CAPABILITY_ID\}"/,
+    '"capabilityId": "stablecoin_transfers"',
+  );
+  assert.notEqual(mutated, text, "Response-derived capability fixture must exist");
+  assert.throws(
+    () =>
+      assertResponseDerivedQuoteCapabilityIds(CORRECTED_PAGES, (candidate) =>
+        candidate === page ? mutated : readPage(candidate),
+      ),
+    /must come from a capability response/,
+  );
+});
+
+test("anchors readiness and retained fields in response schemas", () => {
+  assert.ok(
+    responseEnum("get", "/v3/customers/{customerId}/capabilities/{capabilityId}", "200", "data.status").includes("ready"),
+  );
+  assert.ok(
+    responseEnum("get", "/v3/customers/{customerId}/accounts/{accountId}", "200", "data.status").includes("ready"),
+  );
+  assert.ok(
+    responseEnum(
+      "get",
+      "/v3/customers/{customerId}/recipients/{recipientId}/destinations/{destinationId}",
+      "200",
+      "data.status",
+    ).includes("ready"),
+  );
+
+  assertResponseFields("post", "/v3/customers/{customerId}/accounts", "201", [
+    "data.id",
+    "data.status",
+    "data.openTaskIds",
+    "data.statusReason.code",
+    "data.statusReason.message",
+    "data.statusReason.retryable",
+    "data.details",
+    "data.settlement.accountId",
+  ]);
+  assertResponseFields("get", "/v3/customers/{customerId}/accounts/{accountId}", "200", [
+    "data.balances.currency",
+    "data.balances.available",
+  ]);
+  assertResponseFields("post", "/v3/customers/{customerId}/recipients", "201", [
+    "data.id",
+    "data.status",
+  ]);
+  assertResponseFields(
+    "post",
+    "/v3/customers/{customerId}/recipients/{recipientId}/destinations",
+    "201",
+    ["data.id", "data.status"],
+  );
+  assertResponseFields("post", "/v3/quotes", "201", [
+    "data.id",
+    "data.status",
+    "data.expiresAt",
+    "data.in.amount",
+  ]);
+  assertResponseFields("post", "/v3/transfers", "201", [
+    "data.id",
+    "data.state",
+    "data.stateDetail",
+    "data.openTaskIds",
+    "data.instructions",
+  ]);
+  assertResponseFields("get", "/v3/transfers/{transferId}/instructions", "200", [
+    "data.instructions",
+    "data.instructions.reference.required",
+    "data.instructions.reference.value",
+  ]);
+  assertResponseFields("post", "/v3/customers/{customerId}/rules", "201", [
+    "data.id",
+    "data.status",
+  ]);
+});
+
+test("anchors account ownership and pooled assignment in OpenAPI", () => {
+  const createAccount = openApiOperation("post", "/v3/customers/{customerId}/accounts");
+  assert.match(
+    createAccount.description,
+    /`origin: "issued"` for platform-issued[\s\S]*`origin: "external"` for customer-owned/i,
+  );
+  const issuedBankExample = createAccount.responses?.["201"]?.content?.["application/json"]
+    ?.examples?.issuedAch?.description;
+  assert.match(
+    issuedBankExample,
+    /pooled ACH[\s\S]*`awaiting_assignment`[\s\S]*first payin/i,
+  );
+});
+
+test("derives rule uniqueness, update, and archive behavior from OpenAPI", () => {
+  const create = openApiOperation("post", "/v3/customers/{customerId}/rules");
+  const update = openApiOperation("patch", "/v3/customers/{customerId}/rules/{ruleId}");
+  const archive = openApiOperation("delete", "/v3/customers/{customerId}/rules/{ruleId}");
+  assert.match(create.description, /At most one non-archived rule may watch a given trigger account/i);
+
+  const updateRequest = resolveReference(update.requestBody);
+  const updateSchema = resolveReference(updateRequest.content?.["application/json"]?.schema);
+  const updateStatus = resolveReference(updateSchema.properties?.status);
+  assert.deepEqual(updateStatus.enum, ["active", "paused"]);
+  assert.match(updateStatus.description, /Archiving is terminal[\s\S]*DELETE/i);
+  assert.match(archive.description, /terminal[\s\S]*frees the trigger account for a new rule/i);
+
+  const listSchema = resolveReference(
+    responseSchema("get", "/v3/customers/{customerId}/rules", "200"),
+  );
+  const ruleItems = resolveReference(resolveReference(listSchema.properties?.data).items);
+  assert.deepEqual(ruleItems.properties?.status?.enum, ["active", "paused", "archived"]);
+  assert.ok(ruleItems.required?.includes("archivedAt"));
+});
+
+test("common flows compares the three developer outcomes without implementation prose", () => {
+  const text = readPage("integration/common-flows");
+  assert.equal((text.match(/<Card\b/g) ?? []).length, 3);
+  assert.equal(hasCard(text, "Receive funds", "/integration/receive-funds"), true);
+  assert.equal(hasCard(text, "Send funds", "/integration/send-funds"), true);
+  assert.equal(hasCard(text, "Issue a bank account", "/integration/issue-bank-account"), true);
+  assert.match(text, /Pay-in[\s\S]*ready pay-in capability[\s\S]*destination wallet[\s\S]*funding instructions[\s\S]*stablecoin settlement/i);
+  assert.match(text, /Payout[\s\S]*ready payout capability[\s\S]*source funds[\s\S]*ready destination[\s\S]*(?:fiat|stablecoin) delivery/i);
+  assert.match(text, /Issued bank account[\s\S]*ready bank capability[\s\S]*ready settlement wallet[\s\S]*reusable bank details[\s\S]*provisioning/i);
+  assert.ok(proseWordCount(text) <= 300, "Common flows must stay concise");
+});
+
+test("accounts explains the four account choices and gates use on current state", () => {
+  const text = readPage("integration/accounts");
+  assertAccountOwnershipSemantics(text);
+  for (const label of ["Issued wallet", "Issued bank", "External wallet", "External bank"]) {
+    assert.match(text, new RegExp(`^\\| ${label} \\|`, "m"));
+  }
+  assert.match(text, /Store `data\.id`, `data\.status`, and `data\.openTaskIds`/i);
+  assert.match(text, /refetch|read the current account/i);
+  assert.match(text, /current `data\.status` is `ready`/i);
+  assert.match(text, /`statusReason`[\s\S]{0,180}(?:next action|action signal)/i);
+  assert.match(text, /`statusReason`[\s\S]{0,220}`retryable`/i);
+  assert.match(text, /issued bank[\s\S]{0,180}`settlement\.accountId`/i);
+  assert.match(text, /details may be absent|`data\.details` may be `null`/i);
+  assert.match(text, /`details\.referenceRequired`[\s\S]{0,160}`details\.reference`/i);
+  assert.match(text, /developer fee|fee rule/i);
+  assert.match(text, /archive/i);
+  assert.equal(linkCount(text, "/integration/api-reliability"), 1);
+  assert.doesNotMatch(text, /account_holder_name_mismatch|provider_provisioning|provisioning_failed/);
+});
+
+test("account ownership validation rejects the all-customer-owned polarity", () => {
+  const text = readPage("integration/accounts");
+  const mutated = `${text}\nEvery account is customer-owned.\n`;
+  assert.throws(() => assertAccountOwnershipSemantics(mutated));
+});
+
+test("issued bank account follows settlement, provisioning, and safe presentation order", () => {
+  const text = readPage("integration/issue-bank-account");
+  assertAwaitingAssignmentFlow(text);
+  headingOrder(text, [
+    "Before you start",
+    "1. Create or select the settlement wallet",
+    "2. Create the issued bank account",
+    "3. Monitor provisioning",
+    "4. Present bank details safely",
+    "Next step",
+  ]);
+  textOrder(text, ["ready bank capability", "ready settlement wallet", "settlement.accountId", "Monitor provisioning", "Present bank details safely"]);
+  assert.match(text, /Store `data\.id`, `data\.status`, `data\.openTaskIds`, and `data\.details`/i);
+  assert.match(text, /refetch|read the current account/i);
+  assert.match(text, /do not present|only present/i);
+  assert.match(text, /details[\s\S]{0,180}(?:absent|`null`)[\s\S]{0,180}provision/i);
+  assert.match(text, /`details\.referenceRequired`[\s\S]{0,180}`details\.reference`/i);
+  assert.match(text, /\[Accounts and wallets\]\(\/integration\/accounts(?:#[^)]+)?\)/);
+  assert.equal(linkCount(text, "/integration/api-reliability"), 1);
+});
+
+test("pooled assignment validation rejects a universal or indefinite-polling branch", () => {
+  const text = readPage("integration/issue-bank-account");
+  const universal = `${text}\nAll issued bank accounts require this first pay-in branch.\n`;
+  assert.throws(() => assertAwaitingAssignmentFlow(universal));
+
+  const polling = `${text}\nKeep polling indefinitely.\n`;
+  assert.throws(() => assertAwaitingAssignmentFlow(polling));
+});
+
+test("recipients keeps ownership, address, destinations, and readiness explicit", () => {
+  const text = readPage("integration/recipients");
+  assert.match(text, /Use an account when the customer owns the destination; use a recipient and destination for another person or business\./i);
+  textOrder(text, ["Individual recipient", "streetLine1", "Bank destination"]);
+  assert.match(text, /Store (?:the )?recipient `data\.id` and `data\.status`/i);
+  assert.match(text, /Store (?:the )?destination `data\.id` and `data\.status`/i);
+  assert.match(text, /current destination[\s\S]{0,120}`data\.status` is `ready`/i);
+  assert.match(text, /ownership[\s\S]{0,180}declaration/i);
+  assert.match(text, /read[\s\S]{0,200}update[\s\S]{0,200}archive/i);
+  assert.doesNotMatch(text, /POST \/v3\/quotes|POST \/v3\/transfers/);
+  assert.equal(linkCount(text, "/integration/api-reliability"), 1);
+});
+
+test("receive funds implements the complete pay-in sequence and exact reference handling", () => {
+  const text = readPage("integration/receive-funds");
+  headingOrder(text, [
+    "Before you start",
+    "1. Create a quote",
+    "2. Execute the quote",
+    "3. Retrieve funding instructions",
+    "4. Show the required reference",
+    "5. Monitor settlement",
+    "Next step",
+  ]);
+  textOrder(text, ["ready pay-in capability", "ready destination wallet", "Store `data.id` as the quote ID", "Store transfer `data.id` as the transfer ID", "`data.instructions`", "`reference.required`", "current `data.state`"]);
+  assert.match(text, /transfer-specific[\s\S]{0,220}issued bank account[\s\S]{0,220}reusable/i);
+  assert.match(text, /`reference\.required`[\s\S]{0,180}`reference\.value`/i);
+  assert.doesNotMatch(text, /payout[\s\S]{0,80}instructions|instructions[\s\S]{0,80}payout/i);
+  assert.equal(linkCount(text, "/integration/api-reliability"), 1);
+});
+
+test("send funds separates first-party and third-party payout preparation", () => {
+  const text = readPage("integration/send-funds");
+  assert.match(text, /<Tab title="First-party">/);
+  assert.match(text, /<Tab title="Third-party">/);
+  assert.match(text, /ready, funded source wallet/i);
+  assert.match(text, /customer-owned external bank account/i);
+  assert.match(text, /current account[\s\S]{0,160}`data\.status` is `ready`/i);
+  assert.match(text, /addressed individual recipient/i);
+  assert.match(text, /current destination[\s\S]{0,160}`data\.status` is `ready`/i);
+  const tabsEnd = text.indexOf("</Tabs>");
+  const execute = text.indexOf("## Execute the payout");
+  assert.ok(tabsEnd >= 0 && execute > tabsEnd, "Transfer execution must follow both preparation tabs");
+  assert.equal((text.match(/```json\n\{\n  "quoteId": "\$\{QUOTE_ID\}"\n\}\n```/g) ?? []).length, 1);
+  assert.match(text, /Store transfer `data\.id`[\s\S]{0,120}`data\.state`/i);
+  assert.ok(text.includes("[Quotes and transfers](/integration/quotes-and-transfers)"));
+  assert.doesNotMatch(text, /instruction/i);
+  assert.equal(linkCount(text, "/integration/api-reliability"), 1);
+});
+
+test("quotes and transfers uses schema-backed exact amounts and current transfer state", () => {
+  const text = readPage("integration/quotes-and-transfers");
+  assert.match(text, /Exact in[\s\S]{0,220}`in\.amount`[\s\S]{0,220}omit `out\.amount`/i);
+  assert.match(text, /Exact out[\s\S]{0,220}`out\.amount`[\s\S]{0,220}omit `in\.amount`/i);
+  assert.doesNotMatch(text, /["`]mode["`]/i);
+  assert.match(text, /`expiresAt`[\s\S]{0,220}(?:execute|execution)/i);
+  assert.match(text, /POST \/v3\/transfers[\s\S]{0,400}"quoteId"/i);
+  assert.match(text, /`data\.state`, `data\.stateDetail`, and `data\.openTaskIds`/i);
+  assert.match(text, /current `revision`[\s\S]{0,160}current `requirements`/i);
+  assert.match(text, /`data\.instructions`[\s\S]{0,220}`reference\.required`[\s\S]{0,160}`reference\.value`/i);
+  assert.doesNotMatch(text, /## (?:Cancel|Cancellation)|transfer_not_cancelable/i);
+  assert.equal(linkCount(text, "/integration/api-reliability"), 1);
+});
+
+test("quotes define the contract-critical resource compatibility predicates", () => {
+  assertQuoteCompatibility(readPage("integration/quotes-and-transfers"));
+});
+
+test("stablecoin-funded exact-out quotes gate execution on the current available source balance", () => {
+  assertExactOutFundingGate(readPage("integration/quotes-and-transfers"));
+});
+
+test("quote compatibility validation rejects generic resource guidance", () => {
+  const text = readPage("integration/quotes-and-transfers");
+  const heading = "## Check resource compatibility";
+  const mutated = text.includes(heading)
+    ? text.replace(
+        sectionText(text, "Check resource compatibility"),
+        `${heading}\n\nUse compatible resources.\n`,
+      )
+    : `${text}\n${heading}\n\nUse compatible resources.\n`;
+  assert.throws(() => assertQuoteCompatibility(mutated));
+});
+
+test("exact-out execution validation rejects a missing balance check", () => {
+  const text = readPage("integration/quotes-and-transfers");
+  const withoutGate = text.replace(
+    /After (?:a stablecoin-funded|an|every) exact-out quote returns[\s\S]*?(?=\n## Execute before expiry)/i,
+    "Execute an exact-out quote directly from its returned amount.\n",
+  );
+  const mutated = withoutGate === text
+    ? `${text}\nAfter an exact-out quote returns, execute it without another source read.\n`
+    : withoutGate;
+  assert.throws(() => assertExactOutFundingGate(mutated));
+});
+
+test("exact-out funding validation rejects universal and fiat balance gates", () => {
+  const text = readPage("integration/quotes-and-transfers");
+  for (const claim of [
+    "After every exact-out quote returns, use the source-account balance gate.",
+    "All exact-out quotes, including fiat-funded quotes, must use the source-account balance gate.",
+    "Exact-out quotes always use the source-account balance gate.",
+    "Each exact-out quote must use the source-account balance gate.",
+    "Fiat-funded exact-out quotes must use the source-account balance gate before execution.",
+    "Fiat-funded exact-out quotes must not skip the source-account balance gate.",
+    "Fiat-funded exact-out quotes must use the source-account balance gate; this is not optional.",
+  ]) {
+    assert.throws(
+      () => assertExactOutFundingGate(`${text}\n${claim}\n`),
+      { name: "AssertionError" },
+      `Expected universal exact-out claim to fail: ${claim}`,
+    );
+  }
+  assert.doesNotThrow(() =>
+    assertExactOutFundingGate(
+      `${text}\nNot all exact-out quotes use the source-account balance gate.\n`,
+    ),
+  );
+});
+
+test("automated rules covers prerequisites, target choice, current state, update, and archive", () => {
+  const text = readPage("integration/rules");
+  assertRuleReplacementSemantics(text);
+  headingOrder(text, ["Before you start", "Choose the trigger and target", "Create the rule", "Inspect the current rule", "Update or archive the rule", "Next step"]);
+  assert.match(text, /current[\s\S]{0,120}(?:trigger|target)[\s\S]{0,160}eligible/i);
+  assert.match(text, /`funds_received`/);
+  assert.match(text, /`account`[\s\S]{0,220}`destination`/i);
+  assert.match(text, /Store `data\.id` as the rule ID and `data\.status`/i);
+  assert.match(text, /refetch|read the current rule/i);
+  assert.match(text, /archive/i);
+  assert.equal(linkCount(text, "/integration/api-reliability"), 1);
+});
+
+test("rule prerequisites use current eligible resources without a capability gate", () => {
+  const text = readPage("integration/rules");
+  assert.match(text, /current[\s\S]{0,120}(?:trigger|target)[\s\S]{0,160}eligible/i);
+  assert.doesNotMatch(text, /capabilit/i);
+});
+
+test("rule lifecycle keeps pause non-archived and archives before replacement", () => {
+  const text = readPage("integration/rules");
+  assert.match(
+    text,
+    /pause[\s\S]{0,100}temporarily suspends[\s\S]{0,100}same rule[\s\S]{0,100}remains non-archived/i,
+  );
+  assert.match(
+    text,
+    /replace a rule on the same trigger[\s\S]{0,140}archive the existing rule first[\s\S]{0,140}create the replacement/i,
+  );
+});
+
+test("rule replacement validation rejects pause-before-replacement guidance", () => {
+  const text = readPage("integration/rules");
+  const mutated = `${text}\nPause the existing rule before creating the replacement.\n`;
+  assert.throws(() => assertRuleReplacementSemantics(mutated));
+});
+
+test("keeps public workflow prose concise, current, and free of retired guidance", () => {
+  const maximums = new Map([
+    ["integration/common-flows", 300],
+    ["integration/accounts", 900],
+    ["integration/issue-bank-account", 900],
+    ["integration/recipients", 900],
+    ["integration/receive-funds", 900],
+    ["integration/send-funds", 900],
+    ["integration/quotes-and-transfers", 900],
+    ["integration/rules", 900],
+  ]);
   for (const page of PAGES) {
-    const text = requiredPage(page);
-    for (const href of internalLinks(text)) {
-      assert.match(href, /^\//, `${page} internal link must be root-relative: ${href}`);
-      assert.doesNotMatch(href, /\.mdx?(?:$|[#?])/, `${page} internal link must omit file extensions: ${href}`);
+    const text = readPage(page);
+    const words = proseWordCount(text);
+    const maximum = maximums.get(page);
+    assert.ok(words <= maximum, `${page}.mdx is too long for a focused guide (${words})`);
+    assert.match(text, /^## Next step$/m, `${page}.mdx must end with a next developer action`);
+    assert.doesNotMatch(
+      text,
+      /\/integration\/(?:request-safety|onboarding\/(?:tasks-and-submissions|documents|individuals|businesses))\b/,
+    );
+    assert.doesNotMatch(
+      text,
+      /\b(?:provider|source precedence|contract audit|migration|docs generation|SDK)\b|openapi-(?:coverage|provenance)\.json/i,
+    );
+    assert.doesNotMatch(text, /(^|[^A-Za-z0-9])v[12](?=$|[^A-Za-z0-9])/i);
+    assert.doesNotMatch(text, /\b[\w.-]+\.json\b/i);
+    for (const match of text.matchAll(/\]\(([^)]+)\)/g)) {
+      if (!match[1].startsWith("/")) continue;
+      assert.doesNotMatch(match[1], /\.mdx?(?:#|$)/);
     }
   }
 });

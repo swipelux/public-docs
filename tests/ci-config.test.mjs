@@ -116,7 +116,7 @@ test("documents final verification, deployment, and policy release gates", () =>
 
   assert.match(readme, /Redirect verification is complete/i);
   assert.match(readme, /committed[^\n]*phase[^\n]*`?final`?/i);
-  assert.match(readme, /53 redirects[^\n]*verified/i);
+  assert.match(readme, /62 redirects[^\n]*verified/i);
   assert.match(readme, /\bnvm install\b/);
   assert.match(readme, /\bnvm use\b/);
   assert.match(readme, /\bnpm ci\b/);

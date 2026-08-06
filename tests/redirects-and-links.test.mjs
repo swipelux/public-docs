@@ -1,10 +1,18 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, readdirSync } from "node:fs";
-import { resolve } from "node:path";
+import {
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { posix, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { generateOpenApiPages } from "@mintlify/common";
+import { buildGraph } from "@mintlify/link-rot";
 
 import {
   APPROVED_REDIRECT_DESTINATIONS,
@@ -36,6 +44,49 @@ const ledger = parseMigrationLedger(
   readProjectFile("docs/content-migration-ledger.md"),
 );
 
+const CUSTOMER_CREATION_API_REFERENCE =
+  "/api-reference/customers/post-v3-customers";
+
+const STRUCTURE_REDIRECTS = {
+  "/integration/environments":
+    "/integration/authentication#sandbox-and-production",
+  "/integration/errors": "/integration/api-reliability#handle-errors",
+  "/integration/pagination-and-sync":
+    "/integration/sync-and-reconciliation",
+  "/integration/request-safety": "/integration/api-reliability",
+  "/integration/using-the-api-reference": CUSTOMER_CREATION_API_REFERENCE,
+  "/integration/onboarding/individuals":
+    "/integration/onboarding/customers#individual-customers",
+  "/integration/onboarding/businesses":
+    "/integration/onboarding/customers#business-customers",
+  "/integration/onboarding/tasks-and-submissions":
+    "/integration/onboarding/capabilities-and-requirements#complete-requirements",
+  "/integration/onboarding/documents":
+    "/integration/onboarding/capabilities-and-requirements#upload-documents",
+};
+
+const STAGE_A_RETARGETED_LEGACY_REDIRECTS = Object.freeze({
+  "/get-started/api-reference": CUSTOMER_CREATION_API_REFERENCE,
+  "/individual-onboarding/api-reference":
+    "/integration/onboarding/customers#individual-customers",
+  "/onboarding": "/integration/onboarding/customers#individual-customers",
+  "/onboarding/businesses":
+    "/integration/onboarding/customers#business-customers",
+  "/onboarding/individuals":
+    "/integration/onboarding/customers#individual-customers",
+  "/onboarding/shareholders-and-documents":
+    "/integration/onboarding/capabilities-and-requirements#upload-documents",
+  "/reference/endpoint-map": CUSTOMER_CREATION_API_REFERENCE,
+  "/reference/v3-reason-codes":
+    "/integration/api-reliability#handle-errors",
+});
+
+const GENERIC_REFERENCE_REDIRECT_SOURCES = Object.freeze([
+  "/get-started/api-reference",
+  "/integration/using-the-api-reference",
+  "/reference/endpoint-map",
+]);
+
 function publishedRoute(page) {
   return page === "index" ? "/" : `/${page}`;
 }
@@ -59,6 +110,135 @@ function markdownFiles(directory = projectRoot, prefix = "") {
   }
 
   return files;
+}
+
+function markdownRoute(path) {
+  const route = path.replace(/\.mdx?$/i, "");
+  if (route === "index") return "/";
+  if (route.endsWith("/index")) return `/${route.slice(0, -6)}`;
+  return `/${route}`;
+}
+
+function maskInvisibleLinkContent(content) {
+  let fence = null;
+  const visibleLines = content.split("\n").map((line) => {
+    if (fence) {
+      const closingFence = new RegExp(
+        `^[ \\t]{0,3}${fence.character}{${fence.length},}[ \\t]*$`,
+      );
+      if (closingFence.test(line)) fence = null;
+      return "";
+    }
+
+    const openingFence = /^[ \t]{0,3}(`{3,}|~{3,})/.exec(line);
+    if (openingFence) {
+      fence = {
+        character: openingFence[1][0],
+        length: openingFence[1].length,
+      };
+      return "";
+    }
+
+    return line;
+  });
+
+  return visibleLines
+    .join("\n")
+    .replace(/\{\/\*[\s\S]*?\*\/\}/g, (comment) =>
+      comment.replace(/[^\n]/g, " "),
+    );
+}
+
+function lineNumberAt(content, index) {
+  return content.slice(0, index).split("\n").length;
+}
+
+function outboundLinks(content) {
+  const visibleContent = maskInvisibleLinkContent(content);
+  const links = [];
+  const markdownLinkPattern =
+    /(?<!!)\[[^\]\n]*\]\(\s*(?:<([^>\n]+)>|([^\s)]+))/g;
+  const mdxHrefPattern =
+    /\bhref\s*=\s*(?:"([^"\n]*)"|'([^'\n]*)'|\{\s*(?:"([^"\n]*)"|'([^'\n]*)'|`([^`\n]*)`)\s*\})/g;
+
+  for (const match of visibleContent.matchAll(markdownLinkPattern)) {
+    links.push({
+      href: match[1] ?? match[2],
+      line: lineNumberAt(visibleContent, match.index),
+    });
+  }
+  for (const match of visibleContent.matchAll(mdxHrefPattern)) {
+    links.push({
+      href: match.slice(1).find((value) => value !== undefined),
+      line: lineNumberAt(visibleContent, match.index),
+    });
+  }
+
+  return links.sort((left, right) => left.line - right.line);
+}
+
+function internalOutboundLinks(content) {
+  return outboundLinks(content).filter(({ href }) => {
+    const trimmed = href.trim();
+    return (
+      trimmed !== "" &&
+      !trimmed.startsWith("#") &&
+      !/^(?:[a-z][a-z\d+.-]*:|\/\/)/i.test(trimmed)
+    );
+  });
+}
+
+function linkDestinationPath(href, sourceRoute) {
+  const path = href.trim().split(/[?#]/, 1)[0];
+  const resolved = path.startsWith("/")
+    ? path
+    : posix.resolve(posix.dirname(sourceRoute), path || ".");
+  return resolved === "/" ? resolved : resolved.replace(/\/+$/, "");
+}
+
+function graphNodeAnchors(graph, path) {
+  const node = graph.getNode(path);
+  assert.ok(node, `${path} must be present in the Mintlify link graph`);
+  assert.ok(
+    node.headingSlugs,
+    `${path} must have Mintlify-derived heading slugs`,
+  );
+  return node.headingSlugs;
+}
+
+async function mintlifyAnchorsForContent(content) {
+  const fixtureRoot = mkdtempSync(
+    resolve(tmpdir(), "swipelux-mintlify-anchors-"),
+  );
+  const fixturePath = "fixture.mdx";
+
+  try {
+    writeFileSync(resolve(fixtureRoot, fixturePath), content);
+    const graph = await buildGraph(fixtureRoot);
+    return graphNodeAnchors(graph, fixturePath);
+  } finally {
+    rmSync(fixtureRoot, { recursive: true, force: true });
+  }
+}
+
+function assertStageARetargetedLegacyRedirects(redirects) {
+  for (const [source, expectedDestination] of Object.entries(
+    STAGE_A_RETARGETED_LEGACY_REDIRECTS,
+  )) {
+    const matchingRedirects = redirects.filter(
+      (redirect) => redirect.source === source,
+    );
+    assert.equal(
+      matchingRedirects.length,
+      1,
+      `${source} must have exactly one independently pinned redirect`,
+    );
+    assert.equal(
+      matchingRedirects[0].destination,
+      expectedDestination,
+      `${source} must remain pinned to ${expectedDestination}`,
+    );
+  }
 }
 
 function generatedPageKey(page) {
@@ -110,8 +290,23 @@ test("every frozen source page has exactly one approved migration row", () => {
   }
 });
 
-test("every redirectable non-Terms source has one approved redirect and root has none", () => {
-  assert.equal(EXPECTED_REDIRECT_SOURCES.length, 53);
+test("generic reference migrations use the customer-creation API Reference entry point", () => {
+  for (const sourcePath of [
+    "content/get-started/api-reference.mdx",
+    "content/reference/endpoint-map.mdx",
+  ]) {
+    assert.equal(
+      FROZEN_MIGRATION_DECISIONS[sourcePath].destination,
+      CUSTOMER_CREATION_API_REFERENCE,
+    );
+    const row = ledger.find((entry) => entry.sourcePath === sourcePath);
+    assert.equal(row?.destination, CUSTOMER_CREATION_API_REFERENCE);
+    assert.match(row?.notes ?? "", /customer-creation API Reference entry point/i);
+  }
+});
+
+test("every approved redirect source has one direct redirect and root has none", () => {
+  assert.equal(EXPECTED_REDIRECT_SOURCES.length, 62);
   assert.equal(inventory.length, EXPECTED_REDIRECT_SOURCES.length);
 
   const redirectsBySource = new Map();
@@ -151,6 +346,72 @@ test("docs.json redirects exactly match the approved inventory pairs", () => {
     config.redirects,
     inventory.map(({ source, destination }) => ({ source, destination })),
   );
+});
+
+test("retired Integration routes and legacy sources resolve without redirect chains", () => {
+  const destinations = new Map(
+    inventory.map(({ source, destination }) => [source, destination]),
+  );
+  for (const [source, destination] of Object.entries(STRUCTURE_REDIRECTS)) {
+    assert.equal(destinations.get(source), destination);
+  }
+
+  const sources = new Set(inventory.map(({ source }) => source));
+  for (const { source, destination } of inventory) {
+    const destinationPath = destination.split("#", 1)[0];
+    assert.equal(
+      sources.has(destinationPath),
+      false,
+      `${source} must redirect directly instead of chaining through ${destinationPath}`,
+    );
+  }
+});
+
+test("Stage A retargeted legacy redirects retain independent destinations", () => {
+  assert.equal(Object.keys(STAGE_A_RETARGETED_LEGACY_REDIRECTS).length, 8);
+  assertStageARetargetedLegacyRedirects(inventory);
+});
+
+test("generic reference redirects identify the customer-creation entry point", () => {
+  for (const source of GENERIC_REFERENCE_REDIRECT_SOURCES) {
+    const redirect = inventory.find((entry) => entry.source === source);
+    assert.equal(redirect?.destination, CUSTOMER_CREATION_API_REFERENCE);
+    assert.equal(
+      redirect?.reason,
+      "Redirected to the customer-creation API Reference entry point",
+    );
+  }
+});
+
+test("each Stage A legacy redirect pin rejects a wrong destination", async (t) => {
+  const expectedInventory = inventory.map((redirect) => ({
+    ...redirect,
+    destination:
+      STAGE_A_RETARGETED_LEGACY_REDIRECTS[redirect.source] ??
+      redirect.destination,
+  }));
+
+  for (const [source, expectedDestination] of Object.entries(
+    STAGE_A_RETARGETED_LEGACY_REDIRECTS,
+  )) {
+    await t.test(source, () => {
+      const wrongDestination = "/integration/overview";
+      const mutatedInventory = expectedInventory.map((redirect) =>
+        redirect.source === source
+          ? { ...redirect, destination: wrongDestination }
+          : redirect,
+      );
+
+      assert.throws(
+        () => assertStageARetargetedLegacyRedirects(mutatedInventory),
+        (error) => {
+          assert.ok(error.message.includes(source));
+          assert.ok(error.message.includes(expectedDestination));
+          return true;
+        },
+      );
+    });
+  }
 });
 
 test("Terms routes have no redirects", () => {
@@ -235,6 +496,70 @@ test("every webhook-labelled Markdown/MDX link uses its exact coverage href", ()
   assert.ok(linkCount > 0, "expected webhook-labelled Markdown/MDX links");
 });
 
+test("published link extraction supports MDX hrefs and ignores invisible content", () => {
+  const links = internalOutboundLinks(`
+[Inline](/integration/overview)
+[External](https://example.com/docs)
+[Email](mailto:support@example.com)
+[Local](#section)
+<Card href="/integration/quickstart" />
+<Card href='/integration/authentication' />
+<Card href={"/integration/sandbox"} />
+<Card href={'/integration/common-flows'} />
+<Card href={\`/integration/accounts\`} />
+
+\`\`\`mdx
+[Hidden](/integration/onboarding/individuals)
+<Card href="/integration/onboarding/businesses" />
+\`\`\`
+
+{/* [Hidden](/integration/onboarding/documents) */}
+`);
+
+  assert.deepEqual(
+    links.map(({ href }) => href),
+    [
+      "/integration/overview",
+      "/integration/quickstart",
+      "/integration/authentication",
+      "/integration/sandbox",
+      "/integration/common-flows",
+      "/integration/accounts",
+    ],
+  );
+});
+
+test("every published Markdown/MDX internal link resolves directly", () => {
+  const publishedRoutes = new Set(REQUIRED_PUBLISHED_PAGES.map(publishedRoute));
+  const generatedRoutes = new Set([
+    ...coverage.operations.map(({ href }) => href),
+    ...coverage.webhooks.map(({ href }) => href),
+  ]);
+  const knownDestinations = new Set([...publishedRoutes, ...generatedRoutes]);
+  const redirectSources = new Set(inventory.map(({ source }) => source));
+  const problems = [];
+  let linkCount = 0;
+
+  for (const page of REQUIRED_PUBLISHED_PAGES) {
+    const path = page === "index" ? "index.mdx" : `${page}.mdx`;
+    const sourceRoute = publishedRoute(page);
+    for (const { href, line } of internalOutboundLinks(readProjectFile(path))) {
+      linkCount += 1;
+      const destinationPath = linkDestinationPath(href, sourceRoute);
+      if (redirectSources.has(destinationPath)) {
+        problems.push(
+          `${path}:${line} links directly to redirect source ${href}`,
+        );
+      } else if (!knownDestinations.has(destinationPath)) {
+        problems.push(`${path}:${line} links unresolved destination ${href}`);
+      }
+    }
+  }
+
+  assert.ok(linkCount > 0, "expected published internal links");
+  assert.deepEqual(problems, []);
+});
+
 test("the pinned Mintlify generator emits every exact coverage href", () => {
   const pages = generatedOpenApiPages();
   const generatedByKey = new Map();
@@ -289,9 +614,58 @@ test("every redirect destination resolves to a published or generated page", () 
   );
 
   for (const { source, destination } of inventory) {
+    const destinationPath = destination.split("#", 1)[0];
     assert.ok(
-      publishedRoutes.has(destination) || generatedRoutes.has(destination),
+      publishedRoutes.has(destinationPath) ||
+        generatedRoutes.has(destinationPath),
       `${source} redirects to unresolved destination ${destination}`,
+    );
+  }
+});
+
+test("Mintlify anchors match heading and component-id behavior", async () => {
+  const anchors = await mintlifyAnchorsForContent(`
+## Use \`X-API-Key\`
+
+## Heading {#custom-anchor}
+
+<Warning id="warning-anchor">
+This warning does not create an anchor.
+</Warning>
+
+##### Deep heading
+
+<h2 id="foo:bar">
+Custom
+</h2>
+`);
+
+  assert.deepEqual(
+    [...anchors].sort(),
+    ["custom-anchor", "foobar", "use-x-api-key"],
+  );
+});
+
+test("every fragment-bearing redirect resolves to a Markdown/MDX anchor", async () => {
+  const markdownByRoute = new Map(
+    markdownFiles().map((path) => [markdownRoute(path), path]),
+  );
+  const fragmentRedirects = inventory.filter(({ destination }) =>
+    destination.includes("#"),
+  );
+  assert.equal(fragmentRedirects.length, 12);
+  const graph = await buildGraph(projectRoot);
+
+  for (const { source, destination } of fragmentRedirects) {
+    const [destinationPath, fragment] = destination.split("#", 2);
+    const projectPath = markdownByRoute.get(destinationPath);
+    assert.ok(
+      projectPath,
+      `${source} redirects to ${destination}, but ${destinationPath} has no Markdown/MDX source`,
+    );
+    assert.ok(
+      graphNodeAnchors(graph, projectPath).has(fragment),
+      `${source} redirects to ${destinationPath} with missing fragment #${fragment}`,
     );
   }
 });

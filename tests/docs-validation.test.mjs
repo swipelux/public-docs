@@ -100,6 +100,7 @@ function knownRedirectDestinations() {
   return new Set([
     "/",
     ...REQUIRED_NAVIGATION_PAGES.map((page) => `/${page}`),
+    "/api-reference/customers/post-v3-customers",
     "/api-reference/money-movement/get-v3-rates",
   ]);
 }
@@ -167,6 +168,7 @@ function createCompleteCliFixture({
   writeFixtureJson(fixture, "openapi.json", {});
   writeFixtureJson(fixture, "openapi-coverage.json", {
     operations: [
+      { href: "/api-reference/customers/post-v3-customers" },
       { href: "/api-reference/money-movement/get-v3-rates" },
     ],
     webhooks: [],
@@ -373,6 +375,33 @@ for (const [label, banned, pattern] of [
     assertHasError(errors, pattern);
   });
 }
+
+test("rejects internal documentation implementation details in Integration pages", () => {
+  for (const value of [
+    "openapi-coverage.json",
+    "openapi-provenance.json",
+    "x-mint.href",
+    "the committed contract defines",
+    "the generated schema says",
+  ]) {
+    const errors = validatePublishedText(
+      "integration/example.mdx",
+      validPage(value),
+    );
+
+    assertHasError(errors, /internal documentation implementation detail/i);
+  }
+});
+
+test("allows internal documentation terms in planning files", () => {
+  assert.deepEqual(
+    validatePublishedText(
+      "docs/plans/example.md",
+      "openapi-coverage.json and x-mint.href",
+    ),
+    [],
+  );
+});
 
 test("rejects standalone legacy API version identifiers and routes", () => {
   for (const legacyReference of [
@@ -930,6 +959,20 @@ test("rejects redirects to unknown destinations", () => {
   assertHasError(errors, /unknown destination \/unknown/i);
 });
 
+test("does not treat bare /api-reference as an implicit destination", () => {
+  const errors = validateRedirectInventory(
+    [redirect("/old", "/api-reference")],
+    {
+      expectedSources: ["/old"],
+      knownDestinations: new Set([
+        "/api-reference/customers/post-v3-customers",
+      ]),
+    },
+  );
+
+  assertHasError(errors, /unknown destination \/api-reference/i);
+});
+
 test("rejects duplicate redirect sources", () => {
   const errors = validateRedirectInventory(
     [redirect(), redirect()],
@@ -1241,11 +1284,11 @@ test("normalizes index source pages to public routes", () => {
 });
 
 test("commits the complete approved page and frozen source inventories", () => {
-  assert.equal(REQUIRED_NAVIGATION_PAGES.length, 42);
-  assert.equal(REQUIRED_PUBLISHED_PAGES.length, 43);
+  assert.equal(REQUIRED_NAVIGATION_PAGES.length, 39);
+  assert.equal(REQUIRED_PUBLISHED_PAGES.length, 40);
   assert.equal(FROZEN_SOURCE_PAGES.length, 59);
   assert.equal(Object.keys(FROZEN_MIGRATION_DECISIONS).length, 59);
-  assert.equal(EXPECTED_REDIRECT_SOURCES.length, 53);
+  assert.equal(EXPECTED_REDIRECT_SOURCES.length, 62);
   assert.equal(new Set(FROZEN_SOURCE_PAGES).size, FROZEN_SOURCE_PAGES.length);
   assert.equal(
     new Set(EXPECTED_REDIRECT_SOURCES).size,
@@ -1319,7 +1362,7 @@ test("rejects omitting any approved non-Terms source page", () => {
 test("validates the committed redirect inventory", () => {
   const { inventory, marker } = committedRedirectState();
 
-  assert.equal(inventory.length, 53);
+  assert.equal(inventory.length, 62);
   assert.ok(["current", "final"].includes(marker.phase));
   assert.equal(assertRedirectRepositoryState(marker, inventory), marker.phase);
 });
@@ -1338,12 +1381,16 @@ test("keeps the approved legacy route destinations", () => {
 
   assert.equal(destinations.get("/get-started"), "/integration/overview");
   assert.equal(
+    destinations.get("/get-started/api-reference"),
+    "/api-reference/customers/post-v3-customers",
+  );
+  assert.equal(
     destinations.get("/compliance/merchant-onboarding"),
     "/knowledge-base/business-onboarding/overview",
   );
   assert.equal(
     destinations.get("/individual-onboarding/api-reference"),
-    "/integration/onboarding/individuals",
+    "/integration/onboarding/customers#individual-customers",
   );
   assert.equal(destinations.get("/concepts/accounts"), "/integration/accounts");
   assert.equal(destinations.get("/concepts/wallets"), "/integration/accounts");
@@ -1359,7 +1406,7 @@ test("keeps the approved legacy route destinations", () => {
   assert.equal(destinations.get("/reference/rates"), rates.href);
   assert.equal(
     destinations.get("/reference/v3-reason-codes"),
-    "/integration/errors",
+    "/integration/api-reliability#handle-errors",
   );
   assert.equal(
     destinations.get("/reference/webhooks"),
@@ -1367,12 +1414,33 @@ test("keeps the approved legacy route destinations", () => {
   );
   assert.equal(
     destinations.get("/reference/endpoint-map"),
-    "/integration/using-the-api-reference",
+    "/api-reference/customers/post-v3-customers",
+  );
+  assert.equal(
+    destinations.get("/integration/using-the-api-reference"),
+    "/api-reference/customers/post-v3-customers",
   );
   assert.equal(
     inventory.some(({ source }) => source.startsWith("/t-c")),
     false,
   );
+});
+
+test("keeps generic-reference migration rows on the customer-creation entry point", () => {
+  const ledger = committedLedger();
+  for (const sourcePath of [
+    "content/get-started/api-reference.mdx",
+    "content/reference/endpoint-map.mdx",
+  ]) {
+    const expectedDestination = "/api-reference/customers/post-v3-customers";
+    assert.equal(
+      FROZEN_MIGRATION_DECISIONS[sourcePath].destination,
+      expectedDestination,
+    );
+    const row = ledger.find((entry) => entry.sourcePath === sourcePath);
+    assert.equal(row?.destination, expectedDestination);
+    assert.match(row?.notes ?? "", /customer-creation API Reference entry point/i);
+  }
 });
 
 test("validates complete ledger and redirect coverage", () => {
