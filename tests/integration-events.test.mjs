@@ -450,150 +450,7 @@ function assertNoUnsupportedWebhookGuarantees(label, text) {
   }
 }
 
-function matchingParenthesis(source, openIndex) {
-  let depth = 0;
-  let quote;
-  let escaped = false;
-  let lineComment = false;
-  let blockComment = false;
-
-  for (let index = openIndex; index < source.length; index += 1) {
-    const character = source[index];
-    const next = source[index + 1];
-
-    if (lineComment) {
-      if (character === "\n") lineComment = false;
-      continue;
-    }
-    if (blockComment) {
-      if (character === "*" && next === "/") {
-        blockComment = false;
-        index += 1;
-      }
-      continue;
-    }
-    if (quote) {
-      if (escaped) {
-        escaped = false;
-      } else if (character === "\\") {
-        escaped = true;
-      } else if (character === quote) {
-        quote = undefined;
-      }
-      continue;
-    }
-    if (character === "/" && next === "/") {
-      lineComment = true;
-      index += 1;
-      continue;
-    }
-    if (character === "/" && next === "*") {
-      blockComment = true;
-      index += 1;
-      continue;
-    }
-    if (character === '"' || character === "'" || character === "`") {
-      quote = character;
-      continue;
-    }
-    if (character === "(") depth += 1;
-    if (character !== ")") continue;
-
-    depth -= 1;
-    if (depth === 0) return index;
-  }
-
-  return -1;
-}
-
-function normalizeCallCallee(calleeSource) {
-  const normalized = calleeSource
-    .replace(/\s*(?:\?\.|\.)\s*/g, ".")
-    .replace(
-      /\s*\[\s*(["'])([A-Za-z_$][\w$]*)\1\s*\]/g,
-      (_match, _quote, member) => `.${member}`,
-    )
-    .replace(/\s/g, "");
-
-  if (/^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*$/.test(normalized)) {
-    return normalized;
-  }
-
-  assert.doesNotMatch(
-    calleeSource,
-    /(?:checkpoint|cursor)/i,
-    "Checkpoint and cursor static member calls must use normalizable names",
-  );
-  return undefined;
-}
-
-function callExpressions(source) {
-  const calls = [];
-  const pattern =
-    /(?<![\w$])(?:(await)\s+)?([A-Za-z_$][\w$]*(?:(?:\s*(?:\?\.|\.)\s*[A-Za-z_$][\w$]*)|(?:\s*\[\s*(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')\s*\]))*)\s*\(/g;
-
-  for (const match of source.matchAll(pattern)) {
-    const openIndex = match.index + match[0].lastIndexOf("(");
-    const closeIndex = matchingParenthesis(source, openIndex);
-    assert.notEqual(closeIndex, -1, "Call must have balanced parentheses");
-    const callee = normalizeCallCallee(match[2]);
-    if (!callee) continue;
-
-    let endIndex = closeIndex + 1;
-    while (/\s/.test(source[endIndex] ?? "")) endIndex += 1;
-    if (source[endIndex] === ";") endIndex += 1;
-
-    calls.push({
-      arguments: source.slice(openIndex + 1, closeIndex),
-      awaited: Boolean(match[1]),
-      callee,
-      endIndex,
-      index: match.index,
-    });
-  }
-
-  return calls;
-}
-
-function isCheckpointWriter(callee) {
-  const segments = callee.toLowerCase().split(".");
-  const hasCheckpointOrCursor = segments.some((segment) =>
-    /(?:checkpoint|cursor)/.test(segment),
-  );
-  const writer = segments.at(-1);
-  return (
-    hasCheckpointOrCursor &&
-    /^(?:advance|commit|persist|put|save|set|store|update|write)/.test(writer)
-  );
-}
-
-function withoutJavaScriptComments(source) {
-  return source
-    .replace(/\/\*[\s\S]*?\*\//g, "")
-    .replace(/\/\/[^\n]*/g, "");
-}
-
-function isCapturedTimestampArgument(argumentSource, timestampIdentifier) {
-  const argument = withoutJavaScriptComments(argumentSource).trim();
-  if (argument === timestampIdentifier) return true;
-  if (!argument.startsWith("{") || !argument.endsWith("}")) return false;
-
-  const objectBody = argument
-    .slice(1, -1)
-    .trim()
-    .replace(/,\s*$/, "")
-    .trim();
-  const escapedIdentifier = timestampIdentifier.replace(
-    /[.*+?^${}()|[\]\\]/g,
-    "\\$&",
-  );
-  const propertyName = String.raw`(?:[A-Za-z_$][\w$]*|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')`;
-  return new RegExp(
-    `^(?:${escapedIdentifier}|${propertyName}\\s*:\\s*${escapedIdentifier})$`,
-  ).test(objectBody);
-}
-
-function assertSafeReconciliationCheckpoint(label, source) {
+function assertPublishedReconciliationCheckpoint(label, source) {
   const captures = [
     ...source.matchAll(
       /\bconst\s+([A-Za-z_$][\w$]*)\s*=\s*new Date\(\)\.toISOString\(\)\s*;/g,
@@ -601,44 +458,36 @@ function assertSafeReconciliationCheckpoint(label, source) {
   ];
   assert.equal(captures.length, 1, `${label} must capture one run timestamp`);
 
-  const captureIndex = captures[0].index;
+  const capture = captures[0];
   const timestampIdentifier = captures[0][1];
-  const awaitedWork = [...source.matchAll(/\bawait\b/g)];
-  assert.ok(awaitedWork.length > 1, `${label} must await request and checkpoint work`);
-  assert.ok(
-    captureIndex < awaitedWork[0].index,
-    `${label} must capture the run timestamp before asynchronous request work`,
+  const escapedTimestamp = timestampIdentifier.replace(
+    /[.*+?^${}()|[\]\\]/g,
+    "\\$&",
+  );
+  const checkpointWrites = [
+    ...source.matchAll(
+      new RegExp(`\\bawait\\s+saveCheckpoint\\(\\s*${escapedTimestamp}\\s*\\)`, "g"),
+    ),
+  ];
+  assert.equal(
+    checkpointWrites.length,
+    1,
+    `${label} must save the captured timestamp once`,
   );
 
-  const checkpointCalls = callExpressions(source).filter(({ callee }) =>
-    isCheckpointWriter(callee),
-  );
-  assert.equal(
-    checkpointCalls.length,
-    1,
-    `${label} must contain exactly one checkpoint write`,
-  );
-  assert.equal(
-    checkpointCalls[0].awaited,
-    true,
-    `${label} must await the checkpoint write`,
-  );
-  assert.equal(
-    isCapturedTimestampArgument(
-      checkpointCalls[0].arguments,
-      timestampIdentifier,
-    ),
-    true,
-    `${label} must pass the captured timestamp to the checkpoint write`,
-  );
-  assert.equal(
-    withoutJavaScriptComments(source.slice(checkpointCalls[0].endIndex)).replace(
-      /[\s,;\])}]/g,
-      "",
-    ),
-    "",
-    `${label} must not execute work after the checkpoint write`,
-  );
+  const steps = [
+    ["capture the timestamp", capture.index],
+    ["make the first request", source.indexOf("await fetch(")],
+    ["advance the cursor", source.indexOf("cursor = nextCursor;")],
+    ["finish pagination", source.indexOf("} while (hasMore);")],
+    ["apply current state", source.indexOf("await applyCurrentState(")],
+    ["save the checkpoint", checkpointWrites[0].index],
+  ];
+  for (const [step, index] of steps) {
+    assert.ok(index >= 0, `${label} must ${step}`);
+  }
+  const positions = steps.map(([, index]) => index);
+  assert.deepEqual(positions, positions.toSorted((left, right) => left - right));
 }
 
 function assertRuleOperationResponsibilities(label, text) {
@@ -921,7 +770,7 @@ test("sync and reconciliation follows every cursor before advancing a checkpoint
     (match) => match[1],
   );
   assert.equal(javascript.length, 1, "Sync needs one cursor-loop example");
-  assertSafeReconciliationCheckpoint("reconciliation example", javascript[0]);
+  assertPublishedReconciliationCheckpoint("reconciliation example", javascript[0]);
   assert.match(javascript[0], /updatedAfter/);
   assert.match(javascript[0], /cursor/);
   assert.match(javascript[0], /data/);
@@ -974,201 +823,40 @@ test("sync and reconciliation follows every cursor before advancing a checkpoint
   assert.ok(wordCount(text) <= 800, "Sync must stay at or below 800 words");
 });
 
-test("reconciliation checkpoint guard fails closed on unsafe timestamp sources", () => {
-  const callerSuppliedWindowEnd = `
-async function reconcile({ requestedEnd }) {
-  const capturedAt = new Date().toISOString();
-  const page = await requestPage();
-  for (const resource of page.data) {
-    await updateLocalResource(resource);
-  }
-  await checkpointStore.write(requestedEnd);
-}
-`;
-  const timestampCapturedAfterPagination = `
-async function reconcile() {
-  const page = await requestPage();
-  const capturedAt = new Date().toISOString();
-  for (const resource of page.data) {
-    await updateLocalResource(resource);
-  }
-  await checkpointStore.write(capturedAt);
-}
-`;
-  const harmlessSafeRefactor = `
-async function synchronize() {
-  const completionBoundary = new Date().toISOString();
-  let pageToken;
-  while (true) {
-    const page = await requestPage(pageToken);
-    for (const resource of page.data) {
-      await updateLocalResource(resource);
-    }
-    if (!page.hasMore) break;
-    pageToken = page.nextCursor;
-  }
-  await checkpointStore.write(completionBoundary);
-}
-`;
-  const objectShapedSafeRefactor = `
-async function synchronize() {
-  const completionBoundary = new Date().toISOString();
-  const page = await requestPage();
-  for (const resource of page.data) {
-    await updateLocalResource(resource);
-  }
-  await checkpointStore.write({ updatedAfter: completionBoundary });
-}
-`;
-  const unawaitedCheckpointAfterAudit = `
-async function reconcile({ requestedEnd }) {
-  const capturedAt = new Date().toISOString();
-  const page = await requestPage();
-  for (const resource of page.data) {
-    await updateLocalResource(resource);
-  }
-  await auditTimestamp(capturedAt);
-  checkpointStore.write(requestedEnd);
-}
-`;
-  const auditAfterWrongCheckpoint = `
-async function reconcile({ requestedEnd }) {
-  const capturedAt = new Date().toISOString();
-  const page = await requestPage();
-  for (const resource of page.data) {
-    await updateLocalResource(resource);
-  }
-  await checkpointStore.write(requestedEnd);
-  await recordRunBoundary(capturedAt);
-}
-`;
-  const duplicateCheckpointWrite = `
-async function reconcile({ requestedEnd }) {
-  const capturedAt = new Date().toISOString();
-  const page = await requestPage();
-  await updateLocalResource(page.data[0]);
-  await checkpointStore.write(requestedEnd);
-  await checkpointStore.write(capturedAt);
-}
-`;
-  const duplicateDoubleQuotedComputedCheckpointWrite = `
-async function reconcile() {
-  const capturedAt = new Date().toISOString();
-  const page = await requestPage();
-  await updateLocalResource(page.data[0]);
-  await checkpointStore["write"](capturedAt);
-  await checkpointStore.write(capturedAt);
-}
-`;
-  const duplicateSingleQuotedComputedCheckpointWrite = `
-async function reconcile() {
-  const capturedAt = new Date().toISOString();
-  const page = await requestPage();
-  await updateLocalResource(page.data[0]);
-  await checkpointStore['write'](capturedAt);
-  await checkpointStore.write(capturedAt);
-}
-`;
-  const duplicateOptionalCheckpointWrite = `
-async function reconcile() {
-  const capturedAt = new Date().toISOString();
-  const page = await requestPage();
-  await updateLocalResource(page.data[0]);
-  await checkpointStore?.write(capturedAt);
-  await checkpointStore.write(capturedAt);
-}
-`;
-  const unnormalizableStaticCheckpointWrite = `
-async function reconcile() {
-  const capturedAt = new Date().toISOString();
-  const page = await requestPage();
-  await updateLocalResource(page.data[0]);
-  await checkpointStore["write-now"](capturedAt);
-  await checkpointStore.write(capturedAt);
-}
-`;
-  const unawaitedThenAwaitedCheckpointWrite = `
-async function reconcile({ requestedEnd }) {
-  const capturedAt = new Date().toISOString();
-  const page = await requestPage();
-  await updateLocalResource(page.data[0]);
-  checkpointStore.write(requestedEnd);
-  await checkpointStore.write(capturedAt);
-}
-`;
-  const ambiguousCheckpointObject = `
-async function reconcile({ requestedEnd }) {
-  const capturedAt = new Date().toISOString();
-  const page = await requestPage();
-  await updateLocalResource(page.data[0]);
-  await checkpointStore.write({
-    updatedAfter: requestedEnd,
-    observedAt: capturedAt,
-  });
-}
-`;
-  const executableWorkAfterCheckpoint = `
-async function reconcile() {
-  const capturedAt = new Date().toISOString();
-  const page = await requestPage();
-  await updateLocalResource(page.data[0]);
-  await checkpointStore.write(capturedAt);
-  recordRunBoundary();
-}
-`;
+test("published reconciliation example rejects unsafe checkpoint mutations", () => {
+  const text = requiredPage("integration/sync-and-reconciliation");
+  const [source] = [...text.matchAll(/```(?:js|javascript)\n([\s\S]*?)```/g)].map(
+    (match) => match[1],
+  );
+  const wrongTimestamp = source.replace(
+    "await saveCheckpoint(runStartedAt);",
+    "await saveCheckpoint(updatedAfter);",
+  );
+  const checkpointBeforeApply = source
+    .replace("  await saveCheckpoint(runStartedAt);\n", "")
+    .replace(
+      "  for (const resource of resourcesById.values()) {",
+      "  await saveCheckpoint(runStartedAt);\n\n  for (const resource of resourcesById.values()) {",
+    );
+  const postCheckpointLogging = source.replace(
+    "await saveCheckpoint(runStartedAt);",
+    'await saveCheckpoint(runStartedAt);\n  console.info("Reconciliation complete");',
+  );
 
-  assert.throws(
-    () =>
-      assertSafeReconciliationCheckpoint(
-        "caller-supplied windowEnd mutation",
-        callerSuppliedWindowEnd,
-      ),
-    { name: "AssertionError" },
-  );
-  assert.throws(
-    () =>
-      assertSafeReconciliationCheckpoint(
-        "late timestamp mutation",
-        timestampCapturedAfterPagination,
-      ),
-    { name: "AssertionError" },
-  );
-  for (const [label, source] of [
-    ["unawaited checkpoint after audit mutation", unawaitedCheckpointAfterAudit],
-    ["audit after wrong checkpoint mutation", auditAfterWrongCheckpoint],
-    ["duplicate checkpoint write mutation", duplicateCheckpointWrite],
-    [
-      "duplicate double-quoted computed checkpoint mutation",
-      duplicateDoubleQuotedComputedCheckpointWrite,
-    ],
-    [
-      "duplicate single-quoted computed checkpoint mutation",
-      duplicateSingleQuotedComputedCheckpointWrite,
-    ],
-    ["duplicate optional checkpoint mutation", duplicateOptionalCheckpointWrite],
-    [
-      "unnormalizable static checkpoint mutation",
-      unnormalizableStaticCheckpointWrite,
-    ],
-    [
-      "unawaited then awaited checkpoint mutation",
-      unawaitedThenAwaitedCheckpointWrite,
-    ],
-    ["ambiguous checkpoint object mutation", ambiguousCheckpointObject],
-    ["work after checkpoint mutation", executableWorkAfterCheckpoint],
+  for (const [label, mutation] of [
+    ["wrong timestamp", wrongTimestamp],
+    ["checkpoint before apply", checkpointBeforeApply],
   ]) {
+    assert.notEqual(mutation, source, `${label} fixture must change the example`);
     assert.throws(
-      () => assertSafeReconciliationCheckpoint(label, source),
+      () => assertPublishedReconciliationCheckpoint(label, mutation),
       { name: "AssertionError" },
     );
   }
   assert.doesNotThrow(() =>
-    assertSafeReconciliationCheckpoint("safe refactor", harmlessSafeRefactor),
-  );
-  assert.doesNotThrow(() =>
-    assertSafeReconciliationCheckpoint(
-      "object-shaped safe refactor",
-      objectShapedSafeRefactor,
+    assertPublishedReconciliationCheckpoint(
+      "post-checkpoint logging",
+      postCheckpointLogging,
     ),
   );
 });
@@ -1196,7 +884,25 @@ test("production readiness covers a controlled environment cutover", () => {
   one(/idempotency[\s\S]{0,100}correlation/i, "Missing write observability");
   one(/durable webhook inbox[\s\S]{0,140}(?:portal|replay)[\s\S]{0,140}reconciliation/i, "Missing recovery test");
   one(/account[\s\S]{0,80}recipient[\s\S]{0,80}destination[\s\S]{0,80}transfer[\s\S]{0,80}monitor/i, "Missing state monitoring");
-  one(/low-risk[\s\S]{0,80}smoke test[\s\S]{0,120}Swipelux[\s\S]{0,120}broad writes/i, "Missing agreed smoke test");
+  const smokeTest = one(
+    /(?:plan and run|run)[\s\S]{0,80}low-risk production smoke test[\s\S]{0,120}before broad writes/i,
+    "Missing developer-controlled production smoke test",
+  );
+  for (const field of [
+    /customer/i,
+    /capability/i,
+    /expected readback/i,
+    /owner/i,
+    /stop condition/i,
+  ]) {
+    assert.match(smokeTest, field);
+  }
+  assert.match(text, /description: "[^"]*plan[^"]*production smoke test[^"]*"/i);
+  assert.match(
+    text,
+    /run the (?:planned )?smoke test[\s\S]{0,120}verify (?:the )?expected readback[\s\S]{0,180}after it succeeds[\s\S]{0,100}expand production writes/i,
+  );
+  assert.doesNotMatch(text, /\bagree\b|\bagreed\b|with Swipelux/i);
 
   for (const href of [
     "/integration/authentication",

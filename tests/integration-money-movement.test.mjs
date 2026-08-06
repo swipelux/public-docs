@@ -600,14 +600,19 @@ function assertQuoteCompatibility(text) {
 }
 
 function assertExactOutFundingGate(text) {
-  const quoteReturned = matchPosition(
+  const stablecoinScope = matchPosition(
     text,
-    /After an exact-out quote returns/i,
-    "Exact-out guidance must start from the returned quote",
+    /After a stablecoin-funded exact-out quote returns/i,
+    "The source-account balance gate must apply only to stablecoin-funded exact-out quotes",
+  );
+  assert.doesNotMatch(
+    text,
+    /After every exact-out quote returns[\s\S]{0,160}(?:call|read|source-account balance gate)/i,
+    "The source-account balance gate must not apply to every exact-out quote",
   );
   const accountRead = text.indexOf(
     operationMarkdown("get", "/v3/customers/{customerId}/accounts/{accountId}"),
-    quoteReturned,
+    stablecoinScope,
   );
   const availableBalance = matchPosition(
     text,
@@ -629,16 +634,22 @@ function assertExactOutFundingGate(text) {
     /after (?:the )?resources? change[\s\S]{0,120}(?:create|get) a new quote/i,
     "Exact-out guidance must require a new quote after resources change",
   );
+  const fiatExemption = matchPosition(
+    text,
+    /Fiat-funded exact-out quotes do not use this source-account balance gate[\s\S]{0,120}`in\.accountId`[\s\S]{0,80}ignored for fiat funding/i,
+    "Fiat-funded exact-out quotes must be exempt because in.accountId is ignored",
+  );
   const execute = text.indexOf("## Execute before expiry");
   assert.ok(accountRead >= 0, "Exact-out guidance must link the current account read");
   assert.ok(execute >= 0, "Missing transfer execution section");
   const positions = [
-    quoteReturned,
+    stablecoinScope,
     accountRead,
     availableBalance,
     comparison,
     insufficient,
     requote,
+    fiatExemption,
     execute,
   ];
   assert.deepEqual(positions, positions.toSorted((left, right) => left - right));
@@ -966,7 +977,7 @@ test("quotes define the contract-critical resource compatibility predicates", ()
   assertQuoteCompatibility(readPage("integration/quotes-and-transfers"));
 });
 
-test("exact-out quotes gate execution on the current available source balance", () => {
+test("stablecoin-funded exact-out quotes gate execution on the current available source balance", () => {
   assertExactOutFundingGate(readPage("integration/quotes-and-transfers"));
 });
 
@@ -985,12 +996,18 @@ test("quote compatibility validation rejects generic resource guidance", () => {
 test("exact-out execution validation rejects a missing balance check", () => {
   const text = readPage("integration/quotes-and-transfers");
   const withoutGate = text.replace(
-    /After an exact-out quote returns[\s\S]*?(?=\n## Execute before expiry)/i,
+    /After (?:a stablecoin-funded|an|every) exact-out quote returns[\s\S]*?(?=\n## Execute before expiry)/i,
     "Execute an exact-out quote directly from its returned amount.\n",
   );
   const mutated = withoutGate === text
     ? `${text}\nAfter an exact-out quote returns, execute it without another source read.\n`
     : withoutGate;
+  assert.throws(() => assertExactOutFundingGate(mutated));
+});
+
+test("exact-out funding validation rejects an every exact-out balance gate", () => {
+  const text = readPage("integration/quotes-and-transfers");
+  const mutated = `${text}\nAfter every exact-out quote returns, use the source-account balance gate.\n`;
   assert.throws(() => assertExactOutFundingGate(mutated));
 });
 

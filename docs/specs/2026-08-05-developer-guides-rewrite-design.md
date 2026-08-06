@@ -109,7 +109,7 @@ The rewrite reduces duplicate guidance while preserving existing URLs.
 | Existing route | Disposition |
 |---|---|
 | `/integration/environments` | Redirect to `/integration/authentication#sandbox-and-production`. |
-| `/integration/using-the-api-reference` | Redirect to `/api-reference`. |
+| `/integration/using-the-api-reference` | Redirect to `/api-reference/customers/post-v3-customers`. |
 | `/integration/request-safety` | Redirect to `/integration/api-reliability`. |
 | `/integration/errors` | Redirect to `/integration/api-reliability#handle-errors`. |
 | `/integration/pagination-and-sync` | Redirect to `/integration/sync-and-reconciliation`. |

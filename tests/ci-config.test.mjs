@@ -116,7 +116,7 @@ test("documents final verification, deployment, and policy release gates", () =>
 
   assert.match(readme, /Redirect verification is complete/i);
   assert.match(readme, /committed[^\n]*phase[^\n]*`?final`?/i);
-  assert.match(readme, /53 redirects[^\n]*verified/i);
+  assert.match(readme, /62 redirects[^\n]*verified/i);
   assert.match(readme, /\bnvm install\b/);
   assert.match(readme, /\bnvm use\b/);
   assert.match(readme, /\bnpm ci\b/);
@@ -149,5 +149,22 @@ test("documents final verification, deployment, and policy release gates", () =>
   assert.match(
     readme,
     /jurisdiction-source contradictions[^\n]*production-release blocker[^\n]*until resolved/i,
+  );
+});
+
+test("rewrite planning metadata points the API reference redirect at a live operation", () => {
+  const destination = "/api-reference/customers/post-v3-customers";
+  const design = read("docs/specs/2026-08-05-developer-guides-rewrite-design.md");
+  const plan = read("docs/plans/2026-08-05-developer-guides-rewrite.md");
+
+  assert.ok(
+    design.includes(
+      `| \`/integration/using-the-api-reference\` | Redirect to \`${destination}\`. |`,
+    ),
+  );
+  assert.ok(
+    plan.includes(
+      `"/integration/using-the-api-reference": "${destination}",`,
+    ),
   );
 });

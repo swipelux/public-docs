@@ -139,7 +139,7 @@ const STRUCTURE_REDIRECTS = {
   "/integration/errors": "/integration/api-reliability#handle-errors",
   "/integration/pagination-and-sync": "/integration/sync-and-reconciliation",
   "/integration/request-safety": "/integration/api-reliability",
-  "/integration/using-the-api-reference": "/api-reference",
+  "/integration/using-the-api-reference": "/api-reference/customers/post-v3-customers",
   "/integration/onboarding/individuals": "/integration/onboarding/customers#individual-customers",
   "/integration/onboarding/businesses": "/integration/onboarding/customers#business-customers",
   "/integration/onboarding/tasks-and-submissions": "/integration/onboarding/capabilities-and-requirements#complete-requirements",
