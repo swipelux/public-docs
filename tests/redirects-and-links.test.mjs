@@ -48,19 +48,26 @@ const CUSTOMER_CREATION_API_REFERENCE =
   "/api-reference/customers/post-v3-customers";
 
 const STRUCTURE_REDIRECTS = {
+  "/integration/api-reliability": "/api-reference/introduction",
   "/integration/environments":
     "/integration/authentication#sandbox-and-production",
-  "/integration/errors": "/integration/api-reliability#handle-errors",
+  "/integration/errors": "/api-reference/introduction#handle-errors",
   "/integration/pagination-and-sync":
-    "/integration/sync-and-reconciliation",
-  "/integration/request-safety": "/integration/api-reliability",
+    "/integration/webhooks#recover-deliveries",
+  "/integration/production-readiness": "/integration/go-live",
+  "/integration/request-safety":
+    "/api-reference/introduction#make-writes-safe-to-retry",
+  "/integration/rules": "/integration/overview",
+  "/integration/starter-kit": "/integration/overview#see-it-in-action",
+  "/integration/sync-and-reconciliation":
+    "/integration/webhooks#recover-deliveries",
   "/integration/using-the-api-reference": CUSTOMER_CREATION_API_REFERENCE,
   "/integration/onboarding/individuals":
     "/integration/onboarding/customers#individual-customers",
   "/integration/onboarding/businesses":
     "/integration/onboarding/customers#business-customers",
   "/integration/onboarding/tasks-and-submissions":
-    "/integration/onboarding/capabilities-and-requirements#complete-requirements",
+    "/integration/onboarding/capabilities-and-requirements#complete-current-tasks",
   "/integration/onboarding/documents":
     "/integration/onboarding/capabilities-and-requirements#upload-documents",
 };
@@ -78,7 +85,7 @@ const STAGE_A_RETARGETED_LEGACY_REDIRECTS = Object.freeze({
     "/integration/onboarding/capabilities-and-requirements#upload-documents",
   "/reference/endpoint-map": CUSTOMER_CREATION_API_REFERENCE,
   "/reference/v3-reason-codes":
-    "/integration/api-reliability#handle-errors",
+    "/api-reference/introduction#handle-errors",
 });
 
 const GENERIC_REFERENCE_REDIRECT_SOURCES = Object.freeze([
@@ -306,7 +313,7 @@ test("generic reference migrations use the customer-creation API Reference entry
 });
 
 test("every approved redirect source has one direct redirect and root has none", () => {
-  assert.equal(EXPECTED_REDIRECT_SOURCES.length, 62);
+  assert.equal(EXPECTED_REDIRECT_SOURCES.length, 67);
   assert.equal(inventory.length, EXPECTED_REDIRECT_SOURCES.length);
 
   const redirectsBySource = new Map();
@@ -653,7 +660,12 @@ test("every fragment-bearing redirect resolves to a Markdown/MDX anchor", async 
   const fragmentRedirects = inventory.filter(({ destination }) =>
     destination.includes("#"),
   );
-  assert.equal(fragmentRedirects.length, 12);
+  assert.equal(
+    fragmentRedirects.length,
+    Object.values(APPROVED_REDIRECT_DESTINATIONS).filter((destination) =>
+      destination.includes("#"),
+    ).length,
+  );
   const graph = await buildGraph(projectRoot);
 
   for (const { source, destination } of fragmentRedirects) {

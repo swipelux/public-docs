@@ -1,29 +1,33 @@
 ---
 title: "Quotes and transfers"
-description: "Choose an exact amount, execute a quote, and follow the current transfer state."
+description: "Choose an exact amount, execute one quote safely, and follow the current transfer state."
 ---
 
-Use a quote to lock the priced movement you intend to execute, then read the resulting transfer for current progress, tasks, and any applicable funding details.
+A quote is time-bound and single-use. Execute it once, and do not reuse it as a transfer template. A transfer is the execution of that quote and continues changing after creation.
 
 ## Check resource compatibility
 
-Before quoting, confirm these resources still match the movement:
+Before quoting, confirm that:
 
-- The current capability is `ready`, belongs to the customer, and matches the intended flow.
-- For a stablecoin-funded movement, the source is an active `issued` custodial account. Its current status is `ready`, and it supports the input currency.
-- For stablecoin movement, the source and destination use the same currency and network.
-- A fiat payout destination is current and `ready`, and supports the output currency and method.
+- The capability is ready, belongs to the customer, and matches the intended direction and method.
+- A stablecoin source is an active issued wallet that supports the input currency.
+- Wallet-to-wallet resources use the same currency and network.
+- A fiat payout account or destination is ready and supports the output currency and method.
 
 ## Choose the exact amount
 
-Create a quote with [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes). Supply one amount side and both currencies.
+Create a quote with [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes). Send one amount side, both currencies, and response-derived resource IDs with these headers:
 
-Use response-derived IDs for the customer, ready capability, source account when required, and destination. An `acc_` destination identifies a customer account; a `dst_` destination identifies a recipient destination. The selected resources must still be compatible when you execute the quote.
+```http
+X-API-Key: ${SWIPELUX_API_KEY}
+Idempotency-Key: quote-create-001
+Content-Type: application/json
+```
 
 <Tabs>
   <Tab title="Exact in">
 
-For exact in, set `in.amount` and omit `out.amount`. The response calculates the output amount.
+Set `in.amount` and omit `out.amount`. The response calculates what the destination receives.
 
 ```json
 {
@@ -44,7 +48,7 @@ For exact in, set `in.amount` and omit `out.amount`. The response calculates the
   </Tab>
   <Tab title="Exact out">
 
-For exact out, set `out.amount` and omit `in.amount`. The response calculates the source amount.
+Set `out.amount` and omit `in.amount`. The response calculates what must leave the source.
 
 ```json
 {
@@ -65,17 +69,21 @@ For exact out, set `out.amount` and omit `in.amount`. The response calculates th
   </Tab>
 </Tabs>
 
-Store the quote `data.id`, `data.status`, `data.expiresAt`, returned legs, rate, and fees. These response values form the priced snapshot; do not rebuild executable amounts from the rate alone.
+Store the quote `data.id`, `data.status`, `data.expiresAt`, returned legs, rate, and fees. Use the returned decimal strings; do not recalculate executable amounts with floating-point arithmetic.
 
-Exact in fixes what leaves the source. Exact out fixes what the destination should receive. In either case, use the decimal string returned by the API and avoid floating-point arithmetic in your application.
+After a stablecoin-funded exact-out quote, read [`GET /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts-by-account-id). Compare the current source `balances[].available` for the input currency with the returned `data.in.amount`. If funds are insufficient, change or fund the source and create a new quote. Fiat-funded exact-out quotes do not use this source-wallet balance gate.
 
-After a stablecoin-funded exact-out quote returns, call [`GET /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts-by-account-id). From that response, read the current source account `balances[].available` for the input currency. Compare it with the returned `data.in.amount` before execution. If the available balance is insufficient, fund or change the source. After resources change, create a new quote before executing. Fiat-funded exact-out quotes do not use this source-account balance gate because `in.accountId` is ignored for fiat funding.
+## Execute once and recover safely
 
-## Execute before expiry
-
-Read the latest quote with [`GET /v3/quotes/{quoteId}`](/api-reference/money-movement/get-v3-quotes-by-quote-id). Use `expiresAt` as the execution deadline, and execute only while the current quote status permits it. If the quote is no longer executable, create a new quote from freshly read resources.
+Read the current quote with [`GET /v3/quotes/{quoteId}`](/api-reference/money-movement/get-v3-quotes-by-quote-id). Execute only while its status and `expiresAt` permit it.
 
 Create the transfer with [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers):
+
+```http
+X-API-Key: ${SWIPELUX_API_KEY}
+Idempotency-Key: transfer-create-001
+Content-Type: application/json
+```
 
 ```json
 {
@@ -83,32 +91,16 @@ Create the transfer with [`POST /v3/transfers`](/api-reference/money-movement/po
 }
 ```
 
-Store the transfer `data.id`. The transfer creation request references the chosen quote; it does not repeat the quote's amounts or destination.
+Generate one new `Idempotency-Key` for this intended transfer and persist it before sending the request. If the response is lost, retry the identical method, path, body, and key. Do not create a second execution key to recover an uncertain result.
 
-Use [API reliability](/integration/api-reliability) for the quote and transfer writes.
-
-Keep quote and transfer IDs as separate fields. The quote records the priced choice; the transfer records the executed movement and can continue changing after creation.
+If the API returns `quote_already_executed`, use its `transferId` to continue with the existing transfer. An idempotent replay can also return `Idempotency-Replayed: true`.
 
 ## Follow the current transfer
 
-Read [`GET /v3/transfers/{transferId}`](/api-reference/money-movement/get-v3-transfers-by-transfer-id) after creation and after each event. Store and evaluate `data.state`, `data.stateDetail`, and `data.openTaskIds` from the latest response.
+Read [`GET /v3/transfers/{transferId}`](/api-reference/money-movement/get-v3-transfers-by-transfer-id) after creation and after each webhook. Store the latest `data.state`, `data.stateDetail`, and `data.openTaskIds`.
 
-Treat `state` as the public lifecycle value. Use `stateDetail` only as the current explanation and action signal; do not hard-code a complete reason catalog. An empty `openTaskIds` list means no transfer-scoped task is currently open, not that a non-terminal transfer has finished.
+When task IDs are open, fetch [`GET /v3/transfers/{transferId}/tasks`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-tasks) and complete each task using its current revision and requirements.
 
-Read the current transfer before making an operator decision. A previously stored state can be useful for history, but it must not override the latest resource.
+For an inbound movement, [`GET /v3/transfers/{transferId}/instructions`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-instructions) can return transfer-specific funding details. Render only the returned instruction variant and exact reference.
 
-## Follow transfer tasks
-
-When task IDs are open, fetch [`GET /v3/transfers/{transferId}/tasks`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-tasks). Submit against each task's current `revision` and current `requirements`. Refetch after a submission because either value can change.
-
-Use [Capabilities and requirements](/integration/onboarding/capabilities-and-requirements#complete-requirements) for the shared task completion pattern.
-
-## Use funding details only when returned
-
-For an applicable inbound transfer, fetch [`GET /v3/transfers/{transferId}/instructions`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-instructions). Read the nullable `data.instructions` response and render only the fields returned for its type.
-
-For bank details, when `reference.required` is `true`, present the exact `reference.value`. Keep the returned amount, currency, optional local amount, and expiry attached to the same transfer. Never reuse these values for a different transfer.
-
-## Next step
-
-Persist the quote and transfer IDs, schedule current-resource reads around [Webhooks](/integration/webhooks), and route open task IDs into your existing requirement workflow.
+Next, implement [Webhooks](/integration/webhooks) so every asynchronous transfer update enters the same current-state handling path.

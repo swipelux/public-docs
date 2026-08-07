@@ -1,24 +1,30 @@
 ---
 title: "Accounts and wallets"
-description: "Choose, create, and monitor customer-scoped issued and external accounts."
+description: "Choose the customer-owned account or issued resource required by a money flow."
 ---
 
-Accounts are scoped to one customer. `issued` resources are platform-issued custodial accounts, while `external` resources record customer-owned endpoints. Choose the account family from the movement you are building, create one representative resource, and wait for its current state to permit the next operation.
+Every account belongs to one customer. Choose it using two dimensions: who manages it and whether it is a wallet or bank account.
 
 ## Choose an account
 
-| Account | Use it when |
+| Account | Use it for |
 | --- | --- |
-| Issued wallet | You need a custodial stablecoin balance, a transfer source or destination, or the settlement wallet for an issued bank account. |
-| Issued bank | You need reusable bank details that settle incoming fiat into an issued wallet after provisioning. |
-| External wallet | You need to record a customer-owned blockchain address as a movement destination. |
-| External bank | You need a customer-owned bank account as a first-party payout destination. |
+| Issued wallet | Hold a custodial stablecoin balance, fund a payout, receive a pay-in, or settle an issued bank account. |
+| Issued bank account | Give the customer reusable bank details that settle into an issued wallet. |
+| External wallet | Record a blockchain address owned by the customer. |
+| External bank account | Record a bank account owned by the customer for a first-party payout. |
 
-The available currencies, networks, methods, and account families depend on the customer's current capabilities. Do not infer support from another customer or an earlier response.
+`issued` means Swipelux creates and manages the resource. `external` records an endpoint owned by the customer. A third-party endpoint belongs under a [recipient and destination](/integration/recipients), not under the customer account list.
 
 ## Create the account
 
-Send the selected body to [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts). These examples cover the four account families without reproducing every API Reference variant.
+Use [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts). Send these headers with one of the request bodies below:
+
+```http
+X-API-Key: ${SWIPELUX_API_KEY}
+Idempotency-Key: account-create-001
+Content-Type: application/json
+```
 
 <Tabs>
   <Tab title="Issued wallet">
@@ -34,7 +40,7 @@ Send the selected body to [`POST /v3/customers/{customerId}/accounts`](/api-refe
 ```
 
   </Tab>
-  <Tab title="Issued bank">
+  <Tab title="Issued bank account">
 
 ```json
 {
@@ -46,7 +52,7 @@ Send the selected body to [`POST /v3/customers/{customerId}/accounts`](/api-refe
   "settlement": {
     "accountId": "${SETTLEMENT_WALLET_ID}"
   },
-  "label": "USD pay-in account"
+  "label": "USD account"
 }
 ```
 
@@ -67,24 +73,21 @@ Send the selected body to [`POST /v3/customers/{customerId}/accounts`](/api-refe
 ```
 
   </Tab>
-  <Tab title="External bank">
+  <Tab title="External bank account">
 
 ```json
 {
   "origin": "external",
   "type": "bank",
-  "methods": [
-    "ach",
-    "wire"
-  ],
+  "methods": ["ach", "wire"],
   "country": "US",
   "currency": "USD",
   "details": {
     "routingNumber": "021000021",
     "accountNumber": "123456789",
     "accountType": "checking",
-    "bankName": "JPMorgan Chase Bank",
-    "accountHolderName": "Swipelux Inc."
+    "bankName": "Example Bank",
+    "accountHolderName": "Acme Payments SAS"
   },
   "label": "Customer operating account"
 }
@@ -93,35 +96,18 @@ Send the selected body to [`POST /v3/customers/{customerId}/accounts`](/api-refe
   </Tab>
 </Tabs>
 
-For an issued bank account, set `settlement.accountId` from the issued wallet's response-derived `data.id`. That wallet must be ready for the settlement role before you create the bank account.
+Use only currencies, networks, methods, and account types returned for the current customer and capability. Do not copy availability from another customer or environment.
 
-## Use the current state
+## Wait for the account to be usable
 
-Store `data.id`, `data.status`, and `data.openTaskIds` from each create response. Then read the resource with [`GET /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts-by-account-id) before you quote a movement, show bank details, or update the account.
+Store `data.id`, `data.status`, and `data.openTaskIds` from the create response. Read the latest account with [`GET /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts-by-account-id) before you quote a transfer or show bank details.
 
-Use an account only when its current `data.status` is `ready`, unless the next operation explicitly allows another state. Treat `statusReason` as an action signal: use its current `message` and `retryable` value to decide whether to wait, change data, or complete a task. Keep following current task IDs through [Capabilities and requirements](/integration/onboarding/capabilities-and-requirements#complete-requirements); do not build a local reason-code catalog.
+Use the account only when its current status permits the next operation. If task IDs are open, complete them through [Capabilities and tasks](/integration/onboarding/capabilities-and-requirements).
 
-An issued bank account's `data.details` may be `null` while it is provisioning. Present details only after a current read returns them. If `details.referenceRequired` is `true`, show the exact `details.reference` with the bank coordinates.
+An issued bank account can return `details: null` while provisioning. Present bank details only after a current read returns the complete set. If `details.referenceRequired` is true, show the exact `details.reference` with the bank coordinates.
 
-## Change an account only when needed
+## Keep account roles explicit
 
-The developer fee rule affects later pay-ins. Read the current rule with [`GET /v3/customers/{customerId}/accounts/{accountId}/fees`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts-by-account-id-fees), then replace it with [`PUT /v3/customers/{customerId}/accounts/{accountId}/fees`](/api-reference/accounts/put-v3-customers-by-customer-id-accounts-by-account-id-fees):
+For a payout, the issued wallet is the source in `in.accountId`. A customer-owned bank account is the `destinationId`. For an issued bank account, `settlement.accountId` is the issued wallet that receives matched deposits.
 
-```json
-{
-  "breakdown": {
-    "developer": {
-      "fixed": "1.00",
-      "bips": 50
-    }
-  }
-}
-```
-
-Use [`PATCH /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/patch-v3-customers-by-customer-id-accounts-by-account-id) only to change supported metadata, the default issued wallet, or an issued bank account's settlement wallet. Refetch after the update. Use [`DELETE /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/delete-v3-customers-by-customer-id-accounts-by-account-id) to archive an unused account; finish in-flight transfers first.
-
-Apply one idempotency key per intended write by following [API reliability](/integration/api-reliability).
-
-## Next step
-
-Use a ready account in [Receive funds](/integration/receive-funds), [Send funds](/integration/send-funds), or [Issue a bank account](/integration/issue-bank-account).
+Next, use a ready account in [Receive funds](/integration/receive-funds), [Send funds](/integration/send-funds), or [Issue a bank account](/integration/issue-bank-account).

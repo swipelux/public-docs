@@ -1,21 +1,32 @@
 ---
 title: "Receive funds"
-description: "Create a fiat-to-stablecoin pay-in and present its funding instructions safely."
+description: "Create a one-time fiat pay-in and present the exact funding instructions for that transfer."
 ---
 
-Create a quoted pay-in, execute it, and show the exact funding details for that transfer. The customer sends fiat using those details, and the transfer settles stablecoin into the selected issued wallet.
+Use a quoted pay-in when the customer needs to fund a specific amount. The transfer settles stablecoin into an issued wallet.
+
+```mermaid
+flowchart TD
+  A["Ready pay-in capability"] --> B["Ready destination wallet"]
+  B --> C["Create quote"]
+  C --> D["Execute transfer"]
+  D --> E["Display funding instructions"]
+  E --> F["Track settlement"]
+```
 
 ## Before you start
 
-You need a ready pay-in capability and a ready destination wallet for the same customer. Store the customer, capability, and wallet IDs from their API responses, then refetch both resources before you quote. Continue only when the capability and destination wallet currently report `ready`.
-
-If the capability still has requirements, complete them through [Capabilities and requirements](/integration/onboarding/capabilities-and-requirements). Prepare the issued wallet through [Accounts and wallets](/integration/accounts). Follow [API reliability](/integration/api-reliability) for each write's idempotency key.
-
-Choose the input amount and currency you expect the sender to fund. The destination wallet receives the output currency returned by the quote, so keep the wallet ID tied to the customer and asset you selected.
+You need a ready pay-in capability and ready issued destination wallet for the same customer. Complete any open work through [Capabilities and tasks](/integration/onboarding/capabilities-and-requirements), then refetch both resources.
 
 ## 1. Create a quote
 
-Send the response-derived IDs to [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes):
+Create the price with [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes). Send these headers:
+
+```http
+X-API-Key: ${SWIPELUX_API_KEY}
+Idempotency-Key: payin-quote-001
+Content-Type: application/json
+```
 
 ```json
 {
@@ -33,13 +44,17 @@ Send the response-derived IDs to [`POST /v3/quotes`](/api-reference/money-moveme
 }
 ```
 
-Store `data.id` as the quote ID. Also retain `data.status`, `data.expiresAt`, and the returned amounts and fees so your application can show the priced movement without recalculating it.
-
-The optional `externalId` is your correlation value. It does not replace the quote ID, and it does not change how you make the write safe to repeat.
+Store `data.id` as `QUOTE_ID`. Present the returned amounts and fees rather than rebuilding them from the rate.
 
 ## 2. Execute the quote
 
-Execute the selected quote before its current expiry with [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers):
+Execute the current quote before expiry with [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers). Use a new key for this intended transfer:
+
+```http
+X-API-Key: ${SWIPELUX_API_KEY}
+Idempotency-Key: payin-transfer-001
+Content-Type: application/json
+```
 
 ```json
 {
@@ -47,30 +62,22 @@ Execute the selected quote before its current expiry with [`POST /v3/transfers`]
 }
 ```
 
-Store transfer `data.id` as the transfer ID and `data.state` as its current state. Keep the transfer ID separate from your optional external correlation values.
+Store transfer `data.id` as `TRANSFER_ID` and retain its current state.
 
 ## 3. Retrieve funding instructions
 
-Request [`GET /v3/transfers/{transferId}/instructions`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-instructions) for the executed pay-in. Use the returned `data.instructions` only when it is present, and render the fields for its returned type.
+Read [`GET /v3/transfers/{transferId}/instructions`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-instructions). Render the returned `data.instructions` variant without assuming its type.
 
-These details are transfer-specific. They are different from an issued bank account's reusable bank details: never reuse one pay-in transfer's coordinates, code, URL, amount, or expiry for another transfer.
+These details are transfer-specific. Never reuse one transfer's bank coordinates, code, hosted URL, amount, reference, or expiry for another pay-in.
 
-Render the returned instruction type directly. Bank instructions contain banking coordinates, while other applicable types can return a code or hosted URL. Do not assume one type from the capability name.
+For bank instructions, when `reference.required` is true, display the exact `reference.value` next to the bank coordinates and make it copyable. Show the returned amount and currency from the same instruction set.
 
-## 4. Show the required reference
+An issued bank account is different: it provides reusable details for later deposits. See [Issue a bank account](/integration/issue-bank-account) when that is the intended experience.
 
-For bank instructions, inspect `reference.required`. When it is `true`, show the exact `reference.value` next to the bank coordinates and make it copyable. Do not shorten, normalize, or replace the returned value.
+## 4. Track settlement
 
-Also show the returned amount and currency. If a local amount or expiry is present, display it as part of the same instruction set rather than deriving your own value.
+Read [`GET /v3/transfers/{transferId}`](/api-reference/money-movement/get-v3-transfers-by-transfer-id) after execution and after each event. Drive the customer-facing status from the latest `data.state`.
 
-## 5. Monitor settlement
+Use `data.stateDetail` and `data.openTaskIds` when the transfer needs another action. Do not mark it complete from an expected schedule.
 
-Read [`GET /v3/transfers/{transferId}`](/api-reference/money-movement/get-v3-transfers-by-transfer-id) after execution and after each event you process. Drive your interface from the current `data.state`. Use `data.stateDetail` and `data.openTaskIds` when the current transfer needs another action; do not mark settlement complete from an expected schedule.
-
-See [Quotes and transfers](/integration/quotes-and-transfers) for current-state and task handling.
-
-Keep the transfer's funding view and settlement view connected by the transfer ID. That lets you replace expired or changed display data with the latest response instead of leaving a stale deposit screen open.
-
-## Next step
-
-Persist the quote and transfer IDs, present the returned funding details, and add [Webhooks](/integration/webhooks) while you keep reading the transfer until its current state reaches the outcome your application handles.
+Next, add [Webhooks](/integration/webhooks) and keep the transfer status synchronized until it reaches an outcome your product handles.

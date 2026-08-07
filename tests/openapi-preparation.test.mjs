@@ -34,13 +34,13 @@ const artifactNames = [
 ];
 const fixtureExpectations = Object.freeze({
   sourceSha256:
-    "b3b86c0a80dea1cbefb80737ba8669814c2a674566915e10967d282b572c2369",
+    "54f644dd824b55a23c5628a5314ec4c6cd6402476405b63d1cc3c09b9fad20c9",
   outputSha256:
-    "e1795ee89ef93beefe56b058eecc3bb7873e46c0368196ef6d13f29c0cbc8713",
+    "3d2a3778058b18ce5f8a708f6ecaff81c630187893aee0bf4ee8afa768558d29",
   coverageSha256:
     "1f9f3a44c9f2624113806f85fa34eaf099d663e4b5961bd4a895884801e4ffdb",
   transformationsSha256:
-    "d6981ea8056cc6472d5c255ce53b1a1379ebfd89bd3a4dd5b73d609c21f8d478",
+    "9f1084df6fcdfb6223a6773fe548a3f053e767ce428d38dc096b0d68d22b34da",
   generatedAt: "2026-08-05T00:00:00.000Z",
   counts: Object.freeze({
     paths: 2,
@@ -156,9 +156,15 @@ function webhook(name) {
 function makeFixture() {
   return {
     openapi: "3.1.0",
-    info: { title: "Fixture API", version: "3.0.0" },
+    info: { title: "Swipelux API v3 [Beta]", version: "3.0.0" },
     servers: [{ url: "https://platform.example.com" }],
     security: [{ apiKey: [] }],
+    "x-tagGroups": [
+      {
+        name: "API v3",
+        tags: ["Customer Profiles", "Task submissions"],
+      },
+    ],
     paths: {
       "/v3/customers": {
         parameters: [
@@ -354,6 +360,12 @@ test("publishes only X-API-Key authentication", () => {
   const { spec } = prepareOpenApi(makeFixture(), SOURCE_SHA256);
   assert.deepEqual(Object.keys(spec.components.securitySchemes), ["apiKey"]);
   assert.deepEqual(spec.security, [{ apiKey: [] }]);
+});
+
+test("uses product-facing labels in the generated API Reference", () => {
+  const { spec } = prepareOpenApi(makeFixture(), SOURCE_SHA256);
+  assert.equal(spec.info.title, "Swipelux API");
+  assert.equal(spec["x-tagGroups"][0].name, "API");
 });
 
 test("rejects deleting security schemes referenced globally or by operations", () => {
@@ -689,10 +701,10 @@ test("compareSourceToPrepared rejects unexpected transformation pointers", () =>
   const unexpected = [
     ...transformations,
     {
-      pointer: "/info/title",
+      pointer: "/info/version",
       reason: "Unexpected rewrite",
-      beforeHash: canonicalHash(source.info.title),
-      afterHash: canonicalHash(spec.info.title),
+      beforeHash: canonicalHash(source.info.version),
+      afterHash: canonicalHash(spec.info.version),
     },
   ];
 

@@ -21,14 +21,16 @@ const RETIRED_ROUTES = new Set([
   "/integration/onboarding/businesses",
   "/integration/onboarding/tasks-and-submissions",
   "/integration/onboarding/documents",
+  "/integration/rules",
+  "/integration/api-reliability",
+  "/integration/sync-and-reconciliation",
+  "/integration/production-readiness",
+  "/integration/starter-kit",
 ]);
 
 const MAX_WORDS = new Map([
   ["integration/webhooks", 900],
-  ["integration/api-reliability", 800],
-  ["integration/sync-and-reconciliation", 800],
-  ["integration/production-readiness", 800],
-  ["integration/starter-kit", 500],
+  ["integration/go-live", 800],
 ]);
 
 const PROHIBITED_PATTERNS = [
@@ -221,8 +223,8 @@ function hasConcreteNextAction(text) {
 }
 
 test("derives every canonical Integration page from docs.json", () => {
-  assert.equal(PAGES.length, 19, "Integration navigation must contain 19 pages");
-  assert.equal(new Set(PAGES).size, 19, "Integration pages must be unique");
+  assert.equal(PAGES.length, 15, "Integration navigation must contain 15 pages");
+  assert.equal(new Set(PAGES).size, 15, "Integration pages must be unique");
   for (const page of PAGES) assert.doesNotThrow(() => readPage(page));
 });
 

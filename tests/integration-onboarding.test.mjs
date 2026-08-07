@@ -282,8 +282,7 @@ test("customers starts from the intended outcome and stores caller mappings", ()
     "Individual customers",
     "Business customers",
     "Add business related parties",
-    "Read the current customer",
-    "Next: enable a capability",
+    "Read readiness from capabilities",
   ]);
   assert.match(text, /`externalId`[^.]*stable mapping|stable mapping[^.]*`externalId`/i);
   assert.match(text, /CUSTOMER_ID/);
@@ -336,13 +335,10 @@ test("customers starts from the intended outcome and stores caller mappings", ()
 test("capability onboarding follows discovery, request, requirements, and readiness", () => {
   const text = readPage("integration/onboarding/capabilities-and-requirements");
   assertHeadingOrder(text, [
-    "Find a capability for the intended flow",
+    "Discover supported capabilities",
     "Request the capability",
-    "Complete requirements",
-    "Use hosted sessions",
-    "Upload documents",
-    "Submit API answers",
-    "Wait for readiness",
+    "Complete current tasks",
+    "Continue when the capability is ready",
   ]);
 
   const supported = text.indexOf("`GET /v3/customers/{customerId}/capabilities/supported`");
@@ -359,28 +355,28 @@ test("capability onboarding follows discovery, request, requirements, and readin
   ]) {
     assert.ok(text.includes(field), `Missing capability decision field ${field}`);
   }
-  assert.match(text, /empty object|`\{\}`/i);
-  assert.match(text, /institution IDs returned by[^.]*supported/i);
+  assert.match(text, /--data '\{\}'/i);
+  assert.match(text, /IDs returned by the supported-capability response/i);
   assert.match(text, /CAPABILITY_STATUS|`status`/);
   assert.match(text, /OPEN_TASK_IDS|`openTaskIds`/);
   assert.match(text, /APPLICATION_IDS|`applications\[\]\.id`/);
-  assert.match(text, /SESSION_ID|`verificationSessions\[\]\.id`|`tosSessions\[\]\.id`/);
-  assert.match(text, /SESSION_URL|`verificationSessions\[\]\.url`|`tosSessions\[\]\.url`/);
+  assert.match(text, /verificationSessions[\s\S]{0,80}tosSessions/);
+  assert.match(text, /session `id`[\s\S]{0,80}(?:current )?`url`/i);
 
-  const uploadIndex = headingIndex(text, "Upload documents");
-  const submitIndex = headingIndex(text, "Submit API answers");
+  const uploadIndex = text.indexOf("### Upload documents");
+  const submitIndex = text.indexOf("### API answers");
   assert.ok(uploadIndex < submitIndex);
-  assert.match(text, /upload[^.]*before[^.]*document answer|before[^.]*document answer[^.]*upload/i);
-  assert.match(text, /current task revision/i);
-  assert.match(text, /current requirement[^.]*ID|requirement ID[^.]*current task/i);
-  assert.match(text, /current requirement[^.]*type|answer type[^.]*current requirement/i);
-  assert.match(text, /refetch|read the capability again/i);
-  assert.match(text, /continue only when[^.]*current (?:status|state)/i);
   assert.match(
     text,
-    /each operation above links to its complete API Reference schema/i,
+    /Store the returned `data\.id` as `DOCUMENT_ID` before submitting/i,
   );
+  assert.match(text, /latest `data\.revision`|current revision/i);
+  assert.match(text, /requirement ID[^.]*latest task/i);
+  assert.match(text, /answer type[^.]*latest task/i);
+  assert.match(text, /refetch|read the capability again/i);
+  assert.match(text, /continue only when[^.]*current capability status/i);
   assert.doesNotMatch(text, /\]\(\/api-reference\)/);
+  assert.doesNotMatch(text, /\/v3\/sandbox\/customers\/\{customerId\}\/verification/);
 });
 
 test("capability request, document upload, and text submission examples validate", () => {

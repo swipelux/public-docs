@@ -13,8 +13,6 @@ const PAGES = [
   "integration/sandbox",
 ];
 
-const STARTER_PAGE = "integration/starter-kit";
-
 const PATH_VARIABLES = new Map([
   ["CUSTOMER_ID", "customerId"],
   ["CAPABILITY_ID", "capabilityId"],
@@ -331,203 +329,6 @@ function card(text, title, href) {
   ).test(text);
 }
 
-function proseSentences(text) {
-  return text
-    .split(/(?<=[.!?])(?:[ \t]+|\n+)|\n+/)
-    .map((sentence) => sentence.trim())
-    .filter(Boolean);
-}
-
-function affirmingSentence(sentences, pattern, message) {
-  const sentence = sentences.find((candidate) => pattern.test(candidate));
-  assert.ok(sentence, message);
-  return sentence;
-}
-
-function assertStarterCredentialPolarity(text) {
-  assert.doesNotMatch(
-    text,
-    /https:\/\/neobank-starter\.vercel\.app/i,
-    "Starter kit must not invite developers into the externally hosted credential form",
-  );
-
-  const paragraphs = text.split(/\n\s*\n/);
-  const sentences = proseSentences(text);
-  const hostedWarning = paragraphs.find((paragraph) => /hosted/i.test(paragraph));
-  assert.ok(hostedWarning, "Hosted starter needs a credential warning");
-  assert.match(
-    hostedWarning,
-    /(?:do not|never)[^.]{0,80}(?:choose|select|use)[^.]{0,40}`?Go live`?/i,
-  );
-  assert.match(
-    hostedWarning,
-    /(?:do not|must not|never)[^.]{0,100}(?:enter|expose|provide|supply|use)[^.]{0,60}(?:an? |any )?API key/i,
-  );
-
-  const browserDemo = paragraphs.find(
-    (paragraph) =>
-      /connected[- ]sandbox/i.test(paragraph) &&
-      /sandbox key/i.test(paragraph) &&
-      /browser/i.test(paragraph),
-  );
-  assert.ok(browserDemo, "Connected sandbox mode needs a browser credential warning");
-  assert.match(
-    browserDemo,
-    /(?:local[^.]{0,80}browser|browser[^.]{0,80}(?:local|your (?:computer|machine)))/i,
-  );
-  const browserCode = String.raw`(?:browser\s+(?:code|runtime(?:\s+code)?)|client-side\s+code)`;
-  const browserCredentialSentences = sentences.filter(
-    (sentence) =>
-      /sandbox key/i.test(sentence) && new RegExp(browserCode, "i").test(sentence),
-  );
-  assert.doesNotMatch(
-    browserCredentialSentences.join("\n"),
-    new RegExp(
-      String.raw`(?:\bnever\b|\b(?:do|does|did|is|are|was|were|can|could|will|would|should|must)(?:n't|\s+not)\b)[^.!?\n]{0,40}\bexpos(?:e|es|ed|ing)\b|\b${browserCode}\b[^.!?\n]{0,40}\b(?:cannot|can't|(?:does?|did|can|could|will|would|should|must)(?:n't|\s+not))\s+(?:access|have\s+access\s+to)\s+(?:(?:the\s+)?sandbox key|it)\b`,
-      "i",
-    ),
-    "Connected sandbox must affirmatively expose its sandbox key to browser code",
-  );
-  affirmingSentence(
-    sentences,
-    new RegExp(
-      String.raw`(?:\bexpos(?:e|es|ed|ing)\b[^.!?\n]{0,80}\bsandbox key\b[^.!?\n]{0,40}\bto\s+${browserCode}\b|\bsandbox key\b[^.!?\n]{0,40}\b(?:is\s+)?exposed\b[^.!?\n]{0,40}\bto\s+${browserCode}\b|\b${browserCode}\b[^.!?\n]{0,40}\b(?:has|have)\s+access\s+to\s+(?:the\s+)?sandbox key\b|\bsandbox key\b[^.!?\n]{0,80}\b${browserCode}\b[^.!?\n]{0,40}\b(?:has|have)\s+access\s+to\s+it\b)`,
-      "i",
-    ),
-    "Connected sandbox must affirmatively expose its sandbox key to browser code",
-  );
-  assert.match(browserDemo, /(?:must not|never)[^.]{0,80}share/i);
-  assert.match(browserDemo, /(?:must not|never)[^.]{0,80}deploy/i);
-  assert.match(
-    browserDemo,
-    /(?:do not|must not|never)[^.]{0,100}(?:enter|expose|provide|supply|use)[^.]{0,60}(?:a )?production (?:API )?key/i,
-  );
-  assert.doesNotMatch(
-    text,
-    /(?:browser|connected[- ]sandbox)[^.]{0,160}(?:(?:can|may|safe to) (?:be )?(?:shared|deployed|used in production)|shareable|deployable|production[- ]safe|production[- ]ready)/i,
-    "Browser mode must not be portrayed as shareable, deployable, or production-safe",
-  );
-
-  const backendScopeSentences = sentences.filter(
-    (sentence) =>
-      /shared sandbox environments?/i.test(sentence) &&
-      /(?:all|every) production integrations?/i.test(sentence) &&
-      /backend/i.test(sentence),
-  );
-  assert.doesNotMatch(
-    backendScopeSentences.join("\n"),
-    /(?:\bnever\b|\b(?:do|does|did|can|could|will|would|should|must)(?:n't|\s+not)\b)[^.!?\n]{0,40}\b(?:use|requir(?:e|es|ed|ing))\b[^.!?\n]{0,80}\b(?:a\s+)?backend\b|\b(?:a\s+)?backend\b[^.!?\n]{0,40}\b(?:is|are|was|were|will|would|should|must)(?:n't|\s+not)\s+required\b/i,
-    "Shared sandbox and production integrations must affirmatively use or require a backend",
-  );
-  affirmingSentence(
-    sentences,
-    /(?:\b(?:use|uses|using)\s+(?:a\s+)?backend\s+for\s+shared sandbox environments?[^.!?\n]{0,40}\b(?:all|every)\s+production integrations?\b|\b(?:a\s+)?backend\b[^.!?\n]{0,30}\b(?:is|are)\s+(?:used|required)\s+for\s+shared sandbox environments?[^.!?\n]{0,40}\b(?:all|every)\s+production integrations?\b|\bshared sandbox environments?[^.!?\n]{0,40}\b(?:all|every)\s+production integrations?\b[^.!?\n]{0,40}\b(?:use|uses|require|requires)\s+(?:a\s+)?backend\b)/i,
-    "Shared sandbox and production integrations must use a backend",
-  );
-
-  const secretManagerSentences = sentences.filter(
-    (sentence) =>
-      /(?:API keys?|credentials?)/i.test(sentence) &&
-      /secret manager/i.test(sentence),
-  );
-  assert.doesNotMatch(
-    secretManagerSentences.join("\n"),
-    /(?:\bnever\b|\b(?:do|does|did|can|could|will|would|should|must)(?:n't|\s+not)\b)[^.!?\n]{0,40}\b(?:keep|manage|store)\b[^.!?\n]{0,100}\b(?:API keys?|credentials?)\b|\b(?:API keys?|credentials?)\b[^.!?\n]{0,80}\b(?:are|were|will|would|should|must)(?:n't|\s+not)\s+(?:kept|managed|stored)\b/i,
-    "API keys or credentials must affirmatively be kept in a secret manager",
-  );
-  assert.doesNotMatch(
-    secretManagerSentences.join("\n"),
-    /\b(?:API keys?|credentials?)\b[^.!?\n]{0,80}\b(?:outside|not\s+(?:in|inside))\s+(?:a\s+)?secret manager\b/i,
-    "API keys or credentials must be kept inside a secret manager",
-  );
-  affirmingSentence(
-    sentences,
-    /(?:\b(?:keep|manage|store)\b[^.!?\n]{0,60}\b(?:API keys?|credentials?)\b[^.!?\n]{0,40}\b(?:in|inside)\s+(?:a\s+)?secret manager\b|\b(?:API keys?|credentials?)\b[^.!?\n]{0,60}\b(?:are|must be|should be)\s+(?:kept|managed|stored)\b[^.!?\n]{0,40}\b(?:in|inside)\s+(?:a\s+)?secret manager\b)/i,
-    "API keys or credentials must affirmatively be kept in a secret manager",
-  );
-}
-
-test("starter credential guard enforces outcomes without preferred adjectives", () => {
-  const safeAlternativeWording = `
-The hosted starter displays built-in data only. Do not choose \`Go live\`, and never enter an API key there.
-
-Connected sandbox mode runs in a browser on your local computer and exposes the sandbox key to browser runtime code. Never share or deploy this mode. Do not use a production key in connected sandbox mode.
-
-A backend is required for shared sandbox environments and all production integrations. Store API keys in a secret manager.
-`;
-  const missingProductionKeyProhibition = safeAlternativeWording.replace(
-    "Do not use a production key in connected sandbox mode.",
-    "",
-  );
-  const browserAccessSafeWording = safeAlternativeWording.replace(
-    "Connected sandbox mode runs in a browser on your local computer and exposes the sandbox key to browser runtime code.",
-    "Connected sandbox mode runs in a browser on your local computer. The sandbox key stays in the browser runtime, and browser runtime code has access to it.",
-  );
-  const negatedBrowserExposure = safeAlternativeWording.replace(
-    "exposes the sandbox key to browser runtime code",
-    "does not expose the sandbox key to browser runtime code",
-  );
-  const negatedBackendRequirement = safeAlternativeWording.replace(
-    "A backend is required for shared sandbox environments and all production integrations.",
-    "Do not use a backend for shared sandbox environments and all production integrations.",
-  );
-  const negatedSecretManagerStorage = safeAlternativeWording.replace(
-    "Store API keys in a secret manager.",
-    "Do not store API keys in a secret manager.",
-  );
-  const outsideSecretManagerStorage = safeAlternativeWording.replace(
-    "Store API keys in a secret manager.",
-    "Store API keys outside a secret manager.",
-  );
-  const serverOnlyBrowserExposure = safeAlternativeWording.replace(
-    "Connected sandbox mode runs in a browser on your local computer and exposes the sandbox key to browser runtime code.",
-    "Connected sandbox mode runs in a browser on your local computer. Connected sandbox mode exposes the sandbox key to server code; browser runtime code cannot access it.",
-  );
-  const unrelatedBackendGuidance = safeAlternativeWording.replace(
-    "A backend is required for shared sandbox environments and all production integrations.",
-    "Use a backend for local demos. Shared sandbox environments and all production integrations run directly in browser code.",
-  );
-  const hostedCardMutation = `${safeAlternativeWording}
-<Card title="Open hosted starter" href={"https://neobank-starter.vercel.app"} />
-`;
-  assert.notEqual(missingProductionKeyProhibition, safeAlternativeWording);
-  assert.notEqual(browserAccessSafeWording, safeAlternativeWording);
-  assert.notEqual(negatedBrowserExposure, safeAlternativeWording);
-  assert.notEqual(negatedBackendRequirement, safeAlternativeWording);
-  assert.notEqual(negatedSecretManagerStorage, safeAlternativeWording);
-  assert.notEqual(outsideSecretManagerStorage, safeAlternativeWording);
-  assert.notEqual(serverOnlyBrowserExposure, safeAlternativeWording);
-  assert.notEqual(unrelatedBackendGuidance, safeAlternativeWording);
-
-  assert.doesNotThrow(() =>
-    assertStarterCredentialPolarity(safeAlternativeWording),
-  );
-  assert.doesNotThrow(() =>
-    assertStarterCredentialPolarity(browserAccessSafeWording),
-  );
-  assert.throws(
-    () => assertStarterCredentialPolarity(missingProductionKeyProhibition),
-    { name: "AssertionError" },
-  );
-  for (const invertedMutation of [
-    negatedBrowserExposure,
-    negatedBackendRequirement,
-    negatedSecretManagerStorage,
-    outsideSecretManagerStorage,
-    serverOnlyBrowserExposure,
-    unrelatedBackendGuidance,
-  ]) {
-    assert.throws(
-      () => assertStarterCredentialPolarity(invertedMutation),
-      { name: "AssertionError" },
-    );
-  }
-  assert.throws(
-    () => assertStarterCredentialPolarity(hostedCardMutation),
-    { name: "AssertionError" },
-  );
-});
-
 test("publishes the four Get started pages in the intended order", () => {
   assertPages(PAGES);
   const integration = config.navigation.tabs.find((tab) => tab.tab === "Integration Docs");
@@ -536,34 +337,16 @@ test("publishes the four Get started pages in the intended order", () => {
   assert.deepEqual(getStarted?.pages, PAGES);
 });
 
-test("publishes Starter kit as a focused resource outside Get started", () => {
-  assertPages([STARTER_PAGE]);
-  const integration = config.navigation.tabs.find((tab) => tab.tab === "Integration Docs");
-  assert.ok(integration, "Missing Integration Docs tab");
-  const getStarted = integration.groups.find((group) => group.group === "Get started");
-  const resources = integration.groups.find((group) => group.group === "Resources");
-  assert.equal(getStarted?.pages.includes(STARTER_PAGE), false);
-  assert.deepEqual(resources?.pages, [STARTER_PAGE]);
-
-  const text = readPage(STARTER_PAGE);
-  assert.match(text, /(?:public )?(?:neobank )?starter[\s\S]{0,80}(?:shows|demonstrates)/i);
-  assert.match(
-    text,
-    /git clone https:\/\/github\.com\/swipelux\/neobank-starter[\s\S]{0,120}cd neobank-starter[\s\S]{0,120}npm install[\s\S]{0,120}npm run dev/,
-  );
-  assert.match(text, /built-in (?:demo )?data/i);
-  assert.match(text, /connected sandbox (?:data|mode)/i);
-  assertStarterCredentialPolarity(text);
-  assert.match(text, /\]\(\/integration\/quickstart\)/);
-  assert.match(text, /\]\(\/integration\/authentication\)/);
-  assert.doesNotMatch(
-    text,
-    /sandbox key (?:authorizes|enables|permits)[^.]{0,80}(?:real-money|production) use/i,
-  );
-  assert.ok((text.match(/\S+/g) ?? []).length <= 500);
-
-  const tail = text.slice(-1200);
-  assert.match(tail, /\/(?:integration\/quickstart|integration\/authentication)/);
+test("surfaces the demo and starter as product references", () => {
+  const homepage = readFileSync("index.mdx", "utf8");
+  const overview = readPage("integration/overview");
+  for (const text of [homepage, overview]) {
+    assert.match(text, /https:\/\/demo\.swipelux\.com/);
+    assert.match(text, /https:\/\/github\.com\/swipelux\/neobank-starter/);
+    assert.match(text, /product and UI references/i);
+    assert.match(text, /(?:do not replace|supported production integration|API contract)/i);
+  }
+  assert.throws(() => readPage("integration/starter-kit"), /ENOENT/);
 });
 
 test("every linked operation and representative curl remains OpenAPI-backed", () => {
@@ -575,7 +358,11 @@ test("every linked operation and representative curl remains OpenAPI-backed", ()
 
   for (const page of PAGES) {
     const text = readPage(page);
-    assertOperationLinksMatchOpenApi(page, text);
+    if (page === "integration/overview") {
+      assert.equal(operationLinks(text).length, 0);
+    } else {
+      assertOperationLinksMatchOpenApi(page, text);
+    }
     for (const [index, example] of curlExamples(page, text).entries()) {
       assertCurlMatchesOpenApi(example, `${page}.mdx curl ${index + 1}`);
     }
@@ -681,44 +468,37 @@ test("request validation rejects format, length, uniqueness, bounds, variants, a
   );
 });
 
-test("overview leads with outcomes, the shared lifecycle, and core resources", () => {
+test("overview leads with outcomes, the shared lifecycle, and clear starting points", () => {
   const text = readPage("integration/overview");
-  assertHeadingOrder(text, ["What you can build", "How an integration works", "Core resources", "Start building"]);
+  assertHeadingOrder(text, [
+    "What you can build",
+    "How an integration works",
+    "See it in action",
+    "Start building",
+  ]);
   for (const [title, href] of [
-    ["Pay-ins", "/integration/receive-funds"],
-    ["Payouts", "/integration/send-funds"],
-    ["Bank accounts", "/integration/issue-bank-account"],
+    ["Receive funds", "/integration/receive-funds"],
+    ["Send funds", "/integration/send-funds"],
+    ["Issue a bank account", "/integration/issue-bank-account"],
     ["Quickstart", "/integration/quickstart"],
-    ["Authentication", "/integration/authentication"],
     ["Common flows", "/integration/common-flows"],
+    ["API Reference", "/api-reference/introduction"],
   ]) {
     assert.equal(card(text, title, href), true, `Missing ${title} card`);
   }
 
   const lifecycle = [
-    "Create a customer",
-    "Choose the intended outcome",
-    "Request an eligible capability",
-    "Complete current requirements",
-    "Create the account or destination",
+    "Create customer",
+    "Activate capability",
+    "Complete open tasks",
+    "Create account or destination",
+    "Run the selected flow",
+    "Track updates with webhooks",
   ];
   const indexes = lifecycle.map((step) => text.indexOf(step));
   assert.ok(indexes.every((index) => index >= 0), "Overview is missing a lifecycle step");
   assert.deepEqual(indexes, indexes.toSorted((left, right) => left - right));
-
-  const finalStep = text.match(/^6\. \*\*[^\n]+$/m)?.[0] ?? "";
-  assert.match(finalStep, /money movement/i);
-  assert.match(finalStep, /quote/i);
-  assert.match(finalStep, /execute/i);
-  assert.match(finalStep, /monitor/i);
-  assert.match(
-    finalStep,
-    /issued bank account[\s\S]*create[\s\S]*monitor[\s\S]*provision/i,
-  );
-
-  for (const resource of ["customer", "capability", "account", "recipient", "destination", "quote", "transfer"]) {
-    assert.match(text, new RegExp(`\\*\\*${resource}\\.\\*\\*`, "i"));
-  }
+  assert.doesNotMatch(text, /^## Core resources$/m);
   assert.doesNotMatch(text, /provider orchestration|source precedence|contract provenance/i);
 });
 
@@ -726,7 +506,6 @@ test("authentication shows one backend API-key flow and preserves the environmen
   const text = readPage("integration/authentication");
   assertHeadingOrder(text, [
     "Send your API key",
-    "Make your first request",
     "Sandbox and production",
     "Store credentials safely",
   ]);
@@ -937,15 +716,13 @@ test("quickstart gates both reusable accounts on current readiness before use", 
 test("sandbox is organized by testing scenario and links every helper", () => {
   const text = readPage("integration/sandbox");
   assertHeadingOrder(text, [
-    "Test customer verification",
     "Test capability readiness",
-    "Test requirements",
+    "Test an open task",
     "Fund a sandbox wallet",
     "Complete or fail a transfer",
   ]);
 
   const expected = [
-    ["post", "/v3/sandbox/customers/{customerId}/verification"],
     ["post", "/v3/sandbox/customers/{customerId}/capabilities/{capabilityId}/status"],
     ["post", "/v3/sandbox/tasks"],
     ["post", "/v3/sandbox/tasks/{taskId}/review"],
@@ -983,8 +760,12 @@ test("sandbox is organized by testing scenario and links every helper", () => {
   assert.match(text, /simulate|test control/i);
   assert.match(text, /do not replace production compliance|does not replace production compliance/i);
   assert.match(text, /same (?:base URL|API host)/i);
-  assert.match(text, /sandbox (?:API )?key selects (?:the )?environment/i);
+  assert.match(text, /sandbox (?:API )?key selects (?:the )?(?:test )?environment/i);
   assert.match(text, /without moving real funds|no real funds move/i);
+  assert.doesNotMatch(
+    text,
+    /\/v3\/sandbox\/customers\/\{customerId\}\/verification/,
+  );
 });
 
 test("Get started pages keep public-only language and root-relative links", () => {

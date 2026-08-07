@@ -1,110 +1,78 @@
 ---
 title: "Send funds"
-description: "Prepare a first-party or third-party destination and execute a stablecoin-to-fiat payout."
+description: "Send from a customer wallet to a customer-owned account or third-party destination."
 ---
 
-Send funds from a customer's issued wallet to either the customer's own bank account or another person's or business's bank destination.
+Every payout starts from a ready, funded issued wallet. The destination model depends on who owns the endpoint.
+
+```mermaid
+flowchart TD
+  A["Funded issued wallet"] --> B{"Who owns the endpoint?"}
+  B -->|"Customer"| C["Customer account acc_..."]
+  B -->|"Another person or business"| D["Recipient destination dst_..."]
+  C --> E["Create quote"]
+  D --> E
+  E --> F["Execute and track transfer"]
+```
 
 ## Before you start
 
-You need a ready payout capability and a ready, funded source wallet. Refetch the issued wallet before quoting, confirm its current `data.status` is `ready`, and confirm the available balance covers the intended source amount. Use its response-derived `data.id` as `SOURCE_WALLET_ID`.
+Refetch the source wallet. Confirm its current status permits the payout and its available balance covers the intended source amount. Store its response-derived ID as `SOURCE_WALLET_ID`.
 
-Prepare exactly one destination path below. Follow [API reliability](/integration/api-reliability) for every write.
+You also need a ready payout capability for the current customer and selected destination.
 
-Choose first-party from ownership, not from the bank name: use it only when the customer owns the destination account. Choose third-party when another person or business owns the endpoint, even if the customer supplied the banking details.
+## 1. Prepare the destination
 
 <Tabs>
   <Tab title="First-party">
 
-Use a customer-owned external bank account when the customer owns the payout destination. Create it with [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts):
+Use a customer-owned external bank account when the customer owns the endpoint. Create it with [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) and these headers:
+
+```http
+X-API-Key: ${SWIPELUX_API_KEY}
+Idempotency-Key: payout-account-001
+Content-Type: application/json
+```
 
 ```json
 {
   "origin": "external",
   "type": "bank",
-  "methods": [
-    "ach",
-    "wire"
-  ],
+  "methods": ["ach", "wire"],
   "country": "US",
   "currency": "USD",
   "details": {
     "routingNumber": "021000021",
     "accountNumber": "123456789",
     "accountType": "checking",
-    "bankName": "JPMorgan Chase Bank",
-    "accountHolderName": "Swipelux Inc."
+    "bankName": "Example Bank",
+    "accountHolderName": "Acme Payments SAS"
   },
   "label": "Customer operating account"
 }
 ```
 
-Keep the external bank account ID as the destination ID. The source wallet remains in `in.accountId`; do not swap the two account IDs because both use the `acc_` prefix.
-
-Store the returned account ID. Read it with [`GET /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts-by-account-id), and do not quote until the current account `data.status` is `ready`.
-
-Then create the stablecoin-to-fiat quote with [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes):
-
-```json
-{
-  "customerId": "${CUSTOMER_ID}",
-  "capabilityId": "${CAPABILITY_ID}",
-  "in": {
-    "amount": "150.00",
-    "currency": "USDC",
-    "accountId": "${SOURCE_WALLET_ID}"
-  },
-  "destinationId": "${CUSTOMER_BANK_ACCOUNT_ID}",
-  "out": {
-    "currency": "USD"
-  }
-}
-```
+Read it with [`GET /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts-by-account-id). Continue only when its current status permits the payout. Store its `acc_` ID as `PAYOUT_DESTINATION_ID`.
 
   </Tab>
   <Tab title="Third-party">
 
-Create an addressed individual recipient with [`POST /v3/customers/{customerId}/recipients`](/api-reference/recipients/post-v3-customers-by-customer-id-recipients):
+Create the person or business and their bank or wallet endpoint through [Recipients and destinations](/integration/recipients). Continue only when the destination is ready.
 
-```json
-{
-  "type": "individual",
-  "relationship": "contractor",
-  "firstName": "Jason",
-  "lastName": "Swipelux",
-  "email": "jason@swipelux.com",
-  "phone": "+14155551234",
-  "address": {
-    "streetLine1": "1 Market Street",
-    "city": "San Francisco",
-    "state": "CA",
-    "postalCode": "94105",
-    "country": "US"
-  },
-  "label": "Jason contractor"
-}
+Store the returned `dst_` ID as `PAYOUT_DESTINATION_ID`. Do not use the recipient's `rcp_` ID as the quote destination.
+
+  </Tab>
+</Tabs>
+
+## 2. Create the payout quote
+
+Use [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) with these headers:
+
+```http
+X-API-Key: ${SWIPELUX_API_KEY}
+Idempotency-Key: payout-quote-001
+Content-Type: application/json
 ```
-
-Use the returned recipient ID to create the bank destination with [`POST /v3/customers/{customerId}/recipients/{recipientId}/destinations`](/api-reference/recipients/post-v3-customers-by-customer-id-recipients-by-recipient-id-destinations):
-
-```json
-{
-  "type": "ach",
-  "currency": "USD",
-  "details": {
-    "routingNumber": "021000021",
-    "accountNumber": "123456789",
-    "accountType": "checking",
-    "bankName": "JPMorgan Chase",
-    "accountHolderName": "Jason Swipelux",
-    "country": "US"
-  }
-}
-```
-
-Read it with [`GET /v3/customers/{customerId}/recipients/{recipientId}/destinations/{destinationId}`](/api-reference/recipients/get-v3-customers-by-customer-id-recipients-by-recipient-id-destinations-by-destination-id). Do not quote until the current destination `data.status` is `ready`.
-
-Then create the destination quote with [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes):
 
 ```json
 {
@@ -115,23 +83,24 @@ Then create the destination quote with [`POST /v3/quotes`](/api-reference/money-
     "currency": "USDC",
     "accountId": "${SOURCE_WALLET_ID}"
   },
-  "destinationId": "${RECIPIENT_DESTINATION_ID}",
+  "destinationId": "${PAYOUT_DESTINATION_ID}",
   "out": {
     "currency": "USD"
   }
 }
 ```
 
-For destination lifecycle details, see [Recipients and destinations](/integration/recipients).
+Store `data.id` as `QUOTE_ID` and present the returned price and fees.
 
-Keep the response-derived `dst_` ID as `destinationId`. The recipient ID identifies the owner record, but it is not a quote destination.
+## 3. Execute the payout
 
-  </Tab>
-</Tabs>
+Create the transfer with [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers). Use one new key for this intended execution:
 
-## Execute the payout
-
-After either tab returns the quote you want, execute it once with [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers):
+```http
+X-API-Key: ${SWIPELUX_API_KEY}
+Idempotency-Key: payout-transfer-001
+Content-Type: application/json
+```
 
 ```json
 {
@@ -139,16 +108,10 @@ After either tab returns the quote you want, execute it once with [`POST /v3/tra
 }
 ```
 
-Store transfer `data.id` as the transfer ID and `data.state` as the current state. A successful create response starts the transfer; it does not prove delivery.
+Store transfer `data.id` as `TRANSFER_ID`. A successful create starts the payout; it does not prove delivery.
 
-Retain the quote ID alongside the transfer ID so you can trace the price the customer accepted. Do not create another transfer from the same quote to recover from an uncertain response; use the same write-safety context for that intended execution.
-
-## Monitor current state
+## 4. Track delivery
 
 Read [`GET /v3/transfers/{transferId}`](/api-reference/money-movement/get-v3-transfers-by-transfer-id) after creation and after each event. Use the latest `data.state`, `data.stateDetail`, and `data.openTaskIds` to decide whether to wait, act, or show a terminal outcome.
 
-Follow [Quotes and transfers](/integration/quotes-and-transfers) for state and task handling.
-
-## Next step
-
-Persist the destination, quote, and transfer IDs, then add [Webhooks](/integration/webhooks) and keep the payout status synchronized from the current transfer resource.
+Next, review [Quotes and transfers](/integration/quotes-and-transfers) for exact amounts, safe execution recovery, and transfer tasks.
