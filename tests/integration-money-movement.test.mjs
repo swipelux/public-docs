@@ -22,6 +22,24 @@ const CORRECTED_PAGES = [
   "integration/quotes-and-transfers",
 ];
 
+const VISIBLE_IDEMPOTENCY_KEYS = new Map([
+  ["integration/accounts", ["account-create-001"]],
+  ["integration/issue-bank-account", ["issued-bank-account-001"]],
+  [
+    "integration/recipients",
+    ["recipient-create-001", "recipient-destination-create-001"],
+  ],
+  ["integration/receive-funds", ["payin-quote-001", "payin-transfer-001"]],
+  [
+    "integration/send-funds",
+    ["payout-account-001", "payout-quote-001", "payout-transfer-001"],
+  ],
+  [
+    "integration/quotes-and-transfers",
+    ["quote-create-001", "transfer-create-001"],
+  ],
+]);
+
 const REQUIRED_OPERATIONS = new Map([
   [
     "integration/accounts",
@@ -361,6 +379,12 @@ function jsonBlocks(text) {
   });
 }
 
+function fencedCode(text) {
+  return [...text.matchAll(/```[^\n]*\n([\s\S]*?)```/g)]
+    .map((match) => match[1])
+    .join("\n");
+}
+
 function materializeBody(value) {
   if (Array.isArray(value)) return value.map(materializeBody);
   if (value && typeof value === "object") {
@@ -660,6 +684,19 @@ test("keeps every representative request body and write header OpenAPI-valid", (
   }
 });
 
+test("shows the idempotency header for every effectful body example", () => {
+  for (const [page, keys] of VISIBLE_IDEMPOTENCY_KEYS) {
+    const code = fencedCode(readPage(page));
+    for (const key of keys) {
+      assert.match(
+        code,
+        new RegExp(`Idempotency-Key: ${key}`),
+        `${page}.mdx must show Idempotency-Key: ${key} in a code example`,
+      );
+    }
+  }
+});
+
 test("uses response-derived capability IDs in public quote request examples", () => {
   assertResponseDerivedQuoteCapabilityIds(CORRECTED_PAGES);
 });
@@ -870,6 +907,8 @@ test("send funds separates first-party and third-party payout preparation", () =
 
 test("quotes and transfers uses schema-backed exact amounts and current transfer state", () => {
   const text = readPage("integration/quotes-and-transfers");
+  assert.match(text, /quote is time-bound and single-use/i);
+  assert.match(text, /do not reuse it as a transfer template/i);
   assert.match(text, /Exact in[\s\S]{0,220}`in\.amount`[\s\S]{0,220}omit `out\.amount`/i);
   assert.match(text, /Exact out[\s\S]{0,220}`out\.amount`[\s\S]{0,220}omit `in\.amount`/i);
   assert.doesNotMatch(text, /["`]mode["`]/i);
