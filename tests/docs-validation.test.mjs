@@ -430,6 +430,36 @@ test("does not match legacy-version text inside longer alphanumeric tokens", () 
   assert.deepEqual(validatePublishedText("integration/example.mdx", text), []);
 });
 
+test("allows legacy API references only in the canonical migration guide", () => {
+  const migrationPath = "api-reference/versioning/migrate-to-v3.mdx";
+  const migrationText = [
+    "---",
+    "title: Migrate from API v1 or v2",
+    "description: Map API v1 and v2 endpoints to v3.",
+    "---",
+    "",
+    "Replace `POST /v1/customers` and `POST /v2/customers` with `POST /v3/customers`.",
+  ].join("\n");
+
+  assert.deepEqual(validateFrontmatter(migrationPath, migrationText), []);
+  assert.deepEqual(validatePublishedText(migrationPath, migrationText), []);
+
+  assertHasError(
+    validatePublishedText(
+      "api-reference/versioning/changelog.mdx",
+      migrationText,
+    ),
+    /prohibited legacy API v1\/v2 identifier/i,
+  );
+  assertHasError(
+    validatePublishedText(
+      migrationPath,
+      validPage("Use https://wallet.swipelux.com during migration."),
+    ),
+    /deprecated wallet\.swipelux\.com host/i,
+  );
+});
+
 test("rejects realistic live and sandbox secret keys", () => {
   for (const secret of [
     "sk.live.4E7mQ9zR2pX8vK6nT3wB5cY1aD0fHjLu",
@@ -1284,8 +1314,8 @@ test("normalizes index source pages to public routes", () => {
 });
 
 test("commits the complete approved page and frozen source inventories", () => {
-  assert.equal(REQUIRED_NAVIGATION_PAGES.length, 36);
-  assert.equal(REQUIRED_PUBLISHED_PAGES.length, 37);
+  assert.equal(REQUIRED_NAVIGATION_PAGES.length, 38);
+  assert.equal(REQUIRED_PUBLISHED_PAGES.length, 39);
   assert.equal(FROZEN_SOURCE_PAGES.length, 59);
   assert.equal(Object.keys(FROZEN_MIGRATION_DECISIONS).length, 59);
   assert.equal(EXPECTED_REDIRECT_SOURCES.length, 67);

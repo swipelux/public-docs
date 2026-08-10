@@ -26,6 +26,8 @@ export const REQUIRED_NAVIGATION_PAGES = Object.freeze([
   "integration/webhooks",
   "integration/go-live",
   "api-reference/introduction",
+  "api-reference/versioning/migrate-to-v3",
+  "api-reference/versioning/changelog",
   "knowledge-base/compliance/overview",
   "knowledge-base/compliance/regulatory-perimeter",
   "knowledge-base/compliance/supported-business-models",
@@ -824,11 +826,18 @@ export function validatePublishedText(path, text, options = {}) {
 
   const errors = [];
   const value = String(text);
+  const normalized = normalizePath(path).split("#", 1)[0];
+  const allowsLegacyVersionReferences =
+    normalized === "api-reference/versioning/migrate-to-v3.mdx";
   const bannedPatterns = [
-    {
-      pattern: /(^|[^A-Za-z0-9])v[12](?=$|[^A-Za-z0-9])/i,
-      label: "prohibited legacy API v1/v2 identifier",
-    },
+    ...(allowsLegacyVersionReferences
+      ? []
+      : [
+          {
+            pattern: /(^|[^A-Za-z0-9])v[12](?=$|[^A-Za-z0-9])/i,
+            label: "prohibited legacy API v1/v2 identifier",
+          },
+        ]),
     {
       pattern: /wallet\.swipelux\.com/i,
       label: "deprecated wallet.swipelux.com host",
@@ -857,7 +866,6 @@ export function validatePublishedText(path, text, options = {}) {
     }
   }
 
-  const normalized = normalizePath(path).split("#", 1)[0];
   if (normalized.startsWith("integration/")) {
     for (const pattern of [
       /openapi-coverage\.json/i,
