@@ -26,6 +26,8 @@ const config = JSON.parse(read("docs.json"));
 const indexText = read("index.mdx");
 const stylePath = resolve(projectRoot, "style.css");
 const styleText = existsSync(stylePath) ? read("style.css") : "";
+const LANGUAGE_PICKER_LAYOUT_BLOCK =
+  /\/\* language-picker-layout:start \*\/[\s\S]*?\/\* language-picker-layout:end \*\//;
 const redirectInventory = JSON.parse(read("docs/redirect-inventory.json"));
 
 const INTEGRATION_GROUPS = [
@@ -351,13 +353,17 @@ test("uses the approved Swipelux identity and site controls", () => {
 
 test("keeps Mintlify's native layout while styling components", () => {
   assert.equal(existsSync(stylePath), true, "style.css must style docs components");
+  const nativeComponentStyle = styleText.replace(
+    LANGUAGE_PICKER_LAYOUT_BLOCK,
+    "",
+  );
   assert.doesNotMatch(
-    styleText,
+    nativeComponentStyle,
     /#(?:navbar|sidebar|sidebar-content|content-area|content|page-title|table-of-contents)\b|(?:^|[\n,])\s*(?:html|body|mdx-content|\.mdx-content)\b/m,
     "custom CSS must not target Mintlify's shell or page typography",
   );
   assert.doesNotMatch(
-    styleText,
+    nativeComponentStyle,
     /\b(?:min-|max-)?(?:inline-|block-)?(?:width|height)\s*:|\b(?:margin|padding)(?:-[a-z]+)?\s*:|\bposition\s*:|\bdisplay\s*:|\b(?:grid|flex)(?:-[a-z]+)?\s*:|\boverflow(?:-[a-z]+)?\s*:|\b(?:font-size|line-height|letter-spacing)\s*:/,
     "component styling must not change layout, spacing, overflow, or type sizing",
   );
@@ -375,6 +381,33 @@ test("keeps Mintlify's native layout while styling components", () => {
       `${selector} should keep the approved component styling`,
     );
   }
+});
+
+test("shows the language picker only on translated pages and places it by the theme control", () => {
+  const block = LANGUAGE_PICKER_LAYOUT_BLOCK.exec(styleText)?.[0];
+  assert.ok(block, "style.css must contain the approved language picker layout block");
+  assert.match(
+    block,
+    /#localization-select-trigger\s*\{[^}]*display:\s*none\s*!important;/s,
+  );
+
+  for (const page of ["migrate-to-v3", "changelog"]) {
+    assert.match(
+      block,
+      new RegExp(
+        `html\\[data-current-path\\$="/api-reference/versioning/${page}"\\]\\s+#localization-select-trigger`,
+      ),
+    );
+  }
+
+  assert.match(block, /@media\s*\(min-width:\s*1024px\)/);
+  assert.match(block, /position:\s*absolute;/);
+  assert.match(block, /top:\s*1rem;/);
+  assert.match(block, /right:\s*2\.5rem;/);
+  assert.match(
+    block,
+    /#theme-preference-menu-trigger\s*\{[^}]*margin-left:\s*7rem\s*!important;/s,
+  );
 });
 
 test("uses an accessible mpanel primary color for docs UI text and controls", () => {
