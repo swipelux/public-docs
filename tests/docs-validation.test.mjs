@@ -19,10 +19,12 @@ import {
   EXPECTED_REDIRECT_SOURCES,
   FROZEN_MIGRATION_DECISIONS,
   FROZEN_SOURCE_PAGES,
+  LOCALIZED_HOME_PAGES,
   LOCALIZED_NAVIGATION_PAGES,
   REQUIRED_NAVIGATION_PAGES,
   REQUIRED_PUBLISHED_PAGES,
   SOURCE_COMMIT,
+  TRANSLATED_LOCALES,
   collectJsonStrings,
   pagePathToRoute,
   parseFrontmatter,
@@ -1325,9 +1327,11 @@ test("normalizes index source pages to public routes", () => {
 
 test("commits the complete approved page and frozen source inventories", () => {
   assert.equal(CANONICAL_NAVIGATION_PAGES.length, 38);
-  assert.equal(LOCALIZED_NAVIGATION_PAGES.length, 32);
-  assert.equal(REQUIRED_NAVIGATION_PAGES.length, 70);
-  assert.equal(REQUIRED_PUBLISHED_PAGES.length, 71);
+  assert.equal(TRANSLATED_LOCALES.length, 16);
+  assert.equal(LOCALIZED_HOME_PAGES.length, 16);
+  assert.equal(LOCALIZED_NAVIGATION_PAGES.length, 608);
+  assert.equal(REQUIRED_NAVIGATION_PAGES.length, 646);
+  assert.equal(REQUIRED_PUBLISHED_PAGES.length, 663);
   assert.equal(FROZEN_SOURCE_PAGES.length, 59);
   assert.equal(Object.keys(FROZEN_MIGRATION_DECISIONS).length, 59);
   assert.equal(EXPECTED_REDIRECT_SOURCES.length, 67);

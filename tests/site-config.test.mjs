@@ -10,7 +10,7 @@ import {
   CANONICAL_NAVIGATION_PAGES,
   LOCALIZED_NAVIGATION_PAGES,
   REQUIRED_NAVIGATION_PAGES,
-  TRANSLATED_VERSIONING_LOCALES,
+  TRANSLATED_LOCALES,
   VERSIONING_PAGE_ROUTES,
   collectNavigationPages,
   getDefaultNavigation,
@@ -188,7 +188,7 @@ const KNOWLEDGE_BASE_GROUPS = [
   },
 ];
 
-const EXPECTED_TRANSLATED_VERSIONING_LOCALES = [
+const EXPECTED_TRANSLATED_LOCALES = [
   "ca",
   "cn",
   "cs",
@@ -228,30 +228,11 @@ const ENGLISH_NAVIGATION = {
   ],
 };
 
-const LOCALIZED_NAVIGATION = EXPECTED_TRANSLATED_VERSIONING_LOCALES.map(
-  (language) => ({
-    language,
-    groups: [
-      {
-        group: "Versioning",
-        pages: EXPECTED_VERSIONING_PAGE_ROUTES.map(
-          (page) => `${language}/${page}`,
-        ),
-      },
-    ],
-  }),
-);
-
-const EXPECTED_NAVIGATION = {
-  languages: [
-    {
-      language: "en",
-      default: true,
-      ...ENGLISH_NAVIGATION,
-    },
-    ...LOCALIZED_NAVIGATION,
-  ],
-};
+const LOCALIZED_TAB_GROUPS = [
+  INTEGRATION_GROUPS,
+  API_REFERENCE_GROUPS.filter(({ openapi }) => openapi === undefined),
+  KNOWLEDGE_BASE_GROUPS,
+];
 
 const APPROVED_FAVICON_SYMBOL =
   '<svg xmlns="http://www.w3.org/2000/svg" width="65" height="64" fill="none"><path fill="#F4663E" d="M2.938 34.102a2.97 2.97 0 0 1 0-4.204L18.2 14.655a2.98 2.98 0 0 1 4.21 0l15.262 15.243a2.97 2.97 0 0 1 0 4.204L22.411 49.345a2.98 2.98 0 0 1-4.21 0L2.937 34.102Z"/><path fill="#FA9B51" d="M27.897 44.922a1.486 1.486 0 0 0 0 2.103l2.323 2.32a2.98 2.98 0 0 0 4.21 0l15.262-15.243a2.97 2.97 0 0 0 0-4.204L34.43 14.655a2.98 2.98 0 0 0-4.21 0l-2.323 2.32a1.485 1.485 0 0 0 0 2.103l10.834 10.82a2.97 2.97 0 0 1 0 4.204l-10.834 10.82Z"/><path fill="#FFDA99" d="M39.909 44.923a1.485 1.485 0 0 0 0 2.102l2.323 2.32a2.98 2.98 0 0 0 4.21 0l15.262-15.243a2.97 2.97 0 0 0 0-4.204L46.442 14.655a2.98 2.98 0 0 0-4.21 0l-2.323 2.32a1.485 1.485 0 0 0 0 2.102l10.834 10.82a2.97 2.97 0 0 1 0 4.205l-10.834 10.82Z"/></svg>';
@@ -383,7 +364,7 @@ test("keeps Mintlify's native layout while styling components", () => {
   }
 });
 
-test("shows the language picker only on translated pages and places it by the theme control", () => {
+test("shows the language picker on every translated authored page and places it by the theme control", () => {
   const block = LANGUAGE_PICKER_LAYOUT_BLOCK.exec(styleText)?.[0];
   assert.ok(block, "style.css must contain the approved language picker layout block");
   assert.match(
@@ -391,22 +372,37 @@ test("shows the language picker only on translated pages and places it by the th
     /#localization-select-trigger\s*\{[^}]*display:\s*none\s*!important;/s,
   );
 
-  for (const page of ["migrate-to-v3", "changelog"]) {
-    assert.match(
-      block,
-      new RegExp(
-        `html\\[data-current-path\\$="/api-reference/versioning/${page}"\\]\\s+#localization-select-trigger`,
-      ),
+  for (const path of [
+    "/",
+    ...EXPECTED_TRANSLATED_LOCALES.flatMap((locale) => [
+      `/${locale}`,
+      `/${locale}/`,
+    ]),
+  ]) {
+    assert.ok(
+      block.includes(`[data-current-path="${path}"]`),
+      `language picker must cover ${path}`,
     );
   }
 
+  for (const page of CANONICAL_NAVIGATION_PAGES) {
+    assert.ok(
+      block.includes(`[data-current-path$="/${page}"]`),
+      `language picker must cover ${page}`,
+    );
+  }
+
+  assert.match(
+    block,
+    /html:is\([\s\S]*?\)\s+#localization-select-trigger\s*\{[^}]*display:\s*flex\s*!important;/,
+  );
   assert.match(block, /@media\s*\(min-width:\s*1024px\)/);
   assert.match(block, /position:\s*absolute;/);
   assert.match(block, /top:\s*1rem;/);
   assert.match(block, /right:\s*2\.5rem;/);
   assert.match(
     block,
-    /#theme-preference-menu-trigger\s*\{[^}]*margin-left:\s*7rem\s*!important;/s,
+    /html:is\([\s\S]*?\)\s+#theme-preference-menu-trigger\s*\{[^}]*margin-left:\s*7rem\s*!important;/,
   );
 });
 
@@ -419,25 +415,57 @@ test("uses an accessible mpanel primary color for docs UI text and controls", ()
 });
 
 test("uses the approved language navigation and English tab skeleton", () => {
-  assert.deepEqual(config.navigation, EXPECTED_NAVIGATION);
-  assert.deepEqual(
-    TRANSLATED_VERSIONING_LOCALES,
-    EXPECTED_TRANSLATED_VERSIONING_LOCALES,
-  );
+  assert.deepEqual(TRANSLATED_LOCALES, EXPECTED_TRANSLATED_LOCALES);
   assert.deepEqual(VERSIONING_PAGE_ROUTES, EXPECTED_VERSIONING_PAGE_ROUTES);
-  const defaultNavigation = getDefaultNavigation(config.navigation);
   assert.deepEqual(
-    defaultNavigation.tabs.map(({ tab }) => tab),
-    ["Integration Docs", "API Reference", "Knowledge Base"],
+    config.navigation.languages.map(({ language }) => language),
+    ["en", ...EXPECTED_TRANSLATED_LOCALES],
   );
+
+  const defaultNavigation = getDefaultNavigation(config.navigation);
+  assert.deepEqual(defaultNavigation, {
+    language: "en",
+    default: true,
+    ...ENGLISH_NAVIGATION,
+  });
+
+  const localizedNavigation = config.navigation.languages.slice(1);
+  for (const languageNavigation of localizedNavigation) {
+    const { language, tabs } = languageNavigation;
+    assert.deepEqual(Object.keys(languageNavigation).sort(), ["language", "tabs"]);
+    assert.equal(tabs.length, LOCALIZED_TAB_GROUPS.length);
+
+    tabs.forEach((tab, tabIndex) => {
+      assert.deepEqual(Object.keys(tab).sort(), ["groups", "tab"]);
+      assert.equal(typeof tab.tab, "string");
+      assert.notEqual(tab.tab.trim(), "");
+
+      const expectedGroups = LOCALIZED_TAB_GROUPS[tabIndex];
+      assert.equal(tab.groups.length, expectedGroups.length);
+      tab.groups.forEach((group, groupIndex) => {
+        const expectedGroup = expectedGroups[groupIndex];
+        const expectedKeys = expectedGroup.icon
+          ? ["group", "icon", "pages"]
+          : ["group", "pages"];
+        assert.deepEqual(Object.keys(group).sort(), expectedKeys);
+        assert.equal(typeof group.group, "string");
+        assert.notEqual(group.group.trim(), "");
+        assert.deepEqual(
+          group.pages,
+          expectedGroup.pages.map((page) => `${language}/${page}`),
+        );
+        if (expectedGroup.icon) assert.equal(group.icon, expectedGroup.icon);
+      });
+    });
+  }
 
   const canonicalPages = [
     ...INTEGRATION_GROUPS.flatMap(({ pages }) => pages),
     ...API_REFERENCE_GROUPS.flatMap(({ pages }) => pages),
     ...KNOWLEDGE_BASE_GROUPS.flatMap(({ pages }) => pages),
   ];
-  const localizedPages = LOCALIZED_NAVIGATION.flatMap(({ groups }) =>
-    groups.flatMap(({ pages }) => pages),
+  const localizedPages = localizedNavigation.flatMap(({ tabs }) =>
+    tabs.flatMap(({ groups }) => groups.flatMap(({ pages }) => pages)),
   );
   assert.deepEqual(canonicalPages, CANONICAL_NAVIGATION_PAGES);
   assert.deepEqual(localizedPages, LOCALIZED_NAVIGATION_PAGES);
@@ -452,7 +480,7 @@ test("uses the approved language navigation and English tab skeleton", () => {
 });
 
 test("keeps each translated changelog linked to its localized migration guide", () => {
-  for (const locale of EXPECTED_TRANSLATED_VERSIONING_LOCALES) {
+  for (const locale of EXPECTED_TRANSLATED_LOCALES) {
     const changelogPath = `${locale}/api-reference/versioning/changelog.mdx`;
     const migrationPath = `${locale}/api-reference/versioning/migrate-to-v3.mdx`;
     assert.equal(existsSync(resolve(projectRoot, changelogPath)), true);
