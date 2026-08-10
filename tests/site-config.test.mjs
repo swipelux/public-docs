@@ -88,6 +88,26 @@ const RETIRED_INTEGRATION_PAGES = [
   "integration/starter-kit.mdx",
 ];
 
+const API_REFERENCE_GROUPS = [
+  {
+    group: "Overview",
+    pages: ["api-reference/introduction"],
+  },
+  {
+    group: "Versioning",
+    icon: "code-branch",
+    pages: [
+      "api-reference/versioning/migrate-to-v3",
+      "api-reference/versioning/changelog",
+    ],
+  },
+  {
+    group: "Endpoints",
+    openapi: "openapi.json",
+    pages: [],
+  },
+];
+
 const STRUCTURE_REDIRECTS = {
   "/integration/api-reliability": "/api-reference/introduction",
   "/integration/environments":
@@ -169,17 +189,7 @@ const EXPECTED_NAVIGATION = {
     },
     {
       tab: "API Reference",
-      groups: [
-        {
-          group: "Overview",
-          pages: ["api-reference/introduction"],
-        },
-        {
-          group: "Endpoints",
-          openapi: "openapi.json",
-          pages: [],
-        },
-      ],
+      groups: API_REFERENCE_GROUPS,
     },
     {
       tab: "Knowledge Base",
@@ -331,7 +341,7 @@ test("uses exactly the approved three-tab navigation skeleton", () => {
 
   const manualPages = [
     ...INTEGRATION_GROUPS.flatMap(({ pages }) => pages),
-    "api-reference/introduction",
+    ...API_REFERENCE_GROUPS.flatMap(({ pages }) => pages),
     ...KNOWLEDGE_BASE_GROUPS.flatMap(({ pages }) => pages),
   ];
   assert.deepEqual(manualPages, REQUIRED_NAVIGATION_PAGES);
@@ -374,7 +384,13 @@ test("makes API Reference the sole owner of openapi.json", () => {
   );
 
   assert.equal(owners.length, 1);
-  assert.strictEqual(owners[0], config.navigation.tabs[1].groups[1]);
+  const apiReference = config.navigation.tabs.find(
+    ({ tab }) => tab === "API Reference",
+  );
+  const endpoints = apiReference?.groups.find(
+    ({ group }) => group === "Endpoints",
+  );
+  assert.strictEqual(owners[0], endpoints);
   assert.deepEqual(owners[0], {
     group: "Endpoints",
     openapi: "openapi.json",
