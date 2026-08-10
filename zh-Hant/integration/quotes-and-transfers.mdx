@@ -1,0 +1,106 @@
+---
+title: "報價與轉帳"
+description: "選擇精確金額、安全地執行一次報價,並追蹤當前的轉帳狀態。"
+---
+
+報價具有時效性且僅可使用一次。請執行一次,並勿將其作為轉帳範本重複使用。轉帳是該報價的執行結果,並在建立後持續變化。
+
+## 檢查資源相容性
+
+在報價之前,請確認:
+
+- 該能力已就緒、屬於該客戶,且符合預期方向與方法。
+- 若來源為穩定幣,則為支援輸入幣別的有效發行錢包。
+- 錢包對錢包資源使用相同的幣別與網路。
+- 法幣出金帳戶或目的地已就緒,且支援輸出幣別與方法。
+
+## 選擇精確金額
+
+使用 [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) 建立報價。傳送一側的金額、雙方的幣別,以及從回應取得的資源 ID,並使用以下標頭:
+
+```http
+X-API-Key: ${SWIPELUX_API_KEY}
+Idempotency-Key: quote-create-001
+Content-Type: application/json
+```
+
+<Tabs>
+  <Tab title="精確入金">
+
+設定 `in.amount`,並省略 `out.amount`。回應會計算目的地將收到多少。
+
+```json
+{
+  "customerId": "${CUSTOMER_ID}",
+  "capabilityId": "${STABLECOIN_CAPABILITY_ID}",
+  "in": {
+    "amount": "1.234567",
+    "currency": "USDC",
+    "accountId": "${SOURCE_WALLET_ID}"
+  },
+  "destinationId": "${WALLET_DESTINATION_ID}",
+  "out": {
+    "currency": "USDC"
+  }
+}
+```
+
+  </Tab>
+  <Tab title="精確出金">
+
+設定 `out.amount`,並省略 `in.amount`。回應會計算需從來源支付多少。
+
+```json
+{
+  "customerId": "${CUSTOMER_ID}",
+  "capabilityId": "${CAPABILITY_ID}",
+  "in": {
+    "currency": "USDC",
+    "accountId": "${SOURCE_WALLET_ID}"
+  },
+  "destinationId": "${RECIPIENT_DESTINATION_ID}",
+  "out": {
+    "amount": "100.00",
+    "currency": "USD"
+  }
+}
+```
+
+  </Tab>
+</Tabs>
+
+儲存報價的 `data.id`、`data.status`、`data.expiresAt`、回傳的分段、匯率與費用。請使用回傳的十進位字串;切勿用浮點運算重新計算可執行金額。
+
+在使用穩定幣為來源的精確出金報價之後,請讀取 [`GET /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts-by-account-id)。將該來源當前輸入幣別的 `balances[].available` 與回傳的 `data.in.amount` 比較。若資金不足,請更換或為來源儲值,並建立新的報價。以法幣為來源的精確出金報價不會經過此來源錢包餘額檢查。
+
+## 執行一次並安全恢復
+
+使用 [`GET /v3/quotes/{quoteId}`](/api-reference/money-movement/get-v3-quotes-by-quote-id) 讀取當前報價。僅在其狀態與 `expiresAt` 允許時才執行。
+
+使用 [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) 建立轉帳:
+
+```http
+X-API-Key: ${SWIPELUX_API_KEY}
+Idempotency-Key: transfer-create-001
+Content-Type: application/json
+```
+
+```json
+{
+  "quoteId": "${QUOTE_ID}"
+}
+```
+
+為此筆預期轉帳產生一組新的 `Idempotency-Key`,並在傳送請求前先持久化。若回應遺失,請以相同的方法、路徑、主體與金鑰重試。切勿為了恢復不明確的結果而建立第二組執行金鑰。
+
+若 API 回傳 `quote_already_executed`,請使用其 `transferId` 繼續處理既有的轉帳。冪等重播也可能回傳 `Idempotency-Replayed: true`。
+
+## 追蹤當前的轉帳
+
+於建立後及每次 webhook 後,讀取 [`GET /v3/transfers/{transferId}`](/api-reference/money-movement/get-v3-transfers-by-transfer-id)。儲存最新的 `data.state`、`data.stateDetail` 與 `data.openTaskIds`。
+
+當有待辦任務 ID 時,請讀取 [`GET /v3/transfers/{transferId}/tasks`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-tasks),並依其當前版本與要求逐一完成。
+
+對於進帳轉帳,[`GET /v3/transfers/{transferId}/instructions`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-instructions) 可能回傳該筆轉帳專屬的入金資料。請僅呈現回傳的指令變體與精確的參考編號。
+
+接下來,請實作 [Webhooks](/zh-Hant/integration/webhooks),讓所有非同步轉帳更新皆進入同一個當前狀態處理路徑。

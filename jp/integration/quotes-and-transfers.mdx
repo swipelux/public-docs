@@ -1,0 +1,106 @@
+---
+title: "見積もりと送金"
+description: "正確な金額を選択し、1 つの見積もりを安全に実行して、現在の送金状態を追跡します。"
+---
+
+見積もりには有効期限があり、1 回のみ使用可能です。1 回実行し、送金テンプレートとして再利用しないでください。送金はその見積もりの実行であり、作成後も状態が変化し続けます。
+
+## リソースの互換性を確認する
+
+見積もりを作成する前に、次を確認してください。
+
+- ケイパビリティが ready であり、その顧客に属し、意図する方向と方法に一致すること。
+- ステーブルコインの送金元が、入力通貨をサポートする有効な発行ウォレットであること。
+- ウォレット間のリソースは、同じ通貨とネットワークを使用すること。
+- フィアット支払い口座または送金先が ready であり、出力通貨と方法をサポートすること。
+
+## 正確な金額を選択する
+
+[`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) で見積もりを作成します。片側の金額、両方の通貨、およびレスポンスから得られたリソース ID を、次のヘッダーとともに送信します。
+
+```http
+X-API-Key: ${SWIPELUX_API_KEY}
+Idempotency-Key: quote-create-001
+Content-Type: application/json
+```
+
+<Tabs>
+  <Tab title="Exact in">
+
+`in.amount` を設定し、`out.amount` は省略します。レスポンスは送金先が受け取る金額を計算します。
+
+```json
+{
+  "customerId": "${CUSTOMER_ID}",
+  "capabilityId": "${STABLECOIN_CAPABILITY_ID}",
+  "in": {
+    "amount": "1.234567",
+    "currency": "USDC",
+    "accountId": "${SOURCE_WALLET_ID}"
+  },
+  "destinationId": "${WALLET_DESTINATION_ID}",
+  "out": {
+    "currency": "USDC"
+  }
+}
+```
+
+  </Tab>
+  <Tab title="Exact out">
+
+`out.amount` を設定し、`in.amount` は省略します。レスポンスは送金元から出るべき金額を計算します。
+
+```json
+{
+  "customerId": "${CUSTOMER_ID}",
+  "capabilityId": "${CAPABILITY_ID}",
+  "in": {
+    "currency": "USDC",
+    "accountId": "${SOURCE_WALLET_ID}"
+  },
+  "destinationId": "${RECIPIENT_DESTINATION_ID}",
+  "out": {
+    "amount": "100.00",
+    "currency": "USD"
+  }
+}
+```
+
+  </Tab>
+</Tabs>
+
+見積もりの `data.id`、`data.status`、`data.expiresAt`、返された leg、レート、手数料を保存します。返された decimal 文字列を使用してください。実行可能な金額を浮動小数点演算で再計算しないでください。
+
+ステーブルコインで資金供給される exact-out の見積もりの後は、[`GET /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts-by-account-id) を読み取ります。入力通貨に対する現在の送金元 `balances[].available` を、返された `data.in.amount` と比較してください。資金が不足している場合は、送金元を変更または入金し、新しい見積もりを作成してください。フィアットで資金供給される exact-out の見積もりは、この送金元ウォレットの残高チェックを使用しません。
+
+## 1 回のみ実行し安全にリカバリーする
+
+[`GET /v3/quotes/{quoteId}`](/api-reference/money-movement/get-v3-quotes-by-quote-id) で現在の見積もりを読み取ります。ステータスと `expiresAt` が許可する場合にのみ実行してください。
+
+[`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) で送金を作成します。
+
+```http
+X-API-Key: ${SWIPELUX_API_KEY}
+Idempotency-Key: transfer-create-001
+Content-Type: application/json
+```
+
+```json
+{
+  "quoteId": "${QUOTE_ID}"
+}
+```
+
+この意図した送金に対して新しい `Idempotency-Key` を 1 つ生成し、リクエストを送信する前に永続化してください。レスポンスが失われた場合は、同じメソッド、パス、ボディ、キーで再試行します。不確実な結果をリカバリーするために、2 つ目の実行キーを作成しないでください。
+
+API が `quote_already_executed` を返す場合は、その `transferId` を使用して既存の送金を継続してください。冪等な再実行は `Idempotency-Replayed: true` を返す場合もあります。
+
+## 現在の送金を追跡する
+
+作成後および各 Webhook の後に、[`GET /v3/transfers/{transferId}`](/api-reference/money-movement/get-v3-transfers-by-transfer-id) を読み取ります。最新の `data.state`、`data.stateDetail`、`data.openTaskIds` を保存してください。
+
+タスク ID がオープンの場合は、[`GET /v3/transfers/{transferId}/tasks`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-tasks) を取得し、その現在のリビジョンと要件を使用して各タスクを完了してください。
+
+インバウンドの資金移動では、[`GET /v3/transfers/{transferId}/instructions`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-instructions) が送金固有の資金移動指示を返すことがあります。返された指示のバリアントと正確な参照情報のみをレンダリングしてください。
+
+次に、[Webhooks](/jp/integration/webhooks) を実装し、非同期の送金更新がすべて同じ現在状態のハンドリングパスに入るようにしてください。

@@ -1,0 +1,142 @@
+---
+title: "Smilšu kastes testēšana"
+description: "Kontrolējiet iespējas, uzdevuma, maka un pārveduma rezultātus, veidojot savu integrāciju."
+---
+
+Smilšu kaste izmanto to pašu API resursdatoru kā produkcija. Smilšu kastes API atslēga izvēlas testa vidi, kur palīgi simulē rezultātus, nepārvietojot reālus līdzekļus.
+
+Turiet atslēgu savā aizmugursistēmā. Smilšu kastes palīgi neaizstāj produkcijas atbilstību vai iesaisti.
+
+```bash
+export API_BASE='https://platform.swipelux.com'
+export SWIPELUX_SANDBOX_API_KEY='replace-with-your-sandbox-key'
+```
+
+## Testējiet iespējas gatavību
+
+Pēc iespējas pieprasīšanas iestatiet tās smilšu kastes statusu ar [`POST /v3/sandbox/customers/{customerId}/capabilities/{capabilityId}/status`](/api-reference/sandbox/post-v3-sandbox-customers-by-customer-id-capabilities-by-capability-id-status):
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/sandbox/customers/${CUSTOMER_ID}/capabilities/${CAPABILITY_ID}/status" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Content-Type: application/json" \
+  --data '{"status":"ready"}'
+```
+
+Pēc palīga izmantošanas atkārtoti ielādējiet iespēju. Uztveriet tās pašreizējo `status` un `openTaskIds` kā rezultātu, ko jūsu produktam jāapstrādā.
+
+## Testējiet atvērtu uzdevumu
+
+Izveidojiet iespējas mērogā ierobežotu uzdevumu ar [`POST /v3/sandbox/tasks`](/api-reference/sandbox/post-v3-sandbox-tasks):
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/sandbox/tasks" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Content-Type: application/json" \
+  --data @- <<JSON
+{
+  "scope": {
+    "type": "capability",
+    "customerId": "${CUSTOMER_ID}",
+    "capabilityId": "${CAPABILITY_ID}"
+  },
+  "items": [
+    {
+      "type": "explanation",
+      "request": "Explain the source of funds."
+    }
+  ]
+}
+JSON
+```
+
+Saglabājiet `data.id` kā `TASK_ID`, `data.revision` kā `TASK_REVISION` un pašreizējo `data.requirements[0].id` kā `REQUIREMENT_ID`. Iesniedziet atbildi caur [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission):
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/tasks/${TASK_ID}/submissions" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: sandbox-task-submission-001" \
+  --header "Content-Type: application/json" \
+  --data @- <<JSON
+{
+  "taskRevision": ${TASK_REVISION},
+  "answers": [
+    {
+      "requirementId": "${REQUIREMENT_ID}",
+      "answer": {
+        "type": "text",
+        "value": "Sandbox requirement completed."
+      }
+    }
+  ]
+}
+JSON
+```
+
+Pēc tam pieņemiet vai noraidiet pašreizējo iesniegumu ar [`POST /v3/sandbox/tasks/{taskId}/review`](/api-reference/sandbox/post-v3-sandbox-tasks-by-task-id-review):
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/sandbox/tasks/${TASK_ID}/review" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Content-Type: application/json" \
+  --data '{"outcome":"accepted"}'
+```
+
+Izmantojiet [Iespējas un uzdevumi](/lv/integration/onboarding/capabilities-and-requirements) produkcijas uzdevumu pabeigšanas paraugam.
+
+## Papildiniet smilšu kastes maku
+
+Kreditējiet izsniegtu maku ar [`POST /v3/sandbox/accounts/{accountId}/topup`](/api-reference/sandbox/post-v3-sandbox-accounts-by-account-id-topup):
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/sandbox/accounts/${ACCOUNT_ID}/topup" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Content-Type: application/json" \
+  --data '{"amount":"250.00","currency":"USDC"}'
+```
+
+Saglabājiet atgriezto `data.id` kā `TRANSFER_ID`, ja vēlaties pārbaudīt simulēto finansējuma pārvedumu.
+
+## Pabeidziet vai noraidiet pārvedumu
+
+Iestatiet rezultātu ar [`POST /v3/sandbox/transfers/{transferId}/state`](/api-reference/sandbox/post-v3-sandbox-transfers-by-transfer-id-state):
+
+<Tabs>
+  <Tab title="Pabeigt">
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/sandbox/transfers/${TRANSFER_ID}/state" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Content-Type: application/json" \
+  --data '{"state":"completed"}'
+```
+
+  </Tab>
+  <Tab title="Noraidīt">
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/sandbox/transfers/${TRANSFER_ID}/state" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Content-Type: application/json" \
+  --data @- <<'JSON'
+{
+  "state": "failed",
+  "stateDetail": {
+    "code": "sandbox_review",
+    "message": "Sandbox transfer failed."
+  }
+}
+JSON
+```
+
+  </Tab>
+</Tabs>
+
+Tālāk palaidiet [iemaksas](/lv/integration/receive-funds), [izmaksas](/lv/integration/send-funds) vai [izsniegta bankas konta](/lv/integration/issue-bank-account) plūsmu smilšu kastē.

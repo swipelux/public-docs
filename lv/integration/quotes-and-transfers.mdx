@@ -1,0 +1,106 @@
+---
+title: "Kotācijas un pārvedumi"
+description: "Izvēlieties precīzu summu, droši izpildiet vienu kotāciju un sekojiet pašreizējam pārveduma stāvoklim."
+---
+
+Kotācija ir laikā ierobežota un vienreiz izmantojama. Izpildiet to vienreiz un neizmantojiet to atkārtoti kā pārveduma veidni. Pārvedums ir šīs kotācijas izpilde un turpina mainīties pēc izveides.
+
+## Pārbaudiet resursu saderību
+
+Pirms kotēšanas apstipriniet, ka:
+
+- Iespēja ir gatava, pieder klientam un atbilst paredzētajam virzienam un metodei.
+- Stabilas monētas avots ir aktīvs izsniegts maks, kas atbalsta ievades valūtu.
+- Maka uz maku resursi izmanto to pašu valūtu un tīklu.
+- Fiat izmaksas konts vai galamērķis ir gatavs un atbalsta izejas valūtu un metodi.
+
+## Izvēlieties precīzu summu
+
+Izveidojiet kotāciju ar [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes). Nosūtiet vienu summas pusi, abas valūtas un no atbildes iegūtos resursu ID ar šīm galvenēm:
+
+```http
+X-API-Key: ${SWIPELUX_API_KEY}
+Idempotency-Key: quote-create-001
+Content-Type: application/json
+```
+
+<Tabs>
+  <Tab title="Precīzs ienākošais">
+
+Iestatiet `in.amount` un izlaidiet `out.amount`. Atbilde aprēķina, ko saņem galamērķis.
+
+```json
+{
+  "customerId": "${CUSTOMER_ID}",
+  "capabilityId": "${STABLECOIN_CAPABILITY_ID}",
+  "in": {
+    "amount": "1.234567",
+    "currency": "USDC",
+    "accountId": "${SOURCE_WALLET_ID}"
+  },
+  "destinationId": "${WALLET_DESTINATION_ID}",
+  "out": {
+    "currency": "USDC"
+  }
+}
+```
+
+  </Tab>
+  <Tab title="Precīzs izejošais">
+
+Iestatiet `out.amount` un izlaidiet `in.amount`. Atbilde aprēķina, kam jāaiziet no avota.
+
+```json
+{
+  "customerId": "${CUSTOMER_ID}",
+  "capabilityId": "${CAPABILITY_ID}",
+  "in": {
+    "currency": "USDC",
+    "accountId": "${SOURCE_WALLET_ID}"
+  },
+  "destinationId": "${RECIPIENT_DESTINATION_ID}",
+  "out": {
+    "amount": "100.00",
+    "currency": "USD"
+  }
+}
+```
+
+  </Tab>
+</Tabs>
+
+Saglabājiet kotācijas `data.id`, `data.status`, `data.expiresAt`, atgrieztos posmus, likmi un maksas. Izmantojiet atgrieztās decimāldaļu virknes; nepārrēķiniet izpildāmās summas ar peldošā punkta aritmētiku.
+
+Pēc stabilas monētas finansētas precīzas izejas kotācijas nolasiet [`GET /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts-by-account-id). Salīdziniet pašreizējo avota `balances[].available` ievades valūtai ar atgriezto `data.in.amount`. Ja līdzekļi nav pietiekami, mainiet vai papildiniet avotu un izveidojiet jaunu kotāciju. Fiat finansētas precīzas izejas kotācijas neizmanto šo avota maka bilances vārtus.
+
+## Izpildiet vienreiz un droši atgūstiet
+
+Nolasiet pašreizējo kotāciju ar [`GET /v3/quotes/{quoteId}`](/api-reference/money-movement/get-v3-quotes-by-quote-id). Izpildiet tikai tad, kad tās statuss un `expiresAt` to atļauj.
+
+Izveidojiet pārvedumu ar [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers):
+
+```http
+X-API-Key: ${SWIPELUX_API_KEY}
+Idempotency-Key: transfer-create-001
+Content-Type: application/json
+```
+
+```json
+{
+  "quoteId": "${QUOTE_ID}"
+}
+```
+
+Ģenerējiet vienu jaunu `Idempotency-Key` šim paredzētajam pārvedumam un saglabājiet to pirms pieprasījuma nosūtīšanas. Ja atbilde ir zaudēta, atkārtojiet identisku metodi, ceļu, pamattekstu un atslēgu. Neveidojiet otru izpildes atslēgu, lai atgūtu neskaidru rezultātu.
+
+Ja API atgriež `quote_already_executed`, izmantojiet tā `transferId`, lai turpinātu ar esošo pārvedumu. Idempotents atkārtojums var arī atgriezt `Idempotency-Replayed: true`.
+
+## Sekojiet pašreizējam pārvedumam
+
+Pēc izveides un pēc katra webhook izsauciena nolasiet [`GET /v3/transfers/{transferId}`](/api-reference/money-movement/get-v3-transfers-by-transfer-id). Saglabājiet jaunāko `data.state`, `data.stateDetail` un `data.openTaskIds`.
+
+Ja uzdevumu ID ir atvērti, iegūstiet [`GET /v3/transfers/{transferId}/tasks`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-tasks) un pabeidziet katru uzdevumu, izmantojot tā pašreizējo versiju un prasības.
+
+Ienākošai kustībai [`GET /v3/transfers/{transferId}/instructions`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-instructions) var atgriezt pārvedumam specifiskas finansēšanas detaļas. Attēlojiet tikai atgriezto instrukciju variantu un precīzu atsauci.
+
+Tālāk ieviesiet [Webhook izsaukumus](/lv/integration/webhooks), lai katra asinhroni pārveduma atjauninājums nokļūtu tajā pašā pašreizējā stāvokļa apstrādes ceļā.

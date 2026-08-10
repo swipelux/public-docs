@@ -1,0 +1,106 @@
+---
+title: "Cotizaciones y transferencias"
+description: "Elige un importe exacto, ejecuta una cotización de forma segura y sigue el estado actual de la transferencia."
+---
+
+Una cotización tiene tiempo limitado y es de un solo uso. Ejecútala una vez y no la reutilices como plantilla de transferencia. Una transferencia es la ejecución de esa cotización y sigue cambiando tras su creación.
+
+## Comprueba la compatibilidad de los recursos
+
+Antes de cotizar, confirma que:
+
+- La capacidad está lista, pertenece al cliente y coincide con la dirección y el método previstos.
+- Una fuente en stablecoin es una cartera emitida activa que soporta la moneda de entrada.
+- Los recursos de cartera a cartera utilizan la misma moneda y red.
+- Una cuenta o destino de pago fiat está listo y soporta la moneda y el método de salida.
+
+## Elige el importe exacto
+
+Crea una cotización con [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes). Envía un lado del importe, ambas monedas y los IDs de recursos derivados de la respuesta con estas cabeceras:
+
+```http
+X-API-Key: ${SWIPELUX_API_KEY}
+Idempotency-Key: quote-create-001
+Content-Type: application/json
+```
+
+<Tabs>
+  <Tab title="Entrada exacta">
+
+Define `in.amount` y omite `out.amount`. La respuesta calcula lo que recibe el destino.
+
+```json
+{
+  "customerId": "${CUSTOMER_ID}",
+  "capabilityId": "${STABLECOIN_CAPABILITY_ID}",
+  "in": {
+    "amount": "1.234567",
+    "currency": "USDC",
+    "accountId": "${SOURCE_WALLET_ID}"
+  },
+  "destinationId": "${WALLET_DESTINATION_ID}",
+  "out": {
+    "currency": "USDC"
+  }
+}
+```
+
+  </Tab>
+  <Tab title="Salida exacta">
+
+Define `out.amount` y omite `in.amount`. La respuesta calcula lo que debe salir del origen.
+
+```json
+{
+  "customerId": "${CUSTOMER_ID}",
+  "capabilityId": "${CAPABILITY_ID}",
+  "in": {
+    "currency": "USDC",
+    "accountId": "${SOURCE_WALLET_ID}"
+  },
+  "destinationId": "${RECIPIENT_DESTINATION_ID}",
+  "out": {
+    "amount": "100.00",
+    "currency": "USD"
+  }
+}
+```
+
+  </Tab>
+</Tabs>
+
+Guarda el `data.id`, `data.status`, `data.expiresAt`, las patas devueltas, la tasa y las comisiones de la cotización. Utiliza las cadenas decimales devueltas; no recalcules los importes ejecutables con aritmética de coma flotante.
+
+Después de una cotización con salida exacta financiada con stablecoin, lee [`GET /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts-by-account-id). Compara el `balances[].available` del origen actual para la moneda de entrada con el `data.in.amount` devuelto. Si los fondos son insuficientes, cambia o financia el origen y crea una nueva cotización. Las cotizaciones con salida exacta financiadas con fiat no utilizan esta comprobación del saldo de la cartera de origen.
+
+## Ejecuta una sola vez y recupera de forma segura
+
+Lee la cotización actual con [`GET /v3/quotes/{quoteId}`](/api-reference/money-movement/get-v3-quotes-by-quote-id). Ejecútala solo mientras su estado y `expiresAt` lo permitan.
+
+Crea la transferencia con [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers):
+
+```http
+X-API-Key: ${SWIPELUX_API_KEY}
+Idempotency-Key: transfer-create-001
+Content-Type: application/json
+```
+
+```json
+{
+  "quoteId": "${QUOTE_ID}"
+}
+```
+
+Genera una nueva `Idempotency-Key` para esta transferencia prevista y persístela antes de enviar la solicitud. Si se pierde la respuesta, reintenta con el mismo método, ruta, cuerpo y clave. No crees una segunda clave de ejecución para recuperar un resultado incierto.
+
+Si la API devuelve `quote_already_executed`, utiliza su `transferId` para continuar con la transferencia existente. Una respuesta idempotente también puede devolver `Idempotency-Replayed: true`.
+
+## Sigue la transferencia actual
+
+Lee [`GET /v3/transfers/{transferId}`](/api-reference/money-movement/get-v3-transfers-by-transfer-id) tras la creación y después de cada webhook. Guarda el último `data.state`, `data.stateDetail` y `data.openTaskIds`.
+
+Cuando haya IDs de tarea abiertos, obtén [`GET /v3/transfers/{transferId}/tasks`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-tasks) y completa cada tarea usando su revisión y requisitos actuales.
+
+Para un movimiento entrante, [`GET /v3/transfers/{transferId}/instructions`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-instructions) puede devolver datos de financiación específicos de la transferencia. Renderiza solo la variante de instrucción devuelta y la referencia exacta.
+
+A continuación, implementa [Webhooks](/es/integration/webhooks) para que cada actualización asíncrona de transferencia entre en la misma ruta de gestión del estado actual.

@@ -1,0 +1,66 @@
+---
+title: "API referencia"
+description: "Használja az API szerződést, biztonságosan próbálja újra az írásokat és kezelje az egységesen a hibákat."
+---
+
+Az API referencia a Swipelux API hiteles szerződése. Minden művelet mutatja a kérés-, válasz-, biztonsági, státusz- és hibasémáit.
+
+Minden kéréshez használja a `https://platform.swipelux.com` címet. Küldje el a környezetspecifikus kulcsát az `X-API-Key` fejlécben egy védett backendről.
+
+## Az írások biztonságos újrapróbálása
+
+Amikor egy művelet az `Idempotency-Key` fejlécet kötelezően kéri, minden szándékolt művelethez generáljon egy kulcsot, és tárolja a helyi kérésrekordjával együtt.
+
+```bash
+curl --request POST \
+  'https://platform.swipelux.com/v3/customers' \
+  --header 'X-API-Key: YOUR_API_KEY' \
+  --header 'Idempotency-Key: customer-order-1001' \
+  --header 'Content-Type: application/json' \
+  --data '{"type":"individual","externalId":"customer-order-1001"}'
+```
+
+Ha a válasz bizonytalan, próbálja meg újra ugyanazt a metódust, útvonalat és törzset ugyanazzal a kulccsal. Ne használja fel újra ezt a kulcsot másik művelethez vagy megváltozott törzshöz.
+
+Néhány művelet `Idempotency-Replayed: true` fejlécet ad vissza, ha a válasz egy korábbi, azonos kulcsú kérésből származik. Ezt a választ az eredeti művelet eredményének tekintse, ne egy második műveletnek.
+
+## Hibák kezelése
+
+Az API hibák `application/problem+json` formátumot használnak. Az ügyféloldali viselkedést ezek köré a stabil mezők köré építse:
+
+| Mező | Használat |
+| --- | --- |
+| `status` | A problémához tartozó HTTP státusz. |
+| `code` | Stabil, gép által olvasható hibakód. |
+| `detail` | Az aktuális kéréshez tartozó, cselekvésre alkalmas magyarázat. |
+| `retryable` | Ha van, azt jelzi, hogy ugyanazon kérés újrapróbálása sikerülhet-e. |
+| `errors[].pointer` | JSON pointer az érvénytelen kérésmezőhöz. |
+| `correlationId` | Kérésazonosító, amelyet a naplókban és támogatási rekordokban meg kell őrizni. |
+
+A válasz `correlationId` tükrözi az `X-Request-Id` értékét. Naplózza a műveletet és ezt az értéket is, de ne fedjen fel titkokat vagy teljes pénzügyi adatokat.
+
+```json
+{
+  "type": "https://docs.swipelux.com/problems/validation_error",
+  "title": "Validation error",
+  "status": 400,
+  "code": "validation_error",
+  "detail": "The request contains invalid fields.",
+  "correlationId": "01JERRORVALIDATION",
+  "errors": [
+    {
+      "pointer": "/externalId",
+      "code": "invalid_format",
+      "message": "Use a valid external identifier."
+    }
+  ]
+}
+```
+
+A művelet dokumentált problémasémái alapján döntse el, hogy javítja-e a bemenetet, frissíti-e az erőforrás állapotát, elvégez-e egy feladatot, vagy újrapróbálja. A státuszok és hibák teljes katalógusát az API referenciában tartsa, ne kódoljon nem dokumentált eseteket.
+
+## Aszinkron műveletek követése
+
+Egy sikeres létrehozási válasz sok munkafolyamatot elindít; nem garantálja a befejezést. Tárolja a válaszból származó erőforrás-azonosítókat, olvassa be az aktuális erőforrást, és használjon [ellenőrzött webhookokat](/hu/integration/webhooks) a változásokra való reagáláshoz.
+
+Kezdje a [`POST /v3/customers`](/api-reference/customers/post-v3-customers) művelettel, vagy kövesse a [Gyorsindítót](/hu/integration/quickstart) egy teljes sandbox forgatókönyvhöz.

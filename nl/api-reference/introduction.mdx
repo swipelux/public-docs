@@ -1,0 +1,66 @@
+---
+title: "API reference"
+description: "Gebruik het API-contract, retry writes veilig en behandel fouten consistent."
+---
+
+De API Reference is het gezaghebbende contract voor de Swipelux API. Elke operation toont het request-, response-, security-, status- en foutschema.
+
+Gebruik `https://platform.swipelux.com` voor elke request. Stuur je omgevingsspecifieke key in `X-API-Key` vanuit een beschermde backend.
+
+## Maak writes veilig om te herhalen
+
+Wanneer een operation `Idempotency-Key` als vereist opgeeft, genereer je één key per beoogde operation en bewaar je die bij je lokale requestrecord.
+
+```bash
+curl --request POST \
+  'https://platform.swipelux.com/v3/customers' \
+  --header 'X-API-Key: YOUR_API_KEY' \
+  --header 'Idempotency-Key: customer-order-1001' \
+  --header 'Content-Type: application/json' \
+  --data '{"type":"individual","externalId":"customer-order-1001"}'
+```
+
+Als de respons onzeker is, herhaal je dezelfde method, path en body met dezelfde key. Hergebruik die key niet voor een andere operation of gewijzigde body.
+
+Sommige operations retourneren `Idempotency-Replayed: true` wanneer de respons afkomstig was van een eerder request met dezelfde key. Behandel die respons als het resultaat van de oorspronkelijke operation, niet als een tweede operation.
+
+## Foutafhandeling
+
+API-fouten gebruiken `application/problem+json`. Bouw clientgedrag rond deze stabiele velden:
+
+| Veld | Gebruik |
+| --- | --- |
+| `status` | HTTP-status die bij het probleem hoort. |
+| `code` | Stabiele machineleesbare foutcode. |
+| `detail` | Bruikbare uitleg voor het huidige request. |
+| `retryable` | Of hetzelfde request opnieuw proberen kan lukken, indien aanwezig. |
+| `errors[].pointer` | JSON Pointer naar een ongeldig requestveld. |
+| `correlationId` | Requestidentifier om te behouden in logs en supportrecords. |
+
+De respons `correlationId` weerspiegelt `X-Request-Id`. Log zowel de operation als deze waarde, maar toon geen secrets of volledige financiële details.
+
+```json
+{
+  "type": "https://docs.swipelux.com/problems/validation_error",
+  "title": "Validation error",
+  "status": 400,
+  "code": "validation_error",
+  "detail": "The request contains invalid fields.",
+  "correlationId": "01JERRORVALIDATION",
+  "errors": [
+    {
+      "pointer": "/externalId",
+      "code": "invalid_format",
+      "message": "Use a valid external identifier."
+    }
+  ]
+}
+```
+
+Gebruik de gedocumenteerde probleemschema's van de operation om te beslissen of je input corrigeert, resourcestatus ververst, een taak voltooit of opnieuw probeert. Bewaar de volledige status- en foutcatalogus in de API Reference in plaats van ongedocumenteerde gevallen hard te coderen.
+
+## Volg asynchrone operations
+
+Een succesvolle create-response start veel workflows; het garandeert geen voltooiing. Sla resource-ID's uit de response op, lees de huidige resource en gebruik [geverifieerde webhooks](/nl/integration/webhooks) om te reageren op wijzigingen.
+
+Begin met [`POST /v3/customers`](/api-reference/customers/post-v3-customers), of volg de [Quickstart](/nl/integration/quickstart) voor een volledige sandboxflow.

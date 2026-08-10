@@ -1,0 +1,266 @@
+---
+title: "Gyorsindító"
+description: "Hozzon létre egy sandbox ügyfelet, engedélyezzen egy képességet és futtasson egy pénzbefizetési, kifizetési vagy kibocsátott bankszámla folyamatot."
+---
+
+Hozzon létre egy ügyfelet, készítsen elő egy újrafelhasználható tárcát és futtassa a szükséges sandbox folyamatot.
+
+## 1. Sandbox konfigurálása
+
+Használjon sandbox API-kulcsot a backendjéből:
+
+```bash
+export API_BASE='https://platform.swipelux.com'
+export SWIPELUX_SANDBOX_API_KEY='replace-with-your-sandbox-key'
+```
+
+A kulcs kiválasztja a sandbox környezetet a közös API-hoszton.
+
+## 2. Ügyfél létrehozása
+
+Hozzon létre egy magánszemély ügyfelet a [`POST /v3/customers`](/api-reference/customers/post-v3-customers) művelettel:
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/customers" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-customer-001" \
+  --header "Content-Type: application/json" \
+  --data '{"type":"individual","externalId":"quickstart-customer-001"}'
+```
+
+Tárolja a `data.id` értéket `CUSTOMER_ID`-ként.
+
+## 3. Az eredmény kiválasztása
+
+- **Pénzbefizetés:** fogadjon USD-t és rendezzen USDC-t az ügyfél kibocsátott tárcájába.
+- **Kifizetés:** küldjön USDC-t az ügyfél kibocsátott tárcájából egy ügyfél tulajdonában lévő bankszámlára.
+- **Kibocsátott bankszámla:** bocsásson ki egy ACH/USD számlát, amely az ügyfél kibocsátott tárcájába rendeződik.
+
+Harmadik fél számára történő kifizetéshez kövesse a [Kedvezményezettek](/hu/integration/recipients) vagy [Pénz küldése](/hu/integration/send-funds) útmutatót.
+
+## 4. Elérhető képesség megtalálása
+
+Sorolja fel a támogatott képességeket a [`GET /v3/customers/{customerId}/capabilities/supported`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-supported) művelettel:
+
+```bash
+curl --request GET \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/capabilities/supported" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}"
+```
+
+Válasszon egy válaszelemet, amelynek `availability` értéke `available` vagy `beta`, `eligibility.eligible` értéke `true`, tartalmazza a szükséges `directions` és `method` értékeket, valamint a megfelelő `accountType` értéket. Használja az ügyfél kibocsátott tárcáját pénzbefizetési célként, kifizetési forrásként vagy bankszámla-rendezési számlaként; használja az ügyfél tulajdonában lévő számlát `destinationId`-ként ehhez a kifizetési útvonalhoz. Ha `institutions` értéket ad vissza, csak a visszaadott intézménylistából válasszon. Tárolja az elem `id` értékét `CAPABILITY_ID`-ként; ne kódoljon be univerzális képességazonosítót.
+
+## 5. A képesség kérése
+
+Kérje a kiválasztott képességet a [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) művelettel:
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/capabilities/${CAPABILITY_ID}" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-capability-001" \
+  --header "Content-Type: application/json" \
+  --data '{}'
+```
+
+Tárolja a `data.status` értéket `CAPABILITY_STATUS`-ként és a `data.openTaskIds` értéket `TASK_IDS`-ként.
+
+## 6. Onboarding elvégzése sandboxban
+
+Ha a `TASK_IDS` nem üres, végezze el minden aktuális követelményt a [Képességek és feladatok](/hu/integration/onboarding/capabilities-and-requirements) útmutató alapján.
+
+Ehhez a végigvezetéshez állítsa a képességet `ready` állapotba a [`POST /v3/sandbox/customers/{customerId}/capabilities/{capabilityId}/status`](/api-reference/sandbox/post-v3-sandbox-customers-by-customer-id-capabilities-by-capability-id-status) művelettel:
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/sandbox/customers/${CUSTOMER_ID}/capabilities/${CAPABILITY_ID}/status" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Content-Type: application/json" \
+  --data '{"status":"ready"}'
+```
+
+Ez a tesztvezérlő nem az éles onboarding. Frissítse le a [`GET /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id) művelettel:
+
+```bash
+curl --request GET \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/capabilities/${CAPABILITY_ID}" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}"
+```
+
+Frissítse a `CAPABILITY_STATUS` és `TASK_IDS` értékeket a `data.status` és `data.openTaskIds` alapján. Csak akkor folytassa, ha a `CAPABILITY_STATUS` értéke `ready`.
+
+## 7. A kiválasztott folyamat felépítése
+
+Hozzon létre egy kibocsátott USDC tárcát a Base hálózaton a [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) művelettel:
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/accounts" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-flow-wallet-001" \
+  --header "Content-Type: application/json" \
+  --data '{"origin":"issued","type":"wallet","currency":"USDC","network":"base"}'
+```
+
+Tárolja a `data.id` értéket `FLOW_WALLET_ID`-ként, a `data.status` értéket `FLOW_WALLET_STATUS`-ként, a `data.openTaskIds` értéket pedig `FLOW_WALLET_TASK_IDS`-ként. Ha a `FLOW_WALLET_TASK_IDS` nem üres, végezze el az aktuális feladatokat a [Képességek és feladatok](/hu/integration/onboarding/capabilities-and-requirements) útmutató alapján.
+
+Frissítse le a tárcát a [`GET /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts-by-account-id) művelettel:
+
+```bash
+curl --request GET \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/accounts/${FLOW_WALLET_ID}" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}"
+```
+
+Frissítse a `FLOW_WALLET_STATUS` és `FLOW_WALLET_TASK_IDS` értékeket a `data.status` és `data.openTaskIds` alapján. Csak akkor folytassa, ha a `FLOW_WALLET_STATUS` értéke `ready`.
+
+<Tabs>
+  <Tab title="Pénzbefizetés">
+
+Hozzon létre egy USD-USDC árajánlatot a [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) művelettel:
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/quotes" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-payin-quote-001" \
+  --header "Content-Type: application/json" \
+  --data @- <<JSON
+{"customerId":"${CUSTOMER_ID}","capabilityId":"${CAPABILITY_ID}","in":{"amount":"150.00","currency":"USD"},"destinationId":"${FLOW_WALLET_ID}","out":{"currency":"USDC"}}
+JSON
+```
+
+Tárolja a `data.id` értéket `QUOTE_ID`-ként, majd hajtsa végre a [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) művelettel:
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/transfers" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-payin-transfer-001" \
+  --header "Content-Type: application/json" \
+  --data @- <<JSON
+{"quoteId":"${QUOTE_ID}"}
+JSON
+```
+
+Tárolja a `data.id` értéket `TRANSFER_ID`-ként. Kérje le az utasításokat a [`GET /v3/transfers/{transferId}/instructions`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-instructions) művelettel:
+
+```bash
+curl --request GET \
+  "${API_BASE}/v3/transfers/${TRANSFER_ID}/instructions" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}"
+```
+
+A válasz tartalmazza a `data.transferId` és `data.instructions` mezőket. Tárolja a `data.transferId` értéket `TRANSFER_ID`-ként, a `data.instructions` értéket pedig `FUNDING_INSTRUCTIONS`-ként.
+
+  </Tab>
+
+  <Tab title="Kifizetés">
+
+Töltse fel a kész tárcát a [`POST /v3/sandbox/accounts/{accountId}/topup`](/api-reference/sandbox/post-v3-sandbox-accounts-by-account-id-topup) művelettel:
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/sandbox/accounts/${FLOW_WALLET_ID}/topup" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Content-Type: application/json" \
+  --data '{"amount":"250.00","currency":"USDC"}'
+```
+
+Hozzon létre egy ügyfél tulajdonában lévő ACH számlát a [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) művelettel:
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/accounts" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-payout-account-001" \
+  --header "Content-Type: application/json" \
+  --data @- <<'JSON'
+{"origin":"external","type":"bank","methods":["ach"],"country":"US","currency":"USD","details":{"routingNumber":"021000021","accountNumber":"123456789","accountType":"checking","bankName":"Example Bank","accountHolderName":"Amina Diallo"}}
+JSON
+```
+
+Tárolja a `data.id` értéket `PAYOUT_ACCOUNT_ID`-ként, a `data.status` értéket `PAYOUT_ACCOUNT_STATUS`-ként, a `data.openTaskIds` értéket pedig `PAYOUT_ACCOUNT_TASK_IDS`-ként. Ha a `PAYOUT_ACCOUNT_TASK_IDS` nem üres, végezze el az aktuális feladatokat a [Képességek és feladatok](/hu/integration/onboarding/capabilities-and-requirements) útmutató alapján.
+
+Frissítse le a [`GET /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts-by-account-id) művelettel:
+
+```bash
+curl --request GET \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/accounts/${PAYOUT_ACCOUNT_ID}" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}"
+```
+
+Frissítse a `PAYOUT_ACCOUNT_STATUS` és `PAYOUT_ACCOUNT_TASK_IDS` értékeket a `data.status` és `data.openTaskIds` alapján. Csak akkor folytassa, ha a `PAYOUT_ACCOUNT_STATUS` értéke `ready`, majd hozza létre az árajánlatot a [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) művelettel:
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/quotes" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-payout-quote-001" \
+  --header "Content-Type: application/json" \
+  --data @- <<JSON
+{"customerId":"${CUSTOMER_ID}","capabilityId":"${CAPABILITY_ID}","in":{"amount":"150.00","currency":"USDC","accountId":"${FLOW_WALLET_ID}"},"destinationId":"${PAYOUT_ACCOUNT_ID}","out":{"currency":"USD"}}
+JSON
+```
+
+Tárolja a `data.id` értéket `QUOTE_ID`-ként, hajtsa végre a [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) művelettel, és tárolja a visszakapott `data.id` értéket `TRANSFER_ID`-ként:
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/transfers" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-payout-transfer-001" \
+  --header "Content-Type: application/json" \
+  --data @- <<JSON
+{"quoteId":"${QUOTE_ID}"}
+JSON
+```
+
+  </Tab>
+
+  <Tab title="Kibocsátott bankszámla">
+
+Hozzon létre egy ACH/USD számlát, amely a kész tárcába rendeződik, a [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) művelettel:
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/accounts" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-bank-account-001" \
+  --header "Content-Type: application/json" \
+  --data @- <<JSON
+{"origin":"issued","type":"bank","method":"ach","country":"US","currency":"USD","settlement":{"accountId":"${FLOW_WALLET_ID}"}}
+JSON
+```
+
+Tárolja a `data.id` értéket `BANK_ACCOUNT_ID`-ként, majd olvassa be a provisioning állapotát a [`GET /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts-by-account-id) művelettel:
+
+```bash
+curl --request GET \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/accounts/${BANK_ACCOUNT_ID}" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}"
+```
+
+Tárolja a `data.status` értéket `BANK_ACCOUNT_STATUS`-ként, a `data.details` értéket `BANK_ACCOUNT_DETAILS`-ként, a `data.openTaskIds` értéket pedig `BANK_ACCOUNT_TASK_IDS`-ként. Végezze el az aktuális feladatokat, majd olvassa be újra a számlát, amíg a státusza engedi a használatát és a `data.details` jelen van.
+
+Előfordulhat, hogy a banki adatok nem jelennek meg azonnal. Az ág akkor teljes, ha be tudja mutatni a `BANK_ACCOUNT_DETAILS`-ben visszaadott pontos, újrafelhasználható banki adatokat. Soha ne konstruáljon vagy jelenítsen meg helyettesítő koordinátákat, amíg a számla még provisioning folyamatban van.
+
+  </Tab>
+</Tabs>
+
+Pénzbefizetéseknél és kifizetéseknél kövesse a `TRANSFER_ID` állapotát a [`GET /v3/transfers/{transferId}`](/api-reference/money-movement/get-v3-transfers-by-transfer-id) művelettel:
+
+```bash
+curl --request GET \
+  "${API_BASE}/v3/transfers/${TRANSFER_ID}" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}"
+```
+
+<CardGroup cols={3}>
+  <Card title="Pénzbefizetés" icon="arrow-down-to-line" href="/hu/integration/receive-funds">Építse ki a teljes pénzbefizetési folyamatot.</Card>
+  <Card title="Kifizetés" icon="arrow-up-from-line" href="/hu/integration/send-funds">Építse ki az éles kifizetéskezelést.</Card>
+  <Card title="Kibocsátott bankszámla" icon="building-columns" href="/hu/integration/issue-bank-account">Kezelje a provisioningot és részleteket.</Card>
+</CardGroup>
+
+Ezután adjon hozzá [webhookokat](/hu/integration/webhooks). A fenti kérések mindegyike már a teljes API referencia sémájára és státuszoldalára hivatkozik.

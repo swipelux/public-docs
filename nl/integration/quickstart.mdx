@@ -1,0 +1,266 @@
+---
+title: "Quickstart"
+description: "Maak een sandboxklant aan, activeer een capability en voer een pay-in, uitbetaling of uitgegeven bankrekeningflow uit."
+---
+
+Maak een klant aan, bereid één herbruikbare wallet voor en voer de gewenste sandboxflow uit.
+
+## 1. Configureer sandbox
+
+Gebruik een sandbox API-key vanuit je backend:
+
+```bash
+export API_BASE='https://platform.swipelux.com'
+export SWIPELUX_SANDBOX_API_KEY='replace-with-your-sandbox-key'
+```
+
+De key selecteert de sandboxomgeving op de gedeelde API-host.
+
+## 2. Maak een klant aan
+
+Maak een individuele klant met [`POST /v3/customers`](/api-reference/customers/post-v3-customers):
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/customers" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-customer-001" \
+  --header "Content-Type: application/json" \
+  --data '{"type":"individual","externalId":"quickstart-customer-001"}'
+```
+
+Bewaar `data.id` als `CUSTOMER_ID`.
+
+## 3. Kies de uitkomst
+
+- **Pay-in:** ontvang USD en verwerk USDC naar de uitgegeven wallet van de klant.
+- **Uitbetaling:** verstuur USDC vanaf de uitgegeven wallet van de klant naar een bankrekening in bezit van de klant.
+- **Uitgegeven bankrekening:** geef een ACH/USD-rekening uit die naar de uitgegeven wallet van de klant wordt afgewikkeld.
+
+Voor een externe uitbetaling volg je [Recipients](/nl/integration/recipients) of [Geld versturen](/nl/integration/send-funds).
+
+## 4. Vind een geschikte capability
+
+Bekijk ondersteunde capabilities met [`GET /v3/customers/{customerId}/capabilities/supported`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-supported):
+
+```bash
+curl --request GET \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/capabilities/supported" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}"
+```
+
+Kies een response-entry met `availability` ingesteld op `available` of `beta`, `eligibility.eligible` ingesteld op `true`, de benodigde `directions` en `method`, en het bijpassende `accountType`. Gebruik de uitgegeven wallet van de klant als pay-inbestemming, uitbetalingsbron of settlement-rekening voor de bankrekening; gebruik de eigen rekening van de klant als `destinationId` voor deze uitbetalingsroute. Als er `institutions` worden geretourneerd, gebruik dan alleen een geretourneerde institution-keuze. Bewaar de `id` van de entry als `CAPABILITY_ID`; hardcode geen universele capability-ID.
+
+## 5. Vraag de capability aan
+
+Vraag de geselecteerde capability aan met [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id):
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/capabilities/${CAPABILITY_ID}" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-capability-001" \
+  --header "Content-Type: application/json" \
+  --data '{}'
+```
+
+Bewaar `data.status` als `CAPABILITY_STATUS` en `data.openTaskIds` als `TASK_IDS`.
+
+## 6. Voltooi onboarding in sandbox
+
+Als `TASK_IDS` niet leeg is, voltooi je elke huidige vereiste via [Capabilities en tasks](/nl/integration/onboarding/capabilities-and-requirements).
+
+Voor deze walkthrough stel je de capability in op `ready` met [`POST /v3/sandbox/customers/{customerId}/capabilities/{capabilityId}/status`](/api-reference/sandbox/post-v3-sandbox-customers-by-customer-id-capabilities-by-capability-id-status):
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/sandbox/customers/${CUSTOMER_ID}/capabilities/${CAPABILITY_ID}/status" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Content-Type: application/json" \
+  --data '{"status":"ready"}'
+```
+
+Deze testcontrol is geen productie-onboarding. Refetch met [`GET /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id):
+
+```bash
+curl --request GET \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/capabilities/${CAPABILITY_ID}" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}"
+```
+
+Ververs `CAPABILITY_STATUS` en `TASK_IDS` vanuit `data.status` en `data.openTaskIds`. Ga alleen verder wanneer `CAPABILITY_STATUS` gelijk is aan `ready`.
+
+## 7. Bouw de geselecteerde flow
+
+Maak één uitgegeven USDC-wallet op Base met [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts):
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/accounts" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-flow-wallet-001" \
+  --header "Content-Type: application/json" \
+  --data '{"origin":"issued","type":"wallet","currency":"USDC","network":"base"}'
+```
+
+Bewaar `data.id` als `FLOW_WALLET_ID`, `data.status` als `FLOW_WALLET_STATUS` en `data.openTaskIds` als `FLOW_WALLET_TASK_IDS`. Als `FLOW_WALLET_TASK_IDS` niet leeg is, voltooi je de huidige taken via [Capabilities en tasks](/nl/integration/onboarding/capabilities-and-requirements).
+
+Refetch de wallet met [`GET /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts-by-account-id):
+
+```bash
+curl --request GET \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/accounts/${FLOW_WALLET_ID}" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}"
+```
+
+Ververs `FLOW_WALLET_STATUS` en `FLOW_WALLET_TASK_IDS` vanuit `data.status` en `data.openTaskIds`. Ga alleen verder wanneer `FLOW_WALLET_STATUS` gelijk is aan `ready`.
+
+<Tabs>
+  <Tab title="Pay-in">
+
+Maak een quote van USD naar USDC met [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes):
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/quotes" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-payin-quote-001" \
+  --header "Content-Type: application/json" \
+  --data @- <<JSON
+{"customerId":"${CUSTOMER_ID}","capabilityId":"${CAPABILITY_ID}","in":{"amount":"150.00","currency":"USD"},"destinationId":"${FLOW_WALLET_ID}","out":{"currency":"USDC"}}
+JSON
+```
+
+Bewaar `data.id` als `QUOTE_ID` en voer de quote uit met [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers):
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/transfers" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-payin-transfer-001" \
+  --header "Content-Type: application/json" \
+  --data @- <<JSON
+{"quoteId":"${QUOTE_ID}"}
+JSON
+```
+
+Bewaar `data.id` als `TRANSFER_ID`. Haal instructies op met [`GET /v3/transfers/{transferId}/instructions`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-instructions):
+
+```bash
+curl --request GET \
+  "${API_BASE}/v3/transfers/${TRANSFER_ID}/instructions" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}"
+```
+
+De respons bevat `data.transferId` en `data.instructions`. Bewaar `data.transferId` als `TRANSFER_ID` en `data.instructions` als `FUNDING_INSTRUCTIONS`.
+
+  </Tab>
+
+  <Tab title="Uitbetaling">
+
+Financier de ready wallet met [`POST /v3/sandbox/accounts/{accountId}/topup`](/api-reference/sandbox/post-v3-sandbox-accounts-by-account-id-topup):
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/sandbox/accounts/${FLOW_WALLET_ID}/topup" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Content-Type: application/json" \
+  --data '{"amount":"250.00","currency":"USDC"}'
+```
+
+Maak een ACH-rekening in bezit van de klant met [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts):
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/accounts" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-payout-account-001" \
+  --header "Content-Type: application/json" \
+  --data @- <<'JSON'
+{"origin":"external","type":"bank","methods":["ach"],"country":"US","currency":"USD","details":{"routingNumber":"021000021","accountNumber":"123456789","accountType":"checking","bankName":"Example Bank","accountHolderName":"Amina Diallo"}}
+JSON
+```
+
+Bewaar `data.id` als `PAYOUT_ACCOUNT_ID`, `data.status` als `PAYOUT_ACCOUNT_STATUS` en `data.openTaskIds` als `PAYOUT_ACCOUNT_TASK_IDS`. Als `PAYOUT_ACCOUNT_TASK_IDS` niet leeg is, voltooi je de huidige taken via [Capabilities en tasks](/nl/integration/onboarding/capabilities-and-requirements).
+
+Refetch met [`GET /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts-by-account-id):
+
+```bash
+curl --request GET \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/accounts/${PAYOUT_ACCOUNT_ID}" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}"
+```
+
+Ververs `PAYOUT_ACCOUNT_STATUS` en `PAYOUT_ACCOUNT_TASK_IDS` vanuit `data.status` en `data.openTaskIds`. Ga alleen verder wanneer `PAYOUT_ACCOUNT_STATUS` gelijk is aan `ready` en maak dan de quote met [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes):
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/quotes" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-payout-quote-001" \
+  --header "Content-Type: application/json" \
+  --data @- <<JSON
+{"customerId":"${CUSTOMER_ID}","capabilityId":"${CAPABILITY_ID}","in":{"amount":"150.00","currency":"USDC","accountId":"${FLOW_WALLET_ID}"},"destinationId":"${PAYOUT_ACCOUNT_ID}","out":{"currency":"USD"}}
+JSON
+```
+
+Bewaar `data.id` als `QUOTE_ID`, voer de quote uit met [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) en bewaar de geretourneerde `data.id` als `TRANSFER_ID`:
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/transfers" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-payout-transfer-001" \
+  --header "Content-Type: application/json" \
+  --data @- <<JSON
+{"quoteId":"${QUOTE_ID}"}
+JSON
+```
+
+  </Tab>
+
+  <Tab title="Uitgegeven bankrekening">
+
+Maak een ACH/USD-rekening die naar de ready wallet wordt afgewikkeld met [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts):
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/accounts" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-bank-account-001" \
+  --header "Content-Type: application/json" \
+  --data @- <<JSON
+{"origin":"issued","type":"bank","method":"ach","country":"US","currency":"USD","settlement":{"accountId":"${FLOW_WALLET_ID}"}}
+JSON
+```
+
+Bewaar `data.id` als `BANK_ACCOUNT_ID` en lees de provisioning met [`GET /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts-by-account-id):
+
+```bash
+curl --request GET \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/accounts/${BANK_ACCOUNT_ID}" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}"
+```
+
+Bewaar `data.status` als `BANK_ACCOUNT_STATUS`, `data.details` als `BANK_ACCOUNT_DETAILS` en `data.openTaskIds` als `BANK_ACCOUNT_TASK_IDS`. Voltooi eventuele huidige taken en lees de rekening opnieuw totdat de status gebruik toestaat en `data.details` aanwezig is.
+
+Bankgegevens zijn mogelijk niet meteen aanwezig. De branch is voltooid wanneer je exact de herbruikbare bankgegevens uit `BANK_ACCOUNT_DETAILS` kunt tonen. Construeer of toon nooit placeholder-coördinaten terwijl de rekening nog provisioneert.
+
+  </Tab>
+</Tabs>
+
+Voor pay-ins en uitbetalingen monitor je `TRANSFER_ID` met [`GET /v3/transfers/{transferId}`](/api-reference/money-movement/get-v3-transfers-by-transfer-id):
+
+```bash
+curl --request GET \
+  "${API_BASE}/v3/transfers/${TRANSFER_ID}" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}"
+```
+
+<CardGroup cols={3}>
+  <Card title="Pay-in" icon="arrow-down-to-line" href="/nl/integration/receive-funds">Bouw de volledige pay-inflow.</Card>
+  <Card title="Uitbetaling" icon="arrow-up-from-line" href="/nl/integration/send-funds">Bouw productie-uitbetalingsafhandeling.</Card>
+  <Card title="Uitgegeven bankrekening" icon="building-columns" href="/nl/integration/issue-bank-account">Behandel provisioning en details.</Card>
+</CardGroup>
+
+Voeg vervolgens [webhooks](/nl/integration/webhooks) toe. Elke request hierboven linkt al naar zijn volledige API Reference-schema en statuspagina.

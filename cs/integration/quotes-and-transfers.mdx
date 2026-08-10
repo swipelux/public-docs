@@ -1,0 +1,106 @@
+---
+title: "Quotes a převody"
+description: "Zvolte přesnou částku, bezpečně proveďte jeden quote a sledujte aktuální stav převodu."
+---
+
+Quote je časově omezený a jednorázový. Proveďte jej jednou a nepoužívejte jej jako šablonu převodu. Převod je provedení daného quote a po vytvoření se dále mění.
+
+## Zkontrolujte kompatibilitu zdrojů
+
+Před quote potvrďte, že:
+
+- Capability je připravená, patří zákazníkovi a odpovídá zamýšlenému směru a metodě.
+- Zdroj stablecoinu je aktivní vydaná peněženka, která podporuje vstupní měnu.
+- Zdroje z peněženky do peněženky používají stejnou měnu a síť.
+- Fiat výplatní účet nebo cíl je připraven a podporuje výstupní měnu a metodu.
+
+## Zvolte přesnou částku
+
+Vytvořte quote pomocí [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes). Odešlete jednu stranu částky, obě měny a ID zdrojů odvozená z odpovědi s těmito hlavičkami:
+
+```http
+X-API-Key: ${SWIPELUX_API_KEY}
+Idempotency-Key: quote-create-001
+Content-Type: application/json
+```
+
+<Tabs>
+  <Tab title="Přesný vstup">
+
+Nastavte `in.amount` a vynechejte `out.amount`. Odpověď vypočítá, co cíl obdrží.
+
+```json
+{
+  "customerId": "${CUSTOMER_ID}",
+  "capabilityId": "${STABLECOIN_CAPABILITY_ID}",
+  "in": {
+    "amount": "1.234567",
+    "currency": "USDC",
+    "accountId": "${SOURCE_WALLET_ID}"
+  },
+  "destinationId": "${WALLET_DESTINATION_ID}",
+  "out": {
+    "currency": "USDC"
+  }
+}
+```
+
+  </Tab>
+  <Tab title="Přesný výstup">
+
+Nastavte `out.amount` a vynechejte `in.amount`. Odpověď vypočítá, co musí opustit zdroj.
+
+```json
+{
+  "customerId": "${CUSTOMER_ID}",
+  "capabilityId": "${CAPABILITY_ID}",
+  "in": {
+    "currency": "USDC",
+    "accountId": "${SOURCE_WALLET_ID}"
+  },
+  "destinationId": "${RECIPIENT_DESTINATION_ID}",
+  "out": {
+    "amount": "100.00",
+    "currency": "USD"
+  }
+}
+```
+
+  </Tab>
+</Tabs>
+
+Uložte `data.id` quote, `data.status`, `data.expiresAt`, vrácené nohy, kurz a poplatky. Používejte vrácené dekadické řetězce; nepočítejte proveditelné částky pomocí aritmetiky s plovoucí desetinnou čárkou.
+
+Po quote s přesným výstupem financovaným ze stablecoinu přečtěte [`GET /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts-by-account-id). Porovnejte aktuální `balances[].available` zdroje pro vstupní měnu s vráceným `data.in.amount`. Pokud jsou prostředky nedostatečné, změňte nebo financujte zdroj a vytvořte nový quote. Fiat financované quote s přesným výstupem tuto kontrolu zůstatku zdrojové peněženky nepoužívají.
+
+## Proveďte jednou a bezpečně obnovte
+
+Přečtěte aktuální quote pomocí [`GET /v3/quotes/{quoteId}`](/api-reference/money-movement/get-v3-quotes-by-quote-id). Provádějte jen tehdy, dokud to jeho stav a `expiresAt` umožňují.
+
+Vytvořte převod pomocí [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers):
+
+```http
+X-API-Key: ${SWIPELUX_API_KEY}
+Idempotency-Key: transfer-create-001
+Content-Type: application/json
+```
+
+```json
+{
+  "quoteId": "${QUOTE_ID}"
+}
+```
+
+Pro tento zamýšlený převod vygenerujte jeden nový `Idempotency-Key` a před odesláním požadavku jej uložte. Pokud se odpověď ztratí, opakujte identickou metodu, cestu, tělo a klíč. Nevytvářejte druhý prováděcí klíč pro obnovení nejistého výsledku.
+
+Pokud API vrátí `quote_already_executed`, použijte jeho `transferId` k pokračování se stávajícím převodem. Idempotentní přehrání může také vrátit `Idempotency-Replayed: true`.
+
+## Sledujte aktuální převod
+
+Přečtěte [`GET /v3/transfers/{transferId}`](/api-reference/money-movement/get-v3-transfers-by-transfer-id) po vytvoření a po každém webhooku. Uložte nejnovější `data.state`, `data.stateDetail` a `data.openTaskIds`.
+
+Když jsou ID úkolů otevřená, načtěte [`GET /v3/transfers/{transferId}/tasks`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-tasks) a dokončete každý úkol s jeho aktuální revizí a požadavky.
+
+Pro příchozí pohyb může [`GET /v3/transfers/{transferId}/instructions`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-instructions) vrátit financovací údaje specifické pro převod. Vykreslete pouze vrácenou variantu pokynů a přesnou referenci.
+
+Dále implementujte [Webhooky](/cs/integration/webhooks), aby každá asynchronní aktualizace převodu vstupovala do stejné cesty zpracování aktuálního stavu.

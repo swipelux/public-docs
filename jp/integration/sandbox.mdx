@@ -1,0 +1,142 @@
+---
+title: "サンドボックステスト"
+description: "インテグレーションの構築中に、ケイパビリティ、タスク、ウォレット、送金の結果を制御します。"
+---
+
+サンドボックスは、本番と同じ API ホストを使用します。サンドボックスの API キーがテスト環境を選択し、そこではヘルパーが実際の資金を移動せずに結果をシミュレートします。
+
+キーはバックエンドに保管してください。サンドボックスのヘルパーは本番のコンプライアンスやオンボーディングを置き換えるものではありません。
+
+```bash
+export API_BASE='https://platform.swipelux.com'
+export SWIPELUX_SANDBOX_API_KEY='replace-with-your-sandbox-key'
+```
+
+## ケイパビリティの ready 状態をテストする
+
+ケイパビリティをリクエストした後、[`POST /v3/sandbox/customers/{customerId}/capabilities/{capabilityId}/status`](/api-reference/sandbox/post-v3-sandbox-customers-by-customer-id-capabilities-by-capability-id-status) でサンドボックスのステータスを設定します。
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/sandbox/customers/${CUSTOMER_ID}/capabilities/${CAPABILITY_ID}/status" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Content-Type: application/json" \
+  --data '{"status":"ready"}'
+```
+
+ヘルパーの使用後にケイパビリティを再取得します。現在の `status` と `openTaskIds` を、製品が処理すべき結果として扱ってください。
+
+## オープンタスクをテストする
+
+[`POST /v3/sandbox/tasks`](/api-reference/sandbox/post-v3-sandbox-tasks) でケイパビリティスコープのタスクを作成します。
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/sandbox/tasks" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Content-Type: application/json" \
+  --data @- <<JSON
+{
+  "scope": {
+    "type": "capability",
+    "customerId": "${CUSTOMER_ID}",
+    "capabilityId": "${CAPABILITY_ID}"
+  },
+  "items": [
+    {
+      "type": "explanation",
+      "request": "Explain the source of funds."
+    }
+  ]
+}
+JSON
+```
+
+`data.id` を `TASK_ID`、`data.revision` を `TASK_REVISION`、現在の `data.requirements[0].id` を `REQUIREMENT_ID` として保存します。[`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) で回答を送信します。
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/tasks/${TASK_ID}/submissions" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: sandbox-task-submission-001" \
+  --header "Content-Type: application/json" \
+  --data @- <<JSON
+{
+  "taskRevision": ${TASK_REVISION},
+  "answers": [
+    {
+      "requirementId": "${REQUIREMENT_ID}",
+      "answer": {
+        "type": "text",
+        "value": "Sandbox requirement completed."
+      }
+    }
+  ]
+}
+JSON
+```
+
+次に、[`POST /v3/sandbox/tasks/{taskId}/review`](/api-reference/sandbox/post-v3-sandbox-tasks-by-task-id-review) で現在の送信を受理または拒否します。
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/sandbox/tasks/${TASK_ID}/review" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Content-Type: application/json" \
+  --data '{"outcome":"accepted"}'
+```
+
+本番のタスク完了パターンには、[ケイパビリティとタスク](/jp/integration/onboarding/capabilities-and-requirements) を使用してください。
+
+## サンドボックスウォレットに入金する
+
+[`POST /v3/sandbox/accounts/{accountId}/topup`](/api-reference/sandbox/post-v3-sandbox-accounts-by-account-id-topup) で発行済みウォレットに残高を計上します。
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/sandbox/accounts/${ACCOUNT_ID}/topup" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Content-Type: application/json" \
+  --data '{"amount":"250.00","currency":"USDC"}'
+```
+
+シミュレートされた入金トランスファーを調べたい場合は、返された `data.id` を `TRANSFER_ID` として保存してください。
+
+## 送金を完了または失敗させる
+
+[`POST /v3/sandbox/transfers/{transferId}/state`](/api-reference/sandbox/post-v3-sandbox-transfers-by-transfer-id-state) で結果を設定します。
+
+<Tabs>
+  <Tab title="完了">
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/sandbox/transfers/${TRANSFER_ID}/state" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Content-Type: application/json" \
+  --data '{"state":"completed"}'
+```
+
+  </Tab>
+  <Tab title="失敗">
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/sandbox/transfers/${TRANSFER_ID}/state" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Content-Type: application/json" \
+  --data @- <<'JSON'
+{
+  "state": "failed",
+  "stateDetail": {
+    "code": "sandbox_review",
+    "message": "Sandbox transfer failed."
+  }
+}
+JSON
+```
+
+  </Tab>
+</Tabs>
+
+次に、サンドボックスで [入金](/jp/integration/receive-funds)、[支払い](/jp/integration/send-funds)、または [発行済み銀行口座](/jp/integration/issue-bank-account) のフローを実行してください。

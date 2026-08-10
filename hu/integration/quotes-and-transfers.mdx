@@ -1,0 +1,106 @@
+---
+title: "Árajánlatok és átutalások"
+description: "Válasszon pontos összeget, hajtson végre egy árajánlatot biztonságosan, és kövesse az aktuális átutalási állapotot."
+---
+
+Egy árajánlat időhöz kötött és egyszer használható. Egyszer hajtsa végre, és ne használja újra átutalás-sablonként. Az átutalás az adott árajánlat végrehajtása, és a létrehozás után is változik.
+
+## Erőforrás-kompatibilitás ellenőrzése
+
+Az árazás előtt erősítse meg, hogy:
+
+- A képesség kész, az ügyfélhez tartozik, és megfelel a szándékolt iránynak és módszernek.
+- Egy stablecoin forrás egy aktív kibocsátott tárca, amely támogatja a bemeneti devizát.
+- A tárca-tárca erőforrások ugyanazt a devizát és hálózatot használják.
+- Egy fiat kifizetési számla vagy célpont kész és támogatja a kimeneti devizát és módszert.
+
+## A pontos összeg kiválasztása
+
+Hozzon létre egy árajánlatot a [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) művelettel. Küldjön egy összegoldalt, mindkét devizát és válaszból származó erőforrás-azonosítókat az alábbi fejlécekkel:
+
+```http
+X-API-Key: ${SWIPELUX_API_KEY}
+Idempotency-Key: quote-create-001
+Content-Type: application/json
+```
+
+<Tabs>
+  <Tab title="Pontos in">
+
+Állítsa be az `in.amount` értékét és hagyja el az `out.amount`-et. A válasz kiszámítja, mit kap a célpont.
+
+```json
+{
+  "customerId": "${CUSTOMER_ID}",
+  "capabilityId": "${STABLECOIN_CAPABILITY_ID}",
+  "in": {
+    "amount": "1.234567",
+    "currency": "USDC",
+    "accountId": "${SOURCE_WALLET_ID}"
+  },
+  "destinationId": "${WALLET_DESTINATION_ID}",
+  "out": {
+    "currency": "USDC"
+  }
+}
+```
+
+  </Tab>
+  <Tab title="Pontos out">
+
+Állítsa be az `out.amount` értékét és hagyja el az `in.amount`-et. A válasz kiszámítja, mennyinek kell elhagynia a forrást.
+
+```json
+{
+  "customerId": "${CUSTOMER_ID}",
+  "capabilityId": "${CAPABILITY_ID}",
+  "in": {
+    "currency": "USDC",
+    "accountId": "${SOURCE_WALLET_ID}"
+  },
+  "destinationId": "${RECIPIENT_DESTINATION_ID}",
+  "out": {
+    "amount": "100.00",
+    "currency": "USD"
+  }
+}
+```
+
+  </Tab>
+</Tabs>
+
+Tárolja az árajánlat `data.id`, `data.status`, `data.expiresAt` értékeit, a visszaadott lábakat, árfolyamot és díjakat. Használja a visszaadott decimális stringeket; ne számolja újra a végrehajtható összegeket lebegőpontos aritmetikával.
+
+Egy stablecoinnal finanszírozott pontos out árajánlat után olvassa be a [`GET /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts-by-account-id) műveletet. Hasonlítsa össze az aktuális forrás `balances[].available` értékét a bemeneti devizára a visszaadott `data.in.amount` értékkel. Ha a pénz nem elegendő, változtasson vagy finanszírozzon forrást és hozzon létre új árajánlatot. A fiattal finanszírozott pontos out árajánlatok nem használják ezt a forrás-tárca egyenleg kaput.
+
+## Végrehajtsa egyszer és állítsa helyre biztonságosan
+
+Olvassa be az aktuális árajánlatot a [`GET /v3/quotes/{quoteId}`](/api-reference/money-movement/get-v3-quotes-by-quote-id) művelettel. Csak addig hajtsa végre, amíg a státusza és `expiresAt` engedi.
+
+Hozza létre az átutalást a [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) művelettel:
+
+```http
+X-API-Key: ${SWIPELUX_API_KEY}
+Idempotency-Key: transfer-create-001
+Content-Type: application/json
+```
+
+```json
+{
+  "quoteId": "${QUOTE_ID}"
+}
+```
+
+Generáljon egy új `Idempotency-Key` értéket ehhez a szándékolt átutaláshoz és őrizze meg, mielőtt elküldi a kérést. Ha a válasz elveszik, próbálja meg újra az azonos metódust, útvonalat, törzset és kulcsot. Ne hozzon létre második végrehajtási kulcsot bizonytalan eredmény helyreállításához.
+
+Ha az API `quote_already_executed` értéket ad vissza, használja annak `transferId` értékét a meglévő átutalás folytatásához. Egy idempotens újrajátszás `Idempotency-Replayed: true` értéket is visszaadhat.
+
+## Az aktuális átutalás követése
+
+Olvassa be a [`GET /v3/transfers/{transferId}`](/api-reference/money-movement/get-v3-transfers-by-transfer-id) műveletet a létrehozás után és minden webhook után. Tárolja a legfrissebb `data.state`, `data.stateDetail` és `data.openTaskIds` értékeket.
+
+Ha vannak nyitott feladatazonosítók, kérje le a [`GET /v3/transfers/{transferId}/tasks`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-tasks) műveletet és végezzen el minden feladatot a jelenlegi revíziója és követelményei alapján.
+
+Bejövő mozgáshoz a [`GET /v3/transfers/{transferId}/instructions`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-instructions) átutalás-specifikus befizetési adatokat adhat vissza. Csak a visszaadott utasításváltozatot és pontos hivatkozást jelenítse meg.
+
+Ezután valósítson meg [Webhookokat](/hu/integration/webhooks), hogy minden aszinkron átutalási frissítés ugyanabba az aktuális állapot-kezelési útvonalba kerüljön.

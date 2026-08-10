@@ -1,0 +1,106 @@
+---
+title: "Quotes und Transfers"
+description: "Wählen Sie einen exakten Betrag, führen Sie ein Quote sicher aus und verfolgen Sie den aktuellen Transferzustand."
+---
+
+Ein Quote ist zeitgebunden und einmalig verwendbar. Führen Sie es einmal aus und verwenden Sie es nicht als Transfervorlage wieder. Ein Transfer ist die Ausführung dieses Quotes und ändert sich nach der Erstellung weiter.
+
+## Ressourcenkompatibilität prüfen
+
+Bestätigen Sie vor dem Quoten, dass:
+
+- Die Fähigkeit bereit ist, zum Kunden gehört und der beabsichtigten Richtung und Methode entspricht.
+- Eine Stablecoin-Quelle eine aktive ausgegebene Wallet ist, die die Eingabewährung unterstützt.
+- Wallet-zu-Wallet-Ressourcen dieselbe Währung und dasselbe Netzwerk verwenden.
+- Ein Fiat-Payout-Konto oder -Ziel bereit ist und die Ausgabewährung und -methode unterstützt.
+
+## Exakten Betrag wählen
+
+Legen Sie ein Quote mit [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) an. Senden Sie eine Betragsseite, beide Währungen und aus der Antwort abgeleitete Ressourcen-IDs mit diesen Headern:
+
+```http
+X-API-Key: ${SWIPELUX_API_KEY}
+Idempotency-Key: quote-create-001
+Content-Type: application/json
+```
+
+<Tabs>
+  <Tab title="Exact in">
+
+Setzen Sie `in.amount` und lassen Sie `out.amount` weg. Die Antwort berechnet, was das Ziel erhält.
+
+```json
+{
+  "customerId": "${CUSTOMER_ID}",
+  "capabilityId": "${STABLECOIN_CAPABILITY_ID}",
+  "in": {
+    "amount": "1.234567",
+    "currency": "USDC",
+    "accountId": "${SOURCE_WALLET_ID}"
+  },
+  "destinationId": "${WALLET_DESTINATION_ID}",
+  "out": {
+    "currency": "USDC"
+  }
+}
+```
+
+  </Tab>
+  <Tab title="Exact out">
+
+Setzen Sie `out.amount` und lassen Sie `in.amount` weg. Die Antwort berechnet, was die Quelle verlassen muss.
+
+```json
+{
+  "customerId": "${CUSTOMER_ID}",
+  "capabilityId": "${CAPABILITY_ID}",
+  "in": {
+    "currency": "USDC",
+    "accountId": "${SOURCE_WALLET_ID}"
+  },
+  "destinationId": "${RECIPIENT_DESTINATION_ID}",
+  "out": {
+    "amount": "100.00",
+    "currency": "USD"
+  }
+}
+```
+
+  </Tab>
+</Tabs>
+
+Speichern Sie die Quote-`data.id`, `data.status`, `data.expiresAt`, zurückgegebene Legs, Kurs und Gebühren. Verwenden Sie die zurückgegebenen Dezimalzeichenketten; berechnen Sie ausführbare Beträge nicht mit Fließkomma-Arithmetik neu.
+
+Lesen Sie nach einem Stablecoin-finanzierten Exact-Out-Quote [`GET /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts-by-account-id). Vergleichen Sie das aktuelle Quell-`balances[].available` für die Eingabewährung mit dem zurückgegebenen `data.in.amount`. Wenn die Mittel nicht ausreichen, ändern oder finanzieren Sie die Quelle und erstellen Sie ein neues Quote. Fiat-finanzierte Exact-Out-Quotes verwenden dieses Quell-Wallet-Guthaben-Gate nicht.
+
+## Einmal ausführen und sicher wiederherstellen
+
+Lesen Sie das aktuelle Quote mit [`GET /v3/quotes/{quoteId}`](/api-reference/money-movement/get-v3-quotes-by-quote-id). Führen Sie es nur aus, solange sein Status und `expiresAt` dies erlauben.
+
+Erstellen Sie den Transfer mit [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers):
+
+```http
+X-API-Key: ${SWIPELUX_API_KEY}
+Idempotency-Key: transfer-create-001
+Content-Type: application/json
+```
+
+```json
+{
+  "quoteId": "${QUOTE_ID}"
+}
+```
+
+Generieren Sie einen neuen `Idempotency-Key` für diesen beabsichtigten Transfer und speichern Sie ihn, bevor Sie die Anfrage senden. Wenn die Antwort verloren geht, wiederholen Sie dieselbe Methode, denselben Pfad, denselben Body und denselben Schlüssel. Erstellen Sie keinen zweiten Ausführungsschlüssel, um ein unsicheres Ergebnis wiederherzustellen.
+
+Wenn die API `quote_already_executed` zurückgibt, verwenden Sie ihre `transferId`, um mit dem bestehenden Transfer fortzufahren. Ein idempotenter Replay kann außerdem `Idempotency-Replayed: true` zurückgeben.
+
+## Aktuellen Transfer verfolgen
+
+Lesen Sie [`GET /v3/transfers/{transferId}`](/api-reference/money-movement/get-v3-transfers-by-transfer-id) nach der Erstellung und nach jedem Webhook. Speichern Sie die neuesten `data.state`, `data.stateDetail` und `data.openTaskIds`.
+
+Wenn Aufgaben-IDs offen sind, rufen Sie [`GET /v3/transfers/{transferId}/tasks`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-tasks) ab und erledigen Sie jede Aufgabe unter Verwendung ihrer aktuellen Revision und Anforderungen.
+
+Für eine eingehende Bewegung kann [`GET /v3/transfers/{transferId}/instructions`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-instructions) transferspezifische Finanzierungsdetails zurückgeben. Rendern Sie nur die zurückgegebene Anweisungsvariante und die exakte Referenz.
+
+Implementieren Sie als Nächstes [Webhooks](/de/integration/webhooks), damit jede asynchrone Transferaktualisierung denselben Pfad zur Behandlung des aktuellen Zustands durchläuft.

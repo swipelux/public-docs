@@ -1,0 +1,117 @@
+---
+title: "Pénz küldése"
+description: "Küldjön egy ügyféltárcából ügyfél tulajdonában lévő számlára vagy harmadik fél célpontjára."
+---
+
+Minden kifizetés egy kész, feltöltött kibocsátott tárcából indul. A célpontmodell attól függ, ki tulajdonolja a végpontot.
+
+```mermaid
+flowchart TD
+  A["Feltöltött kibocsátott tárca"] --> B{"Ki tulajdonolja a végpontot?"}
+  B -->|"Ügyfél"| C["Ügyfélszámla acc_..."]
+  B -->|"Másik személy vagy vállalkozás"| D["Címzett célpont dst_..."]
+  C --> E["Árajánlat létrehozása"]
+  D --> E
+  E --> F["Átutalás végrehajtása és követése"]
+```
+
+## Mielőtt kezdi
+
+Frissítse le a forrás tárcát. Erősítse meg, hogy az aktuális státusza engedi a kifizetést és a rendelkezésre álló egyenlege fedezi a szándékolt forrásösszeget. Tárolja a válaszból származó azonosítót `SOURCE_WALLET_ID`-ként.
+
+Szüksége van egy kész kifizetési képességre is az aktuális ügyfélhez és kiválasztott célponthoz.
+
+## 1. A célpont előkészítése
+
+<Tabs>
+  <Tab title="Saját tulajdonú">
+
+Használjon egy ügyfél tulajdonában lévő külső bankszámlát, amikor az ügyfél tulajdonolja a végpontot. Hozza létre a [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) művelettel és ezekkel a fejlécekkel:
+
+```http
+X-API-Key: ${SWIPELUX_API_KEY}
+Idempotency-Key: payout-account-001
+Content-Type: application/json
+```
+
+```json
+{
+  "origin": "external",
+  "type": "bank",
+  "methods": ["ach", "wire"],
+  "country": "US",
+  "currency": "USD",
+  "details": {
+    "routingNumber": "021000021",
+    "accountNumber": "123456789",
+    "accountType": "checking",
+    "bankName": "Example Bank",
+    "accountHolderName": "Acme Payments SAS"
+  },
+  "label": "Customer operating account"
+}
+```
+
+Olvassa be a [`GET /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts-by-account-id) művelettel. Csak akkor folytassa, ha az aktuális státusza engedi a kifizetést. Tárolja a `acc_` azonosítót `PAYOUT_DESTINATION_ID`-ként.
+
+  </Tab>
+  <Tab title="Harmadik fél">
+
+Hozza létre a személyt vagy vállalkozást és a bank- vagy tárca-végpontját a [Címzettek és célpontok](/hu/integration/recipients) alapján. Csak akkor folytassa, ha a célpont kész.
+
+Tárolja a visszakapott `dst_` azonosítót `PAYOUT_DESTINATION_ID`-ként. Ne használja a címzett `rcp_` azonosítóját árajánlat célpontként.
+
+  </Tab>
+</Tabs>
+
+## 2. A kifizetési árajánlat létrehozása
+
+Használja a [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) műveletet ezekkel a fejlécekkel:
+
+```http
+X-API-Key: ${SWIPELUX_API_KEY}
+Idempotency-Key: payout-quote-001
+Content-Type: application/json
+```
+
+```json
+{
+  "customerId": "${CUSTOMER_ID}",
+  "capabilityId": "${CAPABILITY_ID}",
+  "in": {
+    "amount": "150.00",
+    "currency": "USDC",
+    "accountId": "${SOURCE_WALLET_ID}"
+  },
+  "destinationId": "${PAYOUT_DESTINATION_ID}",
+  "out": {
+    "currency": "USD"
+  }
+}
+```
+
+Tárolja a `data.id` értéket `QUOTE_ID`-ként, és jelenítse meg a visszaadott árat és díjakat.
+
+## 3. A kifizetés végrehajtása
+
+Hozza létre az átutalást a [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) művelettel. Használjon egy új kulcsot ehhez a szándékolt végrehajtáshoz:
+
+```http
+X-API-Key: ${SWIPELUX_API_KEY}
+Idempotency-Key: payout-transfer-001
+Content-Type: application/json
+```
+
+```json
+{
+  "quoteId": "${QUOTE_ID}"
+}
+```
+
+Tárolja az átutalás `data.id` értékét `TRANSFER_ID`-ként. Egy sikeres létrehozás elindítja a kifizetést; nem bizonyítja a kézbesítést.
+
+## 4. A kézbesítés követése
+
+Olvassa be a [`GET /v3/transfers/{transferId}`](/api-reference/money-movement/get-v3-transfers-by-transfer-id) műveletet a létrehozás után és minden esemény után. A legfrissebb `data.state`, `data.stateDetail` és `data.openTaskIds` alapján döntse el, hogy vár, cselekszik, vagy végleges kimenetet jelenít meg.
+
+Ezután nézze át az [Árajánlatok és átutalások](/hu/integration/quotes-and-transfers) oldalt a pontos összegekért, a biztonságos végrehajtási helyreállításért és az átutalási feladatokért.

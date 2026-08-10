@@ -1,0 +1,142 @@
+---
+title: "Sandbox testing"
+description: "अपने integration के निर्माण के दौरान capability, task, wallet, और transfer outcomes को नियंत्रित करें।"
+---
+
+Sandbox वही API host उपयोग करता है जो production करता है। एक sandbox API key test environment का चयन करती है, जहाँ helpers वास्तविक funds स्थानांतरित किए बिना outcomes को simulate करते हैं।
+
+Key को अपने backend पर रखें। Sandbox helpers production compliance या onboarding का स्थान नहीं लेते।
+
+```bash
+export API_BASE='https://platform.swipelux.com'
+export SWIPELUX_SANDBOX_API_KEY='replace-with-your-sandbox-key'
+```
+
+## Capability readiness का परीक्षण करें
+
+एक capability का अनुरोध करने के बाद, इसकी sandbox status को [`POST /v3/sandbox/customers/{customerId}/capabilities/{capabilityId}/status`](/api-reference/sandbox/post-v3-sandbox-customers-by-customer-id-capabilities-by-capability-id-status) के साथ सेट करें:
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/sandbox/customers/${CUSTOMER_ID}/capabilities/${CAPABILITY_ID}/status" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Content-Type: application/json" \
+  --data '{"status":"ready"}'
+```
+
+Helper का उपयोग करने के बाद capability को पुन: प्राप्त करें। इसके वर्तमान `status` और `openTaskIds` को उस परिणाम के रूप में मानें जिसे आपके product को संभालना है।
+
+## एक open task का परीक्षण करें
+
+एक capability-scoped task [`POST /v3/sandbox/tasks`](/api-reference/sandbox/post-v3-sandbox-tasks) के साथ बनाएँ:
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/sandbox/tasks" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Content-Type: application/json" \
+  --data @- <<JSON
+{
+  "scope": {
+    "type": "capability",
+    "customerId": "${CUSTOMER_ID}",
+    "capabilityId": "${CAPABILITY_ID}"
+  },
+  "items": [
+    {
+      "type": "explanation",
+      "request": "Explain the source of funds."
+    }
+  ]
+}
+JSON
+```
+
+`data.id` को `TASK_ID`, `data.revision` को `TASK_REVISION`, और वर्तमान `data.requirements[0].id` को `REQUIREMENT_ID` के रूप में संग्रहीत करें। उत्तर को [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) के माध्यम से submit करें:
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/tasks/${TASK_ID}/submissions" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: sandbox-task-submission-001" \
+  --header "Content-Type: application/json" \
+  --data @- <<JSON
+{
+  "taskRevision": ${TASK_REVISION},
+  "answers": [
+    {
+      "requirementId": "${REQUIREMENT_ID}",
+      "answer": {
+        "type": "text",
+        "value": "Sandbox requirement completed."
+      }
+    }
+  ]
+}
+JSON
+```
+
+फिर वर्तमान submission को [`POST /v3/sandbox/tasks/{taskId}/review`](/api-reference/sandbox/post-v3-sandbox-tasks-by-task-id-review) के साथ स्वीकार या अस्वीकार करें:
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/sandbox/tasks/${TASK_ID}/review" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Content-Type: application/json" \
+  --data '{"outcome":"accepted"}'
+```
+
+Production task-completion pattern के लिए [Capabilities और tasks](/hi/integration/onboarding/capabilities-and-requirements) का उपयोग करें।
+
+## Sandbox wallet को fund करें
+
+एक issued wallet को [`POST /v3/sandbox/accounts/{accountId}/topup`](/api-reference/sandbox/post-v3-sandbox-accounts-by-account-id-topup) के साथ credit करें:
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/sandbox/accounts/${ACCOUNT_ID}/topup" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Content-Type: application/json" \
+  --data '{"amount":"250.00","currency":"USDC"}'
+```
+
+जब आप simulated funding transfer का निरीक्षण करना चाहें, तो लौटाए गए `data.id` को `TRANSFER_ID` के रूप में संग्रहीत करें।
+
+## एक transfer को पूरा या fail करें
+
+Outcome को [`POST /v3/sandbox/transfers/{transferId}/state`](/api-reference/sandbox/post-v3-sandbox-transfers-by-transfer-id-state) के साथ सेट करें:
+
+<Tabs>
+  <Tab title="Complete">
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/sandbox/transfers/${TRANSFER_ID}/state" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Content-Type: application/json" \
+  --data '{"state":"completed"}'
+```
+
+  </Tab>
+  <Tab title="Fail">
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/sandbox/transfers/${TRANSFER_ID}/state" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Content-Type: application/json" \
+  --data @- <<'JSON'
+{
+  "state": "failed",
+  "stateDetail": {
+    "code": "sandbox_review",
+    "message": "Sandbox transfer failed."
+  }
+}
+JSON
+```
+
+  </Tab>
+</Tabs>
+
+आगे, sandbox में एक [pay-in](/hi/integration/receive-funds), [payout](/hi/integration/send-funds), या [issued bank account](/hi/integration/issue-bank-account) flow चलाएँ।

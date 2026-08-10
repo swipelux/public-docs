@@ -1,0 +1,66 @@
+---
+title: "Référence API"
+description: "Utilisez le contrat API, réessayez les écritures en toute sécurité et gérez les erreurs de manière cohérente."
+---
+
+La Référence API est le contrat de référence de l'API Swipelux. Chaque opération présente ses schémas de requête, de réponse, de sécurité, de statut et d'erreur.
+
+Utilisez `https://platform.swipelux.com` pour chaque requête. Envoyez votre clé spécifique à l'environnement dans `X-API-Key` depuis un backend protégé.
+
+## Sécuriser les nouvelles tentatives d'écriture
+
+Lorsqu'une opération liste `Idempotency-Key` comme requis, générez une clé pour chaque opération prévue et stockez-la avec votre enregistrement de requête local.
+
+```bash
+curl --request POST \
+  'https://platform.swipelux.com/v3/customers' \
+  --header 'X-API-Key: YOUR_API_KEY' \
+  --header 'Idempotency-Key: customer-order-1001' \
+  --header 'Content-Type: application/json' \
+  --data '{"type":"individual","externalId":"customer-order-1001"}'
+```
+
+Si la réponse est incertaine, réessayez avec la même méthode, le même chemin et le même corps avec la même clé. Ne réutilisez pas cette clé pour une opération différente ou un corps modifié.
+
+Certaines opérations renvoient `Idempotency-Replayed: true` lorsque la réponse provient d'une requête antérieure avec la même clé. Traitez cette réponse comme le résultat de l'opération d'origine, et non comme une seconde opération.
+
+## Gérer les erreurs
+
+Les erreurs API utilisent `application/problem+json`. Construisez le comportement client autour de ces champs stables :
+
+| Champ | Utilisation |
+| --- | --- |
+| `status` | Statut HTTP associé au problème. |
+| `code` | Code d'erreur stable lisible par machine. |
+| `detail` | Explication exploitable pour la requête actuelle. |
+| `retryable` | Indique si la même requête peut réussir en cas de nouvelle tentative, lorsqu'il est présent. |
+| `errors[].pointer` | JSON Pointer vers un champ de requête invalide. |
+| `correlationId` | Identifiant de requête à conserver dans les journaux et les enregistrements de support. |
+
+Le `correlationId` de la réponse reflète `X-Request-Id`. Journalisez à la fois l'opération et cette valeur, mais n'exposez pas de secrets ni de détails financiers complets.
+
+```json
+{
+  "type": "https://docs.swipelux.com/problems/validation_error",
+  "title": "Validation error",
+  "status": 400,
+  "code": "validation_error",
+  "detail": "The request contains invalid fields.",
+  "correlationId": "01JERRORVALIDATION",
+  "errors": [
+    {
+      "pointer": "/externalId",
+      "code": "invalid_format",
+      "message": "Use a valid external identifier."
+    }
+  ]
+}
+```
+
+Utilisez les schémas de problème documentés de l'opération pour décider s'il faut corriger l'entrée, actualiser l'état de la ressource, terminer une tâche ou réessayer. Conservez le catalogue complet des statuts et des erreurs dans la Référence API plutôt que de coder en dur des cas non documentés.
+
+## Suivre les opérations asynchrones
+
+Une réponse de création réussie déclenche de nombreux workflows ; elle ne garantit pas leur achèvement. Stockez les identifiants de ressource dérivés de la réponse, lisez la ressource actuelle et utilisez les [webhooks vérifiés](/fr/integration/webhooks) pour réagir aux changements.
+
+Commencez par [`POST /v3/customers`](/api-reference/customers/post-v3-customers), ou suivez le [Démarrage rapide](/fr/integration/quickstart) pour un parcours complet en sandbox.
