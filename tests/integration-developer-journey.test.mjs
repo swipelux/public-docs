@@ -2,6 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 
+import { getDefaultNavigation } from "../scripts/lib/docs-validation.mjs";
+
 const read = (path) => readFileSync(path, "utf8");
 const config = JSON.parse(read("docs.json"));
 
@@ -61,7 +63,7 @@ function page(route) {
 }
 
 test("publishes the approved 15-page Integration journey", () => {
-  const integration = config.navigation.tabs.find(
+  const integration = getDefaultNavigation(config.navigation).tabs.find(
     ({ tab }) => tab === "Integration Docs",
   );
   assert.deepEqual(integration?.groups, INTEGRATION_GROUPS);
@@ -76,7 +78,7 @@ test("publishes the approved 15-page Integration journey", () => {
 });
 
 test("publishes API Reference overview and versioning before generated endpoints", () => {
-  const reference = config.navigation.tabs.find(
+  const reference = getDefaultNavigation(config.navigation).tabs.find(
     ({ tab }) => tab === "API Reference",
   );
   assert.deepEqual(reference, {

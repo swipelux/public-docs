@@ -9,7 +9,7 @@ import ignore from "ignore";
 export const SOURCE_COMMIT =
   "b4c9b5b7101ec03e01424259f58a5c8763ea489b";
 
-export const REQUIRED_NAVIGATION_PAGES = Object.freeze([
+export const CANONICAL_NAVIGATION_PAGES = Object.freeze([
   "integration/overview",
   "integration/quickstart",
   "integration/authentication",
@@ -48,6 +48,41 @@ export const REQUIRED_NAVIGATION_PAGES = Object.freeze([
   "knowledge-base/individual-onboarding/verification-levels",
   "knowledge-base/individual-onboarding/status-and-workflow",
   "knowledge-base/individual-onboarding/api-workflow",
+]);
+
+export const VERSIONING_PAGE_ROUTES = Object.freeze([
+  "api-reference/versioning/migrate-to-v3",
+  "api-reference/versioning/changelog",
+]);
+
+export const TRANSLATED_VERSIONING_LOCALES = Object.freeze([
+  "ca",
+  "cn",
+  "cs",
+  "de",
+  "es",
+  "fi",
+  "fr",
+  "hi",
+  "hu",
+  "it",
+  "jp",
+  "ko",
+  "lv",
+  "nl",
+  "no",
+  "zh-Hant",
+]);
+
+export const LOCALIZED_NAVIGATION_PAGES = Object.freeze(
+  TRANSLATED_VERSIONING_LOCALES.flatMap((locale) =>
+    VERSIONING_PAGE_ROUTES.map((page) => `${locale}/${page}`),
+  ),
+);
+
+export const REQUIRED_NAVIGATION_PAGES = Object.freeze([
+  ...CANONICAL_NAVIGATION_PAGES,
+  ...LOCALIZED_NAVIGATION_PAGES,
 ]);
 
 export const REQUIRED_PUBLISHED_PAGES = Object.freeze([
@@ -827,8 +862,12 @@ export function validatePublishedText(path, text, options = {}) {
   const errors = [];
   const value = String(text);
   const normalized = normalizePath(path).split("#", 1)[0];
+  const [possibleLocale, ...localizedPathParts] = normalized.split("/");
+  const canonicalPath = TRANSLATED_VERSIONING_LOCALES.includes(possibleLocale)
+    ? localizedPathParts.join("/")
+    : normalized;
   const allowsLegacyVersionReferences =
-    normalized === "api-reference/versioning/migrate-to-v3.mdx";
+    canonicalPath === "api-reference/versioning/migrate-to-v3.mdx";
   const bannedPatterns = [
     ...(allowsLegacyVersionReferences
       ? []
@@ -922,6 +961,19 @@ export function collectNavigationPages(navigation) {
   return pages;
 }
 
+export function getDefaultNavigation(navigation) {
+  const languages = Array.isArray(navigation?.languages)
+    ? navigation.languages
+    : [];
+  if (languages.length === 0) return navigation;
+
+  return (
+    languages.find((language) => language?.default === true) ??
+    languages.find((language) => language?.language === "en") ??
+    languages[0]
+  );
+}
+
 function findObjects(value, predicate, matches = []) {
   if (Array.isArray(value)) {
     value.forEach((item) => findObjects(item, predicate, matches));
@@ -977,7 +1029,10 @@ export function validateNavigation(config, options = {}) {
     }
   }
 
-  const topLevelTabs = Array.isArray(navigation.tabs) ? navigation.tabs : [];
+  const defaultNavigation = getDefaultNavigation(navigation);
+  const topLevelTabs = Array.isArray(defaultNavigation?.tabs)
+    ? defaultNavigation.tabs
+    : [];
   const apiTabs = topLevelTabs.filter(
     (value) =>
       value && typeof value === "object" && value.tab === "API Reference",
