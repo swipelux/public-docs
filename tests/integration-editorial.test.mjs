@@ -2,10 +2,11 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 
+import { getDefaultNavigation } from "../scripts/lib/docs-validation.mjs";
 import { readPage } from "./helpers/content.mjs";
 
 const config = JSON.parse(readFileSync("docs.json", "utf8"));
-const integrationTab = config.navigation.tabs.find(
+const integrationTab = getDefaultNavigation(config.navigation).tabs.find(
   ({ tab }) => tab === "Integration Docs",
 );
 assert.ok(integrationTab, "Missing Integration Docs tab");

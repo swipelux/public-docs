@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { isDeepStrictEqual } from "node:util";
 
+import { getDefaultNavigation } from "../scripts/lib/docs-validation.mjs";
 import { assertPages, readPage } from "./helpers/content.mjs";
 import { createOpenApiValidator } from "./helpers/openapi-validation.mjs";
 
@@ -331,7 +332,9 @@ function card(text, title, href) {
 
 test("publishes the four Get started pages in the intended order", () => {
   assertPages(PAGES);
-  const integration = config.navigation.tabs.find((tab) => tab.tab === "Integration Docs");
+  const integration = getDefaultNavigation(config.navigation).tabs.find(
+    (tab) => tab.tab === "Integration Docs",
+  );
   assert.ok(integration, "Missing Integration Docs tab");
   const getStarted = integration.groups.find((group) => group.group === "Get started");
   assert.deepEqual(getStarted?.pages, PAGES);

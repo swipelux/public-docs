@@ -15,9 +15,11 @@ import { fileURLToPath } from "node:url";
 
 import {
   APPROVED_REDIRECT_DESTINATIONS,
+  CANONICAL_NAVIGATION_PAGES,
   EXPECTED_REDIRECT_SOURCES,
   FROZEN_MIGRATION_DECISIONS,
   FROZEN_SOURCE_PAGES,
+  LOCALIZED_NAVIGATION_PAGES,
   REQUIRED_NAVIGATION_PAGES,
   REQUIRED_PUBLISHED_PAGES,
   SOURCE_COMMIT,
@@ -443,12 +445,20 @@ test("allows legacy API references only in the canonical migration guide", () =>
 
   assert.deepEqual(validateFrontmatter(migrationPath, migrationText), []);
   assert.deepEqual(validatePublishedText(migrationPath, migrationText), []);
+  assert.deepEqual(
+    validatePublishedText(`cn/${migrationPath}`, migrationText),
+    [],
+  );
 
   assertHasError(
     validatePublishedText(
       "api-reference/versioning/changelog.mdx",
       migrationText,
     ),
+    /prohibited legacy API v1\/v2 identifier/i,
+  );
+  assertHasError(
+    validatePublishedText(`unsupported/${migrationPath}`, migrationText),
     /prohibited legacy API v1\/v2 identifier/i,
   );
   assertHasError(
@@ -1314,8 +1324,10 @@ test("normalizes index source pages to public routes", () => {
 });
 
 test("commits the complete approved page and frozen source inventories", () => {
-  assert.equal(REQUIRED_NAVIGATION_PAGES.length, 38);
-  assert.equal(REQUIRED_PUBLISHED_PAGES.length, 39);
+  assert.equal(CANONICAL_NAVIGATION_PAGES.length, 38);
+  assert.equal(LOCALIZED_NAVIGATION_PAGES.length, 32);
+  assert.equal(REQUIRED_NAVIGATION_PAGES.length, 70);
+  assert.equal(REQUIRED_PUBLISHED_PAGES.length, 71);
   assert.equal(FROZEN_SOURCE_PAGES.length, 59);
   assert.equal(Object.keys(FROZEN_MIGRATION_DECISIONS).length, 59);
   assert.equal(EXPECTED_REDIRECT_SOURCES.length, 67);

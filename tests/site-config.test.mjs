@@ -7,8 +7,13 @@ import { fileURLToPath } from "node:url";
 import { docsConfigSchema } from "@mintlify/validation";
 
 import {
+  CANONICAL_NAVIGATION_PAGES,
+  LOCALIZED_NAVIGATION_PAGES,
   REQUIRED_NAVIGATION_PAGES,
+  TRANSLATED_VERSIONING_LOCALES,
+  VERSIONING_PAGE_ROUTES,
   collectNavigationPages,
+  getDefaultNavigation,
   parseFrontmatter,
   validateFrontmatter,
   validatePublishedJsonStrings,
@@ -181,7 +186,30 @@ const KNOWLEDGE_BASE_GROUPS = [
   },
 ];
 
-const EXPECTED_NAVIGATION = {
+const EXPECTED_TRANSLATED_VERSIONING_LOCALES = [
+  "ca",
+  "cn",
+  "cs",
+  "de",
+  "es",
+  "fi",
+  "fr",
+  "hi",
+  "hu",
+  "it",
+  "jp",
+  "ko",
+  "lv",
+  "nl",
+  "no",
+  "zh-Hant",
+];
+const EXPECTED_VERSIONING_PAGE_ROUTES = [
+  "api-reference/versioning/migrate-to-v3",
+  "api-reference/versioning/changelog",
+];
+
+const ENGLISH_NAVIGATION = {
   tabs: [
     {
       tab: "Integration Docs",
@@ -195,6 +223,31 @@ const EXPECTED_NAVIGATION = {
       tab: "Knowledge Base",
       groups: KNOWLEDGE_BASE_GROUPS,
     },
+  ],
+};
+
+const LOCALIZED_NAVIGATION = EXPECTED_TRANSLATED_VERSIONING_LOCALES.map(
+  (language) => ({
+    language,
+    groups: [
+      {
+        group: "Versioning",
+        pages: EXPECTED_VERSIONING_PAGE_ROUTES.map(
+          (page) => `${language}/${page}`,
+        ),
+      },
+    ],
+  }),
+);
+
+const EXPECTED_NAVIGATION = {
+  languages: [
+    {
+      language: "en",
+      default: true,
+      ...ENGLISH_NAVIGATION,
+    },
+    ...LOCALIZED_NAVIGATION,
   ],
 };
 
@@ -332,20 +385,50 @@ test("uses an accessible mpanel primary color for docs UI text and controls", ()
   );
 });
 
-test("uses exactly the approved three-tab navigation skeleton", () => {
+test("uses the approved language navigation and English tab skeleton", () => {
   assert.deepEqual(config.navigation, EXPECTED_NAVIGATION);
   assert.deepEqual(
-    config.navigation.tabs.map(({ tab }) => tab),
+    TRANSLATED_VERSIONING_LOCALES,
+    EXPECTED_TRANSLATED_VERSIONING_LOCALES,
+  );
+  assert.deepEqual(VERSIONING_PAGE_ROUTES, EXPECTED_VERSIONING_PAGE_ROUTES);
+  const defaultNavigation = getDefaultNavigation(config.navigation);
+  assert.deepEqual(
+    defaultNavigation.tabs.map(({ tab }) => tab),
     ["Integration Docs", "API Reference", "Knowledge Base"],
   );
 
-  const manualPages = [
+  const canonicalPages = [
     ...INTEGRATION_GROUPS.flatMap(({ pages }) => pages),
     ...API_REFERENCE_GROUPS.flatMap(({ pages }) => pages),
     ...KNOWLEDGE_BASE_GROUPS.flatMap(({ pages }) => pages),
   ];
-  assert.deepEqual(manualPages, REQUIRED_NAVIGATION_PAGES);
-  assert.deepEqual(collectNavigationPages(config.navigation), manualPages);
+  const localizedPages = LOCALIZED_NAVIGATION.flatMap(({ groups }) =>
+    groups.flatMap(({ pages }) => pages),
+  );
+  assert.deepEqual(canonicalPages, CANONICAL_NAVIGATION_PAGES);
+  assert.deepEqual(localizedPages, LOCALIZED_NAVIGATION_PAGES);
+  assert.deepEqual(
+    [...canonicalPages, ...localizedPages],
+    REQUIRED_NAVIGATION_PAGES,
+  );
+  assert.deepEqual(
+    collectNavigationPages(config.navigation),
+    REQUIRED_NAVIGATION_PAGES,
+  );
+});
+
+test("keeps each translated changelog linked to its localized migration guide", () => {
+  for (const locale of EXPECTED_TRANSLATED_VERSIONING_LOCALES) {
+    const changelogPath = `${locale}/api-reference/versioning/changelog.mdx`;
+    const migrationPath = `${locale}/api-reference/versioning/migrate-to-v3.mdx`;
+    assert.equal(existsSync(resolve(projectRoot, changelogPath)), true);
+    assert.equal(existsSync(resolve(projectRoot, migrationPath)), true);
+    assert.match(
+      read(changelogPath),
+      new RegExp(`\\]\\(/${locale}/api-reference/versioning/migrate-to-v3\\)`),
+    );
+  }
 });
 
 test("publishes the new canonical Integration pages and removes retired files", () => {
@@ -384,7 +467,7 @@ test("makes API Reference the sole owner of openapi.json", () => {
   );
 
   assert.equal(owners.length, 1);
-  const apiReference = config.navigation.tabs.find(
+  const apiReference = getDefaultNavigation(config.navigation).tabs.find(
     ({ tab }) => tab === "API Reference",
   );
   const endpoints = apiReference?.groups.find(

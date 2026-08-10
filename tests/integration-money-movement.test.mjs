@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { isDeepStrictEqual } from "node:util";
 
+import { getDefaultNavigation } from "../scripts/lib/docs-validation.mjs";
 import { assertPages, readPage } from "./helpers/content.mjs";
 import { createOpenApiValidator } from "./helpers/openapi-validation.mjs";
 
@@ -639,7 +640,9 @@ function assertExactOutFundingGate(text) {
 
 test("publishes the complete money-movement guide set in navigation order", () => {
   assertPages(PAGES);
-  const integration = config.navigation.tabs.find((tab) => tab.tab === "Integration Docs");
+  const integration = getDefaultNavigation(config.navigation).tabs.find(
+    (tab) => tab.tab === "Integration Docs",
+  );
   const group = integration?.groups.find((candidate) => candidate.group === "Build money flows");
   assert.deepEqual(group?.pages, PAGES);
 
