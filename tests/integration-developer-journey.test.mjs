@@ -75,7 +75,7 @@ test("publishes the approved 15-page Integration journey", () => {
   }
 });
 
-test("adds one API Reference introduction before generated endpoints", () => {
+test("publishes API Reference overview and versioning before generated endpoints", () => {
   const reference = config.navigation.tabs.find(
     ({ tab }) => tab === "API Reference",
   );
@@ -83,6 +83,14 @@ test("adds one API Reference introduction before generated endpoints", () => {
     tab: "API Reference",
     groups: [
       { group: "Overview", pages: ["api-reference/introduction"] },
+      {
+        group: "Versioning",
+        icon: "code-branch",
+        pages: [
+          "api-reference/versioning/migrate-to-v3",
+          "api-reference/versioning/changelog",
+        ],
+      },
       { group: "Endpoints", openapi: "openapi.json", pages: [] },
     ],
   });
