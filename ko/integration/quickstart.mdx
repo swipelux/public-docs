@@ -1,0 +1,266 @@
+---
+title: "퀵스타트"
+description: "샌드박스 고객을 생성하고, 케이퍼빌리티를 활성화한 뒤, 페이인, 페이아웃 또는 발급 은행 계좌 흐름을 실행하세요."
+---
+
+고객을 생성하고 재사용 가능한 지갑을 하나 준비한 뒤 필요한 샌드박스 흐름을 실행하세요.
+
+## 1. 샌드박스 구성
+
+백엔드에서 샌드박스 API 키를 사용하세요:
+
+```bash
+export API_BASE='https://platform.swipelux.com'
+export SWIPELUX_SANDBOX_API_KEY='replace-with-your-sandbox-key'
+```
+
+키는 공유 API 호스트에서 샌드박스 환경을 선택해요.
+
+## 2. 고객 생성
+
+[`POST /v3/customers`](/api-reference/customers/post-v3-customers)로 개인 고객을 생성하세요:
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/customers" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-customer-001" \
+  --header "Content-Type: application/json" \
+  --data '{"type":"individual","externalId":"quickstart-customer-001"}'
+```
+
+`data.id`를 `CUSTOMER_ID`로 저장하세요.
+
+## 3. 결과 선택
+
+- **페이인:** USD를 수취하고 고객의 발급 지갑에 USDC로 정산해요.
+- **페이아웃:** 고객의 발급 지갑에서 고객 소유 은행 계좌로 USDC를 전송해요.
+- **발급 은행 계좌:** 고객의 발급 지갑으로 정산되는 ACH/USD 계좌를 발급해요.
+
+제3자 페이아웃을 원하시면 [수취인](/ko/integration/recipients) 또는 [자금 지급](/ko/integration/send-funds)을 따라주세요.
+
+## 4. 적격 케이퍼빌리티 찾기
+
+[`GET /v3/customers/{customerId}/capabilities/supported`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-supported)로 지원되는 케이퍼빌리티를 나열하세요:
+
+```bash
+curl --request GET \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/capabilities/supported" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}"
+```
+
+`availability`가 `available` 또는 `beta`이고, `eligibility.eligible`이 `true`이며, 필요한 `directions`와 `method`, 그리고 일치하는 `accountType`을 가진 응답 항목을 선택하세요. 고객의 발급 지갑을 페이인 목적지, 페이아웃 출처 또는 은행 계좌 정산 계좌로 사용하고, 고객 소유 계좌를 이 페이아웃 경로의 `destinationId`로 사용하세요. `institutions`가 반환되면 반환된 기관 선택 사항만 사용하세요. 항목의 `id`를 `CAPABILITY_ID`로 저장하세요. 범용 케이퍼빌리티 ID를 하드코딩하지 마세요.
+
+## 5. 케이퍼빌리티 요청
+
+[`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id)로 선택한 케이퍼빌리티를 요청하세요:
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/capabilities/${CAPABILITY_ID}" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-capability-001" \
+  --header "Content-Type: application/json" \
+  --data '{}'
+```
+
+`data.status`를 `CAPABILITY_STATUS`로, `data.openTaskIds`를 `TASK_IDS`로 저장하세요.
+
+## 6. 샌드박스에서 온보딩 완료
+
+`TASK_IDS`가 비어있지 않으면 [케이퍼빌리티와 태스크](/ko/integration/onboarding/capabilities-and-requirements)를 통해 각 현재 요건을 완료하세요.
+
+이 안내에서는 [`POST /v3/sandbox/customers/{customerId}/capabilities/{capabilityId}/status`](/api-reference/sandbox/post-v3-sandbox-customers-by-customer-id-capabilities-by-capability-id-status)로 케이퍼빌리티를 `ready`로 설정하세요:
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/sandbox/customers/${CUSTOMER_ID}/capabilities/${CAPABILITY_ID}/status" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Content-Type: application/json" \
+  --data '{"status":"ready"}'
+```
+
+이 테스트 컨트롤은 프로덕션 온보딩이 아니에요. [`GET /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id)로 다시 조회하세요:
+
+```bash
+curl --request GET \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/capabilities/${CAPABILITY_ID}" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}"
+```
+
+`data.status`와 `data.openTaskIds`에서 `CAPABILITY_STATUS`와 `TASK_IDS`를 새로고침하세요. `CAPABILITY_STATUS`가 `ready`일 때만 계속 진행하세요.
+
+## 7. 선택한 흐름 구축
+
+[`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts)로 Base 위의 발급 USDC 지갑 하나를 생성하세요:
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/accounts" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-flow-wallet-001" \
+  --header "Content-Type: application/json" \
+  --data '{"origin":"issued","type":"wallet","currency":"USDC","network":"base"}'
+```
+
+`data.id`를 `FLOW_WALLET_ID`, `data.status`를 `FLOW_WALLET_STATUS`, `data.openTaskIds`를 `FLOW_WALLET_TASK_IDS`로 저장하세요. `FLOW_WALLET_TASK_IDS`가 비어있지 않으면 [케이퍼빌리티와 태스크](/ko/integration/onboarding/capabilities-and-requirements)를 통해 현재 태스크를 완료하세요.
+
+[`GET /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts-by-account-id)로 지갑을 다시 조회하세요:
+
+```bash
+curl --request GET \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/accounts/${FLOW_WALLET_ID}" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}"
+```
+
+`data.status`와 `data.openTaskIds`에서 `FLOW_WALLET_STATUS`와 `FLOW_WALLET_TASK_IDS`를 새로고침하세요. `FLOW_WALLET_STATUS`가 `ready`일 때만 계속 진행하세요.
+
+<Tabs>
+  <Tab title="페이인">
+
+[`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes)로 USD 대 USDC 견적을 생성하세요:
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/quotes" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-payin-quote-001" \
+  --header "Content-Type: application/json" \
+  --data @- <<JSON
+{"customerId":"${CUSTOMER_ID}","capabilityId":"${CAPABILITY_ID}","in":{"amount":"150.00","currency":"USD"},"destinationId":"${FLOW_WALLET_ID}","out":{"currency":"USDC"}}
+JSON
+```
+
+`data.id`를 `QUOTE_ID`로 저장한 뒤 [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers)로 실행하세요:
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/transfers" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-payin-transfer-001" \
+  --header "Content-Type: application/json" \
+  --data @- <<JSON
+{"quoteId":"${QUOTE_ID}"}
+JSON
+```
+
+`data.id`를 `TRANSFER_ID`로 저장하세요. [`GET /v3/transfers/{transferId}/instructions`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-instructions)로 지침을 가져오세요:
+
+```bash
+curl --request GET \
+  "${API_BASE}/v3/transfers/${TRANSFER_ID}/instructions" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}"
+```
+
+응답에는 `data.transferId`와 `data.instructions`가 포함돼요. `data.transferId`를 `TRANSFER_ID`, `data.instructions`를 `FUNDING_INSTRUCTIONS`로 저장하세요.
+
+  </Tab>
+
+  <Tab title="페이아웃">
+
+[`POST /v3/sandbox/accounts/{accountId}/topup`](/api-reference/sandbox/post-v3-sandbox-accounts-by-account-id-topup)로 준비된 지갑에 자금을 넣으세요:
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/sandbox/accounts/${FLOW_WALLET_ID}/topup" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Content-Type: application/json" \
+  --data '{"amount":"250.00","currency":"USDC"}'
+```
+
+[`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts)로 고객 소유 ACH 계좌를 생성하세요:
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/accounts" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-payout-account-001" \
+  --header "Content-Type: application/json" \
+  --data @- <<'JSON'
+{"origin":"external","type":"bank","methods":["ach"],"country":"US","currency":"USD","details":{"routingNumber":"021000021","accountNumber":"123456789","accountType":"checking","bankName":"Example Bank","accountHolderName":"Amina Diallo"}}
+JSON
+```
+
+`data.id`를 `PAYOUT_ACCOUNT_ID`, `data.status`를 `PAYOUT_ACCOUNT_STATUS`, `data.openTaskIds`를 `PAYOUT_ACCOUNT_TASK_IDS`로 저장하세요. `PAYOUT_ACCOUNT_TASK_IDS`가 비어있지 않으면 [케이퍼빌리티와 태스크](/ko/integration/onboarding/capabilities-and-requirements)를 통해 현재 태스크를 완료하세요.
+
+[`GET /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts-by-account-id)로 다시 조회하세요:
+
+```bash
+curl --request GET \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/accounts/${PAYOUT_ACCOUNT_ID}" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}"
+```
+
+`data.status`와 `data.openTaskIds`에서 `PAYOUT_ACCOUNT_STATUS`와 `PAYOUT_ACCOUNT_TASK_IDS`를 새로고침하세요. `PAYOUT_ACCOUNT_STATUS`가 `ready`일 때만 계속 진행한 뒤, [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes)로 견적을 생성하세요:
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/quotes" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-payout-quote-001" \
+  --header "Content-Type: application/json" \
+  --data @- <<JSON
+{"customerId":"${CUSTOMER_ID}","capabilityId":"${CAPABILITY_ID}","in":{"amount":"150.00","currency":"USDC","accountId":"${FLOW_WALLET_ID}"},"destinationId":"${PAYOUT_ACCOUNT_ID}","out":{"currency":"USD"}}
+JSON
+```
+
+`data.id`를 `QUOTE_ID`로 저장하고 [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers)로 실행한 뒤 반환된 `data.id`를 `TRANSFER_ID`로 저장하세요:
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/transfers" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-payout-transfer-001" \
+  --header "Content-Type: application/json" \
+  --data @- <<JSON
+{"quoteId":"${QUOTE_ID}"}
+JSON
+```
+
+  </Tab>
+
+  <Tab title="발급 은행 계좌">
+
+[`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts)로 준비된 지갑으로 정산되는 ACH/USD 계좌를 생성하세요:
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/accounts" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-bank-account-001" \
+  --header "Content-Type: application/json" \
+  --data @- <<JSON
+{"origin":"issued","type":"bank","method":"ach","country":"US","currency":"USD","settlement":{"accountId":"${FLOW_WALLET_ID}"}}
+JSON
+```
+
+`data.id`를 `BANK_ACCOUNT_ID`로 저장한 뒤 [`GET /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts-by-account-id)로 프로비저닝을 조회하세요:
+
+```bash
+curl --request GET \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/accounts/${BANK_ACCOUNT_ID}" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}"
+```
+
+`data.status`를 `BANK_ACCOUNT_STATUS`, `data.details`를 `BANK_ACCOUNT_DETAILS`, `data.openTaskIds`를 `BANK_ACCOUNT_TASK_IDS`로 저장하세요. 현재 태스크를 완료한 뒤, 상태가 사용을 허용하고 `data.details`가 존재할 때까지 계좌를 다시 조회하세요.
+
+은행 정보는 즉시 나타나지 않을 수 있어요. `BANK_ACCOUNT_DETAILS`에 반환된 정확한 재사용 가능 은행 정보를 표시할 수 있게 되면 브랜치가 완료돼요. 계좌가 아직 프로비저닝 중일 때는 절대로 자리 표시자 좌표를 구성하거나 표시하지 마세요.
+
+  </Tab>
+</Tabs>
+
+페이인과 페이아웃의 경우 [`GET /v3/transfers/{transferId}`](/api-reference/money-movement/get-v3-transfers-by-transfer-id)로 `TRANSFER_ID`를 모니터링하세요:
+
+```bash
+curl --request GET \
+  "${API_BASE}/v3/transfers/${TRANSFER_ID}" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}"
+```
+
+<CardGroup cols={3}>
+  <Card title="페이인" icon="arrow-down-to-line" href="/ko/integration/receive-funds">완전한 페이인 흐름을 구축하세요.</Card>
+  <Card title="페이아웃" icon="arrow-up-from-line" href="/ko/integration/send-funds">프로덕션 페이아웃 처리를 구축하세요.</Card>
+  <Card title="발급 은행 계좌" icon="building-columns" href="/ko/integration/issue-bank-account">프로비저닝과 정보를 처리하세요.</Card>
+</CardGroup>
+
+다음으로 [웹훅](/ko/integration/webhooks)을 추가하세요. 위의 각 요청에는 이미 완전한 API 레퍼런스 스키마와 상태 페이지가 링크되어 있어요.

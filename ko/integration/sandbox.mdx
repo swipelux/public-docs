@@ -1,0 +1,142 @@
+---
+title: "샌드박스 테스트"
+description: "통합을 구축하는 동안 케이퍼빌리티, 태스크, 지갑, 전송 결과를 제어하세요."
+---
+
+샌드박스는 프로덕션과 동일한 API 호스트를 사용해요. 샌드박스 API 키가 테스트 환경을 선택하며, 헬퍼가 실제 자금을 이동시키지 않고 결과를 시뮬레이션해요.
+
+키는 백엔드에 보관하세요. 샌드박스 헬퍼는 프로덕션 컴플라이언스나 온보딩을 대체하지 않아요.
+
+```bash
+export API_BASE='https://platform.swipelux.com'
+export SWIPELUX_SANDBOX_API_KEY='replace-with-your-sandbox-key'
+```
+
+## 케이퍼빌리티 준비 상태 테스트
+
+케이퍼빌리티를 요청한 후 [`POST /v3/sandbox/customers/{customerId}/capabilities/{capabilityId}/status`](/api-reference/sandbox/post-v3-sandbox-customers-by-customer-id-capabilities-by-capability-id-status)로 샌드박스 상태를 설정하세요:
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/sandbox/customers/${CUSTOMER_ID}/capabilities/${CAPABILITY_ID}/status" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Content-Type: application/json" \
+  --data '{"status":"ready"}'
+```
+
+헬퍼를 사용한 후에는 케이퍼빌리티를 다시 조회하세요. 현재 `status`와 `openTaskIds`를 제품이 처리해야 하는 결과로 다루세요.
+
+## 열린 태스크 테스트
+
+[`POST /v3/sandbox/tasks`](/api-reference/sandbox/post-v3-sandbox-tasks)로 케이퍼빌리티 범위 태스크를 생성하세요:
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/sandbox/tasks" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Content-Type: application/json" \
+  --data @- <<JSON
+{
+  "scope": {
+    "type": "capability",
+    "customerId": "${CUSTOMER_ID}",
+    "capabilityId": "${CAPABILITY_ID}"
+  },
+  "items": [
+    {
+      "type": "explanation",
+      "request": "Explain the source of funds."
+    }
+  ]
+}
+JSON
+```
+
+`data.id`를 `TASK_ID`, `data.revision`을 `TASK_REVISION`, 현재 `data.requirements[0].id`를 `REQUIREMENT_ID`로 저장하세요. [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission)로 답변을 제출하세요:
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/tasks/${TASK_ID}/submissions" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: sandbox-task-submission-001" \
+  --header "Content-Type: application/json" \
+  --data @- <<JSON
+{
+  "taskRevision": ${TASK_REVISION},
+  "answers": [
+    {
+      "requirementId": "${REQUIREMENT_ID}",
+      "answer": {
+        "type": "text",
+        "value": "Sandbox requirement completed."
+      }
+    }
+  ]
+}
+JSON
+```
+
+그런 다음 [`POST /v3/sandbox/tasks/{taskId}/review`](/api-reference/sandbox/post-v3-sandbox-tasks-by-task-id-review)로 현재 제출을 승인하거나 거부하세요:
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/sandbox/tasks/${TASK_ID}/review" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Content-Type: application/json" \
+  --data '{"outcome":"accepted"}'
+```
+
+프로덕션 태스크 완료 패턴은 [케이퍼빌리티와 태스크](/ko/integration/onboarding/capabilities-and-requirements)를 참고하세요.
+
+## 샌드박스 지갑 충전
+
+[`POST /v3/sandbox/accounts/{accountId}/topup`](/api-reference/sandbox/post-v3-sandbox-accounts-by-account-id-topup)로 발급 지갑에 크레딧을 적립하세요:
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/sandbox/accounts/${ACCOUNT_ID}/topup" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Content-Type: application/json" \
+  --data '{"amount":"250.00","currency":"USDC"}'
+```
+
+시뮬레이션된 자금 조달 전송을 확인하려면 반환된 `data.id`를 `TRANSFER_ID`로 저장하세요.
+
+## 전송 완료 또는 실패
+
+[`POST /v3/sandbox/transfers/{transferId}/state`](/api-reference/sandbox/post-v3-sandbox-transfers-by-transfer-id-state)로 결과를 설정하세요:
+
+<Tabs>
+  <Tab title="완료">
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/sandbox/transfers/${TRANSFER_ID}/state" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Content-Type: application/json" \
+  --data '{"state":"completed"}'
+```
+
+  </Tab>
+  <Tab title="실패">
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/sandbox/transfers/${TRANSFER_ID}/state" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Content-Type: application/json" \
+  --data @- <<'JSON'
+{
+  "state": "failed",
+  "stateDetail": {
+    "code": "sandbox_review",
+    "message": "Sandbox transfer failed."
+  }
+}
+JSON
+```
+
+  </Tab>
+</Tabs>
+
+다음으로 샌드박스에서 [페이인](/ko/integration/receive-funds), [페이아웃](/ko/integration/send-funds) 또는 [발급 은행 계좌](/ko/integration/issue-bank-account) 흐름을 실행하세요.

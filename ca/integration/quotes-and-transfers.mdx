@@ -1,0 +1,106 @@
+---
+title: "Cotitzacions i transferències"
+description: "Escull un import exacte, executa una cotització de manera segura i segueix l'estat actual de la transferència."
+---
+
+Una cotització té una durada limitada i és d'un sol ús. Executa-la una vegada i no la reutilitzis com a plantilla de transferència. Una transferència és l'execució d'aquesta cotització i continua canviant després de la creació.
+
+## Comprova la compatibilitat dels recursos
+
+Abans de cotitzar, confirma que:
+
+- La capacitat està preparada, pertany al client i coincideix amb la direcció i el mètode previstos.
+- Una font de stablecoin és una cartera emesa activa que suporta la moneda d'entrada.
+- Els recursos de cartera a cartera utilitzen la mateixa moneda i xarxa.
+- Un compte de pagament fiat o una destinació està preparat i suporta la moneda i el mètode de sortida.
+
+## Escull l'import exacte
+
+Crea una cotització amb [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes). Envia un costat de l'import, les dues monedes i els IDs de recurs derivats de la resposta amb aquestes capçaleres:
+
+```http
+X-API-Key: ${SWIPELUX_API_KEY}
+Idempotency-Key: quote-create-001
+Content-Type: application/json
+```
+
+<Tabs>
+  <Tab title="Entrada exacta">
+
+Estableix `in.amount` i omet `out.amount`. La resposta calcula el que rep la destinació.
+
+```json
+{
+  "customerId": "${CUSTOMER_ID}",
+  "capabilityId": "${STABLECOIN_CAPABILITY_ID}",
+  "in": {
+    "amount": "1.234567",
+    "currency": "USDC",
+    "accountId": "${SOURCE_WALLET_ID}"
+  },
+  "destinationId": "${WALLET_DESTINATION_ID}",
+  "out": {
+    "currency": "USDC"
+  }
+}
+```
+
+  </Tab>
+  <Tab title="Sortida exacta">
+
+Estableix `out.amount` i omet `in.amount`. La resposta calcula el que ha de sortir de la font.
+
+```json
+{
+  "customerId": "${CUSTOMER_ID}",
+  "capabilityId": "${CAPABILITY_ID}",
+  "in": {
+    "currency": "USDC",
+    "accountId": "${SOURCE_WALLET_ID}"
+  },
+  "destinationId": "${RECIPIENT_DESTINATION_ID}",
+  "out": {
+    "amount": "100.00",
+    "currency": "USD"
+  }
+}
+```
+
+  </Tab>
+</Tabs>
+
+Emmagatzema el `data.id`, `data.status`, `data.expiresAt`, els trams retornats, la taxa i les comissions de la cotització. Utilitza les cadenes decimals retornades; no recalculis els imports executables amb aritmètica de coma flotant.
+
+Després d'una cotització de sortida exacta finançada amb stablecoin, llegeix [`GET /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts-by-account-id). Compara l'actual `balances[].available` de la font per a la moneda d'entrada amb el `data.in.amount` retornat. Si els fons són insuficients, canvia o finança la font i crea una nova cotització. Les cotitzacions de sortida exacta finançades amb fiat no utilitzen aquesta comprovació de saldo de la cartera d'origen.
+
+## Executa una vegada i recupera de manera segura
+
+Llegeix la cotització actual amb [`GET /v3/quotes/{quoteId}`](/api-reference/money-movement/get-v3-quotes-by-quote-id). Executa només mentre el seu estat i `expiresAt` ho permetin.
+
+Crea la transferència amb [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers):
+
+```http
+X-API-Key: ${SWIPELUX_API_KEY}
+Idempotency-Key: transfer-create-001
+Content-Type: application/json
+```
+
+```json
+{
+  "quoteId": "${QUOTE_ID}"
+}
+```
+
+Genera una nova `Idempotency-Key` per a aquesta transferència prevista i persisteix-la abans d'enviar la sol·licitud. Si la resposta es perd, reintenta el mateix mètode, camí, cos i clau. No creïs una segona clau d'execució per recuperar un resultat incert.
+
+Si l'API retorna `quote_already_executed`, utilitza el seu `transferId` per continuar amb la transferència existent. Una repetició idempotent també pot retornar `Idempotency-Replayed: true`.
+
+## Segueix la transferència actual
+
+Llegeix [`GET /v3/transfers/{transferId}`](/api-reference/money-movement/get-v3-transfers-by-transfer-id) després de la creació i després de cada webhook. Emmagatzema els `data.state`, `data.stateDetail` i `data.openTaskIds` més recents.
+
+Quan hi hagi IDs de tasca oberts, obté [`GET /v3/transfers/{transferId}/tasks`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-tasks) i completa cada tasca utilitzant la seva revisió i requisits actuals.
+
+Per a un moviment entrant, [`GET /v3/transfers/{transferId}/instructions`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-instructions) pot retornar detalls de finançament específics de la transferència. Renderitza només la variant d'instrucció retornada i la referència exacta.
+
+A continuació, implementa [Webhooks](/ca/integration/webhooks) perquè cada actualització asíncrona de la transferència entri al mateix camí de gestió d'estat actual.

@@ -228,6 +228,12 @@ async function mintlifyAnchorsForContent(content) {
   }
 }
 
+let projectLinkGraphPromise;
+function projectLinkGraph() {
+  projectLinkGraphPromise ??= buildGraph(projectRoot);
+  return projectLinkGraphPromise;
+}
+
 function assertStageARetargetedLegacyRedirects(redirects) {
   for (const [source, expectedDestination] of Object.entries(
     STAGE_A_RETARGETED_LEGACY_REDIRECTS,
@@ -567,6 +573,46 @@ test("every published Markdown/MDX internal link resolves directly", () => {
   assert.deepEqual(problems, []);
 });
 
+test("every published Markdown/MDX fragment link resolves directly", async () => {
+  const markdownByRoute = new Map(
+    markdownFiles().map((path) => [markdownRoute(path), path]),
+  );
+  const graph = await projectLinkGraph();
+  const problems = [];
+  let linkCount = 0;
+
+  for (const page of REQUIRED_PUBLISHED_PAGES) {
+    const path = page === "index" ? "index.mdx" : `${page}.mdx`;
+    const sourceRoute = publishedRoute(page);
+    for (const { href, line } of outboundLinks(readProjectFile(path))) {
+      const trimmed = href.trim();
+      if (
+        !trimmed.includes("#") ||
+        /^(?:[a-z][a-z\d+.-]*:|\/\/)/i.test(trimmed)
+      ) {
+        continue;
+      }
+
+      const rawFragment = trimmed.slice(trimmed.indexOf("#") + 1);
+      if (rawFragment === "") continue;
+      const fragment = decodeURIComponent(rawFragment);
+      const destinationPath = trimmed.startsWith("#")
+        ? sourceRoute
+        : linkDestinationPath(trimmed, sourceRoute);
+      const projectPath = markdownByRoute.get(destinationPath);
+      if (!projectPath) continue;
+
+      linkCount += 1;
+      if (!graphNodeAnchors(graph, projectPath).has(fragment)) {
+        problems.push(`${path}:${line} links to missing fragment ${trimmed}`);
+      }
+    }
+  }
+
+  assert.ok(linkCount > 0, "expected published fragment links");
+  assert.deepEqual(problems, []);
+});
+
 test("the pinned Mintlify generator emits every exact coverage href", () => {
   const pages = generatedOpenApiPages();
   const generatedByKey = new Map();
@@ -666,7 +712,7 @@ test("every fragment-bearing redirect resolves to a Markdown/MDX anchor", async 
       destination.includes("#"),
     ).length,
   );
-  const graph = await buildGraph(projectRoot);
+  const graph = await projectLinkGraph();
 
   for (const { source, destination } of fragmentRedirects) {
     const [destinationPath, fragment] = destination.split("#", 2);

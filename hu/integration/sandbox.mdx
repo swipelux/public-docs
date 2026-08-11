@@ -1,0 +1,142 @@
+---
+title: "Sandbox tesztelés"
+description: "Vezérelje a képességek, feladatok, tárcák és átutalások kimeneteit az integrációja építése közben."
+---
+
+A sandbox ugyanazt az API-hosztot használja, mint az éles környezet. A sandbox API-kulcs kiválasztja a tesztkörnyezetet, ahol a segédeszközök valós pénzmozgás nélkül szimulálják a kimeneteket.
+
+Tartsa a kulcsot a backendjén. A sandbox segédeszközök nem helyettesítik az éles megfelelőséget vagy onboardingot.
+
+```bash
+export API_BASE='https://platform.swipelux.com'
+export SWIPELUX_SANDBOX_API_KEY='replace-with-your-sandbox-key'
+```
+
+## Képesség készenlétének tesztelése
+
+Egy képesség kérése után állítsa be annak sandbox státuszát a [`POST /v3/sandbox/customers/{customerId}/capabilities/{capabilityId}/status`](/api-reference/sandbox/post-v3-sandbox-customers-by-customer-id-capabilities-by-capability-id-status) művelettel:
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/sandbox/customers/${CUSTOMER_ID}/capabilities/${CAPABILITY_ID}/status" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Content-Type: application/json" \
+  --data '{"status":"ready"}'
+```
+
+A segédeszköz használata után frissítse le a képességet. Az aktuális `status` és `openTaskIds` értékeit tekintse annak az eredménynek, amelyet a terméknek kezelnie kell.
+
+## Nyitott feladat tesztelése
+
+Hozzon létre egy képességhez kötött feladatot a [`POST /v3/sandbox/tasks`](/api-reference/sandbox/post-v3-sandbox-tasks) művelettel:
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/sandbox/tasks" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Content-Type: application/json" \
+  --data @- <<JSON
+{
+  "scope": {
+    "type": "capability",
+    "customerId": "${CUSTOMER_ID}",
+    "capabilityId": "${CAPABILITY_ID}"
+  },
+  "items": [
+    {
+      "type": "explanation",
+      "request": "Explain the source of funds."
+    }
+  ]
+}
+JSON
+```
+
+Tárolja a `data.id` értéket `TASK_ID`-ként, a `data.revision` értéket `TASK_REVISION`-ként, az aktuális `data.requirements[0].id` értéket pedig `REQUIREMENT_ID`-ként. Küldje el a választ a [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) művelettel:
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/tasks/${TASK_ID}/submissions" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: sandbox-task-submission-001" \
+  --header "Content-Type: application/json" \
+  --data @- <<JSON
+{
+  "taskRevision": ${TASK_REVISION},
+  "answers": [
+    {
+      "requirementId": "${REQUIREMENT_ID}",
+      "answer": {
+        "type": "text",
+        "value": "Sandbox requirement completed."
+      }
+    }
+  ]
+}
+JSON
+```
+
+Ezután fogadja el vagy utasítsa el az aktuális beküldést a [`POST /v3/sandbox/tasks/{taskId}/review`](/api-reference/sandbox/post-v3-sandbox-tasks-by-task-id-review) művelettel:
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/sandbox/tasks/${TASK_ID}/review" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Content-Type: application/json" \
+  --data '{"outcome":"accepted"}'
+```
+
+Használja a [Képességek és feladatok](/hu/integration/onboarding/capabilities-and-requirements) útmutatót az éles feladat-elvégzési mintához.
+
+## Sandbox tárca feltöltése
+
+Írjon jóvá egy kibocsátott tárcát a [`POST /v3/sandbox/accounts/{accountId}/topup`](/api-reference/sandbox/post-v3-sandbox-accounts-by-account-id-topup) művelettel:
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/sandbox/accounts/${ACCOUNT_ID}/topup" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Content-Type: application/json" \
+  --data '{"amount":"250.00","currency":"USDC"}'
+```
+
+Tárolja a visszakapott `data.id` értéket `TRANSFER_ID`-ként, ha meg szeretné vizsgálni a szimulált feltöltési átutalást.
+
+## Átutalás befejezése vagy sikertelenné tétele
+
+Állítsa be a kimenetet a [`POST /v3/sandbox/transfers/{transferId}/state`](/api-reference/sandbox/post-v3-sandbox-transfers-by-transfer-id-state) művelettel:
+
+<Tabs>
+  <Tab title="Befejezés">
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/sandbox/transfers/${TRANSFER_ID}/state" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Content-Type: application/json" \
+  --data '{"state":"completed"}'
+```
+
+  </Tab>
+  <Tab title="Sikertelen">
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/sandbox/transfers/${TRANSFER_ID}/state" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Content-Type: application/json" \
+  --data @- <<'JSON'
+{
+  "state": "failed",
+  "stateDetail": {
+    "code": "sandbox_review",
+    "message": "Sandbox transfer failed."
+  }
+}
+JSON
+```
+
+  </Tab>
+</Tabs>
+
+Ezután futtasson [pénzbefizetési](/hu/integration/receive-funds), [kifizetési](/hu/integration/send-funds) vagy [kibocsátott bankszámla](/hu/integration/issue-bank-account) folyamatot sandboxban.

@@ -1,0 +1,66 @@
+---
+title: "API 參考"
+description: "使用 API 契約、安全地重試寫入操作,並一致地處理錯誤。"
+---
+
+API 參考是 Swipelux API 的權威契約。每個操作都會列出其請求、回應、安全性、狀態與錯誤的結構。
+
+所有請求皆使用 `https://platform.swipelux.com`。請從受保護的後端於 `X-API-Key` 標頭中傳送對應環境的金鑰。
+
+## 使寫入操作可安全重試
+
+當某操作將 `Idempotency-Key` 列為必填時,請為每次預期的操作產生一組金鑰,並與您本地的請求紀錄一同保存。
+
+```bash
+curl --request POST \
+  'https://platform.swipelux.com/v3/customers' \
+  --header 'X-API-Key: YOUR_API_KEY' \
+  --header 'Idempotency-Key: customer-order-1001' \
+  --header 'Content-Type: application/json' \
+  --data '{"type":"individual","externalId":"customer-order-1001"}'
+```
+
+若回應狀態不明確,請以相同的金鑰重試完全相同的方法、路徑與請求主體。不要將該金鑰用於其他操作或變更後的請求主體。
+
+某些操作在回應由先前使用相同金鑰的請求提供時,會回傳 `Idempotency-Replayed: true`。請將該回應視為原始操作的結果,而不是第二次操作。
+
+## 處理錯誤
+
+API 錯誤採用 `application/problem+json`。請圍繞以下穩定欄位建構用戶端行為:
+
+| 欄位 | 用途 |
+| --- | --- |
+| `status` | 與該問題相關的 HTTP 狀態。 |
+| `code` | 穩定的機器可讀錯誤代碼。 |
+| `detail` | 對當前請求可採取行動的說明。 |
+| `retryable` | 若有提供,表示以相同請求重試是否可能成功。 |
+| `errors[].pointer` | 指向無效請求欄位的 JSON Pointer。 |
+| `correlationId` | 應保留於日誌與客服紀錄中的請求識別碼。 |
+
+回應中的 `correlationId` 與 `X-Request-Id` 相同。請同時記錄操作與此值,但不要暴露密鑰或完整的財務細節。
+
+```json
+{
+  "type": "https://docs.swipelux.com/problems/validation_error",
+  "title": "Validation error",
+  "status": 400,
+  "code": "validation_error",
+  "detail": "The request contains invalid fields.",
+  "correlationId": "01JERRORVALIDATION",
+  "errors": [
+    {
+      "pointer": "/externalId",
+      "code": "invalid_format",
+      "message": "Use a valid external identifier."
+    }
+  ]
+}
+```
+
+請依據該操作所記載的問題結構決定要修正輸入、重新載入資源狀態、完成任務或重試。請於 API 參考中維護完整的狀態與錯誤目錄,而不要硬編碼未記載的情況。
+
+## 追蹤非同步操作
+
+成功的建立回應會啟動許多工作流程;它並不保證操作已完成。請儲存從回應取得的資源 ID,讀取當前的資源狀態,並使用[已驗證的 webhook](/zh-Hant/integration/webhooks) 對變更作出回應。
+
+從 [`POST /v3/customers`](/api-reference/customers/post-v3-customers) 開始,或依照[快速入門](/zh-Hant/integration/quickstart) 走完一次完整的沙箱流程。

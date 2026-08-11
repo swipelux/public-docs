@@ -1,0 +1,266 @@
+---
+title: "Rychlý start"
+description: "Vytvořte zákazníka v sandboxu, aktivujte capability a spusťte tok příchozí platby, výplaty nebo vydaného bankovního účtu."
+---
+
+Vytvořte zákazníka, připravte jednu opakovaně použitelnou peněženku a spusťte sandboxový tok, který potřebujete.
+
+## 1. Nakonfigurujte sandbox
+
+Použijte sandbox API klíč ze svého backendu:
+
+```bash
+export API_BASE='https://platform.swipelux.com'
+export SWIPELUX_SANDBOX_API_KEY='replace-with-your-sandbox-key'
+```
+
+Klíč vybírá sandbox prostředí na sdíleném API hostu.
+
+## 2. Vytvořte zákazníka
+
+Vytvořte fyzickou osobu jako zákazníka pomocí [`POST /v3/customers`](/api-reference/customers/post-v3-customers):
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/customers" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-customer-001" \
+  --header "Content-Type: application/json" \
+  --data '{"type":"individual","externalId":"quickstart-customer-001"}'
+```
+
+Uložte `data.id` jako `CUSTOMER_ID`.
+
+## 3. Zvolte výsledek
+
+- **Příchozí platba:** přijměte USD a vypořádejte USDC do vydané peněženky zákazníka.
+- **Výplata:** odešlete USDC z vydané peněženky zákazníka na bankovní účet vlastněný zákazníkem.
+- **Vydaný bankovní účet:** vydejte ACH/USD účet, který se vypořádá do vydané peněženky zákazníka.
+
+Pro výplatu třetí straně postupujte podle [Příjemci](/cs/integration/recipients) nebo [Odesílat prostředky](/cs/integration/send-funds).
+
+## 4. Najděte vhodnou capability
+
+Zjistěte podporované capabilities pomocí [`GET /v3/customers/{customerId}/capabilities/supported`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-supported):
+
+```bash
+curl --request GET \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/capabilities/supported" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}"
+```
+
+Vyberte položku odpovědi s `availability` nastaveným na `available` nebo `beta`, `eligibility.eligible` nastaveným na `true`, potřebnými `directions` a `method` a odpovídajícím `accountType`. Použijte vydanou peněženku zákazníka jako cíl příchozí platby, zdroj výplaty nebo účet vypořádání bankovního účtu; jako `destinationId` pro tuto cestu výplaty použijte účet vlastněný zákazníkem. Pokud jsou vráceny `institutions`, použijte pouze vrácenou volbu instituce. Uložte `id` položky jako `CAPABILITY_ID`; nekódujte pevně univerzální ID capability.
+
+## 5. Požádejte o capability
+
+Požádejte o vybranou capability pomocí [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id):
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/capabilities/${CAPABILITY_ID}" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-capability-001" \
+  --header "Content-Type: application/json" \
+  --data '{}'
+```
+
+Uložte `data.status` jako `CAPABILITY_STATUS` a `data.openTaskIds` jako `TASK_IDS`.
+
+## 6. Dokončete onboarding v sandboxu
+
+Pokud `TASK_IDS` není prázdný, dokončete každý aktuální požadavek přes [Capabilities a úkoly](/cs/integration/onboarding/capabilities-and-requirements).
+
+Pro tento průchod nastavte capability na `ready` pomocí [`POST /v3/sandbox/customers/{customerId}/capabilities/{capabilityId}/status`](/api-reference/sandbox/post-v3-sandbox-customers-by-customer-id-capabilities-by-capability-id-status):
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/sandbox/customers/${CUSTOMER_ID}/capabilities/${CAPABILITY_ID}/status" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Content-Type: application/json" \
+  --data '{"status":"ready"}'
+```
+
+Toto testovací ovládání není produkční onboarding. Znovu načtěte data pomocí [`GET /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id):
+
+```bash
+curl --request GET \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/capabilities/${CAPABILITY_ID}" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}"
+```
+
+Obnovte `CAPABILITY_STATUS` a `TASK_IDS` z `data.status` a `data.openTaskIds`. Pokračujte jen tehdy, když `CAPABILITY_STATUS` je `ready`.
+
+## 7. Sestavte vybraný tok
+
+Vytvořte jednu vydanou USDC peněženku na síti Base pomocí [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts):
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/accounts" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-flow-wallet-001" \
+  --header "Content-Type: application/json" \
+  --data '{"origin":"issued","type":"wallet","currency":"USDC","network":"base"}'
+```
+
+Uložte `data.id` jako `FLOW_WALLET_ID`, `data.status` jako `FLOW_WALLET_STATUS` a `data.openTaskIds` jako `FLOW_WALLET_TASK_IDS`. Pokud `FLOW_WALLET_TASK_IDS` není prázdný, dokončete aktuální úkoly přes [Capabilities a úkoly](/cs/integration/onboarding/capabilities-and-requirements).
+
+Znovu načtěte peněženku pomocí [`GET /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts-by-account-id):
+
+```bash
+curl --request GET \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/accounts/${FLOW_WALLET_ID}" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}"
+```
+
+Obnovte `FLOW_WALLET_STATUS` a `FLOW_WALLET_TASK_IDS` z `data.status` a `data.openTaskIds`. Pokračujte jen tehdy, když `FLOW_WALLET_STATUS` je `ready`.
+
+<Tabs>
+  <Tab title="Příchozí platba">
+
+Vytvořte USD-na-USDC quote pomocí [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes):
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/quotes" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-payin-quote-001" \
+  --header "Content-Type: application/json" \
+  --data @- <<JSON
+{"customerId":"${CUSTOMER_ID}","capabilityId":"${CAPABILITY_ID}","in":{"amount":"150.00","currency":"USD"},"destinationId":"${FLOW_WALLET_ID}","out":{"currency":"USDC"}}
+JSON
+```
+
+Uložte `data.id` jako `QUOTE_ID`, poté jej proveďte pomocí [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers):
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/transfers" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-payin-transfer-001" \
+  --header "Content-Type: application/json" \
+  --data @- <<JSON
+{"quoteId":"${QUOTE_ID}"}
+JSON
+```
+
+Uložte `data.id` jako `TRANSFER_ID`. Načtěte pokyny pomocí [`GET /v3/transfers/{transferId}/instructions`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-instructions):
+
+```bash
+curl --request GET \
+  "${API_BASE}/v3/transfers/${TRANSFER_ID}/instructions" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}"
+```
+
+Odpověď obsahuje `data.transferId` a `data.instructions`. Uložte `data.transferId` jako `TRANSFER_ID` a `data.instructions` jako `FUNDING_INSTRUCTIONS`.
+
+  </Tab>
+
+  <Tab title="Výplata">
+
+Naplňte připravenou peněženku pomocí [`POST /v3/sandbox/accounts/{accountId}/topup`](/api-reference/sandbox/post-v3-sandbox-accounts-by-account-id-topup):
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/sandbox/accounts/${FLOW_WALLET_ID}/topup" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Content-Type: application/json" \
+  --data '{"amount":"250.00","currency":"USDC"}'
+```
+
+Vytvořte ACH účet vlastněný zákazníkem pomocí [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts):
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/accounts" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-payout-account-001" \
+  --header "Content-Type: application/json" \
+  --data @- <<'JSON'
+{"origin":"external","type":"bank","methods":["ach"],"country":"US","currency":"USD","details":{"routingNumber":"021000021","accountNumber":"123456789","accountType":"checking","bankName":"Example Bank","accountHolderName":"Amina Diallo"}}
+JSON
+```
+
+Uložte `data.id` jako `PAYOUT_ACCOUNT_ID`, `data.status` jako `PAYOUT_ACCOUNT_STATUS` a `data.openTaskIds` jako `PAYOUT_ACCOUNT_TASK_IDS`. Pokud `PAYOUT_ACCOUNT_TASK_IDS` není prázdný, dokončete aktuální úkoly přes [Capabilities a úkoly](/cs/integration/onboarding/capabilities-and-requirements).
+
+Znovu načtěte pomocí [`GET /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts-by-account-id):
+
+```bash
+curl --request GET \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/accounts/${PAYOUT_ACCOUNT_ID}" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}"
+```
+
+Obnovte `PAYOUT_ACCOUNT_STATUS` a `PAYOUT_ACCOUNT_TASK_IDS` z `data.status` a `data.openTaskIds`. Pokračujte jen tehdy, když `PAYOUT_ACCOUNT_STATUS` je `ready`, poté vytvořte quote pomocí [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes):
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/quotes" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-payout-quote-001" \
+  --header "Content-Type: application/json" \
+  --data @- <<JSON
+{"customerId":"${CUSTOMER_ID}","capabilityId":"${CAPABILITY_ID}","in":{"amount":"150.00","currency":"USDC","accountId":"${FLOW_WALLET_ID}"},"destinationId":"${PAYOUT_ACCOUNT_ID}","out":{"currency":"USD"}}
+JSON
+```
+
+Uložte `data.id` jako `QUOTE_ID`, proveďte jej pomocí [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) a uložte vrácené `data.id` jako `TRANSFER_ID`:
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/transfers" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-payout-transfer-001" \
+  --header "Content-Type: application/json" \
+  --data @- <<JSON
+{"quoteId":"${QUOTE_ID}"}
+JSON
+```
+
+  </Tab>
+
+  <Tab title="Vydaný bankovní účet">
+
+Vytvořte ACH/USD účet vypořádávaný do připravené peněženky pomocí [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts):
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/accounts" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-bank-account-001" \
+  --header "Content-Type: application/json" \
+  --data @- <<JSON
+{"origin":"issued","type":"bank","method":"ach","country":"US","currency":"USD","settlement":{"accountId":"${FLOW_WALLET_ID}"}}
+JSON
+```
+
+Uložte `data.id` jako `BANK_ACCOUNT_ID`, poté přečtěte průběh provisioningu pomocí [`GET /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts-by-account-id):
+
+```bash
+curl --request GET \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/accounts/${BANK_ACCOUNT_ID}" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}"
+```
+
+Uložte `data.status` jako `BANK_ACCOUNT_STATUS`, `data.details` jako `BANK_ACCOUNT_DETAILS` a `data.openTaskIds` jako `BANK_ACCOUNT_TASK_IDS`. Dokončete všechny aktuální úkoly, poté účet čtěte znovu, dokud jeho stav neumožní použití a `data.details` není přítomno.
+
+Bankovní údaje nemusí být okamžitě dostupné. Větev je dokončena, když můžete prezentovat přesné opakovaně použitelné bankovní údaje vrácené v `BANK_ACCOUNT_DETAILS`. Nikdy nekonstruujte ani nezobrazujte zástupné souřadnice, dokud se účet stále provisionuje.
+
+  </Tab>
+</Tabs>
+
+Pro příchozí platby a výplaty sledujte `TRANSFER_ID` pomocí [`GET /v3/transfers/{transferId}`](/api-reference/money-movement/get-v3-transfers-by-transfer-id):
+
+```bash
+curl --request GET \
+  "${API_BASE}/v3/transfers/${TRANSFER_ID}" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}"
+```
+
+<CardGroup cols={3}>
+  <Card title="Příchozí platba" icon="arrow-down-to-line" href="/cs/integration/receive-funds">Sestavte kompletní tok příchozí platby.</Card>
+  <Card title="Výplata" icon="arrow-up-from-line" href="/cs/integration/send-funds">Vybudujte produkční zpracování výplat.</Card>
+  <Card title="Vydaný bankovní účet" icon="building-columns" href="/cs/integration/issue-bank-account">Zpracujte provisioning a údaje.</Card>
+</CardGroup>
+
+Dále přidejte [webhooky](/cs/integration/webhooks). Každý požadavek výše již odkazuje na své kompletní API Reference schéma a stavovou stránku.

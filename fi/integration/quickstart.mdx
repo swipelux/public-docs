@@ -1,0 +1,266 @@
+---
+title: "Pikaopas"
+description: "Luo sandbox-asiakas, ota käyttöön kyky ja suorita maksun vastaanotto, maksun lähetys tai luodun pankkitilin virta."
+---
+
+Luo asiakas, valmistele yksi uudelleenkäytettävä lompakko ja suorita tarvitsemasi sandbox-virta.
+
+## 1. Määritä sandbox
+
+Käytä sandbox-API-avainta taustapalvelustasi:
+
+```bash
+export API_BASE='https://platform.swipelux.com'
+export SWIPELUX_SANDBOX_API_KEY='replace-with-your-sandbox-key'
+```
+
+Avain valitsee sandbox-ympäristön jaetulla API-isännällä.
+
+## 2. Luo asiakas
+
+Luo yksityisasiakas [`POST /v3/customers`](/api-reference/customers/post-v3-customers) -toiminnolla:
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/customers" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-customer-001" \
+  --header "Content-Type: application/json" \
+  --data '{"type":"individual","externalId":"quickstart-customer-001"}'
+```
+
+Tallenna `data.id` muuttujaan `CUSTOMER_ID`.
+
+## 3. Valitse tulos
+
+- **Maksun vastaanotto:** ota vastaan USD ja selvitä USDC asiakkaan luotuun lompakkoon.
+- **Maksu ulos:** lähetä USDC asiakkaan luodusta lompakosta asiakkaan omalle pankkitilille.
+- **Luotu pankkitili:** luo ACH/USD-tili, joka selviää asiakkaan luotuun lompakkoon.
+
+Kolmannen osapuolen maksua varten seuraa [Vastaanottajat](/fi/integration/recipients) tai [Lähetä varoja](/fi/integration/send-funds).
+
+## 4. Etsi kelvollinen kyky
+
+Listaa tuetut kyvyt [`GET /v3/customers/{customerId}/capabilities/supported`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-supported) -toiminnolla:
+
+```bash
+curl --request GET \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/capabilities/supported" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}"
+```
+
+Valitse vastauskohta, jossa `availability` on `available` tai `beta`, `eligibility.eligible` on `true`, tarvittavat `directions` ja `method` sekä vastaava `accountType`. Käytä asiakkaan luotua lompakkoa maksun vastaanoton kohteena, maksun lähteenä tai pankkitilin selvitystilinä; käytä asiakkaan omistamaa tiliä `destinationId`-kenttänä tässä maksupolussa. Jos `institutions` palautetaan, käytä vain palautettua instituutiovalintaa. Tallenna kohteen `id` muuttujaan `CAPABILITY_ID`; älä koodaa yleistä kyky-ID:tä kovakoodatusti.
+
+## 5. Pyydä kyky
+
+Pyydä valittu kyky [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) -toiminnolla:
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/capabilities/${CAPABILITY_ID}" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-capability-001" \
+  --header "Content-Type: application/json" \
+  --data '{}'
+```
+
+Tallenna `data.status` muuttujaan `CAPABILITY_STATUS` ja `data.openTaskIds` muuttujaan `TASK_IDS`.
+
+## 6. Suorita käyttöönotto sandboxissa
+
+Jos `TASK_IDS` ei ole tyhjä, suorita jokainen nykyinen vaatimus [Kyvyt ja tehtävät](/fi/integration/onboarding/capabilities-and-requirements) -kautta.
+
+Tämän läpikäynnin osalta aseta kyky tilaan `ready` [`POST /v3/sandbox/customers/{customerId}/capabilities/{capabilityId}/status`](/api-reference/sandbox/post-v3-sandbox-customers-by-customer-id-capabilities-by-capability-id-status) -toiminnolla:
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/sandbox/customers/${CUSTOMER_ID}/capabilities/${CAPABILITY_ID}/status" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Content-Type: application/json" \
+  --data '{"status":"ready"}'
+```
+
+Tämä testihallinta ei ole tuotannon käyttöönotto. Hae uudelleen [`GET /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id) -toiminnolla:
+
+```bash
+curl --request GET \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/capabilities/${CAPABILITY_ID}" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}"
+```
+
+Päivitä `CAPABILITY_STATUS` ja `TASK_IDS` kentistä `data.status` ja `data.openTaskIds`. Jatka vain, kun `CAPABILITY_STATUS` on `ready`.
+
+## 7. Rakenna valittu virta
+
+Luo yksi USDC-lompakko Base-verkossa [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) -toiminnolla:
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/accounts" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-flow-wallet-001" \
+  --header "Content-Type: application/json" \
+  --data '{"origin":"issued","type":"wallet","currency":"USDC","network":"base"}'
+```
+
+Tallenna `data.id` muuttujaan `FLOW_WALLET_ID`, `data.status` muuttujaan `FLOW_WALLET_STATUS` ja `data.openTaskIds` muuttujaan `FLOW_WALLET_TASK_IDS`. Jos `FLOW_WALLET_TASK_IDS` ei ole tyhjä, suorita nykyiset tehtävät [Kyvyt ja tehtävät](/fi/integration/onboarding/capabilities-and-requirements) -kautta.
+
+Hae lompakko uudelleen [`GET /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts-by-account-id) -toiminnolla:
+
+```bash
+curl --request GET \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/accounts/${FLOW_WALLET_ID}" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}"
+```
+
+Päivitä `FLOW_WALLET_STATUS` ja `FLOW_WALLET_TASK_IDS` kentistä `data.status` ja `data.openTaskIds`. Jatka vain, kun `FLOW_WALLET_STATUS` on `ready`.
+
+<Tabs>
+  <Tab title="Maksun vastaanotto">
+
+Luo USD-USDC-tarjous [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) -toiminnolla:
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/quotes" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-payin-quote-001" \
+  --header "Content-Type: application/json" \
+  --data @- <<JSON
+{"customerId":"${CUSTOMER_ID}","capabilityId":"${CAPABILITY_ID}","in":{"amount":"150.00","currency":"USD"},"destinationId":"${FLOW_WALLET_ID}","out":{"currency":"USDC"}}
+JSON
+```
+
+Tallenna `data.id` muuttujaan `QUOTE_ID`, suorita se sitten [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) -toiminnolla:
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/transfers" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-payin-transfer-001" \
+  --header "Content-Type: application/json" \
+  --data @- <<JSON
+{"quoteId":"${QUOTE_ID}"}
+JSON
+```
+
+Tallenna `data.id` muuttujaan `TRANSFER_ID`. Hae ohjeet [`GET /v3/transfers/{transferId}/instructions`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-instructions) -toiminnolla:
+
+```bash
+curl --request GET \
+  "${API_BASE}/v3/transfers/${TRANSFER_ID}/instructions" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}"
+```
+
+Vastaus sisältää `data.transferId` ja `data.instructions`. Tallenna `data.transferId` muuttujaan `TRANSFER_ID` ja `data.instructions` muuttujaan `FUNDING_INSTRUCTIONS`.
+
+  </Tab>
+
+  <Tab title="Maksu ulos">
+
+Rahoita valmis lompakko [`POST /v3/sandbox/accounts/{accountId}/topup`](/api-reference/sandbox/post-v3-sandbox-accounts-by-account-id-topup) -toiminnolla:
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/sandbox/accounts/${FLOW_WALLET_ID}/topup" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Content-Type: application/json" \
+  --data '{"amount":"250.00","currency":"USDC"}'
+```
+
+Luo asiakkaan omistama ACH-tili [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) -toiminnolla:
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/accounts" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-payout-account-001" \
+  --header "Content-Type: application/json" \
+  --data @- <<'JSON'
+{"origin":"external","type":"bank","methods":["ach"],"country":"US","currency":"USD","details":{"routingNumber":"021000021","accountNumber":"123456789","accountType":"checking","bankName":"Example Bank","accountHolderName":"Amina Diallo"}}
+JSON
+```
+
+Tallenna `data.id` muuttujaan `PAYOUT_ACCOUNT_ID`, `data.status` muuttujaan `PAYOUT_ACCOUNT_STATUS` ja `data.openTaskIds` muuttujaan `PAYOUT_ACCOUNT_TASK_IDS`. Jos `PAYOUT_ACCOUNT_TASK_IDS` ei ole tyhjä, suorita nykyiset tehtävät [Kyvyt ja tehtävät](/fi/integration/onboarding/capabilities-and-requirements) -kautta.
+
+Hae se uudelleen [`GET /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts-by-account-id) -toiminnolla:
+
+```bash
+curl --request GET \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/accounts/${PAYOUT_ACCOUNT_ID}" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}"
+```
+
+Päivitä `PAYOUT_ACCOUNT_STATUS` ja `PAYOUT_ACCOUNT_TASK_IDS` kentistä `data.status` ja `data.openTaskIds`. Jatka vain, kun `PAYOUT_ACCOUNT_STATUS` on `ready`, luo sitten tarjous [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) -toiminnolla:
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/quotes" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-payout-quote-001" \
+  --header "Content-Type: application/json" \
+  --data @- <<JSON
+{"customerId":"${CUSTOMER_ID}","capabilityId":"${CAPABILITY_ID}","in":{"amount":"150.00","currency":"USDC","accountId":"${FLOW_WALLET_ID}"},"destinationId":"${PAYOUT_ACCOUNT_ID}","out":{"currency":"USD"}}
+JSON
+```
+
+Tallenna `data.id` muuttujaan `QUOTE_ID`, suorita se [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) -toiminnolla ja tallenna palautettu `data.id` muuttujaan `TRANSFER_ID`:
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/transfers" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-payout-transfer-001" \
+  --header "Content-Type: application/json" \
+  --data @- <<JSON
+{"quoteId":"${QUOTE_ID}"}
+JSON
+```
+
+  </Tab>
+
+  <Tab title="Luotu pankkitili">
+
+Luo ACH/USD-tili, joka selviää valmiiseen lompakkoon [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) -toiminnolla:
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/accounts" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-bank-account-001" \
+  --header "Content-Type: application/json" \
+  --data @- <<JSON
+{"origin":"issued","type":"bank","method":"ach","country":"US","currency":"USD","settlement":{"accountId":"${FLOW_WALLET_ID}"}}
+JSON
+```
+
+Tallenna `data.id` muuttujaan `BANK_ACCOUNT_ID`, lue sitten valmistelu [`GET /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts-by-account-id) -toiminnolla:
+
+```bash
+curl --request GET \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/accounts/${BANK_ACCOUNT_ID}" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}"
+```
+
+Tallenna `data.status` muuttujaan `BANK_ACCOUNT_STATUS`, `data.details` muuttujaan `BANK_ACCOUNT_DETAILS` ja `data.openTaskIds` muuttujaan `BANK_ACCOUNT_TASK_IDS`. Suorita mahdolliset nykyiset tehtävät ja lue tili uudelleen, kunnes sen tila sallii käytön ja `data.details` on läsnä.
+
+Pankkitietoja ei välttämättä ole heti saatavilla. Haara on valmis, kun voit näyttää tarkat uudelleenkäytettävät pankkitiedot, jotka palautettiin `BANK_ACCOUNT_DETAILS`-kentässä. Älä koskaan rakenna tai näytä paikkamerkkikoordinaatteja tilin ollessa vielä valmisteltavana.
+
+  </Tab>
+</Tabs>
+
+Maksun vastaanoton ja maksun ulos osalta seuraa `TRANSFER_ID`-tunnusta [`GET /v3/transfers/{transferId}`](/api-reference/money-movement/get-v3-transfers-by-transfer-id) -toiminnolla:
+
+```bash
+curl --request GET \
+  "${API_BASE}/v3/transfers/${TRANSFER_ID}" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}"
+```
+
+<CardGroup cols={3}>
+  <Card title="Maksun vastaanotto" icon="arrow-down-to-line" href="/fi/integration/receive-funds">Rakenna täydellinen maksun vastaanottovirta.</Card>
+  <Card title="Maksu ulos" icon="arrow-up-from-line" href="/fi/integration/send-funds">Rakenna tuotannon maksunkäsittely.</Card>
+  <Card title="Luotu pankkitili" icon="building-columns" href="/fi/integration/issue-bank-account">Käsittele valmistelu ja tiedot.</Card>
+</CardGroup>
+
+Seuraavaksi lisää [webhookit](/fi/integration/webhooks). Kukin yllä oleva pyyntö linkittää jo täydelliseen API-referenssiskeemaansa ja tilasivuunsa.

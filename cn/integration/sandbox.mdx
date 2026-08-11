@@ -1,0 +1,142 @@
+---
+title: "沙盒测试"
+description: "在构建集成期间控制能力、任务、钱包和转账的结果。"
+---
+
+沙盒与生产环境使用同一个 API 主机。沙盒 API 密钥会选择测试环境,其中的辅助接口可在不真正划转资金的情况下模拟各种结果。
+
+请将该密钥保存在您的后端。沙盒辅助接口并不能替代生产环境的合规或入驻流程。
+
+```bash
+export API_BASE='https://platform.swipelux.com'
+export SWIPELUX_SANDBOX_API_KEY='replace-with-your-sandbox-key'
+```
+
+## 测试能力的就绪状态
+
+申请某个能力后,使用 [`POST /v3/sandbox/customers/{customerId}/capabilities/{capabilityId}/status`](/api-reference/sandbox/post-v3-sandbox-customers-by-customer-id-capabilities-by-capability-id-status) 设置其沙盒状态:
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/sandbox/customers/${CUSTOMER_ID}/capabilities/${CAPABILITY_ID}/status" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Content-Type: application/json" \
+  --data '{"status":"ready"}'
+```
+
+使用辅助接口后,请重新拉取该能力。将其当前的 `status` 与 `openTaskIds` 视为您的产品必须处理的结果。
+
+## 测试一个待办任务
+
+使用 [`POST /v3/sandbox/tasks`](/api-reference/sandbox/post-v3-sandbox-tasks) 创建一个能力范围内的任务:
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/sandbox/tasks" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Content-Type: application/json" \
+  --data @- <<JSON
+{
+  "scope": {
+    "type": "capability",
+    "customerId": "${CUSTOMER_ID}",
+    "capabilityId": "${CAPABILITY_ID}"
+  },
+  "items": [
+    {
+      "type": "explanation",
+      "request": "Explain the source of funds."
+    }
+  ]
+}
+JSON
+```
+
+将 `data.id` 保存为 `TASK_ID`,`data.revision` 保存为 `TASK_REVISION`,并将当前的 `data.requirements[0].id` 保存为 `REQUIREMENT_ID`。使用 [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) 提交答案:
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/tasks/${TASK_ID}/submissions" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: sandbox-task-submission-001" \
+  --header "Content-Type: application/json" \
+  --data @- <<JSON
+{
+  "taskRevision": ${TASK_REVISION},
+  "answers": [
+    {
+      "requirementId": "${REQUIREMENT_ID}",
+      "answer": {
+        "type": "text",
+        "value": "Sandbox requirement completed."
+      }
+    }
+  ]
+}
+JSON
+```
+
+然后使用 [`POST /v3/sandbox/tasks/{taskId}/review`](/api-reference/sandbox/post-v3-sandbox-tasks-by-task-id-review) 接受或拒绝当前的提交:
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/sandbox/tasks/${TASK_ID}/review" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Content-Type: application/json" \
+  --data '{"outcome":"accepted"}'
+```
+
+生产环境的任务完成模式请参阅[能力与任务](/cn/integration/onboarding/capabilities-and-requirements)。
+
+## 为沙盒钱包充值
+
+使用 [`POST /v3/sandbox/accounts/{accountId}/topup`](/api-reference/sandbox/post-v3-sandbox-accounts-by-account-id-topup) 向一个发行的钱包入账:
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/sandbox/accounts/${ACCOUNT_ID}/topup" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Content-Type: application/json" \
+  --data '{"amount":"250.00","currency":"USDC"}'
+```
+
+如需查看这次模拟的入金转账,请将返回的 `data.id` 保存为 `TRANSFER_ID`。
+
+## 完成或失败一笔转账
+
+使用 [`POST /v3/sandbox/transfers/{transferId}/state`](/api-reference/sandbox/post-v3-sandbox-transfers-by-transfer-id-state) 设置其结果:
+
+<Tabs>
+  <Tab title="完成">
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/sandbox/transfers/${TRANSFER_ID}/state" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Content-Type: application/json" \
+  --data '{"state":"completed"}'
+```
+
+  </Tab>
+  <Tab title="失败">
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/sandbox/transfers/${TRANSFER_ID}/state" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Content-Type: application/json" \
+  --data @- <<'JSON'
+{
+  "state": "failed",
+  "stateDetail": {
+    "code": "sandbox_review",
+    "message": "Sandbox transfer failed."
+  }
+}
+JSON
+```
+
+  </Tab>
+</Tabs>
+
+接下来,在沙盒中运行[入金](/cn/integration/receive-funds)、[出金](/cn/integration/send-funds)或[发行银行账户](/cn/integration/issue-bank-account)流程。

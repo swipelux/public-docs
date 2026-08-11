@@ -1,0 +1,66 @@
+---
+title: "API 레퍼런스"
+description: "API 계약을 사용하고, 쓰기 작업을 안전하게 재시도하며, 오류를 일관되게 처리하세요."
+---
+
+API 레퍼런스는 Swipelux API의 공식 계약이에요. 각 동작마다 요청, 응답, 보안, 상태, 오류 스키마가 표시되어 있어요.
+
+모든 요청에 `https://platform.swipelux.com`을 사용하세요. 보호된 백엔드에서 환경별 키를 `X-API-Key`에 실어 보내주세요.
+
+## 쓰기 작업을 안전하게 재시도하세요
+
+동작에 `Idempotency-Key`가 필수로 표시되어 있으면 의도한 각 동작마다 하나의 키를 생성하고 로컬 요청 기록과 함께 저장하세요.
+
+```bash
+curl --request POST \
+  'https://platform.swipelux.com/v3/customers' \
+  --header 'X-API-Key: YOUR_API_KEY' \
+  --header 'Idempotency-Key: customer-order-1001' \
+  --header 'Content-Type: application/json' \
+  --data '{"type":"individual","externalId":"customer-order-1001"}'
+```
+
+응답이 불확실하면 동일한 메서드, 경로, 본문을 같은 키로 재시도하세요. 다른 동작이나 변경된 본문에 그 키를 재사용해서는 안 돼요.
+
+일부 동작은 응답이 같은 키를 가진 이전 요청에서 왔을 때 `Idempotency-Replayed: true`를 반환해요. 그 응답은 원래 동작의 결과로 처리하고 두 번째 동작으로 다루지 마세요.
+
+## 오류 처리
+
+API 오류는 `application/problem+json`을 사용해요. 다음 안정 필드를 중심으로 클라이언트 동작을 구성하세요:
+
+| 필드 | 용도 |
+| --- | --- |
+| `status` | 문제와 연관된 HTTP 상태예요. |
+| `code` | 안정적인 기계 판독 오류 코드예요. |
+| `detail` | 현재 요청에 대한 실행 가능한 설명이에요. |
+| `retryable` | 존재하는 경우, 동일한 요청 재시도가 성공할 수 있는지 여부예요. |
+| `errors[].pointer` | 유효하지 않은 요청 필드에 대한 JSON Pointer예요. |
+| `correlationId` | 로그와 지원 기록에 보관할 요청 식별자예요. |
+
+응답의 `correlationId`는 `X-Request-Id`를 반영해요. 동작과 이 값을 함께 로깅하되, 비밀 정보나 전체 금융 정보는 노출하지 마세요.
+
+```json
+{
+  "type": "https://docs.swipelux.com/problems/validation_error",
+  "title": "Validation error",
+  "status": 400,
+  "code": "validation_error",
+  "detail": "The request contains invalid fields.",
+  "correlationId": "01JERRORVALIDATION",
+  "errors": [
+    {
+      "pointer": "/externalId",
+      "code": "invalid_format",
+      "message": "Use a valid external identifier."
+    }
+  ]
+}
+```
+
+동작에 문서화된 문제 스키마를 사용해 입력을 수정할지, 리소스 상태를 새로고침할지, 작업을 완료할지, 재시도할지 결정하세요. 문서화되지 않은 사례를 하드코딩하기보다는 API 레퍼런스에서 전체 상태와 오류 카탈로그를 유지하세요.
+
+## 비동기 동작 추적
+
+성공적인 생성 응답은 많은 워크플로를 시작해요. 완료를 보장하지는 않아요. 응답에서 파생된 리소스 ID를 저장하고, 현재 리소스를 조회하며, [검증된 웹훅](/ko/integration/webhooks)을 사용해 변경 사항에 대응하세요.
+
+[`POST /v3/customers`](/api-reference/customers/post-v3-customers)로 시작하거나, 완전한 샌드박스 여정을 위해 [퀵스타트](/ko/integration/quickstart)를 따라주세요.

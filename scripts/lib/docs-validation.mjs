@@ -55,7 +55,7 @@ export const VERSIONING_PAGE_ROUTES = Object.freeze([
   "api-reference/versioning/changelog",
 ]);
 
-export const TRANSLATED_VERSIONING_LOCALES = Object.freeze([
+export const TRANSLATED_LOCALES = Object.freeze([
   "ca",
   "cn",
   "cs",
@@ -75,9 +75,13 @@ export const TRANSLATED_VERSIONING_LOCALES = Object.freeze([
 ]);
 
 export const LOCALIZED_NAVIGATION_PAGES = Object.freeze(
-  TRANSLATED_VERSIONING_LOCALES.flatMap((locale) =>
-    VERSIONING_PAGE_ROUTES.map((page) => `${locale}/${page}`),
+  TRANSLATED_LOCALES.flatMap((locale) =>
+    CANONICAL_NAVIGATION_PAGES.map((page) => `${locale}/${page}`),
   ),
+);
+
+export const LOCALIZED_HOME_PAGES = Object.freeze(
+  TRANSLATED_LOCALES.map((locale) => `${locale}/index`),
 );
 
 export const REQUIRED_NAVIGATION_PAGES = Object.freeze([
@@ -87,6 +91,7 @@ export const REQUIRED_NAVIGATION_PAGES = Object.freeze([
 
 export const REQUIRED_PUBLISHED_PAGES = Object.freeze([
   "index",
+  ...LOCALIZED_HOME_PAGES,
   ...REQUIRED_NAVIGATION_PAGES,
 ]);
 
@@ -863,7 +868,7 @@ export function validatePublishedText(path, text, options = {}) {
   const value = String(text);
   const normalized = normalizePath(path).split("#", 1)[0];
   const [possibleLocale, ...localizedPathParts] = normalized.split("/");
-  const canonicalPath = TRANSLATED_VERSIONING_LOCALES.includes(possibleLocale)
+  const canonicalPath = TRANSLATED_LOCALES.includes(possibleLocale)
     ? localizedPathParts.join("/")
     : normalized;
   const allowsLegacyVersionReferences =

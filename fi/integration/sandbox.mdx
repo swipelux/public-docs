@@ -1,0 +1,142 @@
+---
+title: "Sandbox-testaus"
+description: "Hallitse kyky-, tehtävä-, lompakko- ja siirtotuloksia integraatiotasi rakentaessasi."
+---
+
+Sandbox käyttää samaa API-isäntää kuin tuotanto. Sandbox-API-avain valitsee testiympäristön, jossa apuvälineet simuloivat tuloksia siirtämättä oikeita varoja.
+
+Pidä avain taustapalvelussasi. Sandbox-apuvälineet eivät korvaa tuotannon vaatimustenmukaisuutta tai käyttöönottoa.
+
+```bash
+export API_BASE='https://platform.swipelux.com'
+export SWIPELUX_SANDBOX_API_KEY='replace-with-your-sandbox-key'
+```
+
+## Testaa kyvyn valmius
+
+Kun olet pyytänyt kykyä, aseta sen sandbox-tila [`POST /v3/sandbox/customers/{customerId}/capabilities/{capabilityId}/status`](/api-reference/sandbox/post-v3-sandbox-customers-by-customer-id-capabilities-by-capability-id-status) -toiminnolla:
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/sandbox/customers/${CUSTOMER_ID}/capabilities/${CAPABILITY_ID}/status" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Content-Type: application/json" \
+  --data '{"status":"ready"}'
+```
+
+Hae kyky uudelleen apuvälineen käytön jälkeen. Käsittele sen nykyistä `status`- ja `openTaskIds`-tulosta tuotteesi käsittelemänä tuloksena.
+
+## Testaa avoin tehtävä
+
+Luo kykyyn kohdistuva tehtävä [`POST /v3/sandbox/tasks`](/api-reference/sandbox/post-v3-sandbox-tasks) -toiminnolla:
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/sandbox/tasks" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Content-Type: application/json" \
+  --data @- <<JSON
+{
+  "scope": {
+    "type": "capability",
+    "customerId": "${CUSTOMER_ID}",
+    "capabilityId": "${CAPABILITY_ID}"
+  },
+  "items": [
+    {
+      "type": "explanation",
+      "request": "Explain the source of funds."
+    }
+  ]
+}
+JSON
+```
+
+Tallenna `data.id` muuttujaan `TASK_ID`, `data.revision` muuttujaan `TASK_REVISION` ja nykyinen `data.requirements[0].id` muuttujaan `REQUIREMENT_ID`. Lähetä vastaus [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) -toiminnon kautta:
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/tasks/${TASK_ID}/submissions" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: sandbox-task-submission-001" \
+  --header "Content-Type: application/json" \
+  --data @- <<JSON
+{
+  "taskRevision": ${TASK_REVISION},
+  "answers": [
+    {
+      "requirementId": "${REQUIREMENT_ID}",
+      "answer": {
+        "type": "text",
+        "value": "Sandbox requirement completed."
+      }
+    }
+  ]
+}
+JSON
+```
+
+Hyväksy tai hylkää sitten nykyinen lähetys [`POST /v3/sandbox/tasks/{taskId}/review`](/api-reference/sandbox/post-v3-sandbox-tasks-by-task-id-review) -toiminnolla:
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/sandbox/tasks/${TASK_ID}/review" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Content-Type: application/json" \
+  --data '{"outcome":"accepted"}'
+```
+
+Käytä [Kyvyt ja tehtävät](/fi/integration/onboarding/capabilities-and-requirements) -sivua tuotannon tehtävän suorittamisen mallia varten.
+
+## Rahoita sandbox-lompakko
+
+Hyvitä luotu lompakko [`POST /v3/sandbox/accounts/{accountId}/topup`](/api-reference/sandbox/post-v3-sandbox-accounts-by-account-id-topup) -toiminnolla:
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/sandbox/accounts/${ACCOUNT_ID}/topup" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Content-Type: application/json" \
+  --data '{"amount":"250.00","currency":"USDC"}'
+```
+
+Tallenna palautettu `data.id` muuttujaan `TRANSFER_ID`, kun haluat tarkastella simuloitua rahoitussiirtoa.
+
+## Suorita tai epäonnistu siirto
+
+Aseta tulos [`POST /v3/sandbox/transfers/{transferId}/state`](/api-reference/sandbox/post-v3-sandbox-transfers-by-transfer-id-state) -toiminnolla:
+
+<Tabs>
+  <Tab title="Suorita">
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/sandbox/transfers/${TRANSFER_ID}/state" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Content-Type: application/json" \
+  --data '{"state":"completed"}'
+```
+
+  </Tab>
+  <Tab title="Epäonnistu">
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/sandbox/transfers/${TRANSFER_ID}/state" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Content-Type: application/json" \
+  --data @- <<'JSON'
+{
+  "state": "failed",
+  "stateDetail": {
+    "code": "sandbox_review",
+    "message": "Sandbox transfer failed."
+  }
+}
+JSON
+```
+
+  </Tab>
+</Tabs>
+
+Seuraavaksi suorita [maksun vastaanotto](/fi/integration/receive-funds), [maksu ulos](/fi/integration/send-funds) tai [luotu pankkitili](/fi/integration/issue-bank-account) -virta sandboxissa.

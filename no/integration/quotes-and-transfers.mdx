@@ -1,0 +1,106 @@
+---
+title: "Tilbud og overføringer"
+description: "Velg et nøyaktig beløp, utfør ett tilbud trygt, og følg gjeldende overføringstilstand."
+---
+
+Et tilbud er tidsbegrenset og engangs. Utfør det én gang, og ikke gjenbruk det som overføringsmal. En overføring er utførelsen av det tilbudet og fortsetter å endre seg etter opprettelse.
+
+## Sjekk ressurskompatibilitet
+
+Før prising, bekreft at:
+
+- Capability-en er klar, tilhører kunden, og samsvarer med tiltenkt retning og metode.
+- En stablecoin-kilde er en aktiv utstedt lommebok som støtter inn-valutaen.
+- Lommebok-til-lommebok-ressurser bruker samme valuta og nettverk.
+- En fiat-payout-konto eller destinasjon er klar og støtter ut-valutaen og metoden.
+
+## Velg det nøyaktige beløpet
+
+Opprett et tilbud med [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes). Send én beløpsside, begge valutaer, og responsavledede ressurs-ID-er med disse headerne:
+
+```http
+X-API-Key: ${SWIPELUX_API_KEY}
+Idempotency-Key: quote-create-001
+Content-Type: application/json
+```
+
+<Tabs>
+  <Tab title="Eksakt inn">
+
+Sett `in.amount` og utelat `out.amount`. Responsen beregner hva destinasjonen mottar.
+
+```json
+{
+  "customerId": "${CUSTOMER_ID}",
+  "capabilityId": "${STABLECOIN_CAPABILITY_ID}",
+  "in": {
+    "amount": "1.234567",
+    "currency": "USDC",
+    "accountId": "${SOURCE_WALLET_ID}"
+  },
+  "destinationId": "${WALLET_DESTINATION_ID}",
+  "out": {
+    "currency": "USDC"
+  }
+}
+```
+
+  </Tab>
+  <Tab title="Eksakt ut">
+
+Sett `out.amount` og utelat `in.amount`. Responsen beregner hva som må forlate kilden.
+
+```json
+{
+  "customerId": "${CUSTOMER_ID}",
+  "capabilityId": "${CAPABILITY_ID}",
+  "in": {
+    "currency": "USDC",
+    "accountId": "${SOURCE_WALLET_ID}"
+  },
+  "destinationId": "${RECIPIENT_DESTINATION_ID}",
+  "out": {
+    "amount": "100.00",
+    "currency": "USD"
+  }
+}
+```
+
+  </Tab>
+</Tabs>
+
+Lagre tilbudets `data.id`, `data.status`, `data.expiresAt`, returnerte legs, rate og gebyrer. Bruk de returnerte desimalstrengene; ikke regn om utførbare beløp med flyttallaritmetikk.
+
+Etter et stablecoin-finansiert eksakt-ut-tilbud, les [`GET /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts-by-account-id). Sammenlign gjeldende kildes `balances[].available` for inn-valutaen med den returnerte `data.in.amount`. Hvis midlene er utilstrekkelige, endre eller finansier kilden og opprett et nytt tilbud. Fiat-finansierte eksakt-ut-tilbud bruker ikke denne saldogaten for kildelommebok.
+
+## Utfør én gang og gjenopprett trygt
+
+Les det gjeldende tilbudet med [`GET /v3/quotes/{quoteId}`](/api-reference/money-movement/get-v3-quotes-by-quote-id). Utfør kun mens statusen og `expiresAt` tillater det.
+
+Opprett overføringen med [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers):
+
+```http
+X-API-Key: ${SWIPELUX_API_KEY}
+Idempotency-Key: transfer-create-001
+Content-Type: application/json
+```
+
+```json
+{
+  "quoteId": "${QUOTE_ID}"
+}
+```
+
+Generer én ny `Idempotency-Key` for denne tiltenkte overføringen og persister den før du sender forespørselen. Hvis responsen går tapt, prøv på nytt med identisk metode, sti, body og nøkkel. Ikke opprett en andre utførelsesnøkkel for å gjenopprette et uklart resultat.
+
+Hvis API-et returnerer `quote_already_executed`, bruk dens `transferId` for å fortsette med den eksisterende overføringen. En idempotent avspilling kan også returnere `Idempotency-Replayed: true`.
+
+## Følg gjeldende overføring
+
+Les [`GET /v3/transfers/{transferId}`](/api-reference/money-movement/get-v3-transfers-by-transfer-id) etter opprettelse og etter hver webhook. Lagre siste `data.state`, `data.stateDetail` og `data.openTaskIds`.
+
+Når oppgave-ID-er er åpne, hent [`GET /v3/transfers/{transferId}/tasks`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-tasks) og fullfør hver oppgave med gjeldende revisjon og krav.
+
+For en innkommende bevegelse kan [`GET /v3/transfers/{transferId}/instructions`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-instructions) returnere overføringsspesifikke finansieringsopplysninger. Render kun den returnerte instruksjonsvarianten og den nøyaktige referansen.
+
+Deretter, implementer [Webhooks](/no/integration/webhooks) slik at hver asynkron overføringsoppdatering går inn i samme håndteringsvei for gjeldende tilstand.

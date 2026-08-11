@@ -1,0 +1,106 @@
+---
+title: "报价与转账"
+description: "选择准确金额,安全地执行一次报价,并跟随当前的转账状态。"
+---
+
+报价具有时效性且只能使用一次。请只执行一次,不要将其作为转账模板重复使用。转账是该报价的一次执行,并会在创建之后继续变化。
+
+## 检查资源兼容性
+
+在报价之前,请确认:
+
+- 该能力已就绪,属于该客户,并且与目标方向和支付方式匹配。
+- 稳定币来源是一个支持输入币种、状态处于活跃的发行钱包。
+- 钱包到钱包的资源使用相同的币种和网络。
+- 法币出金账户或目的地已就绪,并且支持输出币种和支付方式。
+
+## 选择准确的金额
+
+使用 [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) 创建报价。请只提供一侧的金额、两侧的币种,以及来自响应的资源 ID,并带上以下请求头:
+
+```http
+X-API-Key: ${SWIPELUX_API_KEY}
+Idempotency-Key: quote-create-001
+Content-Type: application/json
+```
+
+<Tabs>
+  <Tab title="固定入方金额">
+
+设置 `in.amount`,并省略 `out.amount`。响应会计算出目的地收到的金额。
+
+```json
+{
+  "customerId": "${CUSTOMER_ID}",
+  "capabilityId": "${STABLECOIN_CAPABILITY_ID}",
+  "in": {
+    "amount": "1.234567",
+    "currency": "USDC",
+    "accountId": "${SOURCE_WALLET_ID}"
+  },
+  "destinationId": "${WALLET_DESTINATION_ID}",
+  "out": {
+    "currency": "USDC"
+  }
+}
+```
+
+  </Tab>
+  <Tab title="固定出方金额">
+
+设置 `out.amount`,并省略 `in.amount`。响应会计算出必须从来源扣除的金额。
+
+```json
+{
+  "customerId": "${CUSTOMER_ID}",
+  "capabilityId": "${CAPABILITY_ID}",
+  "in": {
+    "currency": "USDC",
+    "accountId": "${SOURCE_WALLET_ID}"
+  },
+  "destinationId": "${RECIPIENT_DESTINATION_ID}",
+  "out": {
+    "amount": "100.00",
+    "currency": "USD"
+  }
+}
+```
+
+  </Tab>
+</Tabs>
+
+保存报价的 `data.id`、`data.status`、`data.expiresAt`,以及返回的各段、汇率与费用。请使用返回的十进制字符串;切勿使用浮点数运算重新计算可执行金额。
+
+对于稳定币出资的固定出方金额报价,请读取 [`GET /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts-by-account-id)。将当前来源在输入币种上的 `balances[].available` 与返回的 `data.in.amount` 进行比较。如果资金不足,请更换或补充来源,并创建新的报价。法币出资的固定出方金额报价不受此来源钱包余额检查约束。
+
+## 一次执行,并进行安全恢复
+
+使用 [`GET /v3/quotes/{quoteId}`](/api-reference/money-movement/get-v3-quotes-by-quote-id) 读取当前报价。仅在其状态与 `expiresAt` 允许时才执行。
+
+使用 [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) 创建转账:
+
+```http
+X-API-Key: ${SWIPELUX_API_KEY}
+Idempotency-Key: transfer-create-001
+Content-Type: application/json
+```
+
+```json
+{
+  "quoteId": "${QUOTE_ID}"
+}
+```
+
+为这笔预期的转账生成一个新的 `Idempotency-Key`,并在发送请求前先持久化保存。如果响应丢失,请使用相同的方法、路径、请求体和键重试。切勿为了恢复不确定的结果而创建第二个执行键。
+
+如果 API 返回 `quote_already_executed`,请使用响应中的 `transferId` 继续跟进已有的转账。幂等重放也可能返回 `Idempotency-Replayed: true`。
+
+## 跟随当前转账
+
+在创建之后以及每次 Webhook 之后,读取 [`GET /v3/transfers/{transferId}`](/api-reference/money-movement/get-v3-transfers-by-transfer-id)。保存最新的 `data.state`、`data.stateDetail` 和 `data.openTaskIds`。
+
+当存在未完成任务 ID 时,请获取 [`GET /v3/transfers/{transferId}/tasks`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-tasks),并根据每个任务当前的版本与要求逐一完成。
+
+对于入金流转,[`GET /v3/transfers/{transferId}/instructions`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-instructions) 可能返回本次转账专属的入金信息。请只渲染返回的指令变体和准确的 reference。
+
+接下来,请实现 [Webhook](/cn/integration/webhooks),以便每一次异步的转账更新都进入同一套基于当前状态的处理逻辑。

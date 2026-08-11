@@ -1,0 +1,106 @@
+---
+title: "Quotes en transfers"
+description: "Kies een exact bedrag, voer één quote veilig uit en volg de huidige transferstate."
+---
+
+Een quote is tijdgebonden en single-use. Voer hem één keer uit en gebruik hem niet opnieuw als transfertemplate. Een transfer is de uitvoering van die quote en blijft veranderen na het aanmaken.
+
+## Controleer resource-compatibiliteit
+
+Bevestig vóór het quoten dat:
+
+- De capability ready is, tot de klant behoort en overeenkomt met de beoogde richting en methode.
+- Een stablecoinbron een actieve uitgegeven wallet is die de invoervaluta ondersteunt.
+- Wallet-to-wallet-resources dezelfde valuta en netwerk gebruiken.
+- Een fiat-uitbetalingsrekening of destination ready is en de outputvaluta en methode ondersteunt.
+
+## Kies het exacte bedrag
+
+Maak een quote met [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes). Verstuur één bedragskant, beide valuta's en resource-ID's uit de respons met deze headers:
+
+```http
+X-API-Key: ${SWIPELUX_API_KEY}
+Idempotency-Key: quote-create-001
+Content-Type: application/json
+```
+
+<Tabs>
+  <Tab title="Exact in">
+
+Stel `in.amount` in en laat `out.amount` weg. De respons berekent wat de destination ontvangt.
+
+```json
+{
+  "customerId": "${CUSTOMER_ID}",
+  "capabilityId": "${STABLECOIN_CAPABILITY_ID}",
+  "in": {
+    "amount": "1.234567",
+    "currency": "USDC",
+    "accountId": "${SOURCE_WALLET_ID}"
+  },
+  "destinationId": "${WALLET_DESTINATION_ID}",
+  "out": {
+    "currency": "USDC"
+  }
+}
+```
+
+  </Tab>
+  <Tab title="Exact out">
+
+Stel `out.amount` in en laat `in.amount` weg. De respons berekent wat er vanuit de bron moet vertrekken.
+
+```json
+{
+  "customerId": "${CUSTOMER_ID}",
+  "capabilityId": "${CAPABILITY_ID}",
+  "in": {
+    "currency": "USDC",
+    "accountId": "${SOURCE_WALLET_ID}"
+  },
+  "destinationId": "${RECIPIENT_DESTINATION_ID}",
+  "out": {
+    "amount": "100.00",
+    "currency": "USD"
+  }
+}
+```
+
+  </Tab>
+</Tabs>
+
+Bewaar de quote `data.id`, `data.status`, `data.expiresAt`, geretourneerde legs, rate en fees. Gebruik de geretourneerde decimale strings; herbereken uitvoerbare bedragen niet met floating-point rekenen.
+
+Lees na een stablecoin-gefinancierde exact-out-quote [`GET /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts-by-account-id). Vergelijk de huidige bron `balances[].available` voor de invoervaluta met de geretourneerde `data.in.amount`. Als er onvoldoende geld is, wijzig of financier je de bron en maak je een nieuwe quote. Fiat-gefinancierde exact-out-quotes gebruiken deze bron-wallet-saldo-check niet.
+
+## Voer één keer uit en herstel veilig
+
+Lees de huidige quote met [`GET /v3/quotes/{quoteId}`](/api-reference/money-movement/get-v3-quotes-by-quote-id). Voer alleen uit terwijl de status en `expiresAt` dit toestaan.
+
+Maak de transfer met [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers):
+
+```http
+X-API-Key: ${SWIPELUX_API_KEY}
+Idempotency-Key: transfer-create-001
+Content-Type: application/json
+```
+
+```json
+{
+  "quoteId": "${QUOTE_ID}"
+}
+```
+
+Genereer één nieuwe `Idempotency-Key` voor deze beoogde transfer en persisteer die voordat je het request verstuurt. Als de respons verloren gaat, herhaal je dezelfde method, path, body en key. Maak geen tweede uitvoeringskey om een onzeker resultaat te herstellen.
+
+Als de API `quote_already_executed` retourneert, gebruik dan de `transferId` om verder te gaan met de bestaande transfer. Een idempotente replay kan ook `Idempotency-Replayed: true` retourneren.
+
+## Volg de huidige transfer
+
+Lees [`GET /v3/transfers/{transferId}`](/api-reference/money-movement/get-v3-transfers-by-transfer-id) na aanmaken en na elke webhook. Bewaar de nieuwste `data.state`, `data.stateDetail` en `data.openTaskIds`.
+
+Wanneer er task-ID's open zijn, haal je [`GET /v3/transfers/{transferId}/tasks`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-tasks) op en voltooi je elke taak met de huidige revisie en vereisten.
+
+Voor een inkomende beweging kan [`GET /v3/transfers/{transferId}/instructions`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-instructions) transferspecifieke funding-gegevens retourneren. Render alleen de geretourneerde instructievariant en exacte referentie.
+
+Implementeer vervolgens [Webhooks](/nl/integration/webhooks) zodat elke asynchrone transfer-update door hetzelfde current-state-afhandelingspad gaat.

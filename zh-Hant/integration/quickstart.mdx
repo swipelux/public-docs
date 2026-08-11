@@ -1,0 +1,266 @@
+---
+title: "快速入門"
+description: "建立沙箱客戶、啟用能力,並執行入金、出金或發行銀行帳戶流程。"
+---
+
+建立客戶、準備一個可重複使用的錢包,然後執行您需要的沙箱流程。
+
+## 1. 設定沙箱
+
+從您的後端使用沙箱 API 金鑰:
+
+```bash
+export API_BASE='https://platform.swipelux.com'
+export SWIPELUX_SANDBOX_API_KEY='replace-with-your-sandbox-key'
+```
+
+該金鑰會在共用 API 主機上選擇沙箱環境。
+
+## 2. 建立客戶
+
+使用 [`POST /v3/customers`](/api-reference/customers/post-v3-customers) 建立個人客戶:
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/customers" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-customer-001" \
+  --header "Content-Type: application/json" \
+  --data '{"type":"individual","externalId":"quickstart-customer-001"}'
+```
+
+將 `data.id` 儲存為 `CUSTOMER_ID`。
+
+## 3. 選擇結果
+
+- **入金:** 收取 USD 並將 USDC 結算至客戶發行的錢包。
+- **出金:** 從客戶發行的錢包發送 USDC 至客戶名下的銀行帳戶。
+- **發行銀行帳戶:** 發行一個 ACH/USD 帳戶,並結算至客戶發行的錢包。
+
+若要進行第三方出金,請依照[收款人](/zh-Hant/integration/recipients) 或[發送資金](/zh-Hant/integration/send-funds)。
+
+## 4. 尋找符合資格的能力
+
+使用 [`GET /v3/customers/{customerId}/capabilities/supported`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-supported) 列出支援的能力:
+
+```bash
+curl --request GET \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/capabilities/supported" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}"
+```
+
+選擇一個回應項目,其 `availability` 為 `available` 或 `beta`、`eligibility.eligible` 為 `true`、所需的 `directions` 與 `method`,以及對應的 `accountType`。將客戶發行的錢包作為入金目的地、出金來源或銀行帳戶結算帳戶;而在此出金路徑中,則將客戶名下帳戶作為 `destinationId`。若回傳了 `institutions`,請僅使用回傳的機構選項。將該項目的 `id` 儲存為 `CAPABILITY_ID`;請勿硬編碼萬用的 capability ID。
+
+## 5. 申請該能力
+
+使用 [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) 申請選定的能力:
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/capabilities/${CAPABILITY_ID}" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-capability-001" \
+  --header "Content-Type: application/json" \
+  --data '{}'
+```
+
+將 `data.status` 儲存為 `CAPABILITY_STATUS`,並將 `data.openTaskIds` 儲存為 `TASK_IDS`。
+
+## 6. 於沙箱中完成入駐
+
+若 `TASK_IDS` 不為空,請依照[能力與任務](/zh-Hant/integration/onboarding/capabilities-and-requirements) 完成每一項當前的要求。
+
+在本教學中,請使用 [`POST /v3/sandbox/customers/{customerId}/capabilities/{capabilityId}/status`](/api-reference/sandbox/post-v3-sandbox-customers-by-customer-id-capabilities-by-capability-id-status) 將該能力設為 `ready`:
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/sandbox/customers/${CUSTOMER_ID}/capabilities/${CAPABILITY_ID}/status" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Content-Type: application/json" \
+  --data '{"status":"ready"}'
+```
+
+此測試控制不是正式的入駐流程。請使用 [`GET /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id) 重新讀取:
+
+```bash
+curl --request GET \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/capabilities/${CAPABILITY_ID}" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}"
+```
+
+從 `data.status` 與 `data.openTaskIds` 更新 `CAPABILITY_STATUS` 與 `TASK_IDS`。僅在 `CAPABILITY_STATUS` 為 `ready` 時繼續。
+
+## 7. 建構所選的流程
+
+使用 [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) 在 Base 上建立一個發行的 USDC 錢包:
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/accounts" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-flow-wallet-001" \
+  --header "Content-Type: application/json" \
+  --data '{"origin":"issued","type":"wallet","currency":"USDC","network":"base"}'
+```
+
+將 `data.id` 儲存為 `FLOW_WALLET_ID`、`data.status` 儲存為 `FLOW_WALLET_STATUS`,並將 `data.openTaskIds` 儲存為 `FLOW_WALLET_TASK_IDS`。若 `FLOW_WALLET_TASK_IDS` 不為空,請依照[能力與任務](/zh-Hant/integration/onboarding/capabilities-and-requirements) 完成當前的任務。
+
+使用 [`GET /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts-by-account-id) 重新讀取錢包:
+
+```bash
+curl --request GET \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/accounts/${FLOW_WALLET_ID}" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}"
+```
+
+從 `data.status` 與 `data.openTaskIds` 更新 `FLOW_WALLET_STATUS` 與 `FLOW_WALLET_TASK_IDS`。僅在 `FLOW_WALLET_STATUS` 為 `ready` 時繼續。
+
+<Tabs>
+  <Tab title="入金">
+
+使用 [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) 建立 USD 兌 USDC 報價:
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/quotes" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-payin-quote-001" \
+  --header "Content-Type: application/json" \
+  --data @- <<JSON
+{"customerId":"${CUSTOMER_ID}","capabilityId":"${CAPABILITY_ID}","in":{"amount":"150.00","currency":"USD"},"destinationId":"${FLOW_WALLET_ID}","out":{"currency":"USDC"}}
+JSON
+```
+
+將 `data.id` 儲存為 `QUOTE_ID`,然後使用 [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) 執行:
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/transfers" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-payin-transfer-001" \
+  --header "Content-Type: application/json" \
+  --data @- <<JSON
+{"quoteId":"${QUOTE_ID}"}
+JSON
+```
+
+將 `data.id` 儲存為 `TRANSFER_ID`。使用 [`GET /v3/transfers/{transferId}/instructions`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-instructions) 取得指示:
+
+```bash
+curl --request GET \
+  "${API_BASE}/v3/transfers/${TRANSFER_ID}/instructions" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}"
+```
+
+回應包含 `data.transferId` 與 `data.instructions`。將 `data.transferId` 儲存為 `TRANSFER_ID`,將 `data.instructions` 儲存為 `FUNDING_INSTRUCTIONS`。
+
+  </Tab>
+
+  <Tab title="出金">
+
+使用 [`POST /v3/sandbox/accounts/{accountId}/topup`](/api-reference/sandbox/post-v3-sandbox-accounts-by-account-id-topup) 為就緒的錢包儲值:
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/sandbox/accounts/${FLOW_WALLET_ID}/topup" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Content-Type: application/json" \
+  --data '{"amount":"250.00","currency":"USDC"}'
+```
+
+使用 [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) 建立客戶名下的 ACH 帳戶:
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/accounts" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-payout-account-001" \
+  --header "Content-Type: application/json" \
+  --data @- <<'JSON'
+{"origin":"external","type":"bank","methods":["ach"],"country":"US","currency":"USD","details":{"routingNumber":"021000021","accountNumber":"123456789","accountType":"checking","bankName":"Example Bank","accountHolderName":"Amina Diallo"}}
+JSON
+```
+
+將 `data.id` 儲存為 `PAYOUT_ACCOUNT_ID`、`data.status` 儲存為 `PAYOUT_ACCOUNT_STATUS`,並將 `data.openTaskIds` 儲存為 `PAYOUT_ACCOUNT_TASK_IDS`。若 `PAYOUT_ACCOUNT_TASK_IDS` 不為空,請依照[能力與任務](/zh-Hant/integration/onboarding/capabilities-and-requirements) 完成當前的任務。
+
+使用 [`GET /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts-by-account-id) 重新讀取:
+
+```bash
+curl --request GET \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/accounts/${PAYOUT_ACCOUNT_ID}" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}"
+```
+
+從 `data.status` 與 `data.openTaskIds` 更新 `PAYOUT_ACCOUNT_STATUS` 與 `PAYOUT_ACCOUNT_TASK_IDS`。僅在 `PAYOUT_ACCOUNT_STATUS` 為 `ready` 時繼續,然後使用 [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) 建立報價:
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/quotes" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-payout-quote-001" \
+  --header "Content-Type: application/json" \
+  --data @- <<JSON
+{"customerId":"${CUSTOMER_ID}","capabilityId":"${CAPABILITY_ID}","in":{"amount":"150.00","currency":"USDC","accountId":"${FLOW_WALLET_ID}"},"destinationId":"${PAYOUT_ACCOUNT_ID}","out":{"currency":"USD"}}
+JSON
+```
+
+將 `data.id` 儲存為 `QUOTE_ID`,使用 [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) 執行,並將回傳的 `data.id` 儲存為 `TRANSFER_ID`:
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/transfers" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-payout-transfer-001" \
+  --header "Content-Type: application/json" \
+  --data @- <<JSON
+{"quoteId":"${QUOTE_ID}"}
+JSON
+```
+
+  </Tab>
+
+  <Tab title="發行銀行帳戶">
+
+使用 [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) 建立一個 ACH/USD 帳戶,並結算至就緒的錢包:
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/accounts" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-bank-account-001" \
+  --header "Content-Type: application/json" \
+  --data @- <<JSON
+{"origin":"issued","type":"bank","method":"ach","country":"US","currency":"USD","settlement":{"accountId":"${FLOW_WALLET_ID}"}}
+JSON
+```
+
+將 `data.id` 儲存為 `BANK_ACCOUNT_ID`,然後使用 [`GET /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts-by-account-id) 讀取佈建狀態:
+
+```bash
+curl --request GET \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/accounts/${BANK_ACCOUNT_ID}" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}"
+```
+
+將 `data.status` 儲存為 `BANK_ACCOUNT_STATUS`、`data.details` 儲存為 `BANK_ACCOUNT_DETAILS`,並將 `data.openTaskIds` 儲存為 `BANK_ACCOUNT_TASK_IDS`。完成任何當前任務,然後再次讀取該帳戶,直到其狀態允許使用且 `data.details` 已存在。
+
+銀行資料可能不會立即提供。當您能夠呈現 `BANK_ACCOUNT_DETAILS` 中所回傳的完整、可重複使用的銀行資料時,此分支才算完成。切勿在帳戶仍在佈建期間建構或顯示暫時性的資料。
+
+  </Tab>
+</Tabs>
+
+對於入金與出金,請使用 [`GET /v3/transfers/{transferId}`](/api-reference/money-movement/get-v3-transfers-by-transfer-id) 監控 `TRANSFER_ID`:
+
+```bash
+curl --request GET \
+  "${API_BASE}/v3/transfers/${TRANSFER_ID}" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}"
+```
+
+<CardGroup cols={3}>
+  <Card title="入金" icon="arrow-down-to-line" href="/zh-Hant/integration/receive-funds">建構完整的入金流程。</Card>
+  <Card title="出金" icon="arrow-up-from-line" href="/zh-Hant/integration/send-funds">建構正式環境的出金處理。</Card>
+  <Card title="發行銀行帳戶" icon="building-columns" href="/zh-Hant/integration/issue-bank-account">處理佈建與帳戶資料。</Card>
+</CardGroup>
+
+接下來,請加入 [webhook](/zh-Hant/integration/webhooks)。上述每個請求都已連結至其完整的 API 參考結構與狀態說明頁。

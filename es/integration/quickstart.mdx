@@ -1,0 +1,266 @@
+---
+title: "Quickstart"
+description: "Crea un cliente en sandbox, activa una capacidad y ejecuta un flujo de cobro, pago o cuenta bancaria emitida."
+---
+
+Crea un cliente, prepara una cartera reutilizable y ejecuta el flujo de sandbox que necesites.
+
+## 1. Configura el sandbox
+
+Utiliza una clave de API de sandbox desde tu backend:
+
+```bash
+export API_BASE='https://platform.swipelux.com'
+export SWIPELUX_SANDBOX_API_KEY='replace-with-your-sandbox-key'
+```
+
+La clave selecciona el entorno de sandbox en el host compartido de la API.
+
+## 2. Crea un cliente
+
+Crea un cliente individual con [`POST /v3/customers`](/api-reference/customers/post-v3-customers):
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/customers" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-customer-001" \
+  --header "Content-Type: application/json" \
+  --data '{"type":"individual","externalId":"quickstart-customer-001"}'
+```
+
+Guarda `data.id` como `CUSTOMER_ID`.
+
+## 3. Elige el resultado
+
+- **Cobro (pay-in):** recibe USD y liquida USDC en la cartera emitida del cliente.
+- **Pago (payout):** envía USDC desde la cartera emitida del cliente a una cuenta bancaria propiedad del cliente.
+- **Cuenta bancaria emitida:** emite una cuenta ACH/USD que se liquida en la cartera emitida del cliente.
+
+Para un pago a un tercero, sigue [Destinatarios](/es/integration/recipients) o [Enviar fondos](/es/integration/send-funds).
+
+## 4. Encuentra una capacidad elegible
+
+Lista las capacidades soportadas con [`GET /v3/customers/{customerId}/capabilities/supported`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-supported):
+
+```bash
+curl --request GET \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/capabilities/supported" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}"
+```
+
+Elige una entrada de respuesta con `availability` en `available` o `beta`, `eligibility.eligible` en `true`, los `directions` y `method` necesarios y el `accountType` correspondiente. Utiliza la cartera emitida del cliente como destino del cobro, origen del pago o cuenta de liquidación de la cuenta bancaria; utiliza la cuenta propiedad del cliente como `destinationId` para esta ruta de pago. Si se devuelven `institutions`, utiliza únicamente una elección de institución devuelta. Guarda el `id` de la entrada como `CAPABILITY_ID`; no fijes en el código un ID de capacidad universal.
+
+## 5. Solicita la capacidad
+
+Solicita la capacidad seleccionada con [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id):
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/capabilities/${CAPABILITY_ID}" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-capability-001" \
+  --header "Content-Type: application/json" \
+  --data '{}'
+```
+
+Guarda `data.status` como `CAPABILITY_STATUS` y `data.openTaskIds` como `TASK_IDS`.
+
+## 6. Completa el onboarding en sandbox
+
+Si `TASK_IDS` no está vacío, completa cada requisito actual mediante [Capacidades y tareas](/es/integration/onboarding/capabilities-and-requirements).
+
+Para este recorrido, establece la capacidad en `ready` con [`POST /v3/sandbox/customers/{customerId}/capabilities/{capabilityId}/status`](/api-reference/sandbox/post-v3-sandbox-customers-by-customer-id-capabilities-by-capability-id-status):
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/sandbox/customers/${CUSTOMER_ID}/capabilities/${CAPABILITY_ID}/status" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Content-Type: application/json" \
+  --data '{"status":"ready"}'
+```
+
+Este control de prueba no es el onboarding de producción. Vuelve a consultar con [`GET /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id):
+
+```bash
+curl --request GET \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/capabilities/${CAPABILITY_ID}" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}"
+```
+
+Actualiza `CAPABILITY_STATUS` y `TASK_IDS` a partir de `data.status` y `data.openTaskIds`. Continúa solo cuando `CAPABILITY_STATUS` sea `ready`.
+
+## 7. Construye el flujo seleccionado
+
+Crea una cartera USDC emitida en Base con [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts):
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/accounts" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-flow-wallet-001" \
+  --header "Content-Type: application/json" \
+  --data '{"origin":"issued","type":"wallet","currency":"USDC","network":"base"}'
+```
+
+Guarda `data.id` como `FLOW_WALLET_ID`, `data.status` como `FLOW_WALLET_STATUS` y `data.openTaskIds` como `FLOW_WALLET_TASK_IDS`. Si `FLOW_WALLET_TASK_IDS` no está vacío, completa las tareas actuales mediante [Capacidades y tareas](/es/integration/onboarding/capabilities-and-requirements).
+
+Vuelve a consultar la cartera con [`GET /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts-by-account-id):
+
+```bash
+curl --request GET \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/accounts/${FLOW_WALLET_ID}" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}"
+```
+
+Actualiza `FLOW_WALLET_STATUS` y `FLOW_WALLET_TASK_IDS` a partir de `data.status` y `data.openTaskIds`. Continúa solo cuando `FLOW_WALLET_STATUS` sea `ready`.
+
+<Tabs>
+  <Tab title="Cobro">
+
+Crea una cotización USD a USDC con [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes):
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/quotes" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-payin-quote-001" \
+  --header "Content-Type: application/json" \
+  --data @- <<JSON
+{"customerId":"${CUSTOMER_ID}","capabilityId":"${CAPABILITY_ID}","in":{"amount":"150.00","currency":"USD"},"destinationId":"${FLOW_WALLET_ID}","out":{"currency":"USDC"}}
+JSON
+```
+
+Guarda `data.id` como `QUOTE_ID` y luego ejecútala con [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers):
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/transfers" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-payin-transfer-001" \
+  --header "Content-Type: application/json" \
+  --data @- <<JSON
+{"quoteId":"${QUOTE_ID}"}
+JSON
+```
+
+Guarda `data.id` como `TRANSFER_ID`. Obtén las instrucciones con [`GET /v3/transfers/{transferId}/instructions`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-instructions):
+
+```bash
+curl --request GET \
+  "${API_BASE}/v3/transfers/${TRANSFER_ID}/instructions" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}"
+```
+
+La respuesta contiene `data.transferId` y `data.instructions`. Guarda `data.transferId` como `TRANSFER_ID` y `data.instructions` como `FUNDING_INSTRUCTIONS`.
+
+  </Tab>
+
+  <Tab title="Pago">
+
+Recarga la cartera lista con [`POST /v3/sandbox/accounts/{accountId}/topup`](/api-reference/sandbox/post-v3-sandbox-accounts-by-account-id-topup):
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/sandbox/accounts/${FLOW_WALLET_ID}/topup" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Content-Type: application/json" \
+  --data '{"amount":"250.00","currency":"USDC"}'
+```
+
+Crea una cuenta ACH propiedad del cliente con [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts):
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/accounts" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-payout-account-001" \
+  --header "Content-Type: application/json" \
+  --data @- <<'JSON'
+{"origin":"external","type":"bank","methods":["ach"],"country":"US","currency":"USD","details":{"routingNumber":"021000021","accountNumber":"123456789","accountType":"checking","bankName":"Example Bank","accountHolderName":"Amina Diallo"}}
+JSON
+```
+
+Guarda `data.id` como `PAYOUT_ACCOUNT_ID`, `data.status` como `PAYOUT_ACCOUNT_STATUS` y `data.openTaskIds` como `PAYOUT_ACCOUNT_TASK_IDS`. Si `PAYOUT_ACCOUNT_TASK_IDS` no está vacío, completa las tareas actuales mediante [Capacidades y tareas](/es/integration/onboarding/capabilities-and-requirements).
+
+Vuelve a consultarla con [`GET /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts-by-account-id):
+
+```bash
+curl --request GET \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/accounts/${PAYOUT_ACCOUNT_ID}" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}"
+```
+
+Actualiza `PAYOUT_ACCOUNT_STATUS` y `PAYOUT_ACCOUNT_TASK_IDS` a partir de `data.status` y `data.openTaskIds`. Continúa solo cuando `PAYOUT_ACCOUNT_STATUS` sea `ready`, luego crea la cotización con [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes):
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/quotes" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-payout-quote-001" \
+  --header "Content-Type: application/json" \
+  --data @- <<JSON
+{"customerId":"${CUSTOMER_ID}","capabilityId":"${CAPABILITY_ID}","in":{"amount":"150.00","currency":"USDC","accountId":"${FLOW_WALLET_ID}"},"destinationId":"${PAYOUT_ACCOUNT_ID}","out":{"currency":"USD"}}
+JSON
+```
+
+Guarda `data.id` como `QUOTE_ID`, ejecútala con [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) y guarda el `data.id` devuelto como `TRANSFER_ID`:
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/transfers" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-payout-transfer-001" \
+  --header "Content-Type: application/json" \
+  --data @- <<JSON
+{"quoteId":"${QUOTE_ID}"}
+JSON
+```
+
+  </Tab>
+
+  <Tab title="Cuenta bancaria emitida">
+
+Crea una cuenta ACH/USD liquidada en la cartera lista con [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts):
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/accounts" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-bank-account-001" \
+  --header "Content-Type: application/json" \
+  --data @- <<JSON
+{"origin":"issued","type":"bank","method":"ach","country":"US","currency":"USD","settlement":{"accountId":"${FLOW_WALLET_ID}"}}
+JSON
+```
+
+Guarda `data.id` como `BANK_ACCOUNT_ID` y luego lee el aprovisionamiento con [`GET /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts-by-account-id):
+
+```bash
+curl --request GET \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/accounts/${BANK_ACCOUNT_ID}" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}"
+```
+
+Guarda `data.status` como `BANK_ACCOUNT_STATUS`, `data.details` como `BANK_ACCOUNT_DETAILS` y `data.openTaskIds` como `BANK_ACCOUNT_TASK_IDS`. Completa las tareas actuales, luego vuelve a leer la cuenta hasta que su estado permita su uso y `data.details` esté presente.
+
+Los datos bancarios pueden no estar presentes de inmediato. La rama está completa cuando puedes presentar exactamente los datos bancarios reutilizables devueltos en `BANK_ACCOUNT_DETAILS`. Nunca construyas ni muestres coordenadas de marcador de posición mientras la cuenta se está aprovisionando.
+
+  </Tab>
+</Tabs>
+
+Para cobros y pagos, monitorea `TRANSFER_ID` con [`GET /v3/transfers/{transferId}`](/api-reference/money-movement/get-v3-transfers-by-transfer-id):
+
+```bash
+curl --request GET \
+  "${API_BASE}/v3/transfers/${TRANSFER_ID}" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}"
+```
+
+<CardGroup cols={3}>
+  <Card title="Cobro" icon="arrow-down-to-line" href="/es/integration/receive-funds">Construye el flujo completo de cobro.</Card>
+  <Card title="Pago" icon="arrow-up-from-line" href="/es/integration/send-funds">Construye la gestión de pagos en producción.</Card>
+  <Card title="Cuenta bancaria emitida" icon="building-columns" href="/es/integration/issue-bank-account">Gestiona el aprovisionamiento y los datos.</Card>
+</CardGroup>
+
+A continuación, añade [webhooks](/es/integration/webhooks). Cada solicitud anterior ya enlaza con su esquema y su página de estado completa en la Referencia de la API.

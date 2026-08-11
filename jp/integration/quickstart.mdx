@@ -1,0 +1,266 @@
+---
+title: "クイックスタート"
+description: "サンドボックスで顧客を作成し、ケイパビリティを有効化して、入金、支払い、または発行済み銀行口座のフローを実行します。"
+---
+
+顧客を作成し、再利用可能なウォレットを 1 つ準備して、必要なサンドボックスフローを実行します。
+
+## 1. サンドボックスを構成する
+
+サンドボックスの API キーをバックエンドから使用します。
+
+```bash
+export API_BASE='https://platform.swipelux.com'
+export SWIPELUX_SANDBOX_API_KEY='replace-with-your-sandbox-key'
+```
+
+キーが、共有 API ホスト上のサンドボックス環境を選択します。
+
+## 2. 顧客を作成する
+
+[`POST /v3/customers`](/api-reference/customers/post-v3-customers) を使用して個人顧客を作成します。
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/customers" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-customer-001" \
+  --header "Content-Type: application/json" \
+  --data '{"type":"individual","externalId":"quickstart-customer-001"}'
+```
+
+`data.id` を `CUSTOMER_ID` として保存します。
+
+## 3. 成果を選択する
+
+- **入金:** USD を受け取り、USDC を顧客の発行済みウォレットに決済します。
+- **支払い:** USDC を顧客の発行済みウォレットから、顧客所有の銀行口座に送金します。
+- **発行済み銀行口座:** 顧客の発行済みウォレットに決済される ACH/USD 口座を発行します。
+
+サードパーティへの支払いには、[受取人](/jp/integration/recipients) または [資金を送る](/jp/integration/send-funds) をご覧ください。
+
+## 4. 適格なケイパビリティを見つける
+
+[`GET /v3/customers/{customerId}/capabilities/supported`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-supported) でサポートされているケイパビリティを一覧表示します。
+
+```bash
+curl --request GET \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/capabilities/supported" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}"
+```
+
+`availability` が `available` または `beta`、`eligibility.eligible` が `true`、必要な `directions` と `method`、および該当する `accountType` を持つレスポンスエントリを選択してください。顧客の発行済みウォレットを入金先、支払い元、または銀行口座の決済アカウントとして使用します。この支払いパスでは、顧客所有の口座を `destinationId` として使用します。`institutions` が返された場合は、返された institution の選択肢のみを使用してください。エントリの `id` を `CAPABILITY_ID` として保存します。汎用のケイパビリティ ID をハードコーディングしないでください。
+
+## 5. ケイパビリティをリクエストする
+
+選択したケイパビリティを [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) でリクエストします。
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/capabilities/${CAPABILITY_ID}" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-capability-001" \
+  --header "Content-Type: application/json" \
+  --data '{}'
+```
+
+`data.status` を `CAPABILITY_STATUS`、`data.openTaskIds` を `TASK_IDS` として保存します。
+
+## 6. サンドボックスでオンボーディングを完了する
+
+`TASK_IDS` が空でない場合は、[ケイパビリティとタスク](/jp/integration/onboarding/capabilities-and-requirements) を通じて、現在の各要件を完了してください。
+
+このウォークスルーでは、[`POST /v3/sandbox/customers/{customerId}/capabilities/{capabilityId}/status`](/api-reference/sandbox/post-v3-sandbox-customers-by-customer-id-capabilities-by-capability-id-status) を使用してケイパビリティを `ready` に設定します。
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/sandbox/customers/${CUSTOMER_ID}/capabilities/${CAPABILITY_ID}/status" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Content-Type: application/json" \
+  --data '{"status":"ready"}'
+```
+
+このテスト用制御は、本番のオンボーディングではありません。[`GET /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id) で再取得します。
+
+```bash
+curl --request GET \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/capabilities/${CAPABILITY_ID}" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}"
+```
+
+`data.status` と `data.openTaskIds` から `CAPABILITY_STATUS` と `TASK_IDS` を更新します。`CAPABILITY_STATUS` が `ready` のときのみ次に進んでください。
+
+## 7. 選択したフローを構築する
+
+[`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) で、Base 上に発行済み USDC ウォレットを 1 つ作成します。
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/accounts" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-flow-wallet-001" \
+  --header "Content-Type: application/json" \
+  --data '{"origin":"issued","type":"wallet","currency":"USDC","network":"base"}'
+```
+
+`data.id` を `FLOW_WALLET_ID`、`data.status` を `FLOW_WALLET_STATUS`、`data.openTaskIds` を `FLOW_WALLET_TASK_IDS` として保存します。`FLOW_WALLET_TASK_IDS` が空でない場合は、[ケイパビリティとタスク](/jp/integration/onboarding/capabilities-and-requirements) で現在のタスクを完了してください。
+
+[`GET /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts-by-account-id) でウォレットを再取得します。
+
+```bash
+curl --request GET \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/accounts/${FLOW_WALLET_ID}" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}"
+```
+
+`data.status` と `data.openTaskIds` から `FLOW_WALLET_STATUS` と `FLOW_WALLET_TASK_IDS` を更新します。`FLOW_WALLET_STATUS` が `ready` のときのみ次に進んでください。
+
+<Tabs>
+  <Tab title="入金">
+
+[`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) で USD から USDC への見積もりを作成します。
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/quotes" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-payin-quote-001" \
+  --header "Content-Type: application/json" \
+  --data @- <<JSON
+{"customerId":"${CUSTOMER_ID}","capabilityId":"${CAPABILITY_ID}","in":{"amount":"150.00","currency":"USD"},"destinationId":"${FLOW_WALLET_ID}","out":{"currency":"USDC"}}
+JSON
+```
+
+`data.id` を `QUOTE_ID` として保存し、[`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) で実行します。
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/transfers" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-payin-transfer-001" \
+  --header "Content-Type: application/json" \
+  --data @- <<JSON
+{"quoteId":"${QUOTE_ID}"}
+JSON
+```
+
+`data.id` を `TRANSFER_ID` として保存します。[`GET /v3/transfers/{transferId}/instructions`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-instructions) で指示を取得します。
+
+```bash
+curl --request GET \
+  "${API_BASE}/v3/transfers/${TRANSFER_ID}/instructions" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}"
+```
+
+レスポンスには `data.transferId` と `data.instructions` が含まれます。`data.transferId` を `TRANSFER_ID`、`data.instructions` を `FUNDING_INSTRUCTIONS` として保存します。
+
+  </Tab>
+
+  <Tab title="支払い">
+
+[`POST /v3/sandbox/accounts/{accountId}/topup`](/api-reference/sandbox/post-v3-sandbox-accounts-by-account-id-topup) で ready 状態のウォレットに入金します。
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/sandbox/accounts/${FLOW_WALLET_ID}/topup" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Content-Type: application/json" \
+  --data '{"amount":"250.00","currency":"USDC"}'
+```
+
+[`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) で、顧客所有の ACH 口座を作成します。
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/accounts" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-payout-account-001" \
+  --header "Content-Type: application/json" \
+  --data @- <<'JSON'
+{"origin":"external","type":"bank","methods":["ach"],"country":"US","currency":"USD","details":{"routingNumber":"021000021","accountNumber":"123456789","accountType":"checking","bankName":"Example Bank","accountHolderName":"Amina Diallo"}}
+JSON
+```
+
+`data.id` を `PAYOUT_ACCOUNT_ID`、`data.status` を `PAYOUT_ACCOUNT_STATUS`、`data.openTaskIds` を `PAYOUT_ACCOUNT_TASK_IDS` として保存します。`PAYOUT_ACCOUNT_TASK_IDS` が空でない場合は、[ケイパビリティとタスク](/jp/integration/onboarding/capabilities-and-requirements) で現在のタスクを完了してください。
+
+[`GET /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts-by-account-id) で再取得します。
+
+```bash
+curl --request GET \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/accounts/${PAYOUT_ACCOUNT_ID}" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}"
+```
+
+`data.status` と `data.openTaskIds` から `PAYOUT_ACCOUNT_STATUS` と `PAYOUT_ACCOUNT_TASK_IDS` を更新します。`PAYOUT_ACCOUNT_STATUS` が `ready` になったら次に進み、[`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) で見積もりを作成します。
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/quotes" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-payout-quote-001" \
+  --header "Content-Type: application/json" \
+  --data @- <<JSON
+{"customerId":"${CUSTOMER_ID}","capabilityId":"${CAPABILITY_ID}","in":{"amount":"150.00","currency":"USDC","accountId":"${FLOW_WALLET_ID}"},"destinationId":"${PAYOUT_ACCOUNT_ID}","out":{"currency":"USD"}}
+JSON
+```
+
+`data.id` を `QUOTE_ID` として保存し、[`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) で実行し、返された `data.id` を `TRANSFER_ID` として保存します。
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/transfers" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-payout-transfer-001" \
+  --header "Content-Type: application/json" \
+  --data @- <<JSON
+{"quoteId":"${QUOTE_ID}"}
+JSON
+```
+
+  </Tab>
+
+  <Tab title="発行済み銀行口座">
+
+[`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) で、ready 状態のウォレットに決済される ACH/USD 口座を作成します。
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/accounts" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-bank-account-001" \
+  --header "Content-Type: application/json" \
+  --data @- <<JSON
+{"origin":"issued","type":"bank","method":"ach","country":"US","currency":"USD","settlement":{"accountId":"${FLOW_WALLET_ID}"}}
+JSON
+```
+
+`data.id` を `BANK_ACCOUNT_ID` として保存し、[`GET /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts-by-account-id) でプロビジョニングを読み取ります。
+
+```bash
+curl --request GET \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/accounts/${BANK_ACCOUNT_ID}" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}"
+```
+
+`data.status` を `BANK_ACCOUNT_STATUS`、`data.details` を `BANK_ACCOUNT_DETAILS`、`data.openTaskIds` を `BANK_ACCOUNT_TASK_IDS` として保存します。現在のタスクをすべて完了し、ステータスが利用可能となり `data.details` が返されるまで、口座を繰り返し読み取ってください。
+
+銀行口座の詳細情報はすぐに反映されない場合があります。`BANK_ACCOUNT_DETAILS` に返された正確な再利用可能な銀行口座情報を提示できるようになった時点で、このブランチは完了となります。口座がプロビジョニング中の間、プレースホルダーの座標を構築したり表示したりしないでください。
+
+  </Tab>
+</Tabs>
+
+入金と支払いでは、[`GET /v3/transfers/{transferId}`](/api-reference/money-movement/get-v3-transfers-by-transfer-id) で `TRANSFER_ID` を監視します。
+
+```bash
+curl --request GET \
+  "${API_BASE}/v3/transfers/${TRANSFER_ID}" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}"
+```
+
+<CardGroup cols={3}>
+  <Card title="入金" icon="arrow-down-to-line" href="/jp/integration/receive-funds">完全な入金フローを構築します。</Card>
+  <Card title="支払い" icon="arrow-up-from-line" href="/jp/integration/send-funds">本番向けの支払い処理を構築します。</Card>
+  <Card title="発行済み銀行口座" icon="building-columns" href="/jp/integration/issue-bank-account">プロビジョニングと詳細情報を処理します。</Card>
+</CardGroup>
+
+次に、[Webhook](/jp/integration/webhooks) を追加してください。上記の各リクエストは、既にその完全な API リファレンススキーマとステータスページにリンクされています。

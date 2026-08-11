@@ -1,0 +1,266 @@
+---
+title: "Hurtigstart"
+description: "Opprett en sandbox-kunde, aktiver en capability og kjør en innbetaling, utbetaling eller flyt for utstedt bankkonto."
+---
+
+Opprett en kunde, klargjør én gjenbrukbar lommebok og kjør sandbox-flyten du trenger.
+
+## 1. Konfigurer sandbox
+
+Bruk en sandbox-API-nøkkel fra backend-en din:
+
+```bash
+export API_BASE='https://platform.swipelux.com'
+export SWIPELUX_SANDBOX_API_KEY='replace-with-your-sandbox-key'
+```
+
+Nøkkelen velger sandbox-miljøet på den delte API-verten.
+
+## 2. Opprett en kunde
+
+Opprett en individkunde med [`POST /v3/customers`](/api-reference/customers/post-v3-customers):
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/customers" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-customer-001" \
+  --header "Content-Type: application/json" \
+  --data '{"type":"individual","externalId":"quickstart-customer-001"}'
+```
+
+Lagre `data.id` som `CUSTOMER_ID`.
+
+## 3. Velg utfallet
+
+- **Pay-in:** motta USD og gjør opp USDC til kundens utstedte lommebok.
+- **Payout:** send USDC fra kundens utstedte lommebok til en kundeeid bankkonto.
+- **Utstedt bankkonto:** utsted en ACH/USD-konto som gjøres opp til kundens utstedte lommebok.
+
+For en tredjeparts utbetaling, følg [Recipients](/no/integration/recipients) eller [Send midler](/no/integration/send-funds).
+
+## 4. Finn en kvalifisert capability
+
+List opp støttede capabilities med [`GET /v3/customers/{customerId}/capabilities/supported`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-supported):
+
+```bash
+curl --request GET \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/capabilities/supported" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}"
+```
+
+Velg en responsoppføring med `availability` satt til `available` eller `beta`, `eligibility.eligible` satt til `true`, ønskede `directions` og `method`, samt samsvarende `accountType`. Bruk kundens utstedte lommebok som pay-in-destinasjon, payout-kilde eller bankkonto-oppgjørskonto; bruk den kundeeide kontoen som `destinationId` for denne utbetalingsveien. Hvis `institutions` returneres, bruk kun ett returnert institusjonsvalg. Lagre oppføringens `id` som `CAPABILITY_ID`; ikke hardkode en universell capability-ID.
+
+## 5. Be om capability-en
+
+Be om den valgte capability-en med [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id):
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/capabilities/${CAPABILITY_ID}" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-capability-001" \
+  --header "Content-Type: application/json" \
+  --data '{}'
+```
+
+Lagre `data.status` som `CAPABILITY_STATUS` og `data.openTaskIds` som `TASK_IDS`.
+
+## 6. Fullfør onboarding i sandbox
+
+Hvis `TASK_IDS` ikke er tom, fullfør hvert gjeldende krav via [Capabilities og oppgaver](/no/integration/onboarding/capabilities-and-requirements).
+
+For denne gjennomgangen, sett capability-en til `ready` med [`POST /v3/sandbox/customers/{customerId}/capabilities/{capabilityId}/status`](/api-reference/sandbox/post-v3-sandbox-customers-by-customer-id-capabilities-by-capability-id-status):
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/sandbox/customers/${CUSTOMER_ID}/capabilities/${CAPABILITY_ID}/status" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Content-Type: application/json" \
+  --data '{"status":"ready"}'
+```
+
+Denne testkontrollen er ikke produksjonsonboarding. Hent på nytt med [`GET /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id):
+
+```bash
+curl --request GET \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/capabilities/${CAPABILITY_ID}" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}"
+```
+
+Oppdater `CAPABILITY_STATUS` og `TASK_IDS` fra `data.status` og `data.openTaskIds`. Fortsett kun når `CAPABILITY_STATUS` er `ready`.
+
+## 7. Bygg den valgte flyten
+
+Opprett én utstedt USDC-lommebok på Base med [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts):
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/accounts" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-flow-wallet-001" \
+  --header "Content-Type: application/json" \
+  --data '{"origin":"issued","type":"wallet","currency":"USDC","network":"base"}'
+```
+
+Lagre `data.id` som `FLOW_WALLET_ID`, `data.status` som `FLOW_WALLET_STATUS`, og `data.openTaskIds` som `FLOW_WALLET_TASK_IDS`. Hvis `FLOW_WALLET_TASK_IDS` ikke er tom, fullfør gjeldende oppgaver via [Capabilities og oppgaver](/no/integration/onboarding/capabilities-and-requirements).
+
+Hent lommeboken på nytt med [`GET /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts-by-account-id):
+
+```bash
+curl --request GET \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/accounts/${FLOW_WALLET_ID}" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}"
+```
+
+Oppdater `FLOW_WALLET_STATUS` og `FLOW_WALLET_TASK_IDS` fra `data.status` og `data.openTaskIds`. Fortsett kun når `FLOW_WALLET_STATUS` er `ready`.
+
+<Tabs>
+  <Tab title="Pay-in">
+
+Opprett et USD-til-USDC-tilbud med [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes):
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/quotes" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-payin-quote-001" \
+  --header "Content-Type: application/json" \
+  --data @- <<JSON
+{"customerId":"${CUSTOMER_ID}","capabilityId":"${CAPABILITY_ID}","in":{"amount":"150.00","currency":"USD"},"destinationId":"${FLOW_WALLET_ID}","out":{"currency":"USDC"}}
+JSON
+```
+
+Lagre `data.id` som `QUOTE_ID`, og utfør så med [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers):
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/transfers" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-payin-transfer-001" \
+  --header "Content-Type: application/json" \
+  --data @- <<JSON
+{"quoteId":"${QUOTE_ID}"}
+JSON
+```
+
+Lagre `data.id` som `TRANSFER_ID`. Hent instruksjoner med [`GET /v3/transfers/{transferId}/instructions`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-instructions):
+
+```bash
+curl --request GET \
+  "${API_BASE}/v3/transfers/${TRANSFER_ID}/instructions" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}"
+```
+
+Responsen inneholder `data.transferId` og `data.instructions`. Lagre `data.transferId` som `TRANSFER_ID` og `data.instructions` som `FUNDING_INSTRUCTIONS`.
+
+  </Tab>
+
+  <Tab title="Payout">
+
+Finansier den klare lommeboken med [`POST /v3/sandbox/accounts/{accountId}/topup`](/api-reference/sandbox/post-v3-sandbox-accounts-by-account-id-topup):
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/sandbox/accounts/${FLOW_WALLET_ID}/topup" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Content-Type: application/json" \
+  --data '{"amount":"250.00","currency":"USDC"}'
+```
+
+Opprett en kundeeid ACH-konto med [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts):
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/accounts" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-payout-account-001" \
+  --header "Content-Type: application/json" \
+  --data @- <<'JSON'
+{"origin":"external","type":"bank","methods":["ach"],"country":"US","currency":"USD","details":{"routingNumber":"021000021","accountNumber":"123456789","accountType":"checking","bankName":"Example Bank","accountHolderName":"Amina Diallo"}}
+JSON
+```
+
+Lagre `data.id` som `PAYOUT_ACCOUNT_ID`, `data.status` som `PAYOUT_ACCOUNT_STATUS`, og `data.openTaskIds` som `PAYOUT_ACCOUNT_TASK_IDS`. Hvis `PAYOUT_ACCOUNT_TASK_IDS` ikke er tom, fullfør gjeldende oppgaver via [Capabilities og oppgaver](/no/integration/onboarding/capabilities-and-requirements).
+
+Hent den på nytt med [`GET /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts-by-account-id):
+
+```bash
+curl --request GET \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/accounts/${PAYOUT_ACCOUNT_ID}" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}"
+```
+
+Oppdater `PAYOUT_ACCOUNT_STATUS` og `PAYOUT_ACCOUNT_TASK_IDS` fra `data.status` og `data.openTaskIds`. Fortsett kun når `PAYOUT_ACCOUNT_STATUS` er `ready`, og opprett så tilbudet med [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes):
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/quotes" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-payout-quote-001" \
+  --header "Content-Type: application/json" \
+  --data @- <<JSON
+{"customerId":"${CUSTOMER_ID}","capabilityId":"${CAPABILITY_ID}","in":{"amount":"150.00","currency":"USDC","accountId":"${FLOW_WALLET_ID}"},"destinationId":"${PAYOUT_ACCOUNT_ID}","out":{"currency":"USD"}}
+JSON
+```
+
+Lagre `data.id` som `QUOTE_ID`, utfør med [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers), og lagre den returnerte `data.id` som `TRANSFER_ID`:
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/transfers" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-payout-transfer-001" \
+  --header "Content-Type: application/json" \
+  --data @- <<JSON
+{"quoteId":"${QUOTE_ID}"}
+JSON
+```
+
+  </Tab>
+
+  <Tab title="Utstedt bankkonto">
+
+Opprett en ACH/USD-konto med oppgjør til den klare lommeboken med [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts):
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/accounts" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: quickstart-bank-account-001" \
+  --header "Content-Type: application/json" \
+  --data @- <<JSON
+{"origin":"issued","type":"bank","method":"ach","country":"US","currency":"USD","settlement":{"accountId":"${FLOW_WALLET_ID}"}}
+JSON
+```
+
+Lagre `data.id` som `BANK_ACCOUNT_ID`, og les så provisjonering med [`GET /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts-by-account-id):
+
+```bash
+curl --request GET \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/accounts/${BANK_ACCOUNT_ID}" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}"
+```
+
+Lagre `data.status` som `BANK_ACCOUNT_STATUS`, `data.details` som `BANK_ACCOUNT_DETAILS`, og `data.openTaskIds` som `BANK_ACCOUNT_TASK_IDS`. Fullfør eventuelle gjeldende oppgaver, og les så kontoen igjen til statusen tillater bruk og `data.details` er til stede.
+
+Bankopplysninger er ikke nødvendigvis til stede umiddelbart. Grenen er fullført når du kan presentere de nøyaktige gjenbrukbare bankopplysningene som er returnert i `BANK_ACCOUNT_DETAILS`. Konstruér eller vis aldri plassholderkoordinater mens kontoen fremdeles blir provisjonert.
+
+  </Tab>
+</Tabs>
+
+For pay-ins og payouts, overvåk `TRANSFER_ID` med [`GET /v3/transfers/{transferId}`](/api-reference/money-movement/get-v3-transfers-by-transfer-id):
+
+```bash
+curl --request GET \
+  "${API_BASE}/v3/transfers/${TRANSFER_ID}" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}"
+```
+
+<CardGroup cols={3}>
+  <Card title="Pay-in" icon="arrow-down-to-line" href="/no/integration/receive-funds">Bygg den komplette pay-in-flyten.</Card>
+  <Card title="Payout" icon="arrow-up-from-line" href="/no/integration/send-funds">Bygg produksjonshåndtering av utbetalinger.</Card>
+  <Card title="Utstedt bankkonto" icon="building-columns" href="/no/integration/issue-bank-account">Håndter provisjonering og detaljer.</Card>
+</CardGroup>
+
+Deretter, legg til [webhooks](/no/integration/webhooks). Hver forespørsel over lenker allerede til sitt komplette skjema i API-referansen og statussiden.

@@ -1,0 +1,66 @@
+---
+title: "API-referanse"
+description: "Bruk API-kontrakten, gjør skriveoperasjoner trygge å prøve på nytt, og håndter feil konsekvent."
+---
+
+API-referansen er den autoritative kontrakten for Swipelux-API-et. Hver operasjon viser forespørsel-, respons-, sikkerhets-, status- og feilskjemaene sine.
+
+Bruk `https://platform.swipelux.com` for hver forespørsel. Send din miljøspesifikke nøkkel i `X-API-Key` fra en beskyttet backend.
+
+## Gjør skriveoperasjoner trygge å prøve på nytt
+
+Når en operasjon oppgir `Idempotency-Key` som påkrevd, generer én nøkkel for hver tiltenkte operasjon og lagre den sammen med din lokale forespørselsoppføring.
+
+```bash
+curl --request POST \
+  'https://platform.swipelux.com/v3/customers' \
+  --header 'X-API-Key: YOUR_API_KEY' \
+  --header 'Idempotency-Key: customer-order-1001' \
+  --header 'Content-Type: application/json' \
+  --data '{"type":"individual","externalId":"customer-order-1001"}'
+```
+
+Hvis responsen er uklar, prøv på nytt med identisk metode, sti og body med samme nøkkel. Ikke gjenbruk den nøkkelen for en annen operasjon eller endret body.
+
+Noen operasjoner returnerer `Idempotency-Replayed: true` når responsen kom fra en tidligere forespørsel med samme nøkkel. Behandle den responsen som resultatet av den opprinnelige operasjonen, ikke som en ny operasjon.
+
+## Håndter feil
+
+API-feil bruker `application/problem+json`. Bygg klientatferden rundt disse stabile feltene:
+
+| Felt | Bruk |
+| --- | --- |
+| `status` | HTTP-status knyttet til problemet. |
+| `code` | Stabil maskinlesbar feilkode. |
+| `detail` | Handlingsrettet forklaring for gjeldende forespørsel. |
+| `retryable` | Om nytt forsøk på samme forespørsel kan lykkes, når til stede. |
+| `errors[].pointer` | JSON Pointer til et ugyldig forespørselsfelt. |
+| `correlationId` | Forespørsel-ID som skal beholdes i logger og supportoppføringer. |
+
+Responsens `correlationId` speiler `X-Request-Id`. Logg både operasjonen og denne verdien, men ikke eksponer hemmeligheter eller fullstendige finansielle detaljer.
+
+```json
+{
+  "type": "https://docs.swipelux.com/problems/validation_error",
+  "title": "Validation error",
+  "status": 400,
+  "code": "validation_error",
+  "detail": "The request contains invalid fields.",
+  "correlationId": "01JERRORVALIDATION",
+  "errors": [
+    {
+      "pointer": "/externalId",
+      "code": "invalid_format",
+      "message": "Use a valid external identifier."
+    }
+  ]
+}
+```
+
+Bruk operasjonens dokumenterte problemskjemaer for å avgjøre om du skal korrigere input, oppdatere ressursstatus, fullføre en oppgave eller prøve på nytt. Behold hele status- og feilkatalogen i API-referansen fremfor å hardkode udokumenterte tilfeller.
+
+## Følg opp asynkrone operasjoner
+
+En vellykket create-respons starter mange arbeidsflyter; den garanterer ikke fullføring. Lagre responsavledede ressurs-ID-er, les gjeldende ressurs, og bruk [verifiserte webhooks](/no/integration/webhooks) for å reagere på endringer.
+
+Start med [`POST /v3/customers`](/api-reference/customers/post-v3-customers), eller følg [hurtigstarten](/no/integration/quickstart) for en komplett sandbox-flyt.

@@ -1,0 +1,106 @@
+---
+title: "Tarjoukset ja siirrot"
+description: "Valitse tarkka summa, suorita yksi tarjous turvallisesti ja seuraa nykyistä siirtotilaa."
+---
+
+Tarjous on aikasidonnainen ja kertakäyttöinen. Suorita se kerran, äläkä käytä sitä uudelleen siirtomallina. Siirto on tuon tarjouksen suoritus ja jatkaa muuttumista luonnin jälkeen.
+
+## Tarkista resurssien yhteensopivuus
+
+Ennen tarjousta vahvista, että:
+
+- Kyky on valmis, kuuluu asiakkaalle ja vastaa aiottua suuntaa ja menetelmää.
+- Vakaakolikkolähde on aktiivinen luotu lompakko, joka tukee syötteen valuuttaa.
+- Lompakosta lompakkoon -resurssit käyttävät samaa valuuttaa ja verkkoa.
+- Fiat-maksu ulos -tili tai -kohde on valmis ja tukee lähtövaluuttaa ja -menetelmää.
+
+## Valitse tarkka summa
+
+Luo tarjous [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) -toiminnolla. Lähetä yksi summapuoli, molemmat valuutat ja vastauksesta johdetut resurssi-ID:t näillä otsakkeilla:
+
+```http
+X-API-Key: ${SWIPELUX_API_KEY}
+Idempotency-Key: quote-create-001
+Content-Type: application/json
+```
+
+<Tabs>
+  <Tab title="Tarkka in">
+
+Aseta `in.amount` ja jätä `out.amount` pois. Vastaus laskee, mitä kohde vastaanottaa.
+
+```json
+{
+  "customerId": "${CUSTOMER_ID}",
+  "capabilityId": "${STABLECOIN_CAPABILITY_ID}",
+  "in": {
+    "amount": "1.234567",
+    "currency": "USDC",
+    "accountId": "${SOURCE_WALLET_ID}"
+  },
+  "destinationId": "${WALLET_DESTINATION_ID}",
+  "out": {
+    "currency": "USDC"
+  }
+}
+```
+
+  </Tab>
+  <Tab title="Tarkka out">
+
+Aseta `out.amount` ja jätä `in.amount` pois. Vastaus laskee, mitä lähteestä on lähdettävä.
+
+```json
+{
+  "customerId": "${CUSTOMER_ID}",
+  "capabilityId": "${CAPABILITY_ID}",
+  "in": {
+    "currency": "USDC",
+    "accountId": "${SOURCE_WALLET_ID}"
+  },
+  "destinationId": "${RECIPIENT_DESTINATION_ID}",
+  "out": {
+    "amount": "100.00",
+    "currency": "USD"
+  }
+}
+```
+
+  </Tab>
+</Tabs>
+
+Tallenna tarjouksen `data.id`, `data.status`, `data.expiresAt`, palautetut haarat, kurssi ja maksut. Käytä palautettuja desimaalimerkkijonoja; älä laske suoritettavia summia uudelleen liukulukuaritmetiikalla.
+
+Vakaakolikko-rahoitetun tarkka-out-tarjouksen jälkeen lue [`GET /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts-by-account-id). Vertaa nykyistä lähteen `balances[].available`-arvoa syötteen valuutalle palautettuun `data.in.amount`-arvoon. Jos varat eivät riitä, vaihda tai rahoita lähde ja luo uusi tarjous. Fiat-rahoitetut tarkka-out-tarjoukset eivät käytä tätä lähdelompakon saldoportia.
+
+## Suorita kerran ja toivu turvallisesti
+
+Lue nykyinen tarjous [`GET /v3/quotes/{quoteId}`](/api-reference/money-movement/get-v3-quotes-by-quote-id) -toiminnolla. Suorita vain, kun sen tila ja `expiresAt` sallivat sen.
+
+Luo siirto [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) -toiminnolla:
+
+```http
+X-API-Key: ${SWIPELUX_API_KEY}
+Idempotency-Key: transfer-create-001
+Content-Type: application/json
+```
+
+```json
+{
+  "quoteId": "${QUOTE_ID}"
+}
+```
+
+Luo yksi uusi `Idempotency-Key` tälle aiotulle siirrolle ja tallenna se ennen pyynnön lähettämistä. Jos vastaus katoaa, uudelleenyritä samaa menetelmää, polkua, runkoa ja avainta. Älä luo toista suoritusavainta epävarman tuloksen toipumiseen.
+
+Jos API palauttaa `quote_already_executed`, käytä sen `transferId`-arvoa jatkaaksesi olemassa olevalla siirrolla. Idempotentti toisto voi myös palauttaa `Idempotency-Replayed: true`.
+
+## Seuraa nykyistä siirtoa
+
+Lue [`GET /v3/transfers/{transferId}`](/api-reference/money-movement/get-v3-transfers-by-transfer-id) luonnin jälkeen ja jokaisen webhookin jälkeen. Tallenna uusimmat `data.state`, `data.stateDetail` ja `data.openTaskIds`.
+
+Kun tehtävän ID:t ovat avoinna, hae [`GET /v3/transfers/{transferId}/tasks`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-tasks) ja suorita jokainen tehtävä sen nykyistä versiota ja vaatimuksia käyttäen.
+
+Sisääntulevaa liikettä varten [`GET /v3/transfers/{transferId}/instructions`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-instructions) voi palauttaa siirtokohtaisia rahoitustietoja. Renderöi vain palautettu ohjemuunnelma ja tarkka viite.
+
+Seuraavaksi toteuta [webhookit](/fi/integration/webhooks), jotta jokainen asynkroninen siirtopäivitys tulee samaan nykyisen tilan käsittelypolkuun.

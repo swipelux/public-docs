@@ -1,0 +1,66 @@
+---
+title: "API リファレンス"
+description: "API 契約を利用し、書き込みを安全に再試行し、エラーを一貫して処理します。"
+---
+
+API リファレンスは、Swipelux API における正式な契約です。各操作にはリクエスト、レスポンス、セキュリティ、ステータス、エラースキーマが記載されています。
+
+すべてのリクエストには `https://platform.swipelux.com` を使用してください。環境固有のキーを、保護されたバックエンドから `X-API-Key` として送信します。
+
+## 書き込みを安全に再試行できるようにする
+
+操作が `Idempotency-Key` を必須としている場合は、意図する操作ごとに 1 つのキーを生成し、ローカルのリクエストレコードとともに保存してください。
+
+```bash
+curl --request POST \
+  'https://platform.swipelux.com/v3/customers' \
+  --header 'X-API-Key: YOUR_API_KEY' \
+  --header 'Idempotency-Key: customer-order-1001' \
+  --header 'Content-Type: application/json' \
+  --data '{"type":"individual","externalId":"customer-order-1001"}'
+```
+
+レスポンスが不確実な場合は、同じキーで同一のメソッド、パス、ボディを再送信してください。異なる操作や変更されたボディに対して、そのキーを再利用してはいけません。
+
+一部の操作では、同じキーによる以前のリクエストからレスポンスが返された場合に `Idempotency-Replayed: true` を返します。そのレスポンスは、2 回目の操作の結果ではなく、元の操作の結果として扱ってください。
+
+## エラーを処理する
+
+API エラーは `application/problem+json` を使用します。次の安定したフィールドを基にクライアントの動作を構築してください。
+
+| フィールド | 用途 |
+| --- | --- |
+| `status` | 問題に関連付けられた HTTP ステータス。 |
+| `code` | 安定した機械可読なエラーコード。 |
+| `detail` | 現在のリクエストに対する実行可能な説明。 |
+| `retryable` | 同じリクエストの再試行が成功する可能性があるかどうか(存在する場合)。 |
+| `errors[].pointer` | 無効なリクエストフィールドへの JSON Pointer。 |
+| `correlationId` | ログとサポート記録に保持するリクエスト識別子。 |
+
+レスポンスの `correlationId` は `X-Request-Id` と一致します。操作とこの値の両方をログに記録してください。ただし、シークレットや財務情報の完全な内容を露出しないでください。
+
+```json
+{
+  "type": "https://docs.swipelux.com/problems/validation_error",
+  "title": "Validation error",
+  "status": 400,
+  "code": "validation_error",
+  "detail": "The request contains invalid fields.",
+  "correlationId": "01JERRORVALIDATION",
+  "errors": [
+    {
+      "pointer": "/externalId",
+      "code": "invalid_format",
+      "message": "Use a valid external identifier."
+    }
+  ]
+}
+```
+
+操作にドキュメント化されている problem スキーマを使用して、入力を修正するか、リソースの状態を更新するか、タスクを完了するか、再試行するかを判断してください。ステータスとエラーのカタログ全体は、文書化されていないケースをハードコーディングするのではなく、API リファレンスで参照してください。
+
+## 非同期操作を追跡する
+
+作成成功のレスポンスは多くのワークフローを開始しますが、完了を保証するものではありません。レスポンスから得られたリソース ID を保存し、現在のリソースを読み取り、[検証済みの Webhook](/jp/integration/webhooks) を使用して変更に対応してください。
+
+まずは [`POST /v3/customers`](/api-reference/customers/post-v3-customers) から始めるか、完全なサンドボックスの流れを追う場合は [クイックスタート](/jp/integration/quickstart) をご覧ください。

@@ -1,0 +1,66 @@
+---
+title: "Referencia de la API"
+description: "Utiliza el contrato de la API, reintenta escrituras de forma segura y gestiona los errores de manera coherente."
+---
+
+La Referencia de la API es el contrato autoritativo de la API de Swipelux. Cada operación muestra sus esquemas de solicitud, respuesta, seguridad, estado y errores.
+
+Utiliza `https://platform.swipelux.com` para cada solicitud. Envía tu clave específica del entorno en `X-API-Key` desde un backend protegido.
+
+## Haz que las escrituras sean seguras al reintentar
+
+Cuando una operación indica `Idempotency-Key` como requerida, genera una clave para cada operación prevista y guárdala junto con tu registro local de la solicitud.
+
+```bash
+curl --request POST \
+  'https://platform.swipelux.com/v3/customers' \
+  --header 'X-API-Key: YOUR_API_KEY' \
+  --header 'Idempotency-Key: customer-order-1001' \
+  --header 'Content-Type: application/json' \
+  --data '{"type":"individual","externalId":"customer-order-1001"}'
+```
+
+Si la respuesta es incierta, reintenta con el mismo método, ruta y cuerpo utilizando la misma clave. No reutilices esa clave para una operación distinta ni con un cuerpo modificado.
+
+Algunas operaciones devuelven `Idempotency-Replayed: true` cuando la respuesta procede de una solicitud anterior con la misma clave. Considera esa respuesta como el resultado de la operación original, no como una segunda operación.
+
+## Gestiona los errores
+
+Los errores de la API usan `application/problem+json`. Construye el comportamiento del cliente en torno a estos campos estables:
+
+| Campo | Uso |
+| --- | --- |
+| `status` | Estado HTTP asociado al problema. |
+| `code` | Código de error estable y legible por máquina. |
+| `detail` | Explicación accionable para la solicitud actual. |
+| `retryable` | Si reintentar la misma solicitud puede tener éxito, cuando esté presente. |
+| `errors[].pointer` | JSON Pointer al campo inválido de la solicitud. |
+| `correlationId` | Identificador de la solicitud que debes conservar en logs y registros de soporte. |
+
+El `correlationId` de la respuesta refleja `X-Request-Id`. Registra tanto la operación como este valor, pero no expongas secretos ni datos financieros completos.
+
+```json
+{
+  "type": "https://docs.swipelux.com/problems/validation_error",
+  "title": "Validation error",
+  "status": 400,
+  "code": "validation_error",
+  "detail": "The request contains invalid fields.",
+  "correlationId": "01JERRORVALIDATION",
+  "errors": [
+    {
+      "pointer": "/externalId",
+      "code": "invalid_format",
+      "message": "Use a valid external identifier."
+    }
+  ]
+}
+```
+
+Utiliza los esquemas de problema documentados de la operación para decidir si corregir la entrada, refrescar el estado del recurso, completar una tarea o reintentar. Mantén el catálogo completo de estados y errores en la Referencia de la API en lugar de codificar de forma rígida casos no documentados.
+
+## Rastrea operaciones asíncronas
+
+Una respuesta exitosa de creación inicia muchos flujos de trabajo; no garantiza su finalización. Almacena los IDs de recurso derivados de la respuesta, lee el recurso actual y utiliza [webhooks verificados](/es/integration/webhooks) para reaccionar a los cambios.
+
+Comienza con [`POST /v3/customers`](/api-reference/customers/post-v3-customers), o sigue el [Quickstart](/es/integration/quickstart) para un recorrido completo en sandbox.

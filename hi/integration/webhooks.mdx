@@ -1,0 +1,101 @@
+---
+title: "Webhooks"
+description: "Deliveries को verify करें, events को acknowledge करने से पहले persist करें, और current resource state को सुरक्षित रूप से process करें।"
+---
+
+Asynchronous changes पर प्रतिक्रिया करने के लिए webhooks का उपयोग करें। Delivery कम से कम एक बार है, इसलिए duplicate, delayed, और out of order events सामान्य हैं।
+
+```mermaid
+flowchart TD
+  A["Receive raw request"] --> B["Verify Svix signature"]
+  B --> C["Persist unique event ID"]
+  C --> D["Return 2xx"]
+  D --> E["Process asynchronously"]
+  E --> F["Refetch current API resource"]
+```
+
+## केवल आवश्यक events register करें
+
+एक endpoint को [`POST /v3/webhooks`](/api-reference/webhooks/post-v3-webhooks) के साथ बनाएँ। केवल दस्तावेज़ीकृत events की सदस्यता लें जो आपके integration को drive करते हैं। यह उदाहरण [`transfer.state_changed`](/api-reference/webhooks/transfer-state-changed) का उपयोग करता है।
+
+```bash
+export API_BASE='https://platform.swipelux.com'
+export SWIPELUX_API_KEY='replace-with-your-api-key'
+
+curl --request POST \
+  "${API_BASE}/v3/webhooks" \
+  --header "X-API-Key: ${SWIPELUX_API_KEY}" \
+  --header "Idempotency-Key: webhook-endpoint-001" \
+  --header "Content-Type: application/json" \
+  --data @- <<'JSON'
+{
+  "url": "https://example.com/webhooks/swipelux",
+  "events": ["transfer.state_changed"]
+}
+JSON
+```
+
+Response `data.id` को `WEBHOOK_ID` के रूप में संग्रहीत करें। [`GET /v3/webhooks/portal`](/api-reference/webhooks/get-v3-webhooks-portal) द्वारा लौटाए गए portal को खोलें, इस endpoint की signing secret प्राप्त करें, और इसे अपनी API key से अलग एक secret manager में संग्रहीत करें।
+
+## Parsing से पहले verify करें
+
+Swipelux नए webhook integrations को Svix के माध्यम से deliver करता है। अपनी endpoint signing secret और इन headers के साथ raw request body को verify करें:
+
+- `svix-id`
+- `svix-timestamp`
+- `svix-signature`
+
+Verification सफल होने से पहले JSON parse न करें या side effects का कारण न बनें।
+
+```javascript
+import { Webhook } from "svix";
+
+const verifier = new Webhook(process.env.SWIPELUX_WEBHOOK_SECRET);
+
+export async function handleSwipeluxWebhook(request) {
+  const rawBody = await request.text();
+  const event = verifier.verify(rawBody, {
+    "svix-id": request.headers.get("svix-id"),
+    "svix-timestamp": request.headers.get("svix-timestamp"),
+    "svix-signature": request.headers.get("svix-signature"),
+  });
+
+  await webhookInbox.insertIfAbsent({
+    id: event.id,
+    payload: event,
+    status: "pending",
+  });
+
+  return new Response(null, { status: 204 });
+}
+```
+
+अनुपस्थित या अमान्य signatures वाले requests को अस्वीकार करें। Verification पूरा होने तक raw body उपलब्ध रखें।
+
+## Persist, acknowledge, फिर process
+
+Envelope `id` पर एक uniqueness constraint लगाएँ। Verified envelope को persist करें, तुरंत `2xx` लौटाएँ, फिर इसे asynchronously process करें।
+
+यदि event ID पहले से मौजूद है, तो पूर्ण किए गए side effects को दोहराए बिना delivery को acknowledge करें। अपनी retry queue के माध्यम से pending या failed local work को फिर से शुरू करें। Envelope `attempt` field को deduplication key या transport retry counter के रूप में उपयोग न करें।
+
+## वर्तमान state पुन: प्राप्त करें
+
+Webhook order एक authoritative resource history नहीं है। Object का पता लगाने के लिए `resource.type` और `resource.id` का उपयोग करें, फिर अपने system को update करने से पहले इसकी वर्तमान state प्राप्त करें।
+
+एक transfer event के लिए, [`GET /v3/transfers/{transferId}`](/api-reference/money-movement/get-v3-transfers-by-transfer-id) को call करें:
+
+```bash
+curl --request GET \
+  "${API_BASE}/v3/transfers/${TRANSFER_ID}" \
+  --header "X-API-Key: ${SWIPELUX_API_KEY}"
+```
+
+वर्तमान API response से customer-visible status और downstream actions को drive करें। Side effects को इस तरह design करें कि यदि दो workers संबंधित events को अलग order में process करें तो सुरक्षित रहें।
+
+## Deliveries recover करें
+
+Delivery logs खोलने, failed deliveries retry करने, या manual replay शुरू करने के लिए [`GET /v3/webhooks/portal`](/api-reference/webhooks/get-v3-webhooks-portal) का उपयोग करें।
+
+प्रत्येक replay को उसी signature verification और durable inbox से गुजरना होगा। Downtime के बाद recover करने के लिए, प्रभावित window को replay करें और प्रत्येक संदर्भित resource को पुन: प्राप्त करें। पूर्ण किए गए event IDs no-ops रहते हैं; अपूर्ण records asynchronously फिर से शुरू होते हैं।
+
+आगे, sandbox में duplicate और out-of-order deliveries को verify करें, फिर [Go live](/hi/integration/go-live) checklist पूरी करें।

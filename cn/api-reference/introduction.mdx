@@ -1,0 +1,66 @@
+---
+title: "API 参考"
+description: "遵循 API 契约,安全地重试写入操作,并统一处理错误。"
+---
+
+API 参考是 Swipelux API 的权威契约。每个操作都会展示其请求、响应、安全要求、状态与错误结构。
+
+所有请求请使用 `https://platform.swipelux.com`。从受保护的后端在 `X-API-Key` 中发送对应环境的密钥。
+
+## 让写入操作可安全重试
+
+当某个操作将 `Idempotency-Key` 列为必填时,请为每次预期的操作生成一个唯一的键,并与您本地的请求记录一起保存。
+
+```bash
+curl --request POST \
+  'https://platform.swipelux.com/v3/customers' \
+  --header 'X-API-Key: YOUR_API_KEY' \
+  --header 'Idempotency-Key: customer-order-1001' \
+  --header 'Content-Type: application/json' \
+  --data '{"type":"individual","externalId":"customer-order-1001"}'
+```
+
+如果响应结果不确定,请使用相同的键、相同的方法、路径和请求体重试。不要将同一个键用于不同的操作或已更改的请求体。
+
+部分操作在响应来自使用相同键的更早一次请求时,会返回 `Idempotency-Replayed: true`。请将该响应视为原始操作的结果,而不是一次新的操作。
+
+## 处理错误
+
+API 错误使用 `application/problem+json` 格式。请围绕以下稳定字段来构建客户端行为:
+
+| 字段 | 用途 |
+| --- | --- |
+| `status` | 与该问题关联的 HTTP 状态码。 |
+| `code` | 稳定的、机器可读的错误码。 |
+| `detail` | 针对当前请求的可执行说明。 |
+| `retryable` | 出现时表示以相同请求重试是否可能成功。 |
+| `errors[].pointer` | 指向无效请求字段的 JSON Pointer。 |
+| `correlationId` | 需保留在日志与支持记录中的请求标识。 |
+
+响应中的 `correlationId` 与 `X-Request-Id` 相同。请同时记录操作与该值,但不要暴露密钥或完整的财务详情。
+
+```json
+{
+  "type": "https://docs.swipelux.com/problems/validation_error",
+  "title": "Validation error",
+  "status": 400,
+  "code": "validation_error",
+  "detail": "The request contains invalid fields.",
+  "correlationId": "01JERRORVALIDATION",
+  "errors": [
+    {
+      "pointer": "/externalId",
+      "code": "invalid_format",
+      "message": "Use a valid external identifier."
+    }
+  ]
+}
+```
+
+请根据该操作文档中列出的 problem 结构,来判断是需要更正输入、刷新资源状态、完成某个任务,还是进行重试。请将完整的状态和错误目录保留在 API 参考中,不要硬编码未记录的场景。
+
+## 跟踪异步操作
+
+创建操作返回成功仅意味着许多工作流已启动,并不保证它们已完成。请存储从响应中获得的资源 ID,读取当前资源,并使用[已验证的 Webhook](/cn/integration/webhooks) 对状态变更做出响应。
+
+请从 [`POST /v3/customers`](/api-reference/customers/post-v3-customers) 开始,或按照[快速开始](/cn/integration/quickstart)完成一次完整的沙盒流程。
