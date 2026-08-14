@@ -11,6 +11,7 @@ const PAGES = [
   "integration/overview",
   "integration/quickstart",
   "integration/authentication",
+  "integration/errors",
   "integration/sandbox",
 ];
 
@@ -115,11 +116,19 @@ function assertOperationLinksMatchOpenApi(page, text) {
       href,
       `${page}.mdx must bind ${method.toUpperCase()} ${path} to its generated href`,
     );
-    assert.equal(
-      apiKeySecurity(method, path),
-      true,
-      `${method.toUpperCase()} ${path} must use OpenAPI apiKey security`,
-    );
+    if (path.startsWith("/kyc/redirect/")) {
+      assert.deepEqual(
+        openApiOperation(method, path).operation.security,
+        [],
+        `${method.toUpperCase()} ${path} must remain an unauthenticated customer action link`,
+      );
+    } else {
+      assert.equal(
+        apiKeySecurity(method, path),
+        true,
+        `${method.toUpperCase()} ${path} must use OpenAPI apiKey security`,
+      );
+    }
   }
 
   for (const match of text.matchAll(/\[[^\]]+\]\((\/api-reference\/[^)]+)\)/g)) {
@@ -330,7 +339,7 @@ function card(text, title, href) {
   ).test(text);
 }
 
-test("publishes the four Get started pages in the intended order", () => {
+test("publishes the five Get started pages in the intended order", () => {
   assertPages(PAGES);
   const integration = getDefaultNavigation(config.navigation).tabs.find(
     (tab) => tab.tab === "Integration Docs",

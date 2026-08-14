@@ -44,6 +44,20 @@ import {
 const docsCli = fileURLToPath(
   new URL("../scripts/verify-docs.mjs", import.meta.url),
 );
+const committedOpenApi = JSON.parse(readFileSync("openapi.json", "utf8"));
+const PROBLEM_REDIRECT_DESTINATIONS = Object.fromEntries(
+  committedOpenApi["x-swipelux-problems"].map(({ slug }) => [
+    `/errors/${slug}`,
+    `/integration/errors#${slug}`,
+  ]),
+);
+const ALL_APPROVED_REDIRECT_DESTINATIONS = Object.freeze({
+  ...APPROVED_REDIRECT_DESTINATIONS,
+  ...PROBLEM_REDIRECT_DESTINATIONS,
+});
+const ALL_EXPECTED_REDIRECT_SOURCES = Object.freeze(
+  Object.keys(ALL_APPROVED_REDIRECT_DESTINATIONS).sort(),
+);
 
 function assertHasError(errors, pattern) {
   assert.ok(
@@ -119,8 +133,8 @@ function assertRedirectRepositoryState(marker, inventory) {
   );
   assert.deepEqual(
     validateRedirectInventory(inventory, {
-      expectedDestinations: APPROVED_REDIRECT_DESTINATIONS,
-      expectedSources: EXPECTED_REDIRECT_SOURCES,
+      expectedDestinations: ALL_APPROVED_REDIRECT_DESTINATIONS,
+      expectedSources: ALL_EXPECTED_REDIRECT_SOURCES,
       knownDestinations: knownRedirectDestinations(),
       verificationPhase: phase,
     }),
@@ -169,7 +183,9 @@ function createCompleteCliFixture({
       ],
     },
   });
-  writeFixtureJson(fixture, "openapi.json", {});
+  writeFixtureJson(fixture, "openapi.json", {
+    "x-swipelux-problems": committedOpenApi["x-swipelux-problems"],
+  });
   writeFixtureJson(fixture, "openapi-coverage.json", {
     operations: [
       { href: "/api-reference/customers/post-v3-customers" },
@@ -1326,15 +1342,15 @@ test("normalizes index source pages to public routes", () => {
 });
 
 test("commits the complete approved page and frozen source inventories", () => {
-  assert.equal(CANONICAL_NAVIGATION_PAGES.length, 38);
+  assert.equal(CANONICAL_NAVIGATION_PAGES.length, 39);
   assert.equal(TRANSLATED_LOCALES.length, 16);
   assert.equal(LOCALIZED_HOME_PAGES.length, 16);
   assert.equal(LOCALIZED_NAVIGATION_PAGES.length, 608);
-  assert.equal(REQUIRED_NAVIGATION_PAGES.length, 646);
-  assert.equal(REQUIRED_PUBLISHED_PAGES.length, 663);
+  assert.equal(REQUIRED_NAVIGATION_PAGES.length, 647);
+  assert.equal(REQUIRED_PUBLISHED_PAGES.length, 664);
   assert.equal(FROZEN_SOURCE_PAGES.length, 59);
   assert.equal(Object.keys(FROZEN_MIGRATION_DECISIONS).length, 59);
-  assert.equal(EXPECTED_REDIRECT_SOURCES.length, 67);
+  assert.equal(EXPECTED_REDIRECT_SOURCES.length, 66);
   assert.equal(new Set(FROZEN_SOURCE_PAGES).size, FROZEN_SOURCE_PAGES.length);
   assert.equal(
     new Set(EXPECTED_REDIRECT_SOURCES).size,
@@ -1408,7 +1424,7 @@ test("rejects omitting any approved non-Terms source page", () => {
 test("validates the committed redirect inventory", () => {
   const { inventory, marker } = committedRedirectState();
 
-  assert.equal(inventory.length, 67);
+  assert.equal(inventory.length, 152);
   assert.ok(["current", "final"].includes(marker.phase));
   assert.equal(assertRedirectRepositoryState(marker, inventory), marker.phase);
 });
@@ -1452,7 +1468,7 @@ test("keeps the approved legacy route destinations", () => {
   assert.equal(destinations.get("/reference/rates"), rates.href);
   assert.equal(
     destinations.get("/reference/v3-reason-codes"),
-    "/api-reference/introduction#handle-errors",
+    "/integration/errors",
   );
   assert.equal(
     destinations.get("/reference/webhooks"),

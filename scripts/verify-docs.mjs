@@ -159,6 +159,17 @@ if (openapi) {
 }
 
 const coverage = readJson("openapi-coverage.json");
+const generatedErrorRedirects = Array.isArray(
+  openapi?.["x-swipelux-problems"],
+)
+  ? openapi["x-swipelux-problems"].map(({ slug }) => ({
+      source: `/errors/${slug}`,
+      destination: `/integration/errors#${slug}`,
+    }))
+  : [];
+const generatedErrorDestinations = Object.fromEntries(
+  generatedErrorRedirects.map(({ source, destination }) => [source, destination]),
+);
 const knownDestinations = new Set([
   "/",
   ...REQUIRED_NAVIGATION_PAGES.map((page) => `/${page}`),
@@ -170,8 +181,14 @@ const redirects = readJson("docs/redirect-inventory.json");
 if (redirects) {
   add(
     validateRedirectInventory(redirects, {
-      expectedSources: EXPECTED_REDIRECT_SOURCES,
-      expectedDestinations: APPROVED_REDIRECT_DESTINATIONS,
+      expectedSources: [
+        ...EXPECTED_REDIRECT_SOURCES,
+        ...generatedErrorRedirects.map(({ source }) => source),
+      ].sort(),
+      expectedDestinations: {
+        ...APPROVED_REDIRECT_DESTINATIONS,
+        ...generatedErrorDestinations,
+      },
       knownDestinations,
       verificationPhase: redirectVerificationPhase,
     }),

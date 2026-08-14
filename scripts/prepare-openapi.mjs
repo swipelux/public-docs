@@ -9,6 +9,9 @@ import {
   EXPECTED_OUTPUT_SHA256,
   EXPECTED_TRANSFORMATIONS_SHA256,
   SOURCE_BASENAME,
+  SOURCE_COMMIT,
+  SOURCE_REPOSITORY,
+  SOURCE_ROUTE,
   SOURCE_SHA256,
 } from "./lib/openapi.mjs";
 import { prepareOpenApiArtifacts } from "./lib/openapi-artifacts.mjs";
@@ -23,6 +26,11 @@ function main() {
 
   const { counts } = prepareOpenApiArtifacts({
     sourcePath,
+    sourceMetadata: {
+      repository: SOURCE_REPOSITORY,
+      commit: SOURCE_COMMIT,
+      route: SOURCE_ROUTE,
+    },
     outputDirectory: process.cwd(),
     expectedSourceSha256: SOURCE_SHA256,
     expectedSourceBasename: SOURCE_BASENAME,

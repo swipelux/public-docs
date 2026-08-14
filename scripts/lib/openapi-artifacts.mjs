@@ -29,6 +29,7 @@ export const OPENAPI_ARTIFACT_NAMES = Object.freeze([
 
 const INSTALL_ORDER = OPENAPI_ARTIFACT_NAMES;
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
+const COMMIT_SHA_PATTERN = /^[a-f0-9]{40}$/;
 
 export function byteHash(value) {
   return createHash("sha256").update(value).digest("hex");
@@ -51,6 +52,32 @@ function assertWholeSecondTimestamp(label, value) {
   const parsed = new Date(value);
   if (Number.isNaN(parsed.valueOf()) || parsed.toISOString() !== value) {
     throw new Error(`${label} must be a whole-second ISO-8601 timestamp`);
+  }
+}
+
+function validateSourceMetadata(sourceMetadata) {
+  if (sourceMetadata === undefined) return;
+  if (
+    typeof sourceMetadata !== "object" ||
+    sourceMetadata === null ||
+    Array.isArray(sourceMetadata)
+  ) {
+    throw new TypeError("OpenAPI source metadata must be an object");
+  }
+  if (
+    typeof sourceMetadata.repository !== "string" ||
+    sourceMetadata.repository.trim() === ""
+  ) {
+    throw new Error("OpenAPI source repository must be a non-empty string");
+  }
+  if (!COMMIT_SHA_PATTERN.test(sourceMetadata.commit)) {
+    throw new Error("OpenAPI source commit must be a lowercase 40-character SHA");
+  }
+  if (
+    typeof sourceMetadata.route !== "string" ||
+    !sourceMetadata.route.startsWith("/")
+  ) {
+    throw new Error("OpenAPI source route must start with /");
   }
 }
 
@@ -111,6 +138,7 @@ function artifactTexts(artifactSet) {
 
 export function buildOpenApiArtifactSet({
   sourcePath,
+  sourceMetadata,
   expectedSourceSha256,
   expectedSourceBasename,
   deterministicTimestamp,
@@ -119,6 +147,7 @@ export function buildOpenApiArtifactSet({
   expectedTransformationsSha256,
   expectedCounts,
 }) {
+  validateSourceMetadata(sourceMetadata);
   validateOptions({
     sourcePath,
     expectedSourceSha256,
@@ -179,6 +208,7 @@ export function buildOpenApiArtifactSet({
     source: {
       basename: basename(sourcePath),
       sha256: actualSourceSha256,
+      ...(sourceMetadata ?? {}),
     },
     output: {
       basename: "openapi.json",
@@ -221,6 +251,7 @@ function compareReplayArtifact(name, expectedText, actualBytes) {
 export function verifyOpenApiArtifacts({
   directory,
   sourcePath,
+  expectedSourceMetadata,
   expectedSourceSha256,
   expectedSourceBasename,
   expectedOutputSha256,
@@ -229,6 +260,7 @@ export function verifyOpenApiArtifacts({
   expectedGeneratedAt,
   expectedCounts,
 }) {
+  validateSourceMetadata(expectedSourceMetadata);
   if (typeof directory !== "string" || !isAbsolute(directory)) {
     throw new Error("OpenAPI artifact directory must be absolute");
   }
@@ -258,6 +290,15 @@ export function verifyOpenApiArtifacts({
   }
   if (provenance?.source?.basename !== expectedSourceBasename) {
     throw new Error("Provenance source basename does not match the approved source");
+  }
+  if (expectedSourceMetadata !== undefined) {
+    for (const [field, expected] of Object.entries(expectedSourceMetadata)) {
+      if (provenance?.source?.[field] !== expected) {
+        throw new Error(
+          `Provenance source ${field} does not match the approved source`,
+        );
+      }
+    }
   }
   if (provenance?.output?.basename !== "openapi.json") {
     throw new Error("Provenance output basename must be openapi.json");
@@ -322,6 +363,7 @@ export function verifyOpenApiArtifacts({
   if (sourcePath !== undefined) {
     const replay = buildOpenApiArtifactSet({
       sourcePath,
+      sourceMetadata: expectedSourceMetadata,
       expectedSourceSha256,
       expectedSourceBasename,
       deterministicTimestamp: expectedGeneratedAt,
@@ -436,6 +478,7 @@ function replaceArtifactSet({
 
 export function prepareOpenApiArtifacts({
   sourcePath,
+  sourceMetadata,
   outputDirectory,
   expectedSourceSha256,
   expectedSourceBasename,
@@ -455,6 +498,7 @@ export function prepareOpenApiArtifacts({
 
   const artifactSet = buildOpenApiArtifactSet({
     sourcePath,
+    sourceMetadata,
     expectedSourceSha256,
     expectedSourceBasename,
     deterministicTimestamp,
@@ -471,6 +515,7 @@ export function prepareOpenApiArtifacts({
   const verificationOptions = {
     directory: stagedDirectory,
     sourcePath,
+    expectedSourceMetadata: sourceMetadata,
     expectedSourceSha256,
     expectedSourceBasename,
     expectedOutputSha256,

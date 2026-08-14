@@ -9,7 +9,7 @@ import ignore from "ignore";
 export const SOURCE_COMMIT =
   "b4c9b5b7101ec03e01424259f58a5c8763ea489b";
 
-export const CANONICAL_NAVIGATION_PAGES = Object.freeze([
+export const LOCALIZABLE_NAVIGATION_PAGES = Object.freeze([
   "integration/overview",
   "integration/quickstart",
   "integration/authentication",
@@ -50,6 +50,16 @@ export const CANONICAL_NAVIGATION_PAGES = Object.freeze([
   "knowledge-base/individual-onboarding/api-workflow",
 ]);
 
+export const ENGLISH_ONLY_NAVIGATION_PAGES = Object.freeze([
+  "integration/errors",
+]);
+
+export const CANONICAL_NAVIGATION_PAGES = Object.freeze([
+  ...LOCALIZABLE_NAVIGATION_PAGES.slice(0, 3),
+  ...ENGLISH_ONLY_NAVIGATION_PAGES,
+  ...LOCALIZABLE_NAVIGATION_PAGES.slice(3),
+]);
+
 export const VERSIONING_PAGE_ROUTES = Object.freeze([
   "api-reference/versioning/migrate-to-v3",
   "api-reference/versioning/changelog",
@@ -76,7 +86,7 @@ export const TRANSLATED_LOCALES = Object.freeze([
 
 export const LOCALIZED_NAVIGATION_PAGES = Object.freeze(
   TRANSLATED_LOCALES.flatMap((locale) =>
-    CANONICAL_NAVIGATION_PAGES.map((page) => `${locale}/${page}`),
+    LOCALIZABLE_NAVIGATION_PAGES.map((page) => `${locale}/${page}`),
   ),
 );
 
@@ -384,7 +394,7 @@ const FROZEN_MIGRATION_DECISION_ROWS = Object.freeze([
   ],
   [
     "content/reference/v3-reason-codes.mdx",
-    "/api-reference/introduction#handle-errors",
+    "/integration/errors",
     "contract-rewrite",
     "not-applicable",
   ],
@@ -488,7 +498,6 @@ export const STRUCTURE_REDIRECTS = Object.freeze({
   "/integration/api-reliability": "/api-reference/introduction",
   "/integration/environments":
     "/integration/authentication#sandbox-and-production",
-  "/integration/errors": "/api-reference/introduction#handle-errors",
   "/integration/pagination-and-sync":
     "/integration/webhooks#recover-deliveries",
   "/integration/production-readiness": "/integration/go-live",
@@ -586,8 +595,7 @@ export const APPROVED_REDIRECT_DESTINATIONS = Object.freeze({
   "/reference/v3-blockchain-networks": "/integration/accounts",
   "/reference/v3-fee-schedule": "/integration/quotes-and-transfers",
   "/reference/v3-method-coverage": "/integration/overview",
-  "/reference/v3-reason-codes":
-    "/api-reference/introduction#handle-errors",
+  "/reference/v3-reason-codes": "/integration/errors",
   "/reference/webhooks": "/integration/webhooks",
   "/send": "/integration/send-funds",
   "/send/first-party-payouts": "/integration/send-funds",

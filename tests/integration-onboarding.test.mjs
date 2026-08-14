@@ -257,7 +257,6 @@ test("every onboarding operation link, security scheme, and request remains cont
       type: "apiKey",
       in: "header",
       name: "X-API-Key",
-      description: openapi.components.securitySchemes.apiKey.description,
     },
   );
 
@@ -468,8 +467,19 @@ test("selection and hosted-session guidance names only response fields defined b
   }
   for (const collection of ["verificationSessions", "tosSessions"]) {
     const session = resolveReference(task.properties[collection].items);
-    assert.ok(session.properties.id);
-    assert.ok(session.properties.url);
+    const variants = session.oneOf ?? session.anyOf ?? [session];
+    assert.ok(variants.length >= 1);
+    for (const rawVariant of variants) {
+      const variant = resolveReference(rawVariant);
+      assert.ok(variant.properties.id);
+      assert.ok(variant.properties.status);
+    }
+    assert.ok(
+      variants.some((rawVariant) =>
+        Boolean(resolveReference(rawVariant).properties.url),
+      ),
+      `${collection} must expose a URL on an actionable variant`,
+    );
   }
 });
 

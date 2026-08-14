@@ -46,12 +46,24 @@ const ledger = parseMigrationLedger(
 
 const CUSTOMER_CREATION_API_REFERENCE =
   "/api-reference/customers/post-v3-customers";
+const PROBLEM_REDIRECT_DESTINATIONS = Object.fromEntries(
+  openapi["x-swipelux-problems"].map(({ slug }) => [
+    `/errors/${slug}`,
+    `/integration/errors#${slug}`,
+  ]),
+);
+const ALL_APPROVED_REDIRECT_DESTINATIONS = Object.freeze({
+  ...APPROVED_REDIRECT_DESTINATIONS,
+  ...PROBLEM_REDIRECT_DESTINATIONS,
+});
+const ALL_EXPECTED_REDIRECT_SOURCES = Object.freeze(
+  Object.keys(ALL_APPROVED_REDIRECT_DESTINATIONS).sort(),
+);
 
 const STRUCTURE_REDIRECTS = {
   "/integration/api-reliability": "/api-reference/introduction",
   "/integration/environments":
     "/integration/authentication#sandbox-and-production",
-  "/integration/errors": "/api-reference/introduction#handle-errors",
   "/integration/pagination-and-sync":
     "/integration/webhooks#recover-deliveries",
   "/integration/production-readiness": "/integration/go-live",
@@ -84,8 +96,7 @@ const STAGE_A_RETARGETED_LEGACY_REDIRECTS = Object.freeze({
   "/onboarding/shareholders-and-documents":
     "/integration/onboarding/capabilities-and-requirements#upload-documents",
   "/reference/endpoint-map": CUSTOMER_CREATION_API_REFERENCE,
-  "/reference/v3-reason-codes":
-    "/api-reference/introduction#handle-errors",
+  "/reference/v3-reason-codes": "/integration/errors",
 });
 
 const GENERIC_REFERENCE_REDIRECT_SOURCES = Object.freeze([
@@ -319,8 +330,8 @@ test("generic reference migrations use the customer-creation API Reference entry
 });
 
 test("every approved redirect source has one direct redirect and root has none", () => {
-  assert.equal(EXPECTED_REDIRECT_SOURCES.length, 67);
-  assert.equal(inventory.length, EXPECTED_REDIRECT_SOURCES.length);
+  assert.equal(EXPECTED_REDIRECT_SOURCES.length, 66);
+  assert.equal(inventory.length, ALL_EXPECTED_REDIRECT_SOURCES.length);
 
   const redirectsBySource = new Map();
   for (const redirect of inventory) {
@@ -329,12 +340,12 @@ test("every approved redirect source has one direct redirect and root has none",
     redirectsBySource.set(redirect.source, redirects);
   }
 
-  for (const source of EXPECTED_REDIRECT_SOURCES) {
+  for (const source of ALL_EXPECTED_REDIRECT_SOURCES) {
     const redirects = redirectsBySource.get(source) ?? [];
     assert.equal(redirects.length, 1, `${source} must have exactly one redirect`);
     assert.equal(
       redirects[0].destination,
-      APPROVED_REDIRECT_DESTINATIONS[source],
+      ALL_APPROVED_REDIRECT_DESTINATIONS[source],
       `${source} must retain its approved redirect destination`,
     );
   }
@@ -708,7 +719,7 @@ test("every fragment-bearing redirect resolves to a Markdown/MDX anchor", async 
   );
   assert.equal(
     fragmentRedirects.length,
-    Object.values(APPROVED_REDIRECT_DESTINATIONS).filter((destination) =>
+    Object.values(ALL_APPROVED_REDIRECT_DESTINATIONS).filter((destination) =>
       destination.includes("#"),
     ).length,
   );
