@@ -8,6 +8,7 @@ import { docsConfigSchema } from "@mintlify/validation";
 
 import {
   CANONICAL_NAVIGATION_PAGES,
+  LOCALIZABLE_NAVIGATION_PAGES,
   LOCALIZED_NAVIGATION_PAGES,
   REQUIRED_NAVIGATION_PAGES,
   TRANSLATED_LOCALES,
@@ -37,6 +38,7 @@ const INTEGRATION_GROUPS = [
       "integration/overview",
       "integration/quickstart",
       "integration/authentication",
+      "integration/errors",
       "integration/sandbox",
     ],
   },
@@ -69,6 +71,7 @@ const INTEGRATION_GROUPS = [
 ];
 
 const NEW_CANONICAL_PAGE_TITLES = {
+  "integration/errors": "Errors and retries",
   "integration/common-flows": "Common flows",
   "integration/issue-bank-account": "Issue a bank account",
   "integration/go-live": "Go live",
@@ -80,7 +83,6 @@ const NEW_CANONICAL_PAGE_TITLES = {
 
 const RETIRED_INTEGRATION_PAGES = [
   "integration/environments.mdx",
-  "integration/errors.mdx",
   "integration/pagination-and-sync.mdx",
   "integration/request-safety.mdx",
   "integration/using-the-api-reference.mdx",
@@ -119,7 +121,6 @@ const STRUCTURE_REDIRECTS = {
   "/integration/api-reliability": "/api-reference/introduction",
   "/integration/environments":
     "/integration/authentication#sandbox-and-production",
-  "/integration/errors": "/api-reference/introduction#handle-errors",
   "/integration/pagination-and-sync":
     "/integration/webhooks#recover-deliveries",
   "/integration/production-readiness": "/integration/go-live",
@@ -228,8 +229,13 @@ const ENGLISH_NAVIGATION = {
   ],
 };
 
+const LOCALIZED_INTEGRATION_GROUPS = INTEGRATION_GROUPS.map((group) => ({
+  ...group,
+  pages: group.pages.filter((page) => page !== "integration/errors"),
+}));
+
 const LOCALIZED_TAB_GROUPS = [
-  INTEGRATION_GROUPS,
+  LOCALIZED_INTEGRATION_GROUPS,
   API_REFERENCE_GROUPS.filter(({ openapi }) => openapi === undefined),
   KNOWLEDGE_BASE_GROUPS,
 ];
@@ -385,7 +391,7 @@ test("shows the language picker on every translated authored page and places it 
     );
   }
 
-  for (const page of CANONICAL_NAVIGATION_PAGES) {
+  for (const page of LOCALIZABLE_NAVIGATION_PAGES) {
     assert.ok(
       block.includes(`[data-current-path$="/${page}"]`),
       `language picker must cover ${page}`,
@@ -543,7 +549,7 @@ test("makes API Reference the sole owner of openapi.json", () => {
 });
 
 test("copies the exact approved redirect pairs without internal metadata", () => {
-  assert.equal(redirectInventory.length, 67);
+  assert.equal(redirectInventory.length, 152);
   assert.deepEqual(
     config.redirects,
     redirectInventory.map(({ source, destination }) => ({

@@ -7,6 +7,9 @@ import {
   EXPECTED_OUTPUT_SHA256,
   EXPECTED_TRANSFORMATIONS_SHA256,
   SOURCE_BASENAME,
+  SOURCE_COMMIT,
+  SOURCE_REPOSITORY,
+  SOURCE_ROUTE,
   SOURCE_SHA256,
 } from "./lib/openapi.mjs";
 import { verifyOpenApiArtifacts } from "./lib/openapi-artifacts.mjs";
@@ -15,6 +18,11 @@ function main() {
   const { counts } = verifyOpenApiArtifacts({
     directory: process.cwd(),
     sourcePath: process.env.OPENAPI_SOURCE_PATH,
+    expectedSourceMetadata: {
+      repository: SOURCE_REPOSITORY,
+      commit: SOURCE_COMMIT,
+      route: SOURCE_ROUTE,
+    },
     expectedSourceSha256: SOURCE_SHA256,
     expectedSourceBasename: SOURCE_BASENAME,
     expectedOutputSha256: EXPECTED_OUTPUT_SHA256,

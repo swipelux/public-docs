@@ -1,16 +1,19 @@
 import { createHash } from "node:crypto";
 
 export const SOURCE_SHA256 =
-  "ac2cb435a7099da53e6028bca98a4d57f0a1bf684cddfe64c438106a2997e3a7";
-export const SOURCE_BASENAME = "api-1 (23).json";
+  "8f72086fe1a8b38ff2dd454efa78a9e9f0cd61833af4c9708375a20622d23e3c";
+export const SOURCE_BASENAME = "openapi-v3-c1814dd.json";
+export const SOURCE_REPOSITORY = "swipelux/wallet-infrastructure";
+export const SOURCE_COMMIT = "c1814ddac682803b012c214048731963072a07dd";
+export const SOURCE_ROUTE = "/openapi-v3.json";
 export const EXPECTED_OUTPUT_SHA256 =
-  "c9fa2d865ea2c9fb97ba0d336645288009c17f7ea9efc53fe25ef5f8d500000f";
+  "3f9adac2f1b9cdc204464287beb82a9a1e9f3a6b4273ff2b3ec512d791dad12c";
 export const EXPECTED_COVERAGE_SHA256 =
-  "d13317b85a855551763d82dd4cba87f702f67b058b6e2500ab2746a837483a1d";
+  "f47c27d8dd085156dc3c208a57672eec4ac2afb0d80c044b6dc12bd688741181";
 export const EXPECTED_TRANSFORMATIONS_SHA256 =
-  "a2aacaa4e9746f573cd7850dede566ecb8cec18b45a37d9f1fa62bf66e9d7006";
+  "339e00ef2e85e2c2e992bc02c0c6d6ef24a47607cb6773b286cac4246015e415";
 // Public API label preparation timestamp, normalized to UTC whole seconds.
-export const APPROVED_GENERATED_AT = "2026-08-06T23:05:51.000Z";
+export const APPROVED_GENERATED_AT = "2026-08-13T23:35:55.000Z";
 export const HTTP_METHODS = new Set([
   "get",
   "post",
@@ -21,15 +24,18 @@ export const HTTP_METHODS = new Set([
   "options",
   "trace",
 ]);
-export const PREPARATION_VERSION = "1.2.2";
+export const PREPARATION_VERSION = "1.3.0";
 
 export const EXPECTED_OPENAPI_COUNTS = Object.freeze({
-  paths: 49,
-  operations: 74,
-  schemas: 87,
+  paths: 50,
+  operations: 75,
+  schemas: 90,
   webhooks: 12,
 });
 const CUSTOMER_WEBHOOKS = ["customer.created", "customer.updated"];
+const PUBLIC_V3_COMPATIBILITY_PATHS = new Set([
+  "/kyc/redirect/{customerId}/{taskId}/{verificationSessionId}",
+]);
 
 function isPlainObject(value) {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
@@ -675,7 +681,11 @@ function assertSecuritySchemesUnreferenced(spec, schemeNames) {
 function validateV3Paths(spec) {
   if (!isPlainObject(spec?.paths)) throw new Error("OpenAPI paths must be an object");
   for (const path of Object.keys(spec.paths)) {
-    if (path.startsWith("/") && !path.startsWith("/v3/")) {
+    if (
+      path.startsWith("/") &&
+      !path.startsWith("/v3/") &&
+      !PUBLIC_V3_COMPATIBILITY_PATHS.has(path)
+    ) {
       throw new Error(`Non-v3 path is not publishable: ${path}`);
     }
   }

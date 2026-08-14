@@ -14,7 +14,6 @@ assert.ok(integrationTab, "Missing Integration Docs tab");
 const PAGES = integrationTab.groups.flatMap(({ pages }) => pages);
 const RETIRED_ROUTES = new Set([
   "/integration/environments",
-  "/integration/errors",
   "/integration/pagination-and-sync",
   "/integration/request-safety",
   "/integration/using-the-api-reference",
@@ -224,8 +223,8 @@ function hasConcreteNextAction(text) {
 }
 
 test("derives every canonical Integration page from docs.json", () => {
-  assert.equal(PAGES.length, 15, "Integration navigation must contain 15 pages");
-  assert.equal(new Set(PAGES).size, 15, "Integration pages must be unique");
+  assert.equal(PAGES.length, 16, "Integration navigation must contain 16 pages");
+  assert.equal(new Set(PAGES).size, 16, "Integration pages must be unique");
   for (const page of PAGES) assert.doesNotThrow(() => readPage(page));
 });
 
@@ -239,13 +238,13 @@ test("editorial guards reject representative link, action, and JSON mutations", 
     () =>
       assertCanonicalPublicLinks(
         "reference-link mutation",
-        "Read the [old guide][old].\n\n[old]: /integration/errors",
+        "Read the [old guide][old].\n\n[old]: /integration/environments",
       ),
     { name: "AssertionError" },
   );
   for (const expression of [
-    '<Card href={"/integration/errors"}>Old guide</Card>',
-    "<Card href={'/integration/errors'}>Old guide</Card>",
+    '<Card href={"/integration/environments"}>Old guide</Card>',
+    "<Card href={'/integration/environments'}>Old guide</Card>",
   ]) {
     assert.throws(
       () => assertCanonicalPublicLinks("static MDX mutation", expression),
@@ -276,7 +275,7 @@ test("editorial guards reject representative link, action, and JSON mutations", 
   assert.doesNotThrow(() =>
     assertCanonicalPublicLinks(
       "commented route fixture",
-      "{/* Read the [retired guide](/integration/errors). */}",
+      "{/* Read the [retired guide](/integration/environments). */}",
     ),
   );
   assert.equal(
