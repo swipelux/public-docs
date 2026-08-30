@@ -30,7 +30,18 @@ Refetch the capability after using the helper. Treat its current `status` and `o
 
 ## Test an open task
 
-Create a capability-scoped task with [`POST /v3/sandbox/tasks`](/api-reference/sandbox/post-v3-sandbox-tasks):
+Create a sandbox task with [`POST /v3/sandbox/tasks`](/api-reference/sandbox/post-v3-sandbox-tasks). Scope it to the resource whose workflow you are testing and use `items` to describe what the customer must submit. This guide shows capability and transfer workflows; API Reference defines the customer scope and the complete request schema.
+
+Use an `explanation` item for a text response and a `document` item for an upload. New `profile` items also require `profilePointer`, a JSON Pointer naming the customer field. See [Create sandbox task](/api-reference/sandbox/post-v3-sandbox-tasks) for the other item types and fields.
+
+For the transfer example, first create a sandbox transfer through a [pay-in](/integration/receive-funds) or [payout](/integration/send-funds) flow, then export its returned `data.id`:
+
+```bash
+export TRANSFER_ID='tr_replace_with_your_transfer_id'
+```
+
+<Tabs>
+  <Tab title="Capability + explanation">
 
 ```bash
 curl --request POST \
@@ -54,7 +65,48 @@ curl --request POST \
 JSON
 ```
 
-Store `data.id` as `TASK_ID`, `data.revision` as `TASK_REVISION`, and the current `data.requirements[0].id` as `REQUIREMENT_ID`. Submit the answer through [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission):
+  </Tab>
+  <Tab title="Transfer RFI + document">
+
+Scope the task to the transfer under review and request a document with `constraints` that narrow accepted types, formats, and age.
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/sandbox/tasks" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Content-Type: application/json" \
+  --data @- <<JSON
+{
+  "scope": {
+    "type": "transfer",
+    "customerId": "${CUSTOMER_ID}",
+    "transferId": "${TRANSFER_ID}"
+  },
+  "category": "transaction_rfi",
+  "items": [
+    {
+      "type": "document",
+      "request": "Upload a bank statement showing the source of funds for this transfer.",
+      "constraints": {
+        "acceptedDocumentTypes": ["bank_statement"],
+        "acceptedFormats": ["pdf", "jpeg"],
+        "maxAgeDays": 90
+      }
+    }
+  ]
+}
+JSON
+```
+
+The example narrows the accepted document type, format, and age. See [Create sandbox task](/api-reference/sandbox/post-v3-sandbox-tasks) for every supported document constraint.
+
+  </Tab>
+</Tabs>
+
+Store `data.id` as `TASK_ID`, `data.revision` as `TASK_REVISION`, and the current `data.requirements[0].id` as `REQUIREMENT_ID`. Match the answer to the item you created when you call [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission):
+
+<Tabs>
+  <Tab title="Explanation answer">
 
 ```bash
 curl --request POST \
@@ -77,6 +129,36 @@ curl --request POST \
 }
 JSON
 ```
+
+  </Tab>
+  <Tab title="Document answer">
+
+Upload a matching file with [`POST /v3/customers/{customerId}/documents`](/api-reference/documents/post-v3-customers-by-customer-id-documents), then store the returned `data.id` as `DOCUMENT_ID` and submit it as a document answer:
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/tasks/${TASK_ID}/submissions" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: sandbox-task-document-submission-001" \
+  --header "Content-Type: application/json" \
+  --data @- <<JSON
+{
+  "taskRevision": ${TASK_REVISION},
+  "answers": [
+    {
+      "requirementId": "${REQUIREMENT_ID}",
+      "answer": {
+        "type": "document",
+        "documentIds": ["${DOCUMENT_ID}"]
+      }
+    }
+  ]
+}
+JSON
+```
+
+  </Tab>
+</Tabs>
 
 Then accept or reject the current submission with [`POST /v3/sandbox/tasks/{taskId}/review`](/api-reference/sandbox/post-v3-sandbox-tasks-by-task-id-review):
 

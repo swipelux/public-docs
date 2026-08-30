@@ -28,7 +28,18 @@ Rileggi la capability dopo aver usato l'helper. Considera il suo `status` corren
 
 ## Testa un task aperto
 
-Crea un task con scope di capability con [`POST /v3/sandbox/tasks`](/api-reference/sandbox/post-v3-sandbox-tasks):
+Crea un task sandbox con [`POST /v3/sandbox/tasks`](/api-reference/sandbox/post-v3-sandbox-tasks). Associalo alla risorsa del workflow che stai testando e usa `items` per descrivere ciò che il cliente deve inviare. Questa guida mostra i workflow di capability e transfer; l'API Reference definisce lo scope customer e lo schema completo della richiesta.
+
+Usa un elemento `explanation` per una risposta testuale e un elemento `document` per un caricamento. I nuovi elementi `profile` richiedono anche `profilePointer`, un puntatore JSON che identifica il campo del cliente. Consulta [Create sandbox task](/api-reference/sandbox/post-v3-sandbox-tasks) per gli altri tipi di elementi e campi.
+
+Per l'esempio di transfer, crea prima un transfer sandbox tramite un flusso di [pay-in](/it/integration/receive-funds) o [payout](/it/integration/send-funds), quindi esporta il `data.id` restituito:
+
+```bash
+export TRANSFER_ID='tr_replace_with_your_transfer_id'
+```
+
+<Tabs>
+  <Tab title="Capability + explanation">
 
 ```bash
 curl --request POST \
@@ -52,7 +63,48 @@ curl --request POST \
 JSON
 ```
 
-Salva `data.id` come `TASK_ID`, `data.revision` come `TASK_REVISION` e l'attuale `data.requirements[0].id` come `REQUIREMENT_ID`. Invia la risposta tramite [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission):
+  </Tab>
+  <Tab title="Transfer RFI + document">
+
+Assegna al task lo scope del transfer sotto revisione e richiedi un documento con `constraints` che restringano tipi, formati ed età accettati.
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/sandbox/tasks" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Content-Type: application/json" \
+  --data @- <<JSON
+{
+  "scope": {
+    "type": "transfer",
+    "customerId": "${CUSTOMER_ID}",
+    "transferId": "${TRANSFER_ID}"
+  },
+  "category": "transaction_rfi",
+  "items": [
+    {
+      "type": "document",
+      "request": "Upload a bank statement showing the source of funds for this transfer.",
+      "constraints": {
+        "acceptedDocumentTypes": ["bank_statement"],
+        "acceptedFormats": ["pdf", "jpeg"],
+        "maxAgeDays": 90
+      }
+    }
+  ]
+}
+JSON
+```
+
+L'esempio limita tipo, formato e anzianità accettati del documento. Consulta [Create sandbox task](/api-reference/sandbox/post-v3-sandbox-tasks) per tutti i vincoli di documento supportati.
+
+  </Tab>
+</Tabs>
+
+Salva `data.id` come `TASK_ID`, `data.revision` come `TASK_REVISION` e l'attuale `data.requirements[0].id` come `REQUIREMENT_ID`. Quando chiami [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission), abbina la risposta all'elemento creato:
+
+<Tabs>
+  <Tab title="Risposta di spiegazione">
 
 ```bash
 curl --request POST \
@@ -75,6 +127,36 @@ curl --request POST \
 }
 JSON
 ```
+
+  </Tab>
+  <Tab title="Risposta documento">
+
+Carica un file corrispondente con [`POST /v3/customers/{customerId}/documents`](/api-reference/documents/post-v3-customers-by-customer-id-documents), salva il `data.id` restituito come `DOCUMENT_ID` e invialo come risposta documento:
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/tasks/${TASK_ID}/submissions" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: sandbox-task-document-submission-001" \
+  --header "Content-Type: application/json" \
+  --data @- <<JSON
+{
+  "taskRevision": ${TASK_REVISION},
+  "answers": [
+    {
+      "requirementId": "${REQUIREMENT_ID}",
+      "answer": {
+        "type": "document",
+        "documentIds": ["${DOCUMENT_ID}"]
+      }
+    }
+  ]
+}
+JSON
+```
+
+  </Tab>
+</Tabs>
 
 Poi accetta o rifiuta la submission corrente con [`POST /v3/sandbox/tasks/{taskId}/review`](/api-reference/sandbox/post-v3-sandbox-tasks-by-task-id-review):
 

@@ -28,7 +28,18 @@ curl --request POST \
 
 ## オープンタスクをテストする
 
-[`POST /v3/sandbox/tasks`](/api-reference/sandbox/post-v3-sandbox-tasks) でケイパビリティスコープのタスクを作成します。
+[`POST /v3/sandbox/tasks`](/api-reference/sandbox/post-v3-sandbox-tasks) でサンドボックスタスクを作成します。テストするワークフローのリソースをスコープに指定し、顧客が提出する内容を `items` で記述します。このガイドではケイパビリティと送金のワークフローを示します。customer スコープと完全なリクエストスキーマは API Reference で確認してください。
+
+テキスト回答には `explanation` 項目、ファイルのアップロードには `document` 項目を使用します。新しい `profile` 項目には、顧客フィールドを示す JSON Pointer である `profilePointer` も必要です。その他の項目タイプとフィールドは [Create sandbox task](/api-reference/sandbox/post-v3-sandbox-tasks) を参照してください。
+
+送金の例では、まず[入金](/jp/integration/receive-funds)または[支払い](/jp/integration/send-funds)フローでサンドボックス送金を作成し、返された `data.id` をエクスポートします。
+
+```bash
+export TRANSFER_ID='tr_replace_with_your_transfer_id'
+```
+
+<Tabs>
+  <Tab title="ケイパビリティ + explanation">
 
 ```bash
 curl --request POST \
@@ -52,7 +63,48 @@ curl --request POST \
 JSON
 ```
 
-`data.id` を `TASK_ID`、`data.revision` を `TASK_REVISION`、現在の `data.requirements[0].id` を `REQUIREMENT_ID` として保存します。[`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) で回答を送信します。
+  </Tab>
+  <Tab title="Transfer RFI + document">
+
+タスクを審査対象の送金にスコープし、受け付ける種類・形式・経過日数を絞り込む `constraints` を指定してドキュメントを要求します。
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/sandbox/tasks" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Content-Type: application/json" \
+  --data @- <<JSON
+{
+  "scope": {
+    "type": "transfer",
+    "customerId": "${CUSTOMER_ID}",
+    "transferId": "${TRANSFER_ID}"
+  },
+  "category": "transaction_rfi",
+  "items": [
+    {
+      "type": "document",
+      "request": "Upload a bank statement showing the source of funds for this transfer.",
+      "constraints": {
+        "acceptedDocumentTypes": ["bank_statement"],
+        "acceptedFormats": ["pdf", "jpeg"],
+        "maxAgeDays": 90
+      }
+    }
+  ]
+}
+JSON
+```
+
+この例では、受け付けるドキュメントの種類、形式、経過日数を制限します。サポートされるすべてのドキュメント制約は [Create sandbox task](/api-reference/sandbox/post-v3-sandbox-tasks) を参照してください。
+
+  </Tab>
+</Tabs>
+
+`data.id` を `TASK_ID`、`data.revision` を `TASK_REVISION`、現在の `data.requirements[0].id` を `REQUIREMENT_ID` として保存します。[`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) を呼び出すときは、作成した項目のタイプに回答を合わせます。
+
+<Tabs>
+  <Tab title="説明の回答">
 
 ```bash
 curl --request POST \
@@ -75,6 +127,36 @@ curl --request POST \
 }
 JSON
 ```
+
+  </Tab>
+  <Tab title="ドキュメントの回答">
+
+[`POST /v3/customers/{customerId}/documents`](/api-reference/documents/post-v3-customers-by-customer-id-documents) で条件に合うファイルをアップロードし、返された `data.id` を `DOCUMENT_ID` として保存して、ドキュメント回答として送信します。
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/tasks/${TASK_ID}/submissions" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: sandbox-task-document-submission-001" \
+  --header "Content-Type: application/json" \
+  --data @- <<JSON
+{
+  "taskRevision": ${TASK_REVISION},
+  "answers": [
+    {
+      "requirementId": "${REQUIREMENT_ID}",
+      "answer": {
+        "type": "document",
+        "documentIds": ["${DOCUMENT_ID}"]
+      }
+    }
+  ]
+}
+JSON
+```
+
+  </Tab>
+</Tabs>
 
 次に、[`POST /v3/sandbox/tasks/{taskId}/review`](/api-reference/sandbox/post-v3-sandbox-tasks-by-task-id-review) で現在の送信を受理または拒否します。
 

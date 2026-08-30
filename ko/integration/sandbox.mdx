@@ -28,7 +28,18 @@ curl --request POST \
 
 ## 열린 태스크 테스트
 
-[`POST /v3/sandbox/tasks`](/api-reference/sandbox/post-v3-sandbox-tasks)로 케이퍼빌리티 범위 태스크를 생성하세요:
+[`POST /v3/sandbox/tasks`](/api-reference/sandbox/post-v3-sandbox-tasks)로 샌드박스 태스크를 생성하세요. 테스트할 워크플로우의 리소스로 범위를 지정하고 `items`로 고객이 제출해야 할 내용을 설명하세요. 이 가이드는 capability 및 transfer 워크플로우를 보여 줘요. customer 스코프와 전체 요청 스키마는 API Reference에서 확인하세요.
+
+텍스트 답변에는 `explanation` 항목을, 파일 업로드에는 `document` 항목을 사용하세요. 새 `profile` 항목에는 고객 필드를 지정하는 JSON Pointer인 `profilePointer`도 필요해요. 다른 항목 타입과 필드는 [샌드박스 태스크 생성](/api-reference/sandbox/post-v3-sandbox-tasks)을 참고하세요.
+
+transfer 예시에서는 먼저 [입금](/ko/integration/receive-funds) 또는 [지급](/ko/integration/send-funds) 플로우로 샌드박스 transfer를 생성한 다음, 반환된 `data.id`를 내보내세요:
+
+```bash
+export TRANSFER_ID='tr_replace_with_your_transfer_id'
+```
+
+<Tabs>
+  <Tab title="케이퍼빌리티 + explanation">
 
 ```bash
 curl --request POST \
@@ -52,7 +63,48 @@ curl --request POST \
 JSON
 ```
 
-`data.id`를 `TASK_ID`, `data.revision`을 `TASK_REVISION`, 현재 `data.requirements[0].id`를 `REQUIREMENT_ID`로 저장하세요. [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission)로 답변을 제출하세요:
+  </Tab>
+  <Tab title="전송 RFI + document">
+
+검토 중인 전송으로 태스크의 범위를 지정하고, 허용되는 유형, 형식, 유효 기간을 좁히는 `constraints`와 함께 document를 요청하세요.
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/sandbox/tasks" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Content-Type: application/json" \
+  --data @- <<JSON
+{
+  "scope": {
+    "type": "transfer",
+    "customerId": "${CUSTOMER_ID}",
+    "transferId": "${TRANSFER_ID}"
+  },
+  "category": "transaction_rfi",
+  "items": [
+    {
+      "type": "document",
+      "request": "Upload a bank statement showing the source of funds for this transfer.",
+      "constraints": {
+        "acceptedDocumentTypes": ["bank_statement"],
+        "acceptedFormats": ["pdf", "jpeg"],
+        "maxAgeDays": 90
+      }
+    }
+  ]
+}
+JSON
+```
+
+이 예시는 허용되는 문서 타입, 형식, 유효 기간을 제한해요. 지원되는 모든 문서 제약 조건은 [샌드박스 태스크 생성](/api-reference/sandbox/post-v3-sandbox-tasks)을 참고하세요.
+
+  </Tab>
+</Tabs>
+
+`data.id`를 `TASK_ID`, `data.revision`을 `TASK_REVISION`, 현재 `data.requirements[0].id`를 `REQUIREMENT_ID`로 저장하세요. [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission)를 호출할 때는 생성한 항목 타입에 답변을 맞추세요:
+
+<Tabs>
+  <Tab title="설명 답변">
 
 ```bash
 curl --request POST \
@@ -75,6 +127,36 @@ curl --request POST \
 }
 JSON
 ```
+
+  </Tab>
+  <Tab title="문서 답변">
+
+[`POST /v3/customers/{customerId}/documents`](/api-reference/documents/post-v3-customers-by-customer-id-documents)로 조건에 맞는 파일을 업로드하고, 반환된 `data.id`를 `DOCUMENT_ID`로 저장한 다음 문서 답변으로 제출하세요:
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/tasks/${TASK_ID}/submissions" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: sandbox-task-document-submission-001" \
+  --header "Content-Type: application/json" \
+  --data @- <<JSON
+{
+  "taskRevision": ${TASK_REVISION},
+  "answers": [
+    {
+      "requirementId": "${REQUIREMENT_ID}",
+      "answer": {
+        "type": "document",
+        "documentIds": ["${DOCUMENT_ID}"]
+      }
+    }
+  ]
+}
+JSON
+```
+
+  </Tab>
+</Tabs>
 
 그런 다음 [`POST /v3/sandbox/tasks/{taskId}/review`](/api-reference/sandbox/post-v3-sandbox-tasks-by-task-id-review)로 현재 제출을 승인하거나 거부하세요:
 

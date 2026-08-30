@@ -28,7 +28,18 @@ Rufen Sie die Fähigkeit nach dem Einsatz der Hilfsfunktion erneut ab. Behandeln
 
 ## Eine offene Aufgabe testen
 
-Legen Sie eine fähigkeitsbezogene Aufgabe mit [`POST /v3/sandbox/tasks`](/api-reference/sandbox/post-v3-sandbox-tasks) an:
+Erstellen Sie eine Sandbox-Aufgabe mit [`POST /v3/sandbox/tasks`](/api-reference/sandbox/post-v3-sandbox-tasks). Ordnen Sie sie der Ressource zu, deren Workflow Sie testen, und beschreiben Sie mit `items`, was der Kunde einreichen muss. Dieser Leitfaden zeigt Capability- und Transfer-Workflows; die API-Referenz definiert den Kunden-Scope und das vollständige Request-Schema.
+
+Verwenden Sie ein `explanation`-Element für eine Textantwort und ein `document`-Element für einen Upload. Neue `profile`-Elemente erfordern außerdem `profilePointer`, einen JSON Pointer auf das Kundenfeld. Weitere Elementtypen und Felder finden Sie unter [Sandbox-Aufgabe erstellen](/api-reference/sandbox/post-v3-sandbox-tasks).
+
+Erstellen Sie für das Transfer-Beispiel zunächst einen Sandbox-Transfer über einen [Pay-in](/de/integration/receive-funds)- oder [Payout](/de/integration/send-funds)-Ablauf und exportieren Sie anschließend die zurückgegebene `data.id`:
+
+```bash
+export TRANSFER_ID='tr_replace_with_your_transfer_id'
+```
+
+<Tabs>
+  <Tab title="Fähigkeit + Erklärung">
 
 ```bash
 curl --request POST \
@@ -52,7 +63,48 @@ curl --request POST \
 JSON
 ```
 
-Speichern Sie `data.id` als `TASK_ID`, `data.revision` als `TASK_REVISION` und die aktuelle `data.requirements[0].id` als `REQUIREMENT_ID`. Senden Sie die Antwort über [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission):
+  </Tab>
+  <Tab title="Transfer-RFI + Dokument">
+
+Ordnen Sie die Aufgabe dem zu prüfenden Transfer zu und fordern Sie ein Dokument mit `constraints` an, die die akzeptierten Typen, Formate und das Alter einschränken.
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/sandbox/tasks" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Content-Type: application/json" \
+  --data @- <<JSON
+{
+  "scope": {
+    "type": "transfer",
+    "customerId": "${CUSTOMER_ID}",
+    "transferId": "${TRANSFER_ID}"
+  },
+  "category": "transaction_rfi",
+  "items": [
+    {
+      "type": "document",
+      "request": "Upload a bank statement showing the source of funds for this transfer.",
+      "constraints": {
+        "acceptedDocumentTypes": ["bank_statement"],
+        "acceptedFormats": ["pdf", "jpeg"],
+        "maxAgeDays": 90
+      }
+    }
+  ]
+}
+JSON
+```
+
+Das Beispiel begrenzt den akzeptierten Dokumenttyp, das Format und das Alter. Alle unterstützten Dokumenteinschränkungen finden Sie unter [Sandbox-Aufgabe erstellen](/api-reference/sandbox/post-v3-sandbox-tasks).
+
+  </Tab>
+</Tabs>
+
+Speichern Sie `data.id` als `TASK_ID`, `data.revision` als `TASK_REVISION` und die aktuelle `data.requirements[0].id` als `REQUIREMENT_ID`. Stimmen Sie beim Aufruf von [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) die Antwort auf das erstellte Element ab:
+
+<Tabs>
+  <Tab title="Erklärungsantwort">
 
 ```bash
 curl --request POST \
@@ -75,6 +127,36 @@ curl --request POST \
 }
 JSON
 ```
+
+  </Tab>
+  <Tab title="Dokumentantwort">
+
+Laden Sie mit [`POST /v3/customers/{customerId}/documents`](/api-reference/documents/post-v3-customers-by-customer-id-documents) eine passende Datei hoch, speichern Sie die zurückgegebene `data.id` als `DOCUMENT_ID` und senden Sie sie als Dokumentantwort:
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/tasks/${TASK_ID}/submissions" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: sandbox-task-document-submission-001" \
+  --header "Content-Type: application/json" \
+  --data @- <<JSON
+{
+  "taskRevision": ${TASK_REVISION},
+  "answers": [
+    {
+      "requirementId": "${REQUIREMENT_ID}",
+      "answer": {
+        "type": "document",
+        "documentIds": ["${DOCUMENT_ID}"]
+      }
+    }
+  ]
+}
+JSON
+```
+
+  </Tab>
+</Tabs>
 
 Akzeptieren oder lehnen Sie die aktuelle Einreichung dann mit [`POST /v3/sandbox/tasks/{taskId}/review`](/api-reference/sandbox/post-v3-sandbox-tasks-by-task-id-review) ab:
 

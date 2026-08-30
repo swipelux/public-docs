@@ -28,7 +28,18 @@ Po použití pomocníka znovu načtěte capability. Zacházejte s jejím aktuál
 
 ## Test otevřeného úkolu
 
-Vytvořte úkol v rozsahu capability pomocí [`POST /v3/sandbox/tasks`](/api-reference/sandbox/post-v3-sandbox-tasks):
+Vytvořte sandboxový úkol pomocí [`POST /v3/sandbox/tasks`](/api-reference/sandbox/post-v3-sandbox-tasks). Navažte jej na prostředek, jehož pracovní postup testujete, a pomocí `items` popište, co má zákazník odeslat. Tato příručka ukazuje workflow pro capability a transfer; API Reference definuje customer scope a úplné schéma požadavku.
+
+Pro textovou odpověď použijte položku `explanation` a pro nahrání souboru položku `document`. Nové položky `profile` také vyžadují `profilePointer`, JSON Pointer určující pole zákazníka. Další typy položek a pole najdete v [Create sandbox task](/api-reference/sandbox/post-v3-sandbox-tasks).
+
+Pro příklad transferu nejprve vytvořte sandboxový transfer pomocí workflow [pay-in](/cs/integration/receive-funds) nebo [payout](/cs/integration/send-funds) a potom exportujte vrácené `data.id`:
+
+```bash
+export TRANSFER_ID='tr_replace_with_your_transfer_id'
+```
+
+<Tabs>
+  <Tab title="Capability + vysvětlení">
 
 ```bash
 curl --request POST \
@@ -52,7 +63,48 @@ curl --request POST \
 JSON
 ```
 
-Uložte `data.id` jako `TASK_ID`, `data.revision` jako `TASK_REVISION` a aktuální `data.requirements[0].id` jako `REQUIREMENT_ID`. Odešlete odpověď přes [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission):
+  </Tab>
+  <Tab title="RFI k převodu + dokument">
+
+Omezte úkol na kontrolovaný převod a vyžádejte dokument s `constraints`, které zúží přijímané typy, formáty a stáří.
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/sandbox/tasks" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Content-Type: application/json" \
+  --data @- <<JSON
+{
+  "scope": {
+    "type": "transfer",
+    "customerId": "${CUSTOMER_ID}",
+    "transferId": "${TRANSFER_ID}"
+  },
+  "category": "transaction_rfi",
+  "items": [
+    {
+      "type": "document",
+      "request": "Upload a bank statement showing the source of funds for this transfer.",
+      "constraints": {
+        "acceptedDocumentTypes": ["bank_statement"],
+        "acceptedFormats": ["pdf", "jpeg"],
+        "maxAgeDays": 90
+      }
+    }
+  ]
+}
+JSON
+```
+
+Příklad omezuje přijímaný typ, formát a stáří dokumentu. Všechny podporované podmínky dokumentu najdete v [Create sandbox task](/api-reference/sandbox/post-v3-sandbox-tasks).
+
+  </Tab>
+</Tabs>
+
+Uložte `data.id` jako `TASK_ID`, `data.revision` jako `TASK_REVISION` a aktuální `data.requirements[0].id` jako `REQUIREMENT_ID`. Při volání [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) musí odpověď odpovídat vytvořené položce:
+
+<Tabs>
+  <Tab title="Odpověď s vysvětlením">
 
 ```bash
 curl --request POST \
@@ -75,6 +127,36 @@ curl --request POST \
 }
 JSON
 ```
+
+  </Tab>
+  <Tab title="Odpověď s dokumentem">
+
+Nahrajte odpovídající soubor pomocí [`POST /v3/customers/{customerId}/documents`](/api-reference/documents/post-v3-customers-by-customer-id-documents), uložte vrácené `data.id` jako `DOCUMENT_ID` a odešlete jej jako odpověď s dokumentem:
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/tasks/${TASK_ID}/submissions" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: sandbox-task-document-submission-001" \
+  --header "Content-Type: application/json" \
+  --data @- <<JSON
+{
+  "taskRevision": ${TASK_REVISION},
+  "answers": [
+    {
+      "requirementId": "${REQUIREMENT_ID}",
+      "answer": {
+        "type": "document",
+        "documentIds": ["${DOCUMENT_ID}"]
+      }
+    }
+  ]
+}
+JSON
+```
+
+  </Tab>
+</Tabs>
 
 Poté aktuální odeslání přijměte nebo zamítněte pomocí [`POST /v3/sandbox/tasks/{taskId}/review`](/api-reference/sandbox/post-v3-sandbox-tasks-by-task-id-review):
 

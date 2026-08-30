@@ -28,7 +28,18 @@ Hae kyky uudelleen apuvälineen käytön jälkeen. Käsittele sen nykyistä `sta
 
 ## Testaa avoin tehtävä
 
-Luo kykyyn kohdistuva tehtävä [`POST /v3/sandbox/tasks`](/api-reference/sandbox/post-v3-sandbox-tasks) -toiminnolla:
+Luo sandbox-tehtävä [`POST /v3/sandbox/tasks`](/api-reference/sandbox/post-v3-sandbox-tasks) -toiminnolla. Kohdista se testattavan työnkulun resurssiin ja kuvaa asiakkaan toimitus `items`-kentässä. Tässä oppaassa näytetään capability- ja transfer-työnkulut; API Reference määrittää customer-laajuuden ja koko pyyntöskeeman.
+
+Käytä `explanation`-elementtiä tekstivastaukseen ja `document`-elementtiä tiedoston lataamiseen. Uudet `profile`-elementit vaativat myös `profilePointer`-kentän, joka on asiakaskentän nimeävä JSON Pointer. Muut elementtityypit ja kentät ovat kohdassa [Luo sandbox-tehtävä](/api-reference/sandbox/post-v3-sandbox-tasks).
+
+Luo transfer-esimerkkiä varten ensin sandbox-transfer [pay-in](/fi/integration/receive-funds)- tai [payout](/fi/integration/send-funds)-työnkululla ja vie sitten palautettu `data.id`:
+
+```bash
+export TRANSFER_ID='tr_replace_with_your_transfer_id'
+```
+
+<Tabs>
+  <Tab title="Kyky + selitys">
 
 ```bash
 curl --request POST \
@@ -52,7 +63,48 @@ curl --request POST \
 JSON
 ```
 
-Tallenna `data.id` muuttujaan `TASK_ID`, `data.revision` muuttujaan `TASK_REVISION` ja nykyinen `data.requirements[0].id` muuttujaan `REQUIREMENT_ID`. Lähetä vastaus [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) -toiminnon kautta:
+  </Tab>
+  <Tab title="Siirron RFI + dokumentti">
+
+Kohdista tehtävä tarkasteltavana olevaan siirtoon ja pyydä dokumenttia `constraints`-määrittelyillä, jotka rajaavat hyväksyttyjä tyyppejä, muotoja ja ikää.
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/sandbox/tasks" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Content-Type: application/json" \
+  --data @- <<JSON
+{
+  "scope": {
+    "type": "transfer",
+    "customerId": "${CUSTOMER_ID}",
+    "transferId": "${TRANSFER_ID}"
+  },
+  "category": "transaction_rfi",
+  "items": [
+    {
+      "type": "document",
+      "request": "Upload a bank statement showing the source of funds for this transfer.",
+      "constraints": {
+        "acceptedDocumentTypes": ["bank_statement"],
+        "acceptedFormats": ["pdf", "jpeg"],
+        "maxAgeDays": 90
+      }
+    }
+  ]
+}
+JSON
+```
+
+Esimerkki rajaa hyväksytyn dokumenttityypin, muodon ja iän. Kaikki tuetut dokumenttirajoitukset ovat kohdassa [Luo sandbox-tehtävä](/api-reference/sandbox/post-v3-sandbox-tasks).
+
+  </Tab>
+</Tabs>
+
+Tallenna `data.id` muuttujaan `TASK_ID`, `data.revision` muuttujaan `TASK_REVISION` ja nykyinen `data.requirements[0].id` muuttujaan `REQUIREMENT_ID`. Kun kutsut [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) -toimintoa, sovita vastaus luomaasi elementtiin:
+
+<Tabs>
+  <Tab title="Selitysvastaus">
 
 ```bash
 curl --request POST \
@@ -75,6 +127,36 @@ curl --request POST \
 }
 JSON
 ```
+
+  </Tab>
+  <Tab title="Dokumenttivastaus">
+
+Lataa vaatimuksia vastaava tiedosto [`POST /v3/customers/{customerId}/documents`](/api-reference/documents/post-v3-customers-by-customer-id-documents) -toiminnolla, tallenna palautettu `data.id` muuttujaan `DOCUMENT_ID` ja lähetä se dokumenttivastauksena:
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/tasks/${TASK_ID}/submissions" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: sandbox-task-document-submission-001" \
+  --header "Content-Type: application/json" \
+  --data @- <<JSON
+{
+  "taskRevision": ${TASK_REVISION},
+  "answers": [
+    {
+      "requirementId": "${REQUIREMENT_ID}",
+      "answer": {
+        "type": "document",
+        "documentIds": ["${DOCUMENT_ID}"]
+      }
+    }
+  ]
+}
+JSON
+```
+
+  </Tab>
+</Tabs>
 
 Hyväksy tai hylkää sitten nykyinen lähetys [`POST /v3/sandbox/tasks/{taskId}/review`](/api-reference/sandbox/post-v3-sandbox-tasks-by-task-id-review) -toiminnolla:
 

@@ -28,7 +28,18 @@ Vuelve a consultar la capacidad después de usar el helper. Considera su `status
 
 ## Prueba una tarea abierta
 
-Crea una tarea con ámbito de capacidad con [`POST /v3/sandbox/tasks`](/api-reference/sandbox/post-v3-sandbox-tasks):
+Crea una tarea de sandbox con [`POST /v3/sandbox/tasks`](/api-reference/sandbox/post-v3-sandbox-tasks). Asígnala al recurso cuyo flujo de trabajo estés probando y usa `items` para describir lo que el cliente debe enviar. Esta guía muestra flujos de capacidad y transferencia; la Referencia de la API define el ámbito de cliente y el esquema completo de la solicitud.
+
+Usa un elemento `explanation` para una respuesta de texto y un elemento `document` para una carga. Los nuevos elementos `profile` también requieren `profilePointer`, un puntero JSON que identifica el campo del cliente. Consulta [Crear tarea de sandbox](/api-reference/sandbox/post-v3-sandbox-tasks) para ver los demás tipos de elementos y campos.
+
+Para el ejemplo de transferencia, crea primero una transferencia de sandbox mediante un flujo de [entrada de fondos](/es/integration/receive-funds) o [pago](/es/integration/send-funds) y luego exporta el `data.id` devuelto:
+
+```bash
+export TRANSFER_ID='tr_replace_with_your_transfer_id'
+```
+
+<Tabs>
+  <Tab title="Capacidad + explicación">
 
 ```bash
 curl --request POST \
@@ -52,7 +63,48 @@ curl --request POST \
 JSON
 ```
 
-Guarda `data.id` como `TASK_ID`, `data.revision` como `TASK_REVISION` y el `data.requirements[0].id` actual como `REQUIREMENT_ID`. Envía la respuesta mediante [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission):
+  </Tab>
+  <Tab title="RFI de transferencia + documento">
+
+Aplica el ámbito de la tarea a la transferencia bajo revisión y solicita un documento con `constraints` que acoten los tipos, formatos y antigüedad aceptados.
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/sandbox/tasks" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Content-Type: application/json" \
+  --data @- <<JSON
+{
+  "scope": {
+    "type": "transfer",
+    "customerId": "${CUSTOMER_ID}",
+    "transferId": "${TRANSFER_ID}"
+  },
+  "category": "transaction_rfi",
+  "items": [
+    {
+      "type": "document",
+      "request": "Upload a bank statement showing the source of funds for this transfer.",
+      "constraints": {
+        "acceptedDocumentTypes": ["bank_statement"],
+        "acceptedFormats": ["pdf", "jpeg"],
+        "maxAgeDays": 90
+      }
+    }
+  ]
+}
+JSON
+```
+
+El ejemplo limita el tipo, el formato y la antigüedad aceptados del documento. Consulta [Crear tarea de sandbox](/api-reference/sandbox/post-v3-sandbox-tasks) para ver todas las restricciones de documento compatibles.
+
+  </Tab>
+</Tabs>
+
+Guarda `data.id` como `TASK_ID`, `data.revision` como `TASK_REVISION` y el `data.requirements[0].id` actual como `REQUIREMENT_ID`. Al llamar a [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission), haz que la respuesta coincida con el elemento que creaste:
+
+<Tabs>
+  <Tab title="Respuesta de explicación">
 
 ```bash
 curl --request POST \
@@ -76,7 +128,37 @@ curl --request POST \
 JSON
 ```
 
-Luego acepta o rechaza la envío actual con [`POST /v3/sandbox/tasks/{taskId}/review`](/api-reference/sandbox/post-v3-sandbox-tasks-by-task-id-review):
+  </Tab>
+  <Tab title="Respuesta de documento">
+
+Sube un archivo que cumpla los requisitos con [`POST /v3/customers/{customerId}/documents`](/api-reference/documents/post-v3-customers-by-customer-id-documents), guarda el `data.id` devuelto como `DOCUMENT_ID` y envíalo como respuesta de documento:
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/tasks/${TASK_ID}/submissions" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: sandbox-task-document-submission-001" \
+  --header "Content-Type: application/json" \
+  --data @- <<JSON
+{
+  "taskRevision": ${TASK_REVISION},
+  "answers": [
+    {
+      "requirementId": "${REQUIREMENT_ID}",
+      "answer": {
+        "type": "document",
+        "documentIds": ["${DOCUMENT_ID}"]
+      }
+    }
+  ]
+}
+JSON
+```
+
+  </Tab>
+</Tabs>
+
+Luego acepta o rechaza el envío actual con [`POST /v3/sandbox/tasks/{taskId}/review`](/api-reference/sandbox/post-v3-sandbox-tasks-by-task-id-review):
 
 ```bash
 curl --request POST \

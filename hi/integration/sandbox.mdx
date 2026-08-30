@@ -28,7 +28,18 @@ Helper का उपयोग करने के बाद capability को �
 
 ## एक open task का परीक्षण करें
 
-एक capability-scoped task [`POST /v3/sandbox/tasks`](/api-reference/sandbox/post-v3-sandbox-tasks) के साथ बनाएँ:
+[`POST /v3/sandbox/tasks`](/api-reference/sandbox/post-v3-sandbox-tasks) के साथ sandbox task बनाएँ। इसे उस resource तक scope करें जिसका workflow आप test कर रहे हैं और customer को क्या submit करना है यह बताने के लिए `items` का उपयोग करें। यह guide capability और transfer workflows दिखाती है; API Reference customer scope और पूर्ण request schema परिभाषित करती है।
+
+Text response के लिए `explanation` item और file upload के लिए `document` item उपयोग करें। नए `profile` items को `profilePointer` भी चाहिए, जो customer field का JSON Pointer है। अन्य item types और fields के लिए [Create sandbox task](/api-reference/sandbox/post-v3-sandbox-tasks) देखें।
+
+Transfer उदाहरण के लिए पहले [pay-in](/hi/integration/receive-funds) या [payout](/hi/integration/send-funds) flow से sandbox transfer बनाएँ, फिर लौटाए गए `data.id` को export करें:
+
+```bash
+export TRANSFER_ID='tr_replace_with_your_transfer_id'
+```
+
+<Tabs>
+  <Tab title="Capability + explanation">
 
 ```bash
 curl --request POST \
@@ -52,7 +63,48 @@ curl --request POST \
 JSON
 ```
 
-`data.id` को `TASK_ID`, `data.revision` को `TASK_REVISION`, और वर्तमान `data.requirements[0].id` को `REQUIREMENT_ID` के रूप में संग्रहीत करें। उत्तर को [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) के माध्यम से submit करें:
+  </Tab>
+  <Tab title="Transfer RFI + document">
+
+Task को समीक्षाधीन transfer तक scope करें और `constraints` के साथ एक document का अनुरोध करें जो स्वीकृत types, formats, और आयु को सीमित करते हैं।
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/sandbox/tasks" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Content-Type: application/json" \
+  --data @- <<JSON
+{
+  "scope": {
+    "type": "transfer",
+    "customerId": "${CUSTOMER_ID}",
+    "transferId": "${TRANSFER_ID}"
+  },
+  "category": "transaction_rfi",
+  "items": [
+    {
+      "type": "document",
+      "request": "Upload a bank statement showing the source of funds for this transfer.",
+      "constraints": {
+        "acceptedDocumentTypes": ["bank_statement"],
+        "acceptedFormats": ["pdf", "jpeg"],
+        "maxAgeDays": 90
+      }
+    }
+  ]
+}
+JSON
+```
+
+उदाहरण accepted document type, format और age को सीमित करता है। सभी supported document constraints के लिए [Create sandbox task](/api-reference/sandbox/post-v3-sandbox-tasks) देखें।
+
+  </Tab>
+</Tabs>
+
+`data.id` को `TASK_ID`, `data.revision` को `TASK_REVISION`, और वर्तमान `data.requirements[0].id` को `REQUIREMENT_ID` के रूप में store करें। [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) call करते समय answer को बनाए गए item type से match करें:
+
+<Tabs>
+  <Tab title="Explanation answer">
 
 ```bash
 curl --request POST \
@@ -75,6 +127,36 @@ curl --request POST \
 }
 JSON
 ```
+
+  </Tab>
+  <Tab title="Document answer">
+
+[`POST /v3/customers/{customerId}/documents`](/api-reference/documents/post-v3-customers-by-customer-id-documents) से matching file upload करें, लौटाए गए `data.id` को `DOCUMENT_ID` के रूप में store करें और उसे document answer के रूप में submit करें:
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/tasks/${TASK_ID}/submissions" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: sandbox-task-document-submission-001" \
+  --header "Content-Type: application/json" \
+  --data @- <<JSON
+{
+  "taskRevision": ${TASK_REVISION},
+  "answers": [
+    {
+      "requirementId": "${REQUIREMENT_ID}",
+      "answer": {
+        "type": "document",
+        "documentIds": ["${DOCUMENT_ID}"]
+      }
+    }
+  ]
+}
+JSON
+```
+
+  </Tab>
+</Tabs>
 
 फिर वर्तमान submission को [`POST /v3/sandbox/tasks/{taskId}/review`](/api-reference/sandbox/post-v3-sandbox-tasks-by-task-id-review) के साथ स्वीकार या अस्वीकार करें:
 

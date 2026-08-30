@@ -28,7 +28,18 @@ curl --request POST \
 
 ## 测试一个待办任务
 
-使用 [`POST /v3/sandbox/tasks`](/api-reference/sandbox/post-v3-sandbox-tasks) 创建一个能力范围内的任务:
+使用 [`POST /v3/sandbox/tasks`](/api-reference/sandbox/post-v3-sandbox-tasks) 创建沙盒任务。将任务限定到您正在测试其工作流的资源,并使用 `items` 描述客户必须提交的内容。本指南演示能力和转账工作流;API 参考定义客户范围和完整的请求结构。
+
+文本回答使用 `explanation` 项,文件上传使用 `document` 项。新的 `profile` 项还必须提供 `profilePointer`,即指向客户字段的 JSON Pointer。其他项类型和字段请参阅[创建沙盒任务](/api-reference/sandbox/post-v3-sandbox-tasks)。
+
+对于转账示例,请先通过[收款](/cn/integration/receive-funds)或[付款](/cn/integration/send-funds)流程创建沙盒转账,然后导出返回的 `data.id`:
+
+```bash
+export TRANSFER_ID='tr_replace_with_your_transfer_id'
+```
+
+<Tabs>
+  <Tab title="能力 + 说明">
 
 ```bash
 curl --request POST \
@@ -52,7 +63,48 @@ curl --request POST \
 JSON
 ```
 
-将 `data.id` 保存为 `TASK_ID`,`data.revision` 保存为 `TASK_REVISION`,并将当前的 `data.requirements[0].id` 保存为 `REQUIREMENT_ID`。使用 [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) 提交答案:
+  </Tab>
+  <Tab title="转账 RFI + 文档">
+
+将任务范围限定为正在审查的转账,并请求一份文档,通过 `constraints` 限制可接受的类型、格式和有效期。
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/sandbox/tasks" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Content-Type: application/json" \
+  --data @- <<JSON
+{
+  "scope": {
+    "type": "transfer",
+    "customerId": "${CUSTOMER_ID}",
+    "transferId": "${TRANSFER_ID}"
+  },
+  "category": "transaction_rfi",
+  "items": [
+    {
+      "type": "document",
+      "request": "Upload a bank statement showing the source of funds for this transfer.",
+      "constraints": {
+        "acceptedDocumentTypes": ["bank_statement"],
+        "acceptedFormats": ["pdf", "jpeg"],
+        "maxAgeDays": 90
+      }
+    }
+  ]
+}
+JSON
+```
+
+该示例限制了可接受的文档类型、格式和有效期。所有受支持的文档约束请参阅[创建沙盒任务](/api-reference/sandbox/post-v3-sandbox-tasks)。
+
+  </Tab>
+</Tabs>
+
+将 `data.id` 保存为 `TASK_ID`,`data.revision` 保存为 `TASK_REVISION`,并将当前的 `data.requirements[0].id` 保存为 `REQUIREMENT_ID`。调用 [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) 时,请使答案与所创建的项目类型一致:
+
+<Tabs>
+  <Tab title="说明答案">
 
 ```bash
 curl --request POST \
@@ -75,6 +127,36 @@ curl --request POST \
 }
 JSON
 ```
+
+  </Tab>
+  <Tab title="文档答案">
+
+使用 [`POST /v3/customers/{customerId}/documents`](/api-reference/documents/post-v3-customers-by-customer-id-documents) 上传符合要求的文件,将返回的 `data.id` 保存为 `DOCUMENT_ID`,然后作为文档答案提交:
+
+```bash
+curl --request POST \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/tasks/${TASK_ID}/submissions" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: sandbox-task-document-submission-001" \
+  --header "Content-Type: application/json" \
+  --data @- <<JSON
+{
+  "taskRevision": ${TASK_REVISION},
+  "answers": [
+    {
+      "requirementId": "${REQUIREMENT_ID}",
+      "answer": {
+        "type": "document",
+        "documentIds": ["${DOCUMENT_ID}"]
+      }
+    }
+  ]
+}
+JSON
+```
+
+  </Tab>
+</Tabs>
 
 然后使用 [`POST /v3/sandbox/tasks/{taskId}/review`](/api-reference/sandbox/post-v3-sandbox-tasks-by-task-id-review) 接受或拒绝当前的提交:
 
