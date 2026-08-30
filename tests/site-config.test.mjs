@@ -79,6 +79,7 @@ const NEW_CANONICAL_PAGE_TITLES = {
   "integration/onboarding/capabilities-and-requirements":
     "Capabilities and tasks",
   "api-reference/introduction": "API reference",
+  "knowledge-base/compliance/settlement-slas": "Settlement timing",
 };
 
 const RETIRED_INTEGRATION_PAGES = [
@@ -162,6 +163,7 @@ const KNOWLEDGE_BASE_GROUPS = [
       "knowledge-base/compliance/transaction-limits",
       "knowledge-base/compliance/custody-and-wallet-controls",
       "knowledge-base/compliance/payment-methods",
+      "knowledge-base/compliance/settlement-slas",
       "knowledge-base/compliance/travel-rule",
       "knowledge-base/compliance/screening-and-monitoring",
       "knowledge-base/compliance/governance-retention-and-privacy",
@@ -234,10 +236,17 @@ const LOCALIZED_INTEGRATION_GROUPS = INTEGRATION_GROUPS.map((group) => ({
   pages: group.pages.filter((page) => page !== "integration/errors"),
 }));
 
+const LOCALIZED_KNOWLEDGE_BASE_GROUPS = KNOWLEDGE_BASE_GROUPS.map((group) => ({
+  ...group,
+  pages: group.pages.filter(
+    (page) => page !== "knowledge-base/compliance/settlement-slas",
+  ),
+}));
+
 const LOCALIZED_TAB_GROUPS = [
   LOCALIZED_INTEGRATION_GROUPS,
   API_REFERENCE_GROUPS.filter(({ openapi }) => openapi === undefined),
-  KNOWLEDGE_BASE_GROUPS,
+  LOCALIZED_KNOWLEDGE_BASE_GROUPS,
 ];
 
 const APPROVED_FAVICON_SYMBOL =
