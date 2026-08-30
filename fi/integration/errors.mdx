@@ -1,0 +1,2631 @@
+---
+title: "Virheet ja uudelleenyritykset"
+description: "Käsittele jokainen julkinen Swipelux API -ongelmakoodi, päätä milloin uudelleenyrittää ja ratkaise validointi-, tila-, idempotenssi- ja alustavirheet."
+---
+
+Swipelux API -virheet käyttävät `application/problem+json`-mediatyyppiä. Haaroita sovelluksesi käyttäytyminen vakaan `code`-arvon perusteella ja käytä sitten alla olevaa toimintoa ja ohjeistusta virheen ratkaisemiseen.
+
+| Kenttä | Käyttö |
+| --- | --- |
+| `type` | Vakaa dokumentaation URI ongelmakoodille. |
+| `title` | Lyhyt ihmisluettava ongelman otsikko. |
+| `status` | Tähän vastaukseen liittyvä HTTP-tila. |
+| `code` | Vakaa koneluettava arvo sovelluslogiikkaa varten. |
+| `detail` | Tilannekohtainen ihmisluettava teksti tälle esiintymälle. Älä jäsennä tai vertaa sitä. |
+| `correlationId` | Pyynnön tunniste, joka tallennetaan lokeihin ja liitetään mukaan tukeen otettaessa yhteyttä. |
+| `retryable` | Kun `true`, sama pyyntö voi onnistua myöhemmin. Kun `false`, muuta pyyntöä tai täytä edellytys ennen uutta yritystä. |
+| `errors[]` | Kenttätason validointitiedot, mukaan lukien JSON Pointer, kun se on saatavilla. |
+
+Uudelleenyritä idempotentit kirjoitukset alkuperäisellä `Idempotency-Key`-avaimella sekä muuttamattomalla menetelmällä, polulla ja rungolla. Älä koskaan käytä samaa avainta uudelleen eri aiottuun toimintoon.
+
+```json
+{
+  "type": "https://docs.swipelux.com/errors/validation-error",
+  "title": "Validation Error",
+  "status": 400,
+  "code": "validation_error",
+  "detail": "The request contains invalid fields.",
+  "correlationId": "01JERRORVALIDATION",
+  "retryable": false,
+  "errors": [
+    {
+      "pointer": "/externalId",
+      "code": "invalid_format",
+      "message": "Use a valid external identifier."
+    }
+  ]
+}
+```
+
+## Virhehakemisto
+
+| Virhekoodi | Tila | Uudelleenyritettävä | Merkitys |
+| --- | --- | --- | --- |
+| [`absence_conflicts_with_profile`](#absence-conflicts-with-profile) | `409` | Ei | Tehtävävastaus, joka ilmoittaa arvon puuttuvaksi, on ristiriidassa asiakasprofiilissa jo olevien tietojen kanssa. |
+| [`account_has_active_transfers`](#account-has-active-transfers) | `409` | Kyllä | Tiliä ei voi arkistoida, kun yksi tai useampi siirto on vielä aktiivinen. |
+| [`account_method_not_supported`](#account-method-not-supported) | `422` | Ei | Valittu tili ei tue tarjouksen pyytämää maksutapaa. |
+| [`account_not_ready`](#account-not-ready) | `409` | Tilannekohtainen | Tili on olemassa, mutta sen nykyinen tila ei salli tarjousta tai siirtoa. |
+| [`account_unavailable`](#account-unavailable) | `409` | Ei | Valittu tili ei ole käytettävissä pyydettyyn rahaliikkeeseen. |
+| [`amount_not_deliverable`](#amount-not-deliverable) | `422` | Ei | Pyydettyä summaa ei voida toimittaa valituilla valuutoilla, tileillä tai menetelmällä. |
+| [`amount_side_ambiguous`](#amount-side-ambiguous) | `400` | Ei | Tarjouspyyntö ei yksiselitteisesti kerro, kummalla muunnoksen puolella kiinteä summa on. |
+| [`bank_not_supported_for_customer`](#bank-not-supported-for-customer) | `422` | Ei palauteta | Valittu instituutio ei ole käytettävissä tälle asiakkaalle ja kykypyynnölle. |
+| [`capability_already_exists`](#capability-already-exists) | `409` | Ei | Asiakkaalla on jo pyydetty kyky. |
+| [`capability_direction_unsupported`](#capability-direction-unsupported) | `422` | Ei | Valittu kyky ei tue tarjouksen tai siirron vaatimaa rahaliikkeen suuntaa. |
+| [`capability_ineligible`](#capability-ineligible) | `422` | Ei | Asiakas ei ole oikeutettu pyydettyyn kykyyn nykyisellä profiilillaan ja kokoonpanollaan. |
+| [`capability_institutions_required`](#capability-institutions-required) | `422` | Ei palauteta | Kykypyyntö vaatii yhden tai useamman instituutiovalinnan. |
+| [`capability_institutions_unsupported`](#capability-institutions-unsupported) | `422` | Ei | Yhtä tai useampaa valittua instituutiota ei tueta pyydetylle kyvylle. |
+| [`capability_intent_unsupported`](#capability-intent-unsupported) | `422` | Ei palauteta | Pyydettyä kykyaikomusta ei tueta tälle kykymuunnelmalle. |
+| [`capability_key_unsupported`](#capability-key-unsupported) | `422` | Ei | Kykyavainta ei tueta tässä toiminnossa. |
+| [`capability_not_cancelable`](#capability-not-cancelable) | `409` | Ei | Kykyä ei voi peruuttaa sen nykyisestä tilasta. |
+| [`capability_not_ready`](#capability-not-ready) | `409` | Tilannekohtainen | Pyydetyn tilin tai rahaliikkeen vaatima kyky ei ole valmis. |
+| [`capability_not_supported_for_customer_type`](#capability-not-supported-for-customer-type) | `422` | Ei palauteta | Kykyä ei tueta tälle asiakastyypille. |
+| [`capability_provider_resolution_failed`](#capability-provider-resolution-failed) | `422` | Ei palauteta | Swipelux ei voinut ratkaista täydellistä käsittelykokoonpanoa kykypyynnölle. |
+| [`capability_snapshot_corrupted`](#capability-snapshot-corrupted) | `500` | Ei | Swipelux ei voinut arvioida asiakkaan kykytilaa. |
+| [`capability_terminally_rejected`](#capability-terminally-rejected) | `409` | Ei | Kyky on jo hylätty lopullisessa tilassa. |
+| [`capability_variant_unavailable`](#capability-variant-unavailable) | `409`, `422` | Tilannekohtainen | Pyydetty kykymuunnelma ei ole käytettävissä valitulle asiakas-, aikomus- tai instituutioyhdistelmälle. |
+| [`conflict`](#conflict) | `409` | Ei | Pyydetty toiminto on ristiriidassa resurssin nykyisen tilan kanssa. |
+| [`customer_has_active_resources`](#customer-has-active-resources) | `409` | Ei | Asiakasta ei voi arkistoida, kun aktiiviset resurssit ovat siitä yhä riippuvaisia. |
+| [`customer_not_found`](#customer-not-found) | `404` | Ei | Asiakasta ei ole nykyisessä API-avainympäristössä tai se ei ole enää käytettävissä. |
+| [`destination_not_ready`](#destination-not-ready) | `409` | Tilannekohtainen | Vastaanottajan kohde on olemassa, mutta se ei ole valmis pyydettyyn tarjoukseen. |
+| [`developer_fee_invalid`](#developer-fee-invalid) | `422` | Ei | Kehittäjämaksun kokoonpano on virheellinen valitulle tilille tai rahaliikkeelle. |
+| [`document_not_found`](#document-not-found) | `404` | Ei palauteta | Pyydettyä asiakasasiakirjaa ei löytynyt. |
+| [`duplicate_external_id`](#duplicate-external-id) | `409` | Ei | Annettu `externalId` on jo osoitettu toiselle resurssille samassa laajuudessa. |
+| [`field_required_by_open_task`](#field-required-by-open-task) | `409` | Ei | Pyyntö yrittää tyhjentää profiilikentän, jota avoin tehtävä yhä vaatii. |
+| [`forbidden`](#forbidden) | `403` | Ei | API-avain on kelvollinen, mutta sillä ei ole lupaa suorittaa tätä toimintoa. |
+| [`idempotency_conflict`](#idempotency-conflict) | `409` | Ei | Idempotency-avainta on jo käytetty eri pyyntöön. |
+| [`idempotency_request_in_progress`](#idempotency-request-in-progress) | `409` | Kyllä | Vastaavaa pyyntöä samalla idempotency-avaimella käsitellään vielä. |
+| [`initial_application_identity_conflict`](#initial-application-identity-conflict) | `409` | Ei | Alkuhakemuksen identiteetti muuttui ennen sen tallentamista. |
+| [`initial_application_owner_unavailable`](#initial-application-owner-unavailable) | `503` | Ei | Alkuhakemukselle ei ole käytettävissä kelvollista omistajareittiä. |
+| [`initial_application_scope_unavailable`](#initial-application-scope-unavailable) | `503` | Tilannekohtainen | Swipelux ei voinut ratkaista alkuhakemuksen vaatimaa laajuutta. |
+| [`insufficient_balance`](#insufficient-balance) | `409` | Ei | Lähdetilillä ei ole riittävästi käytettävissä olevaa saldoa siirtoon. |
+| [`internal_error`](#internal-error) | `500` | Kyllä | Swipelux kohtasi odottamattoman palvelinvirheen toimintoa käsitellessään. |
+| [`invalid_capability`](#invalid-capability) | `400`, `422` | Ei palauteta | Kykyviittaus tai pyydetty kykyarvo on virheellinen tälle toiminnolle. |
+| [`invalid_document_reference`](#invalid-document-reference) | `400` | Ei | Tehtävälähetys sisältää asiakirjaviittauksen, joka ei voi täyttää valittua vaatimusta. |
+| [`invalid_field_for_type`](#invalid-field-for-type) | `400`, `422` | Ei palauteta | Pyyntö sisältää kenttiä, jotka eivät ole kelvollisia valitulle resurssityypille. |
+| [`invalid_settlement_target`](#invalid-settlement-target) | `400` | Ei palauteta | Pyydetty selvityskohde on virheellinen tilille. |
+| [`kyc_configuration_unavailable`](#kyc-configuration-unavailable) | `503` | Ei | Kyvyn vaatima vahvistuskokoonpano ei ole käytettävissä. |
+| [`kyc_level_configuration_invalid`](#kyc-level-configuration-invalid) | `503` | Ei | Aktiivinen vahvistustason kokoonpano on virheellinen. |
+| [`kyc_process_conflict`](#kyc-process-conflict) | `409` | Kyllä | Vahvistusprosessi muuttui ennen toiminnon valmistumista. |
+| [`kyc_provider_unavailable`](#kyc-provider-unavailable) | `502` | Kyllä | Vahvistuspalvelu on tilapäisesti poissa käytöstä. |
+| [`kyc_session_terminal`](#kyc-session-terminal) | `410` | Ei | Vahvistusistunto ei ole enää toimintakelpoinen. |
+| [`merchant_kyb_not_approved`](#merchant-kyb-not-approved) | `422` | Ei palauteta | Integroivaa yritystä ei ole hyväksytty pyydettyyn asiakkaanluontivirtaan. |
+| [`not_found`](#not-found) | `404` | Ei | Pyydettyä resurssia ei löytynyt tälle API-avaimelle ja pyyntöpolulle. |
+| [`ops_rail_handoff_conflict`](#ops-rail-handoff-conflict) | `409` | Ei | Tehtävälähetyksen estää ristiriitainen pankkikanavan määritys. |
+| [`payout_target_relationship_invalid`](#payout-target-relationship-invalid) | `400` | Ei palauteta | Valitulla maksun ulos -kohteella ei ole kelvollista suhdetta tarjouksen asiakkaaseen tai vastaanottajaan. |
+| [`profile_obligation_crossheal_failed`](#profile-obligation-crossheal-failed) | `500` | Ei | Swipelux ei voinut päivittää asiakkaan profiilivaatimuksia. |
+| [`provider_conflict`](#provider-conflict) | `400`, `422` | Ei | Pyydetty kyky- tai vahvistustoiminto on ristiriidassa nykyisen käsittelykokoonpanon kanssa. |
+| [`quote_already_executed`](#quote-already-executed) | `409` | Ei | Tarjous on jo suoritettu, ja sillä on olemassa oleva siirto. |
+| [`quote_destination_missing`](#quote-destination-missing) | `409`, `500` | Tilannekohtainen | Tarjous tai siirto ei sisällä toiminnon vaatimaa kohdetta. |
+| [`quote_direction_invalid`](#quote-direction-invalid) | `422`, `500` | Tilannekohtainen | Lähde ja kohde eivät muodosta tuettua tarjoussuuntaa. |
+| [`quote_execution_consumed`](#quote-execution-consumed) | `409` | Ei | Tarjouksen ainoa suoritusmahdollisuus on jo käytetty. |
+| [`quote_expired`](#quote-expired) | `409` | Ei | Tarjous vanheni ennen kuin se suoritettiin. |
+| [`quote_failed`](#quote-failed) | `500`, `502` | Tilannekohtainen | Swipelux ei voinut luoda käyttökelpoista tarjousta pyynnölle. |
+| [`quote_mode_invalid`](#quote-mode-invalid) | `500` | Kyllä | Tarjousta ei voida tulkita toiminnon vaatimassa moodissa. |
+| [`quote_not_found`](#quote-not-found) | `404` | Ei palauteta | Tarjousta ei löytynyt tälle API-avaimelle. |
+| [`rail_not_ready`](#rail-not-ready) | `409` | Ei | Valittu maksukanava ei ole valmis tälle asiakkaalle. |
+| [`rail_temporarily_unavailable`](#rail-temporarily-unavailable) | `503` | Kyllä | Valittu maksukanava on tilapäisesti poissa käytöstä. |
+| [`rate_unavailable`](#rate-unavailable) | `502` | Kyllä | Vaadittu valuuttakurssi on tilapäisesti poissa käytöstä. |
+| [`recipient_account_unsupported`](#recipient-account-unsupported) | `400` | Ei palauteta | Vastaanottajan tilitietoja ei tueta pyydetylle kohteelle. |
+| [`recipient_address_required`](#recipient-address-required) | `422` | Ei | Vastaanottaja tarvitsee osoitteen, ennen kuin tämä fiat-kohde voidaan luoda. |
+| [`recipient_destination_invalid`](#recipient-destination-invalid) | `400`, `422` | Ei | Vastaanottajan kohde on virheellinen tai yhteensopimaton pyydetyn toiminnon kanssa. |
+| [`recipient_name_invalid`](#recipient-name-invalid) | `400` | Ei palauteta | Vastaanottajan nimi ei täytä pyyntöskeemaa. |
+| [`related_party_in_review`](#related-party-in-review) | `409` | Ei | Liittyvää osapuolta ei voi arkistoida, kun se on tarkastettavana. |
+| [`related_party_not_found`](#related-party-not-found) | `404` | Ei palauteta | Liittyvää osapuolta ei löytynyt määritetyn asiakkaan alta. |
+| [`request_body_too_large`](#request-body-too-large) | `413` | Ei | Pyynnön runko ylittää toiminnon hyväksymän koon. |
+| [`request_failed`](#request-failed) | `502`, `503` | Tilannekohtainen | Toiminnon suorittamiseen tarvittava palvelu ei käsitellyt pyyntöä onnistuneesti. |
+| [`rule_already_exists`](#rule-already-exists) | `409` | Ei | Laukaisintilillä on jo aktiivinen sääntö. |
+| [`rule_archived`](#rule-archived) | `409` | Ei | Sääntö on arkistoitu, eikä sitä voi enää muuttaa. |
+| [`rule_not_found`](#rule-not-found) | `404` | Ei palauteta | Sääntöä ei löytynyt määritetyn asiakkaan alta. |
+| [`rule_target_invalid`](#rule-target-invalid) | `400` | Ei palauteta | Säännön toimintokohde on virheellinen tälle asiakkaalle tai sääntötyypille. |
+| [`rule_trigger_account_invalid`](#rule-trigger-account-invalid) | `400` | Ei palauteta | Säännön laukaisimeksi valittu tili on virheellinen. |
+| [`submission_channel_not_allowed`](#submission-channel-not-allowed) | `409` | Ei | Suoraa API-lähetystä ei sallita tälle tehtävälle. |
+| [`submission_not_found`](#submission-not-found) | `404` | Ei | Pyydettyä tehtävälähetystä ei löytynyt. |
+| [`supporting_document_not_found`](#supporting-document-not-found) | `422` | Ei | Siirtopyynnön viittaamaa tukevaa asiakirjaa ei löytynyt. |
+| [`task_changed`](#task-changed) | `409` | Ei | Tehtävä muuttui sen jälkeen, kun asiakassovelluksesi viimeksi luki sen. |
+| [`task_not_found`](#task-not-found) | `404` | Ei | Tehtävää ei löytynyt määritetylle asiakkaalle tai API-avaimelle. |
+| [`task_obligation_conflict`](#task-obligation-conflict) | `409` | Ei | Tehtävällä on ristiriitainen velvoitetila, eikä se voi hyväksyä lähetystä. |
+| [`task_submission_incomplete`](#task-submission-incomplete) | `422` | Ei | Lähetys ei vastaa jokaiseen nykyiseen toimintakelpoiseen vaatimukseen. |
+| [`transfer_execution_failed`](#transfer-execution-failed) | `500` | Ei | Siirtoa ei voitu suorittaa loppuun tarjouksen suorituksen aikana. |
+| [`transfer_has_no_instructions`](#transfer-has-no-instructions) | `404` | Ei palauteta | Siirto on olemassa, mutta se ei tarjoa maksuohjeita. |
+| [`transfer_not_cancelable`](#transfer-not-cancelable) | `409` | Ei | Siirtoa ei voi peruuttaa sen nykyisestä tilasta. |
+| [`transfer_not_found`](#transfer-not-found) | `404` | Ei palauteta | Siirtoa ei löytynyt tälle API-avaimelle. |
+| [`transfer_state_invalid`](#transfer-state-invalid) | `400`, `500` | Kyllä | Siirto on tilassa, joka ei tue pyydettyä toimintoa tai siirtymää. |
+| [`unauthorized`](#unauthorized) | `401` | Ei | Pyynnöstä puuttuu kelvollinen API-avain. |
+| [`unknown_parameter`](#unknown-parameter) | `400` | Ei | Pyyntö sisältää parametrin, jota ei tueta tai tunneta. |
+| [`validation_error`](#validation-error) | `400`, `422` | Ei | Pyyntö ei täytä toiminnon syöteskeemaa. |
+| [`verification_collection_mapping_invalid`](#verification-collection-mapping-invalid) | `503` | Ei | Tehtävän vahvistusvaatimuksia ei voida valmistella toimintakelpoiseksi vahvistusvirraksi. |
+| [`wallet_destination_not_supported`](#wallet-destination-not-supported) | `409` | Ei | Valittu rahaliikkeen menetelmä ei tue lompakkokohdetta. |
+
+## Pyyntö ja todennus
+
+<a id="forbidden" className="block scroll-mt-32">
+  <span className="sr-only">forbidden error</span>
+</a>
+
+### `forbidden`
+
+**HTTP-tila:** `403`<br />
+**Uudelleenyritettävä:** Ei<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/forbidden`
+
+**Merkitys:** API-avain on kelvollinen, mutta sillä ei ole lupaa suorittaa tätä toimintoa.
+
+**Milloin se ilmenee:** Tunnistetiedolta puuttuu vaadittu käyttöoikeus, tai tuotantotunnistetieto kutsuu vain sandboxille tarkoitettua päätepistettä.
+
+**Mitä tehdä:** Käytä oikean ympäristön tunnistetietoa, jolla on vaaditut käyttöoikeudet. Älä paljasta tai korvaa avaimia asiakaspuolen koodissa.
+
+**Uudelleenyritysohje:** Älä uudelleenyritä muuttamatonta pyyntöä. Toteuta yllä oleva toimenpide ennen uuden pyynnön lähettämistä.
+
+**Asiaankuuluvat API-toiminnot:** Kaikki todennetut API-toiminnot.
+
+<a id="invalid-field-for-type" className="block scroll-mt-32">
+  <span className="sr-only">invalid_field_for_type error</span>
+</a>
+
+### `invalid_field_for_type`
+
+**HTTP-tila:** `400`, `422`<br />
+**Uudelleenyritettävä:** Ei palauteta<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/invalid-field-for-type`
+
+**Merkitys:** Pyyntö sisältää kenttiä, jotka eivät ole kelvollisia valitulle resurssityypille.
+
+**Milloin se ilmenee:** Diskriminoitu pyyntö, kuten yksityishenkilö- vastaan yritysprofiili, sisältää toisen muunnelman kenttiä tai jättää pois valitun tyypin vaatimia kenttiä.
+
+**Mitä tehdä:** Käytä valitun tyypin skeemaa, poista muihin muunnelmiin kuuluvat kentät, anna sen vaaditut kentät ja lähetä korjattu pyyntö.
+
+**Uudelleenyritysohje:** Tämä ongelma ei palauta `retryable`-kenttää. Älä oleta, että muuttamaton uudelleenyritys on turvallinen; noudata yllä olevaa toimenpidettä ja toiminnon idempotenssivaatimuksia.
+
+**Asiaankuuluvat API-toiminnot:**
+
+- [`POST /v3/customers`](/api-reference/customers/post-v3-customers) (`postV3Customers`, tila `400`)
+- [`PATCH /v3/customers/{customerId}`](/api-reference/customers/patch-v3-customers-by-customer-id) (`patchV3CustomersByCustomerId`, tila `400`)
+- [`POST /v3/customers/{customerId}/export`](/api-reference/customers/post-v3-customers-by-customer-id-export) (`postV3CustomersByCustomerIdExport`, tila `422`)
+- [`POST /v3/customers/{customerId}/related-parties`](/api-reference/customers/post-v3-customers-by-customer-id-related-parties) (`postV3CustomersByCustomerIdRelated-parties`, tila `400`)
+- [`PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/patch-v3-customers-by-customer-id-related-parties-by-related-party-id) (`patchV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, tila `400`)
+
+<a id="request-body-too-large" className="block scroll-mt-32">
+  <span className="sr-only">request_body_too_large error</span>
+</a>
+
+### `request_body_too_large`
+
+**HTTP-tila:** `413`<br />
+**Uudelleenyritettävä:** Ei<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/request-body-too-large`
+
+**Merkitys:** Pyynnön runko ylittää toiminnon hyväksymän koon.
+
+**Milloin se ilmenee:** Tehtävälähetys lähettää enemmän pyyntödataa kuin API voi käsitellä yhdessä rungossa.
+
+**Mitä tehdä:** Poista tarpeeton data, käytä asiakirjaviittauksia tiedostosisällön upottamisen sijaan ja lähetä pienempi lähetys, joka silti vastaa nykyisiin vaatimuksiin.
+
+**Uudelleenyritysohje:** Älä uudelleenyritä muuttamatonta pyyntöä. Toteuta yllä oleva toimenpide ennen uuden pyynnön lähettämistä.
+
+**Asiaankuuluvat API-toiminnot:**
+
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, tila `413`)
+
+<a id="unauthorized" className="block scroll-mt-32">
+  <span className="sr-only">unauthorized error</span>
+</a>
+
+### `unauthorized`
+
+**HTTP-tila:** `401`<br />
+**Uudelleenyritettävä:** Ei<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/unauthorized`
+
+**Merkitys:** Pyynnöstä puuttuu kelvollinen API-avain.
+
+**Milloin se ilmenee:** `X-API-Key`-otsake puuttuu, on virheellinen, vanhentunut tai ei ole API:n tunnistama.
+
+**Mitä tehdä:** Lähetä oikea ympäristökohtainen avain suojatusta taustapalvelusta. Kierrätä avain, jos se on voinut paljastua.
+
+**Uudelleenyritysohje:** Älä uudelleenyritä muuttamatonta pyyntöä. Toteuta yllä oleva toimenpide ennen uuden pyynnön lähettämistä.
+
+**Asiaankuuluvat API-toiminnot:** Kaikki todennetut API-toiminnot.
+
+<a id="unknown-parameter" className="block scroll-mt-32">
+  <span className="sr-only">unknown_parameter error</span>
+</a>
+
+### `unknown_parameter`
+
+**HTTP-tila:** `400`<br />
+**Uudelleenyritettävä:** Ei<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/unknown-parameter`
+
+**Merkitys:** Pyyntö sisältää parametrin, jota ei tueta tai tunneta.
+
+**Milloin se ilmenee:** Kyselymerkkijono tai toiminnon parametri on kirjoitettu väärin, sitä ei tueta tai kyseinen päätepiste ei hyväksy sitä.
+
+**Mitä tehdä:** Poista tuntematon parametri tai korvaa se toiminnolle dokumentoidulla tarkalla parametrilla.
+
+**Uudelleenyritysohje:** Älä uudelleenyritä muuttamatonta pyyntöä. Toteuta yllä oleva toimenpide ennen uuden pyynnön lähettämistä.
+
+<Accordion title="Asiaankuuluvat API-toiminnot (26)">
+
+- [`GET /v3/capabilities`](/api-reference/capabilities/get-v3-capabilities) (`getV3Capabilities`, tila `400`)
+- [`GET /v3/customers`](/api-reference/customers/get-v3-customers) (`getV3Customers`, tila `400`)
+- [`GET /v3/customers/{customerId}/accounts`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts) (`getV3CustomersByCustomerIdAccounts`, tila `400`)
+- [`GET /v3/customers/{customerId}/capabilities`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities) (`getV3CustomersByCustomerIdCapabilities`, tila `400`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}/applications`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id-applications) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityIdApplications`, tila `400`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}/applications/{applicationId}/history`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id-applications-by-application-id-history) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityIdApplicationsByApplicationIdHistory`, tila `400`)
+- [`GET /v3/customers/{customerId}/capabilities/supported`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-supported) (`getV3CustomersByCustomerIdCapabilitiesSupported`, tila `400`)
+- [`GET /v3/customers/{customerId}/documents`](/api-reference/documents/get-v3-customers-by-customer-id-documents) (`getV3CustomersByCustomerIdDocuments`, tila `400`)
+- [`GET /v3/customers/{customerId}/recipients`](/api-reference/recipients/get-v3-customers-by-customer-id-recipients) (`getV3CustomersByCustomerIdRecipients`, tila `400`)
+- [`GET /v3/customers/{customerId}/recipients/{recipientId}/destinations`](/api-reference/recipients/get-v3-customers-by-customer-id-recipients-by-recipient-id-destinations) (`getV3CustomersByCustomerIdRecipientsByRecipientIdDestinations`, tila `400`)
+- [`GET /v3/customers/{customerId}/related-parties`](/api-reference/customers/get-v3-customers-by-customer-id-related-parties) (`getV3CustomersByCustomerIdRelated-parties`, tila `400`)
+- [`GET /v3/customers/{customerId}/rules`](/api-reference/rules/get-v3-customers-by-customer-id-rules) (`getV3CustomersByCustomerIdRules`, tila `400`)
+- [`GET /v3/customers/{customerId}/tasks`](/api-reference/tasks/list-customer-tasks) (`listCustomerTasks`, tila `400`)
+- [`GET /v3/customers/{customerId}/tasks/{taskId}`](/api-reference/tasks/get-customer-task) (`getCustomerTask`, tila `400`)
+- [`GET /v3/customers/{customerId}/tasks/{taskId}/history`](/api-reference/tasks/list-customer-task-history) (`listCustomerTaskHistory`, tila `400`)
+- [`GET /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/list-customer-task-submissions) (`listCustomerTaskSubmissions`, tila `400`)
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, tila `400`)
+- [`GET /v3/customers/{customerId}/tasks/{taskId}/submissions/{submissionId}`](/api-reference/task-submissions/get-customer-task-submission) (`getCustomerTaskSubmission`, tila `400`)
+- [`GET /v3/institutions`](/api-reference/institutions/get-v3-institutions) (`getV3Institutions`, tila `400`)
+- [`GET /v3/rates`](/api-reference/money-movement/get-v3-rates) (`getV3Rates`, tila `400`)
+- [`POST /v3/sandbox/tasks`](/api-reference/sandbox/post-v3-sandbox-tasks) (`postV3SandboxTasks`, tila `400`)
+- [`POST /v3/sandbox/tasks/{taskId}/review`](/api-reference/sandbox/post-v3-sandbox-tasks-by-task-id-review) (`postV3SandboxTasksByTaskIdReview`, tila `400`)
+- [`GET /v3/tasks`](/api-reference/tasks/list-tasks) (`listTasks`, tila `400`)
+- [`GET /v3/tasks/{taskId}`](/api-reference/tasks/get-task) (`getTask`, tila `400`)
+- [`GET /v3/transfers`](/api-reference/money-movement/get-v3-transfers) (`getV3Transfers`, tila `400`)
+- [`GET /v3/transfers/{transferId}/tasks`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-tasks) (`getV3TransfersByTransferIdTasks`, tila `400`)
+
+</Accordion>
+
+<a id="validation-error" className="block scroll-mt-32">
+  <span className="sr-only">validation_error error</span>
+</a>
+
+### `validation_error`
+
+**HTTP-tila:** `400`, `422`<br />
+**Uudelleenyritettävä:** Ei<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/validation-error`
+
+**Merkitys:** Pyyntö ei täytä toiminnon syöteskeemaa.
+
+**Milloin se ilmenee:** Vaadittuja arvoja puuttuu, kentillä on virheellisiä tyyppejä tai muotoja, tai pyyntöparametrit eivät läpäise validointia.
+
+**Mitä tehdä:** Korjaa pyyntö `errors[]`-kentän ja kunkin JSON Pointerin avulla, vertaa sitä toiminnon skeemaan ja lähetä uusi pyyntö.
+
+**Uudelleenyritysohje:** Älä uudelleenyritä muuttamatonta pyyntöä. Toteuta yllä oleva toimenpide ennen uuden pyynnön lähettämistä.
+
+<Accordion title="Asiaankuuluvat API-toiminnot (55)">
+
+- [`GET /v3/capabilities`](/api-reference/capabilities/get-v3-capabilities) (`getV3Capabilities`, tila `400`)
+- [`GET /v3/customers`](/api-reference/customers/get-v3-customers) (`getV3Customers`, tila `400`)
+- [`POST /v3/customers`](/api-reference/customers/post-v3-customers) (`postV3Customers`, tila `400`)
+- [`DELETE /v3/customers/{customerId}`](/api-reference/customers/delete-v3-customers-by-customer-id) (`deleteV3CustomersByCustomerId`, tila `400`)
+- [`PATCH /v3/customers/{customerId}`](/api-reference/customers/patch-v3-customers-by-customer-id) (`patchV3CustomersByCustomerId`, tila `400`)
+- [`GET /v3/customers/{customerId}/accounts`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts) (`getV3CustomersByCustomerIdAccounts`, tila `400`)
+- [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) (`postV3CustomersByCustomerIdAccounts`, tila `400`)
+- [`DELETE /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/delete-v3-customers-by-customer-id-accounts-by-account-id) (`deleteV3CustomersByCustomerIdAccountsByAccountId`, tila `400`)
+- [`PATCH /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/patch-v3-customers-by-customer-id-accounts-by-account-id) (`patchV3CustomersByCustomerIdAccountsByAccountId`, tila `400`)
+- [`PUT /v3/customers/{customerId}/accounts/{accountId}/fees`](/api-reference/accounts/put-v3-customers-by-customer-id-accounts-by-account-id-fees) (`putV3CustomersByCustomerIdAccountsByAccountIdFees`, tila `400`)
+- [`GET /v3/customers/{customerId}/capabilities`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities) (`getV3CustomersByCustomerIdCapabilities`, tila `400`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, tila `400`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}/applications`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id-applications) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityIdApplications`, tila `400`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}/cancel`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id-cancel) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityIdCancel`, tila `400`)
+- [`GET /v3/customers/{customerId}/documents`](/api-reference/documents/get-v3-customers-by-customer-id-documents) (`getV3CustomersByCustomerIdDocuments`, tila `400`)
+- [`POST /v3/customers/{customerId}/documents`](/api-reference/documents/post-v3-customers-by-customer-id-documents) (`postV3CustomersByCustomerIdDocuments`, tila `400`)
+- [`DELETE /v3/customers/{customerId}/documents/{documentId}`](/api-reference/documents/delete-v3-customers-by-customer-id-documents-by-document-id) (`deleteV3CustomersByCustomerIdDocumentsByDocumentId`, tila `400`)
+- [`POST /v3/customers/{customerId}/export`](/api-reference/customers/post-v3-customers-by-customer-id-export) (`postV3CustomersByCustomerIdExport`, tila `400`)
+- [`GET /v3/customers/{customerId}/recipients`](/api-reference/recipients/get-v3-customers-by-customer-id-recipients) (`getV3CustomersByCustomerIdRecipients`, tila `400`)
+- [`POST /v3/customers/{customerId}/recipients`](/api-reference/recipients/post-v3-customers-by-customer-id-recipients) (`postV3CustomersByCustomerIdRecipients`, tila `400`)
+- [`DELETE /v3/customers/{customerId}/recipients/{recipientId}`](/api-reference/recipients/delete-v3-customers-by-customer-id-recipients-by-recipient-id) (`deleteV3CustomersByCustomerIdRecipientsByRecipientId`, tila `400`)
+- [`PATCH /v3/customers/{customerId}/recipients/{recipientId}`](/api-reference/recipients/patch-v3-customers-by-customer-id-recipients-by-recipient-id) (`patchV3CustomersByCustomerIdRecipientsByRecipientId`, tila `400`)
+- [`GET /v3/customers/{customerId}/recipients/{recipientId}/destinations`](/api-reference/recipients/get-v3-customers-by-customer-id-recipients-by-recipient-id-destinations) (`getV3CustomersByCustomerIdRecipientsByRecipientIdDestinations`, tila `400`)
+- [`POST /v3/customers/{customerId}/recipients/{recipientId}/destinations`](/api-reference/recipients/post-v3-customers-by-customer-id-recipients-by-recipient-id-destinations) (`postV3CustomersByCustomerIdRecipientsByRecipientIdDestinations`, tila `400`)
+- [`DELETE /v3/customers/{customerId}/recipients/{recipientId}/destinations/{destinationId}`](/api-reference/recipients/delete-v3-customers-by-customer-id-recipients-by-recipient-id-destinations-by-destination-id) (`deleteV3CustomersByCustomerIdRecipientsByRecipientIdDestinationsByDestinationId`, tila `400`)
+- [`GET /v3/customers/{customerId}/related-parties`](/api-reference/customers/get-v3-customers-by-customer-id-related-parties) (`getV3CustomersByCustomerIdRelated-parties`, tila `400`)
+- [`POST /v3/customers/{customerId}/related-parties`](/api-reference/customers/post-v3-customers-by-customer-id-related-parties) (`postV3CustomersByCustomerIdRelated-parties`, tila `400`)
+- [`DELETE /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/delete-v3-customers-by-customer-id-related-parties-by-related-party-id) (`deleteV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, tila `400`)
+- [`PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/patch-v3-customers-by-customer-id-related-parties-by-related-party-id) (`patchV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, tila `400`)
+- [`GET /v3/customers/{customerId}/rules`](/api-reference/rules/get-v3-customers-by-customer-id-rules) (`getV3CustomersByCustomerIdRules`, tila `400`)
+- [`POST /v3/customers/{customerId}/rules`](/api-reference/rules/post-v3-customers-by-customer-id-rules) (`postV3CustomersByCustomerIdRules`, tila `400`)
+- [`DELETE /v3/customers/{customerId}/rules/{ruleId}`](/api-reference/rules/delete-v3-customers-by-customer-id-rules-by-rule-id) (`deleteV3CustomersByCustomerIdRulesByRuleId`, tila `400`)
+- [`PATCH /v3/customers/{customerId}/rules/{ruleId}`](/api-reference/rules/patch-v3-customers-by-customer-id-rules-by-rule-id) (`patchV3CustomersByCustomerIdRulesByRuleId`, tila `400`)
+- [`GET /v3/customers/{customerId}/tasks`](/api-reference/tasks/list-customer-tasks) (`listCustomerTasks`, tila `400`)
+- [`GET /v3/customers/{customerId}/tasks/{taskId}/history`](/api-reference/tasks/list-customer-task-history) (`listCustomerTaskHistory`, tila `400`)
+- [`GET /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/list-customer-task-submissions) (`listCustomerTaskSubmissions`, tila `400`)
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, tila `400`)
+- [`GET /v3/institutions`](/api-reference/institutions/get-v3-institutions) (`getV3Institutions`, tila `400`)
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, tila `400`)
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, tila `422`)
+- [`GET /v3/rates`](/api-reference/money-movement/get-v3-rates) (`getV3Rates`, tila `400`)
+- [`POST /v3/sandbox/accounts/{accountId}/topup`](/api-reference/sandbox/post-v3-sandbox-accounts-by-account-id-topup) (`postV3SandboxAccountsByAccountIdTopup`, tila `400`)
+- [`POST /v3/sandbox/customers/{customerId}/capabilities/{capabilityId}/status`](/api-reference/sandbox/post-v3-sandbox-customers-by-customer-id-capabilities-by-capability-id-status) (`postV3SandboxCustomersByCustomerIdCapabilitiesByCapabilityIdStatus`, tila `400`)
+- [`POST /v3/sandbox/customers/{customerId}/verification`](/api-reference/sandbox/post-v3-sandbox-customers-by-customer-id-verification) (`postV3SandboxCustomersByCustomerIdVerification`, tila `400`)
+- [`POST /v3/sandbox/tasks`](/api-reference/sandbox/post-v3-sandbox-tasks) (`postV3SandboxTasks`, tila `400`)
+- [`POST /v3/sandbox/tasks/{taskId}/review`](/api-reference/sandbox/post-v3-sandbox-tasks-by-task-id-review) (`postV3SandboxTasksByTaskIdReview`, tila `400`)
+- [`POST /v3/sandbox/transfers/{transferId}/state`](/api-reference/sandbox/post-v3-sandbox-transfers-by-transfer-id-state) (`postV3SandboxTransfersByTransferIdState`, tila `400`)
+- [`GET /v3/tasks`](/api-reference/tasks/list-tasks) (`listTasks`, tila `400`)
+- [`GET /v3/transfers`](/api-reference/money-movement/get-v3-transfers) (`getV3Transfers`, tila `400`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, tila `400`)
+- [`POST /v3/transfers/{transferId}/cancel`](/api-reference/money-movement/post-v3-transfers-by-transfer-id-cancel) (`postV3TransfersByTransferIdCancel`, tila `400`)
+- [`GET /v3/transfers/{transferId}/tasks`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-tasks) (`getV3TransfersByTransferIdTasks`, tila `400`)
+- [`POST /v3/webhooks`](/api-reference/webhooks/post-v3-webhooks) (`postV3Webhooks`, tila `400`)
+- [`DELETE /v3/webhooks/{webhookId}`](/api-reference/webhooks/delete-v3-webhooks-by-webhook-id) (`deleteV3WebhooksByWebhookId`, tila `400`)
+- [`PATCH /v3/webhooks/{webhookId}`](/api-reference/webhooks/patch-v3-webhooks-by-webhook-id) (`patchV3WebhooksByWebhookId`, tila `400`)
+
+</Accordion>
+
+## Asiakkaat ja profiilit
+
+<a id="customer-has-active-resources" className="block scroll-mt-32">
+  <span className="sr-only">customer_has_active_resources error</span>
+</a>
+
+### `customer_has_active_resources`
+
+**HTTP-tila:** `409`<br />
+**Uudelleenyritettävä:** Ei<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/customer-has-active-resources`
+
+**Merkitys:** Asiakasta ei voi arkistoida, kun aktiiviset resurssit ovat siitä yhä riippuvaisia.
+
+**Milloin se ilmenee:** Arkistoit asiakkaan, jolla on yhä tilejä, siirtoja tai muita ratkaisua vaativia resursseja.
+
+**Mitä tehdä:** Noudata jokaista `blockingResources[].requiredAction`-arvoa, hae asiakas uudelleen resurssien ratkaisemisen jälkeen ja uudelleenyritä arkistointitoimintoa.
+
+**Uudelleenyritysohje:** Älä uudelleenyritä muuttamatonta pyyntöä. Toteuta yllä oleva toimenpide ennen uuden pyynnön lähettämistä.
+
+**Asiaankuuluvat API-toiminnot:**
+
+- [`DELETE /v3/customers/{customerId}`](/api-reference/customers/delete-v3-customers-by-customer-id) (`deleteV3CustomersByCustomerId`, tila `409`)
+
+**Vastauksen lisäkentät:**
+
+- `blockingResources`: Asiakasresurssit, jotka on ratkaistava ennen kuin pyydetty toiminto voi edetä, järjestettynä tyypin ja id:n mukaan.
+
+**Esimerkki:**
+
+```json
+{
+  "type": "https://docs.swipelux.com/errors/customer-has-active-resources",
+  "title": "Customer Has Active Resources",
+  "status": 409,
+  "code": "customer_has_active_resources",
+  "detail": "Archive or resolve every blocking resource before retrying.",
+  "correlationId": "01JERRORCUSTOMERARCHIVE",
+  "retryable": false,
+  "blockingResources": [
+    {
+      "type": "account",
+      "id": "acc_01JACTIVE",
+      "requiredAction": "archive_account"
+    }
+  ]
+}
+```
+
+<a id="customer-not-found" className="block scroll-mt-32">
+  <span className="sr-only">customer_not_found error</span>
+</a>
+
+### `customer_not_found`
+
+**HTTP-tila:** `404`<br />
+**Uudelleenyritettävä:** Ei<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/customer-not-found`
+
+**Merkitys:** Asiakasta ei ole nykyisessä API-avainympäristössä tai se ei ole enää käytettävissä.
+
+**Milloin se ilmenee:** Toiminto käyttää asiakastunnistetta, joka puuttuu, kuuluu toiseen ympäristöön tai viittaa arkistoituun asiakkaaseen, kun toiminto vaatii aktiivisen.
+
+**Mitä tehdä:** Tarkista asiakastunniste ja API-avainympäristö, lue tai listaa sitten asiakkaat ennen uudelleenyritystä käytettävissä olevalla asiakkaalla.
+
+**Uudelleenyritysohje:** Älä uudelleenyritä muuttamatonta pyyntöä. Toteuta yllä oleva toimenpide ennen uuden pyynnön lähettämistä.
+
+<Accordion title="Asiaankuuluvat API-toiminnot (22)">
+
+- [`DELETE /v3/customers/{customerId}`](/api-reference/customers/delete-v3-customers-by-customer-id) (`deleteV3CustomersByCustomerId`, tila `404`)
+- [`GET /v3/customers/{customerId}`](/api-reference/customers/get-v3-customers-by-customer-id) (`getV3CustomersByCustomerId`, tila `404`)
+- [`PATCH /v3/customers/{customerId}`](/api-reference/customers/patch-v3-customers-by-customer-id) (`patchV3CustomersByCustomerId`, tila `404`)
+- [`GET /v3/customers/{customerId}/capabilities`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities) (`getV3CustomersByCustomerIdCapabilities`, tila `404`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityId`, tila `404`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, tila `404`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}/applications`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id-applications) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityIdApplications`, tila `404`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}/applications/{applicationId}/history`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id-applications-by-application-id-history) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityIdApplicationsByApplicationIdHistory`, tila `404`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}/cancel`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id-cancel) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityIdCancel`, tila `404`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}/tasks-preview`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id-tasks-preview) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityIdTasks-preview`, tila `404`)
+- [`GET /v3/customers/{customerId}/capabilities/supported`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-supported) (`getV3CustomersByCustomerIdCapabilitiesSupported`, tila `404`)
+- [`GET /v3/customers/{customerId}/documents`](/api-reference/documents/get-v3-customers-by-customer-id-documents) (`getV3CustomersByCustomerIdDocuments`, tila `404`)
+- [`POST /v3/customers/{customerId}/documents`](/api-reference/documents/post-v3-customers-by-customer-id-documents) (`postV3CustomersByCustomerIdDocuments`, tila `404`)
+- [`DELETE /v3/customers/{customerId}/documents/{documentId}`](/api-reference/documents/delete-v3-customers-by-customer-id-documents-by-document-id) (`deleteV3CustomersByCustomerIdDocumentsByDocumentId`, tila `404`)
+- [`GET /v3/customers/{customerId}/documents/{documentId}`](/api-reference/documents/get-v3-customers-by-customer-id-documents-by-document-id) (`getV3CustomersByCustomerIdDocumentsByDocumentId`, tila `404`)
+- [`POST /v3/customers/{customerId}/export`](/api-reference/customers/post-v3-customers-by-customer-id-export) (`postV3CustomersByCustomerIdExport`, tila `404`)
+- [`GET /v3/customers/{customerId}/related-parties`](/api-reference/customers/get-v3-customers-by-customer-id-related-parties) (`getV3CustomersByCustomerIdRelated-parties`, tila `404`)
+- [`POST /v3/customers/{customerId}/related-parties`](/api-reference/customers/post-v3-customers-by-customer-id-related-parties) (`postV3CustomersByCustomerIdRelated-parties`, tila `404`)
+- [`DELETE /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/delete-v3-customers-by-customer-id-related-parties-by-related-party-id) (`deleteV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, tila `404`)
+- [`GET /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/get-v3-customers-by-customer-id-related-parties-by-related-party-id) (`getV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, tila `404`)
+- [`PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/patch-v3-customers-by-customer-id-related-parties-by-related-party-id) (`patchV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, tila `404`)
+- [`GET /v3/customers/{customerId}/tasks`](/api-reference/tasks/list-customer-tasks) (`listCustomerTasks`, tila `404`)
+
+</Accordion>
+
+<a id="document-not-found" className="block scroll-mt-32">
+  <span className="sr-only">document_not_found error</span>
+</a>
+
+### `document_not_found`
+
+**HTTP-tila:** `404`<br />
+**Uudelleenyritettävä:** Ei palauteta<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/document-not-found`
+
+**Merkitys:** Pyydettyä asiakasasiakirjaa ei löytynyt.
+
+**Milloin se ilmenee:** Asiakirjatunniste puuttuu, on arkistoitu tai ei kuulu pyyntöpolun asiakkaalle.
+
+**Mitä tehdä:** Tarkista asiakas- ja asiakirjatunnisteet, listaa asiakkaan asiakirjat ja lataa korvaava asiakirja, kun vaadittu asiakirja puuttuu.
+
+**Uudelleenyritysohje:** Tämä ongelma ei palauta `retryable`-kenttää. Älä oleta, että muuttamaton uudelleenyritys on turvallinen; noudata yllä olevaa toimenpidettä ja toiminnon idempotenssivaatimuksia.
+
+**Asiaankuuluvat API-toiminnot:**
+
+- [`DELETE /v3/customers/{customerId}/documents/{documentId}`](/api-reference/documents/delete-v3-customers-by-customer-id-documents-by-document-id) (`deleteV3CustomersByCustomerIdDocumentsByDocumentId`, tila `404`)
+- [`GET /v3/customers/{customerId}/documents/{documentId}`](/api-reference/documents/get-v3-customers-by-customer-id-documents-by-document-id) (`getV3CustomersByCustomerIdDocumentsByDocumentId`, tila `404`)
+
+<a id="duplicate-external-id" className="block scroll-mt-32">
+  <span className="sr-only">duplicate_external_id error</span>
+</a>
+
+### `duplicate_external_id`
+
+**HTTP-tila:** `409`<br />
+**Uudelleenyritettävä:** Ei<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/duplicate-external-id`
+
+**Merkitys:** Annettu `externalId` on jo osoitettu toiselle resurssille samassa laajuudessa.
+
+**Milloin se ilmenee:** Luonti- tai päivityspyyntö yrittää käyttää uudelleen kehittäjän hallitsemaa tunnistetta, jonka on oltava yksilöllinen.
+
+**Mitä tehdä:** Lue kyseiseen tunnisteeseen jo liitetty resurssi tai käytä uutta yksilöllistä `externalId`-arvoa aidosti eri resurssille.
+
+**Uudelleenyritysohje:** Älä uudelleenyritä muuttamatonta pyyntöä. Toteuta yllä oleva toimenpide ennen uuden pyynnön lähettämistä.
+
+**Asiaankuuluvat API-toiminnot:**
+
+- [`POST /v3/customers`](/api-reference/customers/post-v3-customers) (`postV3Customers`, tila `409`)
+- [`PATCH /v3/customers/{customerId}`](/api-reference/customers/patch-v3-customers-by-customer-id) (`patchV3CustomersByCustomerId`, tila `409`)
+- [`POST /v3/customers/{customerId}/related-parties`](/api-reference/customers/post-v3-customers-by-customer-id-related-parties) (`postV3CustomersByCustomerIdRelated-parties`, tila `409`)
+- [`PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/patch-v3-customers-by-customer-id-related-parties-by-related-party-id) (`patchV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, tila `409`)
+
+<a id="field-required-by-open-task" className="block scroll-mt-32">
+  <span className="sr-only">field_required_by_open_task error</span>
+</a>
+
+### `field_required_by_open_task`
+
+**HTTP-tila:** `409`<br />
+**Uudelleenyritettävä:** Ei<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/field-required-by-open-task`
+
+**Merkitys:** Pyyntö yrittää tyhjentää profiilikentän, jota avoin tehtävä yhä vaatii.
+
+**Milloin se ilmenee:** Asiakkaan tai liittyvän osapuolen päivitys poistaa arvon, jonka `taskId`-kentän tehtävä on kiinnittänyt vaadituksi.
+
+**Mitä tehdä:** Lue `taskId` sekä `fields`-kentän profiiliosoittimet tai vaatimusavaimet, palauta sitten vaaditut arvot tai suorita tai peruuta tehtävä ennen päivityksen lähettämistä uudelleen.
+
+**Uudelleenyritysohje:** Älä uudelleenyritä muuttamatonta pyyntöä. Toteuta yllä oleva toimenpide ennen uuden pyynnön lähettämistä.
+
+**Asiaankuuluvat API-toiminnot:**
+
+- [`PATCH /v3/customers/{customerId}`](/api-reference/customers/patch-v3-customers-by-customer-id) (`patchV3CustomersByCustomerId`, tila `409`)
+- [`PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/patch-v3-customers-by-customer-id-related-parties-by-related-party-id) (`patchV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, tila `409`)
+
+**Vastauksen lisäkentät:**
+
+- `fields`: Avoimen tehtävän estämät profiiliosoittimet tai vaatimusavaimet.
+- `taskId`: Nykyinen tehtävätunniste.
+
+<a id="merchant-kyb-not-approved" className="block scroll-mt-32">
+  <span className="sr-only">merchant_kyb_not_approved error</span>
+</a>
+
+### `merchant_kyb_not_approved`
+
+**HTTP-tila:** `422`<br />
+**Uudelleenyritettävä:** Ei palauteta<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/merchant-kyb-not-approved`
+
+**Merkitys:** Integroivaa yritystä ei ole hyväksytty pyydettyyn asiakkaanluontivirtaan.
+
+**Milloin se ilmenee:** Tuotannon asiakkaanluontipyyntö tehdään ennen kuin integroiva yritys ja tuotantotila on hyväksytty.
+
+**Mitä tehdä:** Suorita integroivan yrityksen vahvistusvirta ja odota tuotantohyväksyntää ennen tuotantoasiakkaiden luomista.
+
+**Uudelleenyritysohje:** Tämä ongelma ei palauta `retryable`-kenttää. Älä oleta, että muuttamaton uudelleenyritys on turvallinen; noudata yllä olevaa toimenpidettä ja toiminnon idempotenssivaatimuksia.
+
+**Asiaankuuluvat API-toiminnot:**
+
+- [`POST /v3/customers`](/api-reference/customers/post-v3-customers) (`postV3Customers`, tila `422`)
+
+<a id="profile-obligation-crossheal-failed" className="block scroll-mt-32">
+  <span className="sr-only">profile_obligation_crossheal_failed error</span>
+</a>
+
+### `profile_obligation_crossheal_failed`
+
+**HTTP-tila:** `500`<br />
+**Uudelleenyritettävä:** Ei<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/profile-obligation-crossheal-failed`
+
+**Merkitys:** Swipelux ei voinut päivittää asiakkaan profiilivaatimuksia.
+
+**Milloin se ilmenee:** Asiakkaan tai liittyvän osapuolen päivitys ei pysty sovittamaan profiilimuutosta sen nykyisiin tehtävävaatimuksiin.
+
+**Mitä tehdä:** Säilytä `correlationId` ja ota yhteyttä Swipelux-tukeen. Älä uudelleenyritä muuttamatonta päivitystä toistuvasti.
+
+**Uudelleenyritysohje:** Älä uudelleenyritä muuttamatonta pyyntöä. Toteuta yllä oleva toimenpide ennen uuden pyynnön lähettämistä.
+
+**Asiaankuuluvat API-toiminnot:**
+
+- [`PATCH /v3/customers/{customerId}`](/api-reference/customers/patch-v3-customers-by-customer-id) (`patchV3CustomersByCustomerId`, tila `500`)
+- [`PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/patch-v3-customers-by-customer-id-related-parties-by-related-party-id) (`patchV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, tila `500`)
+
+<a id="related-party-in-review" className="block scroll-mt-32">
+  <span className="sr-only">related_party_in_review error</span>
+</a>
+
+### `related_party_in_review`
+
+**HTTP-tila:** `409`<br />
+**Uudelleenyritettävä:** Ei<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/related-party-in-review`
+
+**Merkitys:** Liittyvää osapuolta ei voi arkistoida, kun se on tarkastettavana.
+
+**Milloin se ilmenee:** Yrität arkistoida liittyvän osapuolen, jonka vahvistus- tai tarkastustyönkulku on yhä aktiivinen.
+
+**Mitä tehdä:** Odota tarkastustilan muuttumista, hae liittyvä osapuoli uudelleen ja arkistoi se vasta, kun sen nykyinen tila sallii toiminnon.
+
+**Uudelleenyritysohje:** Älä uudelleenyritä muuttamatonta pyyntöä. Toteuta yllä oleva toimenpide ennen uuden pyynnön lähettämistä.
+
+**Asiaankuuluvat API-toiminnot:**
+
+- [`DELETE /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/delete-v3-customers-by-customer-id-related-parties-by-related-party-id) (`deleteV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, tila `409`)
+
+<a id="related-party-not-found" className="block scroll-mt-32">
+  <span className="sr-only">related_party_not_found error</span>
+</a>
+
+### `related_party_not_found`
+
+**HTTP-tila:** `404`<br />
+**Uudelleenyritettävä:** Ei palauteta<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/related-party-not-found`
+
+**Merkitys:** Liittyvää osapuolta ei löytynyt määritetyn asiakkaan alta.
+
+**Milloin se ilmenee:** Liittyvän osapuolen tunniste puuttuu, on arkistoitu, kuuluu toiselle asiakkaalle tai ei ole käytettävissä nykyisessä ympäristössä.
+
+**Mitä tehdä:** Tarkista asiakkaan ja liittyvän osapuolen tunnisteet, listaa asiakkaan liittyvät osapuolet ja uudelleenyritä käytettävissä olevalla resurssilla.
+
+**Uudelleenyritysohje:** Tämä ongelma ei palauta `retryable`-kenttää. Älä oleta, että muuttamaton uudelleenyritys on turvallinen; noudata yllä olevaa toimenpidettä ja toiminnon idempotenssivaatimuksia.
+
+**Asiaankuuluvat API-toiminnot:**
+
+- [`DELETE /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/delete-v3-customers-by-customer-id-related-parties-by-related-party-id) (`deleteV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, tila `404`)
+- [`GET /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/get-v3-customers-by-customer-id-related-parties-by-related-party-id) (`getV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, tila `404`)
+- [`PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/patch-v3-customers-by-customer-id-related-parties-by-related-party-id) (`patchV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, tila `404`)
+
+## Kyvyt, KYC ja tehtävät
+
+<a id="absence-conflicts-with-profile" className="block scroll-mt-32">
+  <span className="sr-only">absence_conflicts_with_profile error</span>
+</a>
+
+### `absence_conflicts_with_profile`
+
+**HTTP-tila:** `409`<br />
+**Uudelleenyritettävä:** Ei<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/absence-conflicts-with-profile`
+
+**Merkitys:** Tehtävävastaus, joka ilmoittaa arvon puuttuvaksi, on ristiriidassa asiakasprofiilissa jo olevien tietojen kanssa.
+
+**Milloin se ilmenee:** Lähetys merkitsee profiiliin perustuvan vaatimuksen puuttuvaksi, vaikka `profilePointer`-kentän tunnistamassa kanonisessa profiilikentässä on yhä arvo.
+
+**Mitä tehdä:** Tarkista `profilePointer`, päivitä asiakasprofiili tai lähetä sen kanssa yhdenmukainen vastaus, hae tehtävä uudelleen ja lähetä nykyinen versio.
+
+**Uudelleenyritysohje:** Älä uudelleenyritä muuttamatonta pyyntöä. Toteuta yllä oleva toimenpide ennen uuden pyynnön lähettämistä.
+
+**Asiaankuuluvat API-toiminnot:**
+
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, tila `409`)
+
+**Vastauksen lisäkentät:**
+
+- `profilePointer`: Ristiriitaan liittyvä kanoninen profiilikenttä.
+
+<a id="capability-already-exists" className="block scroll-mt-32">
+  <span className="sr-only">capability_already_exists error</span>
+</a>
+
+### `capability_already_exists`
+
+**HTTP-tila:** `409`<br />
+**Uudelleenyritettävä:** Ei<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/capability-already-exists`
+
+**Merkitys:** Asiakkaalla on jo pyydetty kyky.
+
+**Milloin se ilmenee:** Pyydät kykyä, jonka nykyinen tai olemassa oleva hakemus edustaa jo samaa asiakkaan kykyä.
+
+**Mitä tehdä:** Lue olemassa oleva kyky ja jatka sen nykyisestä tilasta kaksoiskappaleen luomisen sijaan.
+
+**Uudelleenyritysohje:** Älä uudelleenyritä muuttamatonta pyyntöä. Toteuta yllä oleva toimenpide ennen uuden pyynnön lähettämistä.
+
+**Asiaankuuluvat API-toiminnot:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, tila `409`)
+
+<a id="capability-ineligible" className="block scroll-mt-32">
+  <span className="sr-only">capability_ineligible error</span>
+</a>
+
+### `capability_ineligible`
+
+**HTTP-tila:** `422`<br />
+**Uudelleenyritettävä:** Ei<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/capability-ineligible`
+
+**Merkitys:** Asiakas ei ole oikeutettu pyydettyyn kykyyn nykyisellä profiilillaan ja kokoonpanollaan.
+
+**Milloin se ilmenee:** Kyvyn arviointi toteaa, että pyydetty vaihtoehto ei ole tämän asiakkaan käytettävissä.
+
+**Mitä tehdä:** Tarkista tuettujen kykyjen vastaus ja nykyiset tehtävät, valitse sitten oikeutettu kyky tai suorita esiin tuotu edellytys ennen uuden pyynnön tekemistä.
+
+**Uudelleenyritysohje:** Älä uudelleenyritä muuttamatonta pyyntöä. Toteuta yllä oleva toimenpide ennen uuden pyynnön lähettämistä.
+
+**Asiaankuuluvat API-toiminnot:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, tila `422`)
+
+<a id="capability-institutions-required" className="block scroll-mt-32">
+  <span className="sr-only">capability_institutions_required error</span>
+</a>
+
+### `capability_institutions_required`
+
+**HTTP-tila:** `422`<br />
+**Uudelleenyritettävä:** Ei palauteta<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/capability-institutions-required`
+
+**Merkitys:** Kykypyyntö vaatii yhden tai useamman instituutiovalinnan.
+
+**Milloin se ilmenee:** Pyydät kykymuunnelmaa, joka vaatii instituutioita, mutta jätät instituutiovalinnan pois.
+
+**Mitä tehdä:** Listaa asiakkaan tuetut instituutiot, sisällytä vaaditut instituutiotunnisteet ja lähetä uusi pyyntö.
+
+**Uudelleenyritysohje:** Tämä ongelma ei palauta `retryable`-kenttää. Älä oleta, että muuttamaton uudelleenyritys on turvallinen; noudata yllä olevaa toimenpidettä ja toiminnon idempotenssivaatimuksia.
+
+**Asiaankuuluvat API-toiminnot:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, tila `422`)
+
+<a id="capability-institutions-unsupported" className="block scroll-mt-32">
+  <span className="sr-only">capability_institutions_unsupported error</span>
+</a>
+
+### `capability_institutions_unsupported`
+
+**HTTP-tila:** `422`<br />
+**Uudelleenyritettävä:** Ei<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/capability-institutions-unsupported`
+
+**Merkitys:** Yhtä tai useampaa valittua instituutiota ei tueta pyydetylle kyvylle.
+
+**Milloin se ilmenee:** Pyyntö sisältää instituution, joka ei kuulu asiakkaan käytettävissä oleviin kykyvaihtoehtoihin.
+
+**Mitä tehdä:** Korvaa tukematon valinta tuettujen kykyjen virran palauttamilla instituutioilla ja lähetä sitten uusi pyyntö.
+
+**Uudelleenyritysohje:** Älä uudelleenyritä muuttamatonta pyyntöä. Toteuta yllä oleva toimenpide ennen uuden pyynnön lähettämistä.
+
+**Asiaankuuluvat API-toiminnot:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, tila `422`)
+
+<a id="capability-intent-unsupported" className="block scroll-mt-32">
+  <span className="sr-only">capability_intent_unsupported error</span>
+</a>
+
+### `capability_intent_unsupported`
+
+**HTTP-tila:** `422`<br />
+**Uudelleenyritettävä:** Ei palauteta<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/capability-intent-unsupported`
+
+**Merkitys:** Pyydettyä kykyaikomusta ei tueta tälle kykymuunnelmalle.
+
+**Milloin se ilmenee:** Pyyntö yhdistää kyvyn aikomukseen, jota ei tarjota valituille asiakas- tai instituutiovaihtoehdoille.
+
+**Mitä tehdä:** Käytä tuettujen kykyjen vastauksen esittämää aikomusta tai valitse toinen tuettu kykymuunnelma.
+
+**Uudelleenyritysohje:** Tämä ongelma ei palauta `retryable`-kenttää. Älä oleta, että muuttamaton uudelleenyritys on turvallinen; noudata yllä olevaa toimenpidettä ja toiminnon idempotenssivaatimuksia.
+
+**Asiaankuuluvat API-toiminnot:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, tila `422`)
+
+<a id="capability-key-unsupported" className="block scroll-mt-32">
+  <span className="sr-only">capability_key_unsupported error</span>
+</a>
+
+### `capability_key_unsupported`
+
+**HTTP-tila:** `422`<br />
+**Uudelleenyritettävä:** Ei<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/capability-key-unsupported`
+
+**Merkitys:** Kykyavainta ei tueta tässä toiminnossa.
+
+**Milloin se ilmenee:** Pyyntö tai tehtävien esikatselu käyttää kykytunnistetta, joka ei ole pyydettävissä asiakkaalle.
+
+**Mitä tehdä:** Listaa tuetut kyvyt ja käytä asiakkaalle palautettua tarkkaa kykytunnistetta.
+
+**Uudelleenyritysohje:** Älä uudelleenyritä muuttamatonta pyyntöä. Toteuta yllä oleva toimenpide ennen uuden pyynnön lähettämistä.
+
+**Asiaankuuluvat API-toiminnot:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, tila `422`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}/tasks-preview`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id-tasks-preview) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityIdTasks-preview`, tila `422`)
+
+<a id="capability-not-cancelable" className="block scroll-mt-32">
+  <span className="sr-only">capability_not_cancelable error</span>
+</a>
+
+### `capability_not_cancelable`
+
+**HTTP-tila:** `409`<br />
+**Uudelleenyritettävä:** Ei<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/capability-not-cancelable`
+
+**Merkitys:** Kykyä ei voi peruuttaa sen nykyisestä tilasta.
+
+**Milloin se ilmenee:** Peruutuspyyntö saapuu sen jälkeen, kun kyky on siirtynyt tilaan, jota ei voi peruuttaa, tai kun resurssit yhä estävät peruutuksen.
+
+**Mitä tehdä:** Tarkastele `statusReason`- ja `blockingResources`-kenttiä, ratkaise listatut resurssit tai odota niitä, hae kyky uudelleen ja valitse sen nykyisen tilan sallima seuraava toimenpide.
+
+**Uudelleenyritysohje:** Älä uudelleenyritä muuttamatonta pyyntöä. Toteuta yllä oleva toimenpide ennen uuden pyynnön lähettämistä.
+
+**Asiaankuuluvat API-toiminnot:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}/cancel`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id-cancel) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityIdCancel`, tila `409`)
+
+**Vastauksen lisäkentät:**
+
+- `blockingResources`: Asiakasresurssit, jotka on ratkaistava ennen kuin pyydetty toiminto voi edetä, järjestettynä tyypin ja id:n mukaan.
+- `statusReason`: Rakenteellinen syy tilaristiriitaan, kun epäonnistunut toiminto riippuu resurssin nykyisestä tilasta.
+
+<a id="capability-not-ready" className="block scroll-mt-32">
+  <span className="sr-only">capability_not_ready error</span>
+</a>
+
+### `capability_not_ready`
+
+**HTTP-tila:** `409`<br />
+**Uudelleenyritettävä:** Tilannekohtainen<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/capability-not-ready`
+
+**Merkitys:** Pyydetyn tilin tai rahaliikkeen vaatima kyky ei ole valmis.
+
+**Milloin se ilmenee:** Toiminto riippuu yhdestä tai useammasta asiakkaan kyvystä, joka ei ole saavuttanut käyttökelpoista tilaa.
+
+**Mitä tehdä:** Lue `capabilities`-kentän kykytunnisteet, suorita avoimet tehtävät tai odota niiden tilan etenemistä, hae ne uudelleen ja lähetä uusi pyyntö, kun ne ovat valmiit.
+
+**Uudelleenyritysohje:** Lue vastauksen `retryable`-arvo. Uudelleenyritä myöhemmin vain, kun se on `true`. Idempotentissa kirjoituksessa käytä uudelleen alkuperäistä idempotency-avainta ja muuttamatonta pyyntöä.
+
+**Asiaankuuluvat API-toiminnot:**
+
+- [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) (`postV3CustomersByCustomerIdAccounts`, tila `409`)
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, tila `409`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, tila `409`)
+
+**Vastauksen lisäkentät:**
+
+- `capabilities`: Kykytunnisteet, jotka täyttävät epäonnistuneen toiminnon.
+
+<a id="capability-not-supported-for-customer-type" className="block scroll-mt-32">
+  <span className="sr-only">capability_not_supported_for_customer_type error</span>
+</a>
+
+### `capability_not_supported_for_customer_type`
+
+**HTTP-tila:** `422`<br />
+**Uudelleenyritettävä:** Ei palauteta<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/capability-not-supported-for-customer-type`
+
+**Merkitys:** Kykyä ei tueta tälle asiakastyypille.
+
+**Milloin se ilmenee:** Yksityis- tai yritysasiakas pyytää kykyä, jota tarjotaan vain toiselle asiakastyypille.
+
+**Mitä tehdä:** Käytä tämän asiakkaan tuettujen kykyjen vastausta ja pyydä sen olemassa olevalle tyypille tarjottua kykyä.
+
+**Uudelleenyritysohje:** Tämä ongelma ei palauta `retryable`-kenttää. Älä oleta, että muuttamaton uudelleenyritys on turvallinen; noudata yllä olevaa toimenpidettä ja toiminnon idempotenssivaatimuksia.
+
+**Asiaankuuluvat API-toiminnot:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, tila `422`)
+
+<a id="capability-provider-resolution-failed" className="block scroll-mt-32">
+  <span className="sr-only">capability_provider_resolution_failed error</span>
+</a>
+
+### `capability_provider_resolution_failed`
+
+**HTTP-tila:** `422`<br />
+**Uudelleenyritettävä:** Ei palauteta<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/capability-provider-resolution-failed`
+
+**Merkitys:** Swipelux ei voinut ratkaista täydellistä käsittelykokoonpanoa kykypyynnölle.
+
+**Milloin se ilmenee:** Pyydetty kykyyhdistelmä on muodoltaan kelvollinen, mutta käytettävissä oleva kykykokoonpano on puutteellinen.
+
+**Mitä tehdä:** Vahvista pyyntö tuettujen kykyjen vastausta vasten. Jos sitä yhä tarjotaan, säilytä `correlationId` ja ota yhteyttä Swipeluxin tukeen.
+
+**Uudelleenyritysohje:** Tämä ongelma ei palauta `retryable`-kenttää. Älä oleta, että muuttamaton uudelleenyritys on turvallinen; noudata yllä olevaa toimenpidettä ja toiminnon idempotenssivaatimuksia.
+
+**Asiaankuuluvat API-toiminnot:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, tila `422`)
+
+<a id="capability-snapshot-corrupted" className="block scroll-mt-32">
+  <span className="sr-only">capability_snapshot_corrupted error</span>
+</a>
+
+### `capability_snapshot_corrupted`
+
+**HTTP-tila:** `500`<br />
+**Uudelleenyritettävä:** Ei<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/capability-snapshot-corrupted`
+
+**Merkitys:** Swipelux ei voinut arvioida asiakkaan kykytilaa.
+
+**Milloin se ilmenee:** Kykyyn liittyvä toiminto kohtaa virheellisen tallennetun kykytilannevedoksen.
+
+**Mitä tehdä:** Säilytä `correlationId` ja ota yhteyttä Swipeluxin tukeen. Älä uudelleenyritä muuttamatonta pyyntöä toistuvasti.
+
+**Uudelleenyritysohje:** Älä uudelleenyritä muuttamatonta pyyntöä. Toteuta yllä oleva toimenpide ennen uuden pyynnön lähettämistä.
+
+<Accordion title="Asiaankuuluvat API-toiminnot (11)">
+
+- [`PATCH /v3/customers/{customerId}`](/api-reference/customers/patch-v3-customers-by-customer-id) (`patchV3CustomersByCustomerId`, tila `500`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, tila `500`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}/cancel`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id-cancel) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityIdCancel`, tila `500`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}/tasks-preview`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id-tasks-preview) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityIdTasks-preview`, tila `500`)
+- [`POST /v3/customers/{customerId}/related-parties`](/api-reference/customers/post-v3-customers-by-customer-id-related-parties) (`postV3CustomersByCustomerIdRelated-parties`, tila `500`)
+- [`DELETE /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/delete-v3-customers-by-customer-id-related-parties-by-related-party-id) (`deleteV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, tila `500`)
+- [`PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/patch-v3-customers-by-customer-id-related-parties-by-related-party-id) (`patchV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, tila `500`)
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, tila `500`)
+- [`POST /v3/sandbox/customers/{customerId}/capabilities/{capabilityId}/status`](/api-reference/sandbox/post-v3-sandbox-customers-by-customer-id-capabilities-by-capability-id-status) (`postV3SandboxCustomersByCustomerIdCapabilitiesByCapabilityIdStatus`, tila `500`)
+- [`POST /v3/sandbox/tasks`](/api-reference/sandbox/post-v3-sandbox-tasks) (`postV3SandboxTasks`, tila `500`)
+- [`POST /v3/sandbox/tasks/{taskId}/review`](/api-reference/sandbox/post-v3-sandbox-tasks-by-task-id-review) (`postV3SandboxTasksByTaskIdReview`, tila `500`)
+
+</Accordion>
+
+<a id="capability-terminally-rejected" className="block scroll-mt-32">
+  <span className="sr-only">capability_terminally_rejected error</span>
+</a>
+
+### `capability_terminally_rejected`
+
+**HTTP-tila:** `409`<br />
+**Uudelleenyritettävä:** Ei<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/capability-terminally-rejected`
+
+**Merkitys:** Kyky on jo hylätty lopullisessa tilassa.
+
+**Milloin se ilmenee:** Pyydät kykyä, jonka olemassa oleva elinkaari ei voi enää palata pyydettävissä olevaan tilaan.
+
+**Mitä tehdä:** Lue olemassa oleva kyky ja esiin tuodut tehtävät tai tilatiedot, valitse sitten toinen tuettu vaihtoehto tai ota yhteyttä tukeen, jos tila on odottamaton.
+
+**Uudelleenyritysohje:** Älä uudelleenyritä muuttamatonta pyyntöä. Toteuta yllä oleva toimenpide ennen uuden pyynnön lähettämistä.
+
+**Asiaankuuluvat API-toiminnot:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, tila `409`)
+
+<a id="capability-variant-unavailable" className="block scroll-mt-32">
+  <span className="sr-only">capability_variant_unavailable error</span>
+</a>
+
+### `capability_variant_unavailable`
+
+**HTTP-tila:** `409`, `422`<br />
+**Uudelleenyritettävä:** Tilannekohtainen<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/capability-variant-unavailable`
+
+**Merkitys:** Pyydetty kykymuunnelma ei ole käytettävissä valitulle asiakas-, aikomus- tai instituutioyhdistelmälle.
+
+**Milloin se ilmenee:** Kyvyn arviointi havaitsee joko tilapäisen saatavuusongelman tai rakenteellisesti tukemattoman yhdistelmän.
+
+**Mitä tehdä:** Tarkista `retryable`. Uudelleenyritä myöhemmin, kun se on `true`; muussa tapauksessa valitse toinen muunnelma tuettujen kykyjen vastauksesta.
+
+**Uudelleenyritysohje:** Lue vastauksen `retryable`-arvo. Uudelleenyritä myöhemmin vain, kun se on `true`. Idempotentissa kirjoituksessa käytä uudelleen alkuperäistä idempotency-avainta ja muuttamatonta pyyntöä. Älä muuta pyyntöä, kun uudelleenyrität tilapäistä muunnelmakatkoa; muuta kykyvalintaa, kun vastaus ei ole uudelleenyritettävä.
+
+**Asiaankuuluvat API-toiminnot:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, tila `409`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, tila `422`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}/tasks-preview`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id-tasks-preview) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityIdTasks-preview`, tila `422`)
+
+<a id="initial-application-identity-conflict" className="block scroll-mt-32">
+  <span className="sr-only">initial_application_identity_conflict error</span>
+</a>
+
+### `initial_application_identity_conflict`
+
+**HTTP-tila:** `409`<br />
+**Uudelleenyritettävä:** Ei<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/initial-application-identity-conflict`
+
+**Merkitys:** Alkuhakemuksen identiteetti muuttui ennen sen tallentamista.
+
+**Milloin se ilmenee:** Asiakkaan luonti tai kykypyyntö havaitsee ristiriitaisen identiteetin luotavalle alkuhakemukselle.
+
+**Mitä tehdä:** Säilytä `correlationId` ja ota yhteyttä Swipeluxin tukeen ennen kykypyynnön uudelleenyrittämistä.
+
+**Uudelleenyritysohje:** Älä uudelleenyritä muuttamatonta pyyntöä. Toteuta yllä oleva toimenpide ennen uuden pyynnön lähettämistä.
+
+**Asiaankuuluvat API-toiminnot:**
+
+- [`POST /v3/customers`](/api-reference/customers/post-v3-customers) (`postV3Customers`, tila `409`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, tila `409`)
+
+<a id="initial-application-owner-unavailable" className="block scroll-mt-32">
+  <span className="sr-only">initial_application_owner_unavailable error</span>
+</a>
+
+### `initial_application_owner_unavailable`
+
+**HTTP-tila:** `503`<br />
+**Uudelleenyritettävä:** Ei<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/initial-application-owner-unavailable`
+
+**Merkitys:** Alkuhakemukselle ei ole käytettävissä kelvollista omistajareittiä.
+
+**Milloin se ilmenee:** Kykypyyntö ei voi osoittaa alkuhakemusta tuetulle instituutiovaihtoehdolle.
+
+**Mitä tehdä:** Valitse kykyluettelon palauttama tuettu instituutio, tai säilytä `correlationId` ja ota yhteyttä Swipeluxin tukeen, kun yhtään ei ole käytettävissä.
+
+**Uudelleenyritysohje:** Älä uudelleenyritä muuttamatonta pyyntöä. Toteuta yllä oleva toimenpide ennen uuden pyynnön lähettämistä.
+
+**Asiaankuuluvat API-toiminnot:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, tila `503`)
+
+<a id="initial-application-scope-unavailable" className="block scroll-mt-32">
+  <span className="sr-only">initial_application_scope_unavailable error</span>
+</a>
+
+### `initial_application_scope_unavailable`
+
+**HTTP-tila:** `503`<br />
+**Uudelleenyritettävä:** Tilannekohtainen<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/initial-application-scope-unavailable`
+
+**Merkitys:** Swipelux ei voinut ratkaista alkuhakemuksen vaatimaa laajuutta.
+
+**Milloin se ilmenee:** Asiakkaan luonti tai kykypyyntö ei voi ratkaista API-avainympäristöä ja vaatimustenmukaisuuskontekstia, joita alkuhakemuksen luominen edellyttää.
+
+**Mitä tehdä:** Vahvista API-avainympäristö ja säilytä `correlationId`. Noudata `retryable`-arvoa, kun se on läsnä; muussa tapauksessa ota yhteyttä Swipeluxin tukeen ennen uudelleenyritystä.
+
+**Uudelleenyritysohje:** Lue vastauksen `retryable`-arvo. Uudelleenyritä myöhemmin vain, kun se on `true`. Idempotentissa kirjoituksessa käytä uudelleen alkuperäistä idempotency-avainta ja muuttamatonta pyyntöä.
+
+**Asiaankuuluvat API-toiminnot:**
+
+- [`POST /v3/customers`](/api-reference/customers/post-v3-customers) (`postV3Customers`, tila `503`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, tila `503`)
+
+<a id="invalid-capability" className="block scroll-mt-32">
+  <span className="sr-only">invalid_capability error</span>
+</a>
+
+### `invalid_capability`
+
+**HTTP-tila:** `400`, `422`<br />
+**Uudelleenyritettävä:** Ei palauteta<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/invalid-capability`
+
+**Merkitys:** Kykyviittaus tai pyydetty kykyarvo on virheellinen tälle toiminnolle.
+
+**Milloin se ilmenee:** Kykypyyntö tai sandbox-tilanmuutos käyttää tuntematonta tai yhteensopimatonta kykytunnistetta tai -arvoa.
+
+**Mitä tehdä:** Lue asiakkaan kyvyt, käytä tarkkaa nykyistä kykytunnistetta ja korjaa pyyntö vastaamaan toiminnon skeemaa.
+
+**Uudelleenyritysohje:** Tämä ongelma ei palauta `retryable`-kenttää. Älä oleta, että muuttamaton uudelleenyritys on turvallinen; noudata yllä olevaa toimenpidettä ja toiminnon idempotenssivaatimuksia.
+
+**Asiaankuuluvat API-toiminnot:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, tila `400`)
+- [`POST /v3/sandbox/customers/{customerId}/capabilities/{capabilityId}/status`](/api-reference/sandbox/post-v3-sandbox-customers-by-customer-id-capabilities-by-capability-id-status) (`postV3SandboxCustomersByCustomerIdCapabilitiesByCapabilityIdStatus`, tila `422`)
+
+<a id="invalid-document-reference" className="block scroll-mt-32">
+  <span className="sr-only">invalid_document_reference error</span>
+</a>
+
+### `invalid_document_reference`
+
+**HTTP-tila:** `400`<br />
+**Uudelleenyritettävä:** Ei<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/invalid-document-reference`
+
+**Merkitys:** Tehtävälähetys sisältää asiakirjaviittauksen, joka ei voi täyttää valittua vaatimusta.
+
+**Milloin se ilmenee:** Viitattu asiakirja puuttuu, ei ole asiakkaan käytettävissä tai ei vastaa vastattavaa tehtävävaatimusta.
+
+**Mitä tehdä:** Listaa tai lataa asiakkaan asiakirjat, käytä vaatimukselle oikeaa asiakirjatunnistetta, hae tehtävä uudelleen ja lähetä sen nykyinen versio.
+
+**Uudelleenyritysohje:** Älä uudelleenyritä muuttamatonta pyyntöä. Toteuta yllä oleva toimenpide ennen uuden pyynnön lähettämistä.
+
+**Asiaankuuluvat API-toiminnot:**
+
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, tila `400`)
+
+<a id="kyc-configuration-unavailable" className="block scroll-mt-32">
+  <span className="sr-only">kyc_configuration_unavailable error</span>
+</a>
+
+### `kyc_configuration_unavailable`
+
+**HTTP-tila:** `503`<br />
+**Uudelleenyritettävä:** Ei<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/kyc-configuration-unavailable`
+
+**Merkitys:** Kyvyn vaatima vahvistuskokoonpano ei ole käytettävissä.
+
+**Milloin se ilmenee:** Swipelux ei voi valmistella pyydettyä vahvistusvirtaa parhaillaan aktiivisesta julkisesta kokoonpanosta.
+
+**Mitä tehdä:** Säilytä `correlationId` ja ota yhteyttä Swipeluxin tukeen. Älä uudelleenyritä muuttamatonta pyyntöä toistuvasti.
+
+**Uudelleenyritysohje:** Älä uudelleenyritä muuttamatonta pyyntöä. Toteuta yllä oleva toimenpide ennen uuden pyynnön lähettämistä.
+
+**Asiaankuuluvat API-toiminnot:**
+
+- [`GET /kyc/redirect/{customerId}/{taskId}/{verificationSessionId}`](/api-reference/tasks/start-kyc-verification-session) (`startKycVerificationSession`, tila `503`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, tila `503`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}/tasks-preview`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id-tasks-preview) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityIdTasks-preview`, tila `503`)
+
+<a id="kyc-level-configuration-invalid" className="block scroll-mt-32">
+  <span className="sr-only">kyc_level_configuration_invalid error</span>
+</a>
+
+### `kyc_level_configuration_invalid`
+
+**HTTP-tila:** `503`<br />
+**Uudelleenyritettävä:** Ei<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/kyc-level-configuration-invalid`
+
+**Merkitys:** Aktiivinen vahvistustason kokoonpano on virheellinen.
+
+**Milloin se ilmenee:** Isännöity vahvistusistunto ei voi käynnistyä, koska sen määritetty vahvistustaso ei ole käyttökelpoinen.
+
+**Mitä tehdä:** Säilytä `correlationId` ja ota yhteyttä Swipeluxin tukeen, jotta kokoonpano voidaan korjata ennen uutta yritystä.
+
+**Uudelleenyritysohje:** Älä uudelleenyritä muuttamatonta pyyntöä. Toteuta yllä oleva toimenpide ennen uuden pyynnön lähettämistä.
+
+**Asiaankuuluvat API-toiminnot:**
+
+- [`GET /kyc/redirect/{customerId}/{taskId}/{verificationSessionId}`](/api-reference/tasks/start-kyc-verification-session) (`startKycVerificationSession`, tila `503`)
+
+<a id="kyc-process-conflict" className="block scroll-mt-32">
+  <span className="sr-only">kyc_process_conflict error</span>
+</a>
+
+### `kyc_process_conflict`
+
+**HTTP-tila:** `409`<br />
+**Uudelleenyritettävä:** Kyllä<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/kyc-process-conflict`
+
+**Merkitys:** Vahvistusprosessi muuttui ennen toiminnon valmistumista.
+
+**Milloin se ilmenee:** Toinen toimenpide edistää tai korvaa tehtävän tai vahvistusistunnon, kun pyyntösi on käsiteltävänä.
+
+**Mitä tehdä:** Lataa tehtävä ja sen käytettävissä olevat vahvistusmenetelmät uudelleen ja uudelleenyritä sitten nykyistä prosessitilaa vasten.
+
+**Uudelleenyritysohje:** Uudelleenyritä viiveen jälkeen. Idempotentissa kirjoituksessa käytä uudelleen alkuperäistä idempotency-avainta ja muuttamatonta pyyntöä.
+
+**Asiaankuuluvat API-toiminnot:**
+
+- [`GET /kyc/redirect/{customerId}/{taskId}/{verificationSessionId}`](/api-reference/tasks/start-kyc-verification-session) (`startKycVerificationSession`, tila `409`)
+- [`PATCH /v3/customers/{customerId}`](/api-reference/customers/patch-v3-customers-by-customer-id) (`patchV3CustomersByCustomerId`, tila `409`)
+- [`PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/patch-v3-customers-by-customer-id-related-parties-by-related-party-id) (`patchV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, tila `409`)
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, tila `409`)
+
+<a id="kyc-provider-unavailable" className="block scroll-mt-32">
+  <span className="sr-only">kyc_provider_unavailable error</span>
+</a>
+
+### `kyc_provider_unavailable`
+
+**HTTP-tila:** `502`<br />
+**Uudelleenyritettävä:** Kyllä<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/kyc-provider-unavailable`
+
+**Merkitys:** Vahvistuspalvelu on tilapäisesti poissa käytöstä.
+
+**Milloin se ilmenee:** Isännöityä vahvistusistuntoa ei voida luoda tai jatkaa, koska vahvistuspalvelu ei suorittanut pyyntöä loppuun.
+
+**Mitä tehdä:** Uudelleenyritä viiveen jälkeen. Säilytä tehtävä- ja istuntotunnisteet ja hae tehtävä uudelleen, jos katko kestää niin kauan, että sen tila ehtii muuttua.
+
+**Uudelleenyritysohje:** Uudelleenyritä viiveen jälkeen. Idempotentissa kirjoituksessa käytä uudelleen alkuperäistä idempotency-avainta ja muuttamatonta pyyntöä.
+
+**Asiaankuuluvat API-toiminnot:**
+
+- [`GET /kyc/redirect/{customerId}/{taskId}/{verificationSessionId}`](/api-reference/tasks/start-kyc-verification-session) (`startKycVerificationSession`, tila `502`)
+
+<a id="kyc-session-terminal" className="block scroll-mt-32">
+  <span className="sr-only">kyc_session_terminal error</span>
+</a>
+
+### `kyc_session_terminal`
+
+**HTTP-tila:** `410`<br />
+**Uudelleenyritettävä:** Ei<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/kyc-session-terminal`
+
+**Merkitys:** Vahvistusistunto ei ole enää toimintakelpoinen.
+
+**Milloin se ilmenee:** Pyydetty isännöity istunto on jo valmistunut, epäonnistunut, vanhentunut tai muuten saavuttanut lopullisen tilan.
+
+**Mitä tehdä:** Hae tehtävä uudelleen ja käytä aktiivista istuntoa tai käynnistä uusi nykyisen tehtävän esiin tuoma vahvistusmenetelmä.
+
+**Uudelleenyritysohje:** Älä uudelleenyritä muuttamatonta pyyntöä. Toteuta yllä oleva toimenpide ennen uuden pyynnön lähettämistä.
+
+**Asiaankuuluvat API-toiminnot:**
+
+- [`GET /kyc/redirect/{customerId}/{taskId}/{verificationSessionId}`](/api-reference/tasks/start-kyc-verification-session) (`startKycVerificationSession`, tila `410`)
+
+<a id="ops-rail-handoff-conflict" className="block scroll-mt-32">
+  <span className="sr-only">ops_rail_handoff_conflict error</span>
+</a>
+
+### `ops_rail_handoff_conflict`
+
+**HTTP-tila:** `409`<br />
+**Uudelleenyritettävä:** Ei<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/ops-rail-handoff-conflict`
+
+**Merkitys:** Tehtävälähetyksen estää ristiriitainen pankkikanavan määritys.
+
+**Milloin se ilmenee:** Asiakirjatehtävän lähetys ei voi sovittaa yhteen asiakkaan nykyistä pankkikanavatilaa.
+
+**Mitä tehdä:** Säilytä ladattujen asiakirjojen tunnisteet, säilytä `correlationId` ja ota yhteyttä Swipeluxin tukeen ennen saman lähetyksen uudelleenyrittämistä. Älä lataa korvaavia kopioita pelkästään tämän ristiriidan vuoksi.
+
+**Uudelleenyritysohje:** Älä uudelleenyritä muuttamatonta pyyntöä. Toteuta yllä oleva toimenpide ennen uuden pyynnön lähettämistä.
+
+**Asiaankuuluvat API-toiminnot:**
+
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, tila `409`)
+
+<a id="provider-conflict" className="block scroll-mt-32">
+  <span className="sr-only">provider_conflict error</span>
+</a>
+
+### `provider_conflict`
+
+**HTTP-tila:** `400`, `422`<br />
+**Uudelleenyritettävä:** Ei<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/provider-conflict`
+
+**Merkitys:** Pyydetty kyky- tai vahvistustoiminto on ristiriidassa nykyisen käsittelykokoonpanon kanssa.
+
+**Milloin se ilmenee:** Pyyntö on muodoltaan kelvollinen, mutta sitä ei voida sovittaa yhteen asiakkaan olemassa olevan kyky- tai vahvistuskokoonpanon kanssa.
+
+**Mitä tehdä:** Hae asiakkaan kyvyt ja tehtävät uudelleen ja valitse tuettu nykyinen vaihtoehto. Jos ristiriita on yhä odottamaton, säilytä `correlationId` ja ota yhteyttä tukeen.
+
+**Uudelleenyritysohje:** Älä uudelleenyritä muuttamatonta pyyntöä. Toteuta yllä oleva toimenpide ennen uuden pyynnön lähettämistä.
+
+**Asiaankuuluvat API-toiminnot:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, tila `400`)
+- [`POST /v3/sandbox/customers/{customerId}/verification`](/api-reference/sandbox/post-v3-sandbox-customers-by-customer-id-verification) (`postV3SandboxCustomersByCustomerIdVerification`, tila `422`)
+
+<a id="submission-channel-not-allowed" className="block scroll-mt-32">
+  <span className="sr-only">submission_channel_not_allowed error</span>
+</a>
+
+### `submission_channel_not_allowed`
+
+**HTTP-tila:** `409`<br />
+**Uudelleenyritettävä:** Ei<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/submission-channel-not-allowed`
+
+**Merkitys:** Suoraa API-lähetystä ei sallita tälle tehtävälle.
+
+**Milloin se ilmenee:** Tehtävä vaatii eri vahvistusmenetelmän ja hylkää suoran lähetyspäätepisteen kautta lähetetyt vastaukset.
+
+**Mitä tehdä:** Hae tehtävä uudelleen ja käytä yhtä sen nykyisten vaatimusten esiin tuomista vahvistusmenetelmistä tai linkeistä.
+
+**Uudelleenyritysohje:** Älä uudelleenyritä muuttamatonta pyyntöä. Toteuta yllä oleva toimenpide ennen uuden pyynnön lähettämistä.
+
+**Asiaankuuluvat API-toiminnot:**
+
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, tila `409`)
+
+<a id="submission-not-found" className="block scroll-mt-32">
+  <span className="sr-only">submission_not_found error</span>
+</a>
+
+### `submission_not_found`
+
+**HTTP-tila:** `404`<br />
+**Uudelleenyritettävä:** Ei<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/submission-not-found`
+
+**Merkitys:** Pyydettyä tehtävälähetystä ei löytynyt.
+
+**Milloin se ilmenee:** Lähetystunniste on virheellinen, kuuluu toiselle tehtävälle tai asiakkaalle tai ei ole käytettävissä nykyisessä ympäristössä.
+
+**Mitä tehdä:** Vahvista asiakas-, tehtävä- ja lähetystunnisteet ja listaa sitten nykyisen tehtävän lähetykset ennen uudelleenyritystä.
+
+**Uudelleenyritysohje:** Älä uudelleenyritä muuttamatonta pyyntöä. Toteuta yllä oleva toimenpide ennen uuden pyynnön lähettämistä.
+
+**Asiaankuuluvat API-toiminnot:**
+
+- [`GET /v3/customers/{customerId}/tasks/{taskId}/submissions/{submissionId}`](/api-reference/task-submissions/get-customer-task-submission) (`getCustomerTaskSubmission`, tila `404`)
+
+<a id="task-changed" className="block scroll-mt-32">
+  <span className="sr-only">task_changed error</span>
+</a>
+
+### `task_changed`
+
+**HTTP-tila:** `409`<br />
+**Uudelleenyritettävä:** Ei<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/task-changed`
+
+**Merkitys:** Tehtävä muuttui sen jälkeen, kun asiakassovelluksesi viimeksi luki sen.
+
+**Milloin se ilmenee:** Lähetys käyttää vanhentunutta tehtävän versiota tai tilaa sen jälkeen, kun toinen toimenpide päivitti tehtävän.
+
+**Mitä tehdä:** Käytä `taskUrl`- tai `taskId`-arvoa tehtävän uudelleenhakuun, rakenna vastaukset uudelleen `currentRevision`- ja `currentStatus`-arvoille ja lähetä nykyiset vaatimukset.
+
+**Uudelleenyritysohje:** Älä uudelleenyritä muuttamatonta pyyntöä. Toteuta yllä oleva toimenpide ennen uuden pyynnön lähettämistä. Koska pyynnön rungon on muututtava uuteen versioon, käytä uutta idempotency-avainta korjatulle lähetykselle.
+
+**Asiaankuuluvat API-toiminnot:**
+
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, tila `409`)
+
+**Vastauksen lisäkentät:**
+
+- `currentRevision`: Tehtävän nykyinen versio.
+- `currentStatus`: Tehtävän nykyinen tila.
+- `taskId`: Tehtävän nykyinen tunniste.
+- `taskUrl`: Ongelman lisäkonteksti.
+
+<a id="task-not-found" className="block scroll-mt-32">
+  <span className="sr-only">task_not_found error</span>
+</a>
+
+### `task_not_found`
+
+**HTTP-tila:** `404`<br />
+**Uudelleenyritettävä:** Ei<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/task-not-found`
+
+**Merkitys:** Tehtävää ei löytynyt määritetylle asiakkaalle tai API-avaimelle.
+
+**Milloin se ilmenee:** Tehtävätunniste puuttuu, kuuluu toiselle asiakkaalle tai laajuudelle tai ei ole käytettävissä nykyisessä ympäristössä.
+
+**Mitä tehdä:** Vahvista asiakas- ja tehtävätunnisteet, listaa nykyiset tehtävät ja jatka käytettävissä olevalla tehtävällä.
+
+**Uudelleenyritysohje:** Älä uudelleenyritä muuttamatonta pyyntöä. Toteuta yllä oleva toimenpide ennen uuden pyynnön lähettämistä.
+
+**Asiaankuuluvat API-toiminnot:**
+
+- [`GET /v3/customers/{customerId}/tasks/{taskId}`](/api-reference/tasks/get-customer-task) (`getCustomerTask`, tila `404`)
+- [`GET /v3/customers/{customerId}/tasks/{taskId}/history`](/api-reference/tasks/list-customer-task-history) (`listCustomerTaskHistory`, tila `404`)
+- [`GET /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/list-customer-task-submissions) (`listCustomerTaskSubmissions`, tila `404`)
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, tila `404`)
+- [`POST /v3/sandbox/tasks/{taskId}/review`](/api-reference/sandbox/post-v3-sandbox-tasks-by-task-id-review) (`postV3SandboxTasksByTaskIdReview`, tila `404`)
+- [`GET /v3/tasks/{taskId}`](/api-reference/tasks/get-task) (`getTask`, tila `404`)
+
+<a id="task-obligation-conflict" className="block scroll-mt-32">
+  <span className="sr-only">task_obligation_conflict error</span>
+</a>
+
+### `task_obligation_conflict`
+
+**HTTP-tila:** `409`<br />
+**Uudelleenyritettävä:** Ei<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/task-obligation-conflict`
+
+**Merkitys:** Tehtävällä on ristiriitainen velvoitetila, eikä se voi hyväksyä lähetystä.
+
+**Milloin se ilmenee:** Tehtävän nykyiset vaatimukset sisältävät epäjohdonmukaisen tilan, jota suora lähetysvirta ei voi turvallisesti ratkaista.
+
+**Mitä tehdä:** Säilytä `correlationId`, hae tehtävä kerran uudelleen ja ota yhteyttä Swipeluxin tukeen, jos ristiriita säilyy.
+
+**Uudelleenyritysohje:** Älä uudelleenyritä muuttamatonta pyyntöä. Toteuta yllä oleva toimenpide ennen uuden pyynnön lähettämistä.
+
+**Asiaankuuluvat API-toiminnot:**
+
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, tila `409`)
+
+<a id="task-submission-incomplete" className="block scroll-mt-32">
+  <span className="sr-only">task_submission_incomplete error</span>
+</a>
+
+### `task_submission_incomplete`
+
+**HTTP-tila:** `422`<br />
+**Uudelleenyritettävä:** Ei<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/task-submission-incomplete`
+
+**Merkitys:** Lähetys ei vastaa jokaiseen nykyiseen toimintakelpoiseen vaatimukseen.
+
+**Milloin se ilmenee:** Yhdellä tai useammalla `missingRequirementIds`-luettelossa mainitulla vaatimustunnisteella ei ole kelvollista vastausta pyynnössä.
+
+**Mitä tehdä:** Hae tehtävä uudelleen, anna vastaus jokaiselle `missingRequirementIds`-luettelon tunnisteelle ja lähetä tehtävän nykyinen versio.
+
+**Uudelleenyritysohje:** Älä uudelleenyritä muuttamatonta pyyntöä. Toteuta yllä oleva toimenpide ennen uuden pyynnön lähettämistä.
+
+**Asiaankuuluvat API-toiminnot:**
+
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, tila `422`)
+
+**Vastauksen lisäkentät:**
+
+- `missingRequirementIds`: Järjestetty luettelo yhä puuttuvista toimintakelpoisista vaatimustunnisteista.
+
+<a id="verification-collection-mapping-invalid" className="block scroll-mt-32">
+  <span className="sr-only">verification_collection_mapping_invalid error</span>
+</a>
+
+### `verification_collection_mapping_invalid`
+
+**HTTP-tila:** `503`<br />
+**Uudelleenyritettävä:** Ei<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/verification-collection-mapping-invalid`
+
+**Merkitys:** Tehtävän vahvistusvaatimuksia ei voida valmistella toimintakelpoiseksi vahvistusvirraksi.
+
+**Milloin se ilmenee:** Swipelux ei voi kartoittaa nykyisiä julkisia tehtävävaatimuksia kyvyn tarvitsemaan vahvistuskokoelmaan.
+
+**Mitä tehdä:** Säilytä `correlationId` ja ota yhteyttä Swipeluxin tukeen. Älä uudelleenyritä muuttamatonta pyyntöä toistuvasti.
+
+**Uudelleenyritysohje:** Älä uudelleenyritä muuttamatonta pyyntöä. Toteuta yllä oleva toimenpide ennen uuden pyynnön lähettämistä.
+
+**Asiaankuuluvat API-toiminnot:**
+
+- [`GET /kyc/redirect/{customerId}/{taskId}/{verificationSessionId}`](/api-reference/tasks/start-kyc-verification-session) (`startKycVerificationSession`, tila `503`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, tila `503`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}/tasks-preview`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id-tasks-preview) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityIdTasks-preview`, tila `503`)
+
+## Tilit ja maksukanavat
+
+<a id="account-has-active-transfers" className="block scroll-mt-32">
+  <span className="sr-only">account_has_active_transfers error</span>
+</a>
+
+### `account_has_active_transfers`
+
+**HTTP-tila:** `409`<br />
+**Uudelleenyritettävä:** Kyllä<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/account-has-active-transfers`
+
+**Merkitys:** Tiliä ei voi arkistoida, kun yksi tai useampi siirto on vielä aktiivinen.
+
+**Milloin se ilmenee:** Yrität arkistoida tilin, johon käynnissä oleva siirto viittaa.
+
+**Mitä tehdä:** Odota, että aktiiviset siirrot saavuttavat lopullisen tilan, tai peruuta tai ratkaise siirrot, jotka voivat vielä muuttua, ja arkistoi sitten tili.
+
+**Uudelleenyritysohje:** Uudelleenyritä viiveen jälkeen. Idempotentissa kirjoituksessa käytä uudelleen alkuperäistä idempotency-avainta ja muuttamatonta pyyntöä.
+
+**Asiaankuuluvat API-toiminnot:**
+
+- [`DELETE /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/delete-v3-customers-by-customer-id-accounts-by-account-id) (`deleteV3CustomersByCustomerIdAccountsByAccountId`, tila `409`)
+
+<a id="account-method-not-supported" className="block scroll-mt-32">
+  <span className="sr-only">account_method_not_supported error</span>
+</a>
+
+### `account_method_not_supported`
+
+**HTTP-tila:** `422`<br />
+**Uudelleenyritettävä:** Ei<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/account-method-not-supported`
+
+**Merkitys:** Valittu tili ei tue tarjouksen pyytämää maksutapaa.
+
+**Milloin se ilmenee:** Tarjouksen lähde- tai kohdetili on yhteensopimaton valitun rahaliikkeen menetelmän kanssa.
+
+**Mitä tehdä:** Valitse nykyisen kyvyn tukema tili- ja menetelmäyhdistelmä ja pyydä sitten uusi tarjous.
+
+**Uudelleenyritysohje:** Älä uudelleenyritä muuttamatonta pyyntöä. Toteuta yllä oleva toimenpide ennen uuden pyynnön lähettämistä.
+
+**Asiaankuuluvat API-toiminnot:**
+
+- [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) (`postV3CustomersByCustomerIdAccounts`, tila `422`)
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, tila `422`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, tila `422`)
+
+<a id="account-not-ready" className="block scroll-mt-32">
+  <span className="sr-only">account_not_ready error</span>
+</a>
+
+### `account_not_ready`
+
+**HTTP-tila:** `409`<br />
+**Uudelleenyritettävä:** Tilannekohtainen<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/account-not-ready`
+
+**Merkitys:** Tili on olemassa, mutta sen nykyinen tila ei salli tarjousta tai siirtoa.
+
+**Milloin se ilmenee:** Rahaliikkeen toiminto vaatii valmiin tilin, eikä valittu tili ole saavuttanut tätä tilaa.
+
+**Mitä tehdä:** Tarkista `statusReason`, suorita vaadittu määritys tai odota tilin tilan etenemistä, hae tili uudelleen ja lähetä uusi pyyntö, kun se on valmis.
+
+**Uudelleenyritysohje:** Lue vastauksen `retryable`-arvo. Uudelleenyritä myöhemmin vain, kun se on `true`. Idempotentissa kirjoituksessa käytä uudelleen alkuperäistä idempotency-avainta ja muuttamatonta pyyntöä.
+
+**Asiaankuuluvat API-toiminnot:**
+
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, tila `409`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, tila `409`)
+
+**Vastauksen lisäkentät:**
+
+- `statusReason`: Jäsennelty syy tilaristiriidalle, kun epäonnistunut toiminto riippuu resurssin nykyisestä tilasta.
+
+<a id="account-unavailable" className="block scroll-mt-32">
+  <span className="sr-only">account_unavailable error</span>
+</a>
+
+### `account_unavailable`
+
+**HTTP-tila:** `409`<br />
+**Uudelleenyritettävä:** Ei<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/account-unavailable`
+
+**Merkitys:** Valittu tili ei ole käytettävissä pyydettyyn rahaliikkeeseen.
+
+**Milloin se ilmenee:** Toiminto ei voi käyttää tiliä sen nykyisessä saatavuustilassa.
+
+**Mitä tehdä:** Hae tili uudelleen ja valitse käytettävissä oleva tili tai ratkaise tilin tila ennen uuden tarjous- tai siirtopyynnön luomista.
+
+**Uudelleenyritysohje:** Älä uudelleenyritä muuttamatonta pyyntöä. Toteuta yllä oleva toimenpide ennen uuden pyynnön lähettämistä.
+
+**Asiaankuuluvat API-toiminnot:**
+
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, tila `409`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, tila `409`)
+
+<a id="bank-not-supported-for-customer" className="block scroll-mt-32">
+  <span className="sr-only">bank_not_supported_for_customer error</span>
+</a>
+
+### `bank_not_supported_for_customer`
+
+**HTTP-tila:** `422`<br />
+**Uudelleenyritettävä:** Ei palauteta<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/bank-not-supported-for-customer`
+
+**Merkitys:** Valittu instituutio ei ole käytettävissä tälle asiakkaalle ja kykypyynnölle.
+
+**Milloin se ilmenee:** Kykypyyntö valitsee instituution, joka ei kuulu asiakkaan tuettuihin vaihtoehtoihin.
+
+**Mitä tehdä:** Listaa asiakkaan tuetut kyvyt ja instituutiot, valitse käytettävissä oleva vaihtoehto ja lähetä uusi kykypyyntö.
+
+**Uudelleenyritysohje:** Tämä ongelma ei palauta `retryable`-kenttää. Älä oleta, että muuttamaton uudelleenyritys on turvallinen; noudata yllä olevaa toimenpidettä ja toiminnon idempotenssivaatimuksia.
+
+**Asiaankuuluvat API-toiminnot:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, tila `422`)
+
+<a id="developer-fee-invalid" className="block scroll-mt-32">
+  <span className="sr-only">developer_fee_invalid error</span>
+</a>
+
+### `developer_fee_invalid`
+
+**HTTP-tila:** `422`<br />
+**Uudelleenyritettävä:** Ei<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/developer-fee-invalid`
+
+**Merkitys:** Kehittäjämaksun kokoonpano on virheellinen valitulle tilille tai rahaliikkeelle.
+
+**Milloin se ilmenee:** Maksun arvo on virheellinen tai valittu tili ei tarjoa yhteensopivaa selvityskohdetta maksulle.
+
+**Mitä tehdä:** Korjaa maksun arvo ja käytä kelvollista tili- ja selvityskokoonpanoa, luo sitten tarpeen mukaan uusi tili-, tarjous- tai siirtopyyntö.
+
+**Uudelleenyritysohje:** Älä uudelleenyritä muuttamatonta pyyntöä. Toteuta yllä oleva toimenpide ennen uuden pyynnön lähettämistä.
+
+**Asiaankuuluvat API-toiminnot:**
+
+- [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) (`postV3CustomersByCustomerIdAccounts`, tila `422`)
+- [`PUT /v3/customers/{customerId}/accounts/{accountId}/fees`](/api-reference/accounts/put-v3-customers-by-customer-id-accounts-by-account-id-fees) (`putV3CustomersByCustomerIdAccountsByAccountIdFees`, tila `422`)
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, tila `422`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, tila `422`)
+
+<a id="invalid-settlement-target" className="block scroll-mt-32">
+  <span className="sr-only">invalid_settlement_target error</span>
+</a>
+
+### `invalid_settlement_target`
+
+**HTTP-tila:** `400`<br />
+**Uudelleenyritettävä:** Ei palauteta<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/invalid-settlement-target`
+
+**Merkitys:** Pyydetty selvityskohde on virheellinen tilille.
+
+**Milloin se ilmenee:** Tilin luonti tai päivitys valitsee selvityskohteen, joka puuttuu, on yhteensopimaton tai jota ei tueta kyseiselle tilikokoonpanolle.
+
+**Mitä tehdä:** Valitse dokumentoitu selvityskohde, joka on yhteensopiva tilin ja kyvyn kanssa, ja lähetä sitten korjattu tilipyyntö.
+
+**Uudelleenyritysohje:** Tämä ongelma ei palauta `retryable`-kenttää. Älä oleta, että muuttamaton uudelleenyritys on turvallinen; noudata yllä olevaa toimenpidettä ja toiminnon idempotenssivaatimuksia.
+
+**Asiaankuuluvat API-toiminnot:**
+
+- [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) (`postV3CustomersByCustomerIdAccounts`, tila `400`)
+- [`PATCH /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/patch-v3-customers-by-customer-id-accounts-by-account-id) (`patchV3CustomersByCustomerIdAccountsByAccountId`, tila `400`)
+
+<a id="rail-not-ready" className="block scroll-mt-32">
+  <span className="sr-only">rail_not_ready error</span>
+</a>
+
+### `rail_not_ready`
+
+**HTTP-tila:** `409`<br />
+**Uudelleenyritettävä:** Ei<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/rail-not-ready`
+
+**Merkitys:** Valittu maksukanava ei ole valmis tälle asiakkaalle.
+
+**Milloin se ilmenee:** Kohde, tarjous tai siirto vaatii asiakaskanavan, joka ei ole suorittanut vaadittua määritystä tai valmiussiirtymää loppuun.
+
+**Mitä tehdä:** Suorita vaadittu kanavan määritys, odota kunnes kanava on käyttövalmis, ja luo sitten uusi pyyntö.
+
+**Uudelleenyritysohje:** Älä uudelleenyritä muuttamatonta pyyntöä. Toteuta yllä oleva toimenpide ennen uuden pyynnön lähettämistä.
+
+**Asiaankuuluvat API-toiminnot:**
+
+- [`POST /v3/customers/{customerId}/recipients/{recipientId}/destinations`](/api-reference/recipients/post-v3-customers-by-customer-id-recipients-by-recipient-id-destinations) (`postV3CustomersByCustomerIdRecipientsByRecipientIdDestinations`, tila `409`)
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, tila `409`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, tila `409`)
+
+<a id="rail-temporarily-unavailable" className="block scroll-mt-32">
+  <span className="sr-only">rail_temporarily_unavailable error</span>
+</a>
+
+### `rail_temporarily_unavailable`
+
+**HTTP-tila:** `503`<br />
+**Uudelleenyritettävä:** Kyllä<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/rail-temporarily-unavailable`
+
+**Merkitys:** Valittu maksukanava on tilapäisesti poissa käytöstä.
+
+**Milloin se ilmenee:** Tarjouksen luonti ei voi käyttää normaalisti tuettua kanavaa, koska kanavalla on tilapäinen saatavuusongelma.
+
+**Mitä tehdä:** Uudelleenyritä tarjouspyyntöä viiveen jälkeen tai valitse toinen tuettu kanava, kun rahaliike ei voi odottaa.
+
+**Uudelleenyritysohje:** Uudelleenyritä viiveen jälkeen. Idempotentissa kirjoituksessa käytä uudelleen alkuperäistä idempotency-avainta ja muuttamatonta pyyntöä.
+
+**Asiaankuuluvat API-toiminnot:**
+
+- [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) (`postV3CustomersByCustomerIdAccounts`, tila `503`)
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, tila `503`)
+
+## Vastaanottajat ja kohteet
+
+<a id="destination-not-ready" className="block scroll-mt-32">
+  <span className="sr-only">destination_not_ready error</span>
+</a>
+
+### `destination_not_ready`
+
+**HTTP-tila:** `409`<br />
+**Uudelleenyritettävä:** Tilannekohtainen<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/destination-not-ready`
+
+**Merkitys:** Vastaanottajan kohde on olemassa, mutta se ei ole valmis pyydettyyn tarjoukseen.
+
+**Milloin se ilmenee:** Tarjous riippuu kohteesta, jonka nykyinen tila ei salli rahaliikettä.
+
+**Mitä tehdä:** Tarkista `statusReason`, suorita esiin tuotu kohteen määritys tai odota sen tilan etenemistä, hae se uudelleen ja pyydä uusi tarjous, kun se on valmis.
+
+**Uudelleenyritysohje:** Lue vastauksen `retryable`-arvo. Uudelleenyritä myöhemmin vain, kun se on `true`. Idempotentissa kirjoituksessa käytä uudelleen alkuperäistä idempotency-avainta ja muuttamatonta pyyntöä.
+
+**Asiaankuuluvat API-toiminnot:**
+
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, tila `409`)
+
+**Vastauksen lisäkentät:**
+
+- `statusReason`: Jäsennelty syy tilaristiriidalle, kun epäonnistunut toiminto riippuu resurssin nykyisestä tilasta.
+
+<a id="payout-target-relationship-invalid" className="block scroll-mt-32">
+  <span className="sr-only">payout_target_relationship_invalid error</span>
+</a>
+
+### `payout_target_relationship_invalid`
+
+**HTTP-tila:** `400`<br />
+**Uudelleenyritettävä:** Ei palauteta<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/payout-target-relationship-invalid`
+
+**Merkitys:** Valitulla maksun ulos -kohteella ei ole kelvollista suhdetta tarjouksen asiakkaaseen tai vastaanottajaan.
+
+**Milloin se ilmenee:** Tarjous osoittaa kohteeseen, joka ei ole aiotun maksusuhteen omistuksessa tai ei ole sille sallittu kohde.
+
+**Mitä tehdä:** Valitse aiotun asiakkaan alla palautettu tili tai vastaanottajan kohde ja pyydä sitten uusi tarjous.
+
+**Uudelleenyritysohje:** Tämä ongelma ei palauta `retryable`-kenttää. Älä oleta, että muuttamaton uudelleenyritys on turvallinen; noudata yllä olevaa toimenpidettä ja toiminnon idempotenssivaatimuksia.
+
+**Asiaankuuluvat API-toiminnot:**
+
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, tila `400`)
+
+<a id="recipient-account-unsupported" className="block scroll-mt-32">
+  <span className="sr-only">recipient_account_unsupported error</span>
+</a>
+
+### `recipient_account_unsupported`
+
+**HTTP-tila:** `400`<br />
+**Uudelleenyritettävä:** Ei palauteta<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/recipient-account-unsupported`
+
+**Merkitys:** Vastaanottajan tilitietoja ei tueta pyydetylle kohteelle.
+
+**Milloin se ilmenee:** Kohteen luonti vastaanottaa tilityypin tai tilitietoyhdistelmän, jota valittu kanava ei hyväksy.
+
+**Mitä tehdä:** Käytä valitun kanavan tukemaa kohdetyyppiä ja tilitietoskeemaa ja luo sitten uusi kohdepyyntö.
+
+**Uudelleenyritysohje:** Tämä ongelma ei palauta `retryable`-kenttää. Älä oleta, että muuttamaton uudelleenyritys on turvallinen; noudata yllä olevaa toimenpidettä ja toiminnon idempotenssivaatimuksia.
+
+**Asiaankuuluvat API-toiminnot:**
+
+- [`POST /v3/customers/{customerId}/recipients/{recipientId}/destinations`](/api-reference/recipients/post-v3-customers-by-customer-id-recipients-by-recipient-id-destinations) (`postV3CustomersByCustomerIdRecipientsByRecipientIdDestinations`, tila `400`)
+
+<a id="recipient-address-required" className="block scroll-mt-32">
+  <span className="sr-only">recipient_address_required error</span>
+</a>
+
+### `recipient_address_required`
+
+**HTTP-tila:** `422`<br />
+**Uudelleenyritettävä:** Ei<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/recipient-address-required`
+
+**Merkitys:** Vastaanottaja tarvitsee osoitteen, ennen kuin tämä fiat-kohde voidaan luoda.
+
+**Milloin se ilmenee:** Kohteen luonti valitsee fiat-maksutavan, joka vaatii vastaanottajan osoitetiedot, eikä vastaanottajan profiili sisällä niitä.
+
+**Mitä tehdä:** Päivitä vastaanottaja vaadituilla osoitekentillä ja luo sitten kohde uudelleen.
+
+**Uudelleenyritysohje:** Älä uudelleenyritä muuttamatonta pyyntöä. Toteuta yllä oleva toimenpide ennen uuden pyynnön lähettämistä.
+
+**Asiaankuuluvat API-toiminnot:**
+
+- [`POST /v3/customers/{customerId}/recipients/{recipientId}/destinations`](/api-reference/recipients/post-v3-customers-by-customer-id-recipients-by-recipient-id-destinations) (`postV3CustomersByCustomerIdRecipientsByRecipientIdDestinations`, tila `422`)
+
+<a id="recipient-destination-invalid" className="block scroll-mt-32">
+  <span className="sr-only">recipient_destination_invalid error</span>
+</a>
+
+### `recipient_destination_invalid`
+
+**HTTP-tila:** `400`, `422`<br />
+**Uudelleenyritettävä:** Ei<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/recipient-destination-invalid`
+
+**Merkitys:** Vastaanottajan kohde on virheellinen tai yhteensopimaton pyydetyn toiminnon kanssa.
+
+**Milloin se ilmenee:** Kohteen luonti, tarjouksen luonti tai siirron suoritus käyttää kohdetietoja, jotka eivät täytä valitun kohteen tai reitin vaatimuksia.
+
+**Mitä tehdä:** Korjaa kohdetiedot tai luo tuettu korvaava kohde ja pyydä sitten tarpeen mukaan uusi tarjous tai siirto.
+
+**Uudelleenyritysohje:** Älä uudelleenyritä muuttamatonta pyyntöä. Toteuta yllä oleva toimenpide ennen uuden pyynnön lähettämistä.
+
+**Asiaankuuluvat API-toiminnot:**
+
+- [`POST /v3/customers/{customerId}/recipients/{recipientId}/destinations`](/api-reference/recipients/post-v3-customers-by-customer-id-recipients-by-recipient-id-destinations) (`postV3CustomersByCustomerIdRecipientsByRecipientIdDestinations`, tila `400`)
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, tila `422`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, tila `422`)
+
+<a id="recipient-name-invalid" className="block scroll-mt-32">
+  <span className="sr-only">recipient_name_invalid error</span>
+</a>
+
+### `recipient_name_invalid`
+
+**HTTP-tila:** `400`<br />
+**Uudelleenyritettävä:** Ei palauteta<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/recipient-name-invalid`
+
+**Merkitys:** Vastaanottajan nimi ei täytä pyyntöskeemaa.
+
+**Milloin se ilmenee:** Vastaanottajan luonti vastaanottaa puuttuvan, tyhjän tai virheellisesti muotoillun nimen.
+
+**Mitä tehdä:** Anna dokumentoitua skeemaa vastaava vastaanottajan nimi ja lähetä korjattu luontipyyntö.
+
+**Uudelleenyritysohje:** Tämä ongelma ei palauta `retryable`-kenttää. Älä oleta, että muuttamaton uudelleenyritys on turvallinen; noudata yllä olevaa toimenpidettä ja toiminnon idempotenssivaatimuksia.
+
+**Asiaankuuluvat API-toiminnot:**
+
+- [`POST /v3/customers/{customerId}/recipients`](/api-reference/recipients/post-v3-customers-by-customer-id-recipients) (`postV3CustomersByCustomerIdRecipients`, tila `400`)
+
+<a id="wallet-destination-not-supported" className="block scroll-mt-32">
+  <span className="sr-only">wallet_destination_not_supported error</span>
+</a>
+
+### `wallet_destination_not_supported`
+
+**HTTP-tila:** `409`<br />
+**Uudelleenyritettävä:** Ei<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/wallet-destination-not-supported`
+
+**Merkitys:** Valittu rahaliikkeen menetelmä ei tue lompakkokohdetta.
+
+**Milloin se ilmenee:** Tarjouksen luonti yhdistää lompakkokohteen kanavaan tai kykyyn, joka on tarkoitettu eri kohdetyypille.
+
+**Mitä tehdä:** Valitse yhteensopiva tili tai vastaanottajan kohde tai valitse tuettu lompakkosiirtomenetelmä ja pyydä sitten uusi tarjous.
+
+**Uudelleenyritysohje:** Älä uudelleenyritä muuttamatonta pyyntöä. Toteuta yllä oleva toimenpide ennen uuden pyynnön lähettämistä.
+
+**Asiaankuuluvat API-toiminnot:**
+
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, tila `409`)
+
+## Tarjoukset ja siirrot
+
+<a id="amount-not-deliverable" className="block scroll-mt-32">
+  <span className="sr-only">amount_not_deliverable error</span>
+</a>
+
+### `amount_not_deliverable`
+
+**HTTP-tila:** `422`<br />
+**Uudelleenyritettävä:** Ei<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/amount-not-deliverable`
+
+**Merkitys:** Pyydettyä summaa ei voida toimittaa valituilla valuutoilla, tileillä tai menetelmällä.
+
+**Milloin se ilmenee:** Tarjouspyyntö on muodoltaan kelvollinen, mutta ei voi tuottaa toimitettavaa kohdesummaa valitulle reitille.
+
+**Mitä tehdä:** Muuta summaa, valuuttaa, tiliä, kohdetta tai menetelmää ja pyydä sitten uusi tarjous.
+
+**Uudelleenyritysohje:** Älä uudelleenyritä muuttamatonta pyyntöä. Toteuta yllä oleva toimenpide ennen uuden pyynnön lähettämistä.
+
+**Asiaankuuluvat API-toiminnot:**
+
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, tila `422`)
+
+<a id="amount-side-ambiguous" className="block scroll-mt-32">
+  <span className="sr-only">amount_side_ambiguous error</span>
+</a>
+
+### `amount_side_ambiguous`
+
+**HTTP-tila:** `400`<br />
+**Uudelleenyritettävä:** Ei<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/amount-side-ambiguous`
+
+**Merkitys:** Tarjouspyyntö ei yksiselitteisesti kerro, kummalla muunnoksen puolella kiinteä summa on.
+
+**Milloin se ilmenee:** Summakentät annetaan yhdistelmänä, joka jättää lähde- ja kohdesumman aikomuksen epäselväksi.
+
+**Mitä tehdä:** Aseta summa täsmälleen tuetulle puolelle aiotun tarjoussuunnan mukaisesti ja pyydä sitten uusi tarjous.
+
+**Uudelleenyritysohje:** Älä uudelleenyritä muuttamatonta pyyntöä. Toteuta yllä oleva toimenpide ennen uuden pyynnön lähettämistä.
+
+**Asiaankuuluvat API-toiminnot:**
+
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, tila `400`)
+
+<a id="capability-direction-unsupported" className="block scroll-mt-32">
+  <span className="sr-only">capability_direction_unsupported error</span>
+</a>
+
+### `capability_direction_unsupported`
+
+**HTTP-tila:** `422`<br />
+**Uudelleenyritettävä:** Ei<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/capability-direction-unsupported`
+
+**Merkitys:** Valittu kyky ei tue tarjouksen tai siirron vaatimaa rahaliikkeen suuntaa.
+
+**Milloin se ilmenee:** Tarjouksen luonti päättelee suunnan, jota valittu kyky ei ilmoita, tai siirron luonti havaitsee, että tarjoukseen kiinnitetty kyky ei enää tue sen tallennettua suuntaa.
+
+**Mitä tehdä:** Valitse kyky, joka tukee aiottua suuntaa, ja pyydä uusi tarjous ennen siirron luomista.
+
+**Uudelleenyritysohje:** Älä uudelleenyritä muuttamatonta pyyntöä. Toteuta yllä oleva toimenpide ennen uuden pyynnön lähettämistä.
+
+**Asiaankuuluvat API-toiminnot:**
+
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, tila `422`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, tila `422`)
+
+<a id="insufficient-balance" className="block scroll-mt-32">
+  <span className="sr-only">insufficient_balance error</span>
+</a>
+
+### `insufficient_balance`
+
+**HTTP-tila:** `409`<br />
+**Uudelleenyritettävä:** Ei<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/insufficient-balance`
+
+**Merkitys:** Lähdetilillä ei ole riittävästi käytettävissä olevaa saldoa siirtoon.
+
+**Milloin se ilmenee:** Siirron suoritus tarkistaa lähdetilin, ja käytettävissä oleva summa alittaa vaaditun veloituksen.
+
+**Mitä tehdä:** Rahoita lähdetili tai pienennä siirtosummaa, hanki sitten uusi tarjous ja luo uusi siirtopyyntö.
+
+**Uudelleenyritysohje:** Älä uudelleenyritä muuttamatonta pyyntöä. Toteuta yllä oleva toimenpide ennen uuden pyynnön lähettämistä.
+
+**Asiaankuuluvat API-toiminnot:**
+
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, tila `409`)
+
+<a id="quote-already-executed" className="block scroll-mt-32">
+  <span className="sr-only">quote_already_executed error</span>
+</a>
+
+### `quote_already_executed`
+
+**HTTP-tila:** `409`<br />
+**Uudelleenyritettävä:** Ei<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/quote-already-executed`
+
+**Merkitys:** Tarjous on jo suoritettu, ja sillä on olemassa oleva siirto.
+
+**Milloin se ilmenee:** Toinen suorituspyyntö saapuu sen jälkeen, kun toinen pyyntö on jo onnistuneesti käyttänyt tarjouksen.
+
+**Mitä tehdä:** Käytä `transferId`-arvoa olemassa olevan siirron lukemiseen ja seuraamiseen. Älä luo toista siirtoa samasta tarjouksesta.
+
+**Uudelleenyritysohje:** Älä uudelleenyritä muuttamatonta pyyntöä. Toteuta yllä oleva toimenpide ennen uuden pyynnön lähettämistä. Käsittele palautettua siirtoa alkuperäisen aikomuksen tuloksena sen sijaan, että uudelleenyrittäisit tarjouksen suoritusta.
+
+**Asiaankuuluvat API-toiminnot:**
+
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, tila `409`)
+
+**Vastauksen lisäkentät:**
+
+- `transferId`: Olemassa oleva siirto, joka käytti tarjouksen.
+
+**Esimerkki:**
+
+```json
+{
+  "type": "https://docs.swipelux.com/errors/quote-already-executed",
+  "title": "Quote Already Executed",
+  "status": 409,
+  "code": "quote_already_executed",
+  "detail": "This quote was already executed by another request.",
+  "correlationId": "cor_01JMM23TRANSFERERRORS",
+  "retryable": false,
+  "transferId": "tr_6dV8xN2pQ4rT7mA9sL1kBc"
+}
+```
+
+<a id="quote-destination-missing" className="block scroll-mt-32">
+  <span className="sr-only">quote_destination_missing error</span>
+</a>
+
+### `quote_destination_missing`
+
+**HTTP-tila:** `409`, `500`<br />
+**Uudelleenyritettävä:** Tilannekohtainen<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/quote-destination-missing`
+
+**Merkitys:** Tarjous tai siirto ei sisällä toiminnon vaatimaa kohdetta.
+
+**Milloin se ilmenee:** Uudesta tarjouksesta puuttuu vaadittu kohde, tai olemassa oleva tarjoukseen perustuva resurssi ei voi ratkaista tallennettua kohdettaan.
+
+**Mitä tehdä:** Anna uudelle pyynnölle kelvollinen tili tai vastaanottajan kohde ja pyydä uusi tarjous. Olemassa olevan resurssin kohdalla säilytä `correlationId` ja ota yhteyttä tukeen, jos uudelleenhaku ei ratkaise ongelmaa.
+
+**Uudelleenyritysohje:** Lue vastauksen `retryable`-arvo. Uudelleenyritä myöhemmin vain, kun se on `true`. Idempotentissa kirjoituksessa käytä uudelleen alkuperäistä idempotency-avainta ja muuttamatonta pyyntöä.
+
+**Asiaankuuluvat API-toiminnot:**
+
+- [`GET /v3/quotes/{quoteId}`](/api-reference/money-movement/get-v3-quotes-by-quote-id) (`getV3QuotesByQuoteId`, tila `500`)
+- [`GET /v3/transfers`](/api-reference/money-movement/get-v3-transfers) (`getV3Transfers`, tila `500`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, tila `409`)
+- [`GET /v3/transfers/{transferId}`](/api-reference/money-movement/get-v3-transfers-by-transfer-id) (`getV3TransfersByTransferId`, tila `500`)
+- [`POST /v3/transfers/{transferId}/cancel`](/api-reference/money-movement/post-v3-transfers-by-transfer-id-cancel) (`postV3TransfersByTransferIdCancel`, tila `500`)
+- [`GET /v3/transfers/{transferId}/instructions`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-instructions) (`getV3TransfersByTransferIdInstructions`, tila `500`)
+- [`GET /v3/transfers/{transferId}/tasks`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-tasks) (`getV3TransfersByTransferIdTasks`, tila `500`)
+
+<a id="quote-direction-invalid" className="block scroll-mt-32">
+  <span className="sr-only">quote_direction_invalid error</span>
+</a>
+
+### `quote_direction_invalid`
+
+**HTTP-tila:** `422`, `500`<br />
+**Uudelleenyritettävä:** Tilannekohtainen<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/quote-direction-invalid`
+
+**Merkitys:** Lähde ja kohde eivät muodosta tuettua tarjoussuuntaa.
+
+**Milloin se ilmenee:** Valittu tili, kohde, valuutat tai menetelmä asettavat rahaliikkeen virheelliseen lähteestä kohteeseen -suuntaan.
+
+**Mitä tehdä:** Korjaa lähteen ja kohteen roolit käyttäen tuettua rahavirtaa ja pyydä sitten uusi tarjous.
+
+**Uudelleenyritysohje:** Lue vastauksen `retryable`-arvo. Uudelleenyritä myöhemmin vain, kun se on `true`. Idempotentissa kirjoituksessa käytä uudelleen alkuperäistä idempotency-avainta ja muuttamatonta pyyntöä.
+
+**Asiaankuuluvat API-toiminnot:**
+
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, tila `422`)
+- [`GET /v3/quotes/{quoteId}`](/api-reference/money-movement/get-v3-quotes-by-quote-id) (`getV3QuotesByQuoteId`, tila `500`)
+- [`GET /v3/transfers`](/api-reference/money-movement/get-v3-transfers) (`getV3Transfers`, tila `500`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, tila `500`)
+- [`GET /v3/transfers/{transferId}`](/api-reference/money-movement/get-v3-transfers-by-transfer-id) (`getV3TransfersByTransferId`, tila `500`)
+- [`POST /v3/transfers/{transferId}/cancel`](/api-reference/money-movement/post-v3-transfers-by-transfer-id-cancel) (`postV3TransfersByTransferIdCancel`, tila `500`)
+- [`GET /v3/transfers/{transferId}/instructions`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-instructions) (`getV3TransfersByTransferIdInstructions`, tila `500`)
+- [`GET /v3/transfers/{transferId}/tasks`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-tasks) (`getV3TransfersByTransferIdTasks`, tila `500`)
+
+<a id="quote-execution-consumed" className="block scroll-mt-32">
+  <span className="sr-only">quote_execution_consumed error</span>
+</a>
+
+### `quote_execution_consumed`
+
+**HTTP-tila:** `409`<br />
+**Uudelleenyritettävä:** Ei<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/quote-execution-consumed`
+
+**Merkitys:** Tarjouksen ainoa suoritusmahdollisuus on jo käytetty.
+
+**Milloin se ilmenee:** Aiempi tai kilpaileva suoritusyritys siirsi tarjouksen tilaan, jota ei voida suorittaa uudelleen, ilman palautettavaa olemassa olevaa onnistunutta siirtoa.
+
+**Mitä tehdä:** Pyydä uusi tarjous aiotulle rahaliikkeelle ja suorita tämä uusi tarjous kerran.
+
+**Uudelleenyritysohje:** Älä uudelleenyritä muuttamatonta pyyntöä. Toteuta yllä oleva toimenpide ennen uuden pyynnön lähettämistä.
+
+**Asiaankuuluvat API-toiminnot:**
+
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, tila `409`)
+
+<a id="quote-expired" className="block scroll-mt-32">
+  <span className="sr-only">quote_expired error</span>
+</a>
+
+### `quote_expired`
+
+**HTTP-tila:** `409`<br />
+**Uudelleenyritettävä:** Ei<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/quote-expired`
+
+**Merkitys:** Tarjous vanheni ennen kuin se suoritettiin.
+
+**Milloin se ilmenee:** Siirron luonti käyttää tarjousta sen voimassaoloajan päättymisen jälkeen.
+
+**Mitä tehdä:** Pyydä tuore tarjous ja suorita se ennen uutta vanhenemisaikaa.
+
+**Uudelleenyritysohje:** Älä uudelleenyritä muuttamatonta pyyntöä. Toteuta yllä oleva toimenpide ennen uuden pyynnön lähettämistä.
+
+**Asiaankuuluvat API-toiminnot:**
+
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, tila `409`)
+
+<a id="quote-failed" className="block scroll-mt-32">
+  <span className="sr-only">quote_failed error</span>
+</a>
+
+### `quote_failed`
+
+**HTTP-tila:** `500`, `502`<br />
+**Uudelleenyritettävä:** Tilannekohtainen<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/quote-failed`
+
+**Merkitys:** Swipelux ei voinut luoda käyttökelpoista tarjousta pyynnölle.
+
+**Milloin se ilmenee:** Tarjouksen luonti kohtaa joko tilapäisen palveluvirheen tai lopullisen virheen valitulle reitille.
+
+**Mitä tehdä:** Tarkista `retryable`. Uudelleenyritä samaa tarjouspyyntöä myöhemmin, kun se on `true`; muussa tapauksessa muuta reitin syötteitä tai ota yhteyttä tukeen `correlationId`-arvon kanssa.
+
+**Uudelleenyritysohje:** Lue vastauksen `retryable`-arvo. Uudelleenyritä myöhemmin vain, kun se on `true`. Idempotentissa kirjoituksessa käytä uudelleen alkuperäistä idempotency-avainta ja muuttamatonta pyyntöä.
+
+**Asiaankuuluvat API-toiminnot:**
+
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, tila `500`)
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, tila `502`)
+
+<a id="quote-mode-invalid" className="block scroll-mt-32">
+  <span className="sr-only">quote_mode_invalid error</span>
+</a>
+
+### `quote_mode_invalid`
+
+**HTTP-tila:** `500`<br />
+**Uudelleenyritettävä:** Kyllä<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/quote-mode-invalid`
+
+**Merkitys:** Tarjousta ei voida tulkita toiminnon vaatimassa moodissa.
+
+**Milloin se ilmenee:** Olemassa oleva tarjoukseen perustuva resurssi sisältää moodin, jota luku- tai suorituspolku ei voi käsitellä.
+
+**Mitä tehdä:** Uudelleenyritä viiveen jälkeen. Jos sama tarjous epäonnistuu edelleen, säilytä `correlationId` ja ota yhteyttä tukeen tallennetun tarjouksen muuttamisen sijaan.
+
+**Uudelleenyritysohje:** Uudelleenyritä viiveen jälkeen. Idempotentissa kirjoituksessa käytä uudelleen alkuperäistä idempotency-avainta ja muuttamatonta pyyntöä.
+
+**Asiaankuuluvat API-toiminnot:**
+
+- [`GET /v3/quotes/{quoteId}`](/api-reference/money-movement/get-v3-quotes-by-quote-id) (`getV3QuotesByQuoteId`, tila `500`)
+- [`GET /v3/transfers`](/api-reference/money-movement/get-v3-transfers) (`getV3Transfers`, tila `500`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, tila `500`)
+- [`GET /v3/transfers/{transferId}`](/api-reference/money-movement/get-v3-transfers-by-transfer-id) (`getV3TransfersByTransferId`, tila `500`)
+- [`POST /v3/transfers/{transferId}/cancel`](/api-reference/money-movement/post-v3-transfers-by-transfer-id-cancel) (`postV3TransfersByTransferIdCancel`, tila `500`)
+- [`GET /v3/transfers/{transferId}/instructions`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-instructions) (`getV3TransfersByTransferIdInstructions`, tila `500`)
+- [`GET /v3/transfers/{transferId}/tasks`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-tasks) (`getV3TransfersByTransferIdTasks`, tila `500`)
+
+<a id="quote-not-found" className="block scroll-mt-32">
+  <span className="sr-only">quote_not_found error</span>
+</a>
+
+### `quote_not_found`
+
+**HTTP-tila:** `404`<br />
+**Uudelleenyritettävä:** Ei palauteta<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/quote-not-found`
+
+**Merkitys:** Tarjousta ei löytynyt tälle API-avaimelle.
+
+**Milloin se ilmenee:** Tarjoustunniste on virheellinen, kuuluu toiseen ympäristöön tai ei ole kutsujan käytettävissä.
+
+**Mitä tehdä:** Vahvista tarjoustunniste ja API-avainympäristö. Pyydä uusi tarjous, kun aiottu tarjous ei ole käytettävissä.
+
+**Uudelleenyritysohje:** Tämä ongelma ei palauta `retryable`-kenttää. Älä oleta, että muuttamaton uudelleenyritys on turvallinen; noudata yllä olevaa toimenpidettä ja toiminnon idempotenssivaatimuksia.
+
+**Asiaankuuluvat API-toiminnot:**
+
+- [`GET /v3/quotes/{quoteId}`](/api-reference/money-movement/get-v3-quotes-by-quote-id) (`getV3QuotesByQuoteId`, tila `404`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, tila `404`)
+
+<a id="rate-unavailable" className="block scroll-mt-32">
+  <span className="sr-only">rate_unavailable error</span>
+</a>
+
+### `rate_unavailable`
+
+**HTTP-tila:** `502`<br />
+**Uudelleenyritettävä:** Kyllä<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/rate-unavailable`
+
+**Merkitys:** Vaadittu valuuttakurssi on tilapäisesti poissa käytöstä.
+
+**Milloin se ilmenee:** Kurssi- tai tarjoustoiminto ei voi hankkia pyydetylle valuuttaparille tarvittavaa kurssia.
+
+**Mitä tehdä:** Uudelleenyritä viiveen jälkeen. Pyydä uusi tarjous aiemman kurssioletuksen uudelleenkäytön sijaan.
+
+**Uudelleenyritysohje:** Uudelleenyritä viiveen jälkeen. Idempotentissa kirjoituksessa käytä uudelleen alkuperäistä idempotency-avainta ja muuttamatonta pyyntöä.
+
+**Asiaankuuluvat API-toiminnot:**
+
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, tila `502`)
+- [`GET /v3/rates`](/api-reference/money-movement/get-v3-rates) (`getV3Rates`, tila `502`)
+
+<a id="supporting-document-not-found" className="block scroll-mt-32">
+  <span className="sr-only">supporting_document_not_found error</span>
+</a>
+
+### `supporting_document_not_found`
+
+**HTTP-tila:** `422`<br />
+**Uudelleenyritettävä:** Ei<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/supporting-document-not-found`
+
+**Merkitys:** Siirtopyynnön viittaamaa tukevaa asiakirjaa ei löytynyt.
+
+**Milloin se ilmenee:** Siirron luonti viittaa puuttuvaan, käyttökelvottomaan tai virheelliseen asiakasasiakirjaan.
+
+**Mitä tehdä:** Listaa tai lataa vaadittu asiakasasiakirja, käytä sen oikeaa tunnistetta ja lähetä uusi siirtopyyntö.
+
+**Uudelleenyritysohje:** Älä uudelleenyritä muuttamatonta pyyntöä. Toteuta yllä oleva toimenpide ennen uuden pyynnön lähettämistä.
+
+**Asiaankuuluvat API-toiminnot:**
+
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, tila `422`)
+
+<a id="transfer-execution-failed" className="block scroll-mt-32">
+  <span className="sr-only">transfer_execution_failed error</span>
+</a>
+
+### `transfer_execution_failed`
+
+**HTTP-tila:** `500`<br />
+**Uudelleenyritettävä:** Ei<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/transfer-execution-failed`
+
+**Merkitys:** Siirtoa ei voitu suorittaa loppuun tarjouksen suorituksen aikana.
+
+**Milloin se ilmenee:** Siirron luonti aloittaa suorituksen, mutta kohtaa lopullisen virheen käyttökelpoisen siirron luomisen sijaan.
+
+**Mitä tehdä:** Säilytä `correlationId`, lue tarjouksen ja siirron tila ja ota yhteyttä tukeen ennen aiotun rahaliikkeen uudelleenyrittämistä uudella tarjouksella.
+
+**Uudelleenyritysohje:** Älä uudelleenyritä muuttamatonta pyyntöä. Toteuta yllä oleva toimenpide ennen uuden pyynnön lähettämistä.
+
+**Asiaankuuluvat API-toiminnot:**
+
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, tila `500`)
+
+<a id="transfer-has-no-instructions" className="block scroll-mt-32">
+  <span className="sr-only">transfer_has_no_instructions error</span>
+</a>
+
+### `transfer_has_no_instructions`
+
+**HTTP-tila:** `404`<br />
+**Uudelleenyritettävä:** Ei palauteta<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/transfer-has-no-instructions`
+
+**Merkitys:** Siirto on olemassa, mutta se ei tarjoa maksuohjeita.
+
+**Milloin se ilmenee:** Pyydät ohjeita siirtotyypille tai -tilalle, joka ei tuo esiin ohjejoukkoa.
+
+**Mitä tehdä:** Lue siirtoresurssi ja seuraa sen nykyistä tilaa. Käytä ohjepäätepistettä vain siirroille, jotka palauttavat maksuohjeita.
+
+**Uudelleenyritysohje:** Tämä ongelma ei palauta `retryable`-kenttää. Älä oleta, että muuttamaton uudelleenyritys on turvallinen; noudata yllä olevaa toimenpidettä ja toiminnon idempotenssivaatimuksia.
+
+**Asiaankuuluvat API-toiminnot:**
+
+- [`GET /v3/transfers/{transferId}/instructions`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-instructions) (`getV3TransfersByTransferIdInstructions`, tila `404`)
+
+<a id="transfer-not-cancelable" className="block scroll-mt-32">
+  <span className="sr-only">transfer_not_cancelable error</span>
+</a>
+
+### `transfer_not_cancelable`
+
+**HTTP-tila:** `409`<br />
+**Uudelleenyritettävä:** Ei<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/transfer-not-cancelable`
+
+**Merkitys:** Siirtoa ei voi peruuttaa sen nykyisestä tilasta.
+
+**Milloin se ilmenee:** Peruutuspyyntö saapuu sen jälkeen, kun siirto on edennyt peruutettavissa olevan tilan ohi.
+
+**Mitä tehdä:** Hae siirto uudelleen ja jatka sen nykyisen tilan käsittelyä peruutuspyynnön toistamisen sijaan.
+
+**Uudelleenyritysohje:** Älä uudelleenyritä muuttamatonta pyyntöä. Toteuta yllä oleva toimenpide ennen uuden pyynnön lähettämistä.
+
+**Asiaankuuluvat API-toiminnot:**
+
+- [`POST /v3/transfers/{transferId}/cancel`](/api-reference/money-movement/post-v3-transfers-by-transfer-id-cancel) (`postV3TransfersByTransferIdCancel`, tila `409`)
+
+<a id="transfer-not-found" className="block scroll-mt-32">
+  <span className="sr-only">transfer_not_found error</span>
+</a>
+
+### `transfer_not_found`
+
+**HTTP-tila:** `404`<br />
+**Uudelleenyritettävä:** Ei palauteta<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/transfer-not-found`
+
+**Merkitys:** Siirtoa ei löytynyt tälle API-avaimelle.
+
+**Milloin se ilmenee:** Siirtotunniste on virheellinen, kuuluu toiseen ympäristöön tai ei ole kutsujan käytettävissä.
+
+**Mitä tehdä:** Vahvista siirtotunniste ja API-avainympäristö, listaa tai lue sitten siirrot ennen uudelleenyritystä käytettävissä olevalla siirrolla.
+
+**Uudelleenyritysohje:** Tämä ongelma ei palauta `retryable`-kenttää. Älä oleta, että muuttamaton uudelleenyritys on turvallinen; noudata yllä olevaa toimenpidettä ja toiminnon idempotenssivaatimuksia.
+
+**Asiaankuuluvat API-toiminnot:**
+
+- [`POST /v3/sandbox/transfers/{transferId}/state`](/api-reference/sandbox/post-v3-sandbox-transfers-by-transfer-id-state) (`postV3SandboxTransfersByTransferIdState`, tila `404`)
+- [`GET /v3/transfers`](/api-reference/money-movement/get-v3-transfers) (`getV3Transfers`, tila `404`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, tila `404`)
+- [`GET /v3/transfers/{transferId}`](/api-reference/money-movement/get-v3-transfers-by-transfer-id) (`getV3TransfersByTransferId`, tila `404`)
+- [`POST /v3/transfers/{transferId}/cancel`](/api-reference/money-movement/post-v3-transfers-by-transfer-id-cancel) (`postV3TransfersByTransferIdCancel`, tila `404`)
+- [`GET /v3/transfers/{transferId}/instructions`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-instructions) (`getV3TransfersByTransferIdInstructions`, tila `404`)
+- [`GET /v3/transfers/{transferId}/tasks`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-tasks) (`getV3TransfersByTransferIdTasks`, tila `404`)
+
+<a id="transfer-state-invalid" className="block scroll-mt-32">
+  <span className="sr-only">transfer_state_invalid error</span>
+</a>
+
+### `transfer_state_invalid`
+
+**HTTP-tila:** `400`, `500`<br />
+**Uudelleenyritettävä:** Kyllä<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/transfer-state-invalid`
+
+**Merkitys:** Siirto on tilassa, joka ei tue pyydettyä toimintoa tai siirtymää.
+
+**Milloin se ilmenee:** Siirron luku, suoritus, peruutus tai sandbox-tilanmuutos kohtaa tilan, joka ei tällä hetkellä voi täyttää toimintoa.
+
+**Mitä tehdä:** Hae siirto uudelleen, odota kelvollista seuraavaa tilaa tai valitse sellainen, ja uudelleenyritä vasta, kun nykyinen tila sallii toiminnon.
+
+**Uudelleenyritysohje:** Uudelleenyritä viiveen jälkeen. Idempotentissa kirjoituksessa käytä uudelleen alkuperäistä idempotency-avainta ja muuttamatonta pyyntöä.
+
+**Asiaankuuluvat API-toiminnot:**
+
+- [`POST /v3/sandbox/transfers/{transferId}/state`](/api-reference/sandbox/post-v3-sandbox-transfers-by-transfer-id-state) (`postV3SandboxTransfersByTransferIdState`, tila `400`)
+- [`GET /v3/transfers`](/api-reference/money-movement/get-v3-transfers) (`getV3Transfers`, tila `500`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, tila `500`)
+- [`GET /v3/transfers/{transferId}`](/api-reference/money-movement/get-v3-transfers-by-transfer-id) (`getV3TransfersByTransferId`, tila `500`)
+- [`POST /v3/transfers/{transferId}/cancel`](/api-reference/money-movement/post-v3-transfers-by-transfer-id-cancel) (`postV3TransfersByTransferIdCancel`, tila `500`)
+- [`GET /v3/transfers/{transferId}/instructions`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-instructions) (`getV3TransfersByTransferIdInstructions`, tila `500`)
+- [`GET /v3/transfers/{transferId}/tasks`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-tasks) (`getV3TransfersByTransferIdTasks`, tila `500`)
+
+## Säännöt
+
+<a id="rule-already-exists" className="block scroll-mt-32">
+  <span className="sr-only">rule_already_exists error</span>
+</a>
+
+### `rule_already_exists`
+
+**HTTP-tila:** `409`<br />
+**Uudelleenyritettävä:** Ei<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/rule-already-exists`
+
+**Merkitys:** Laukaisintilillä on jo aktiivinen sääntö.
+
+**Milloin se ilmenee:** Säännön luonti kohdistuu tiliin, jota arkistoimaton sääntö jo tarkkailee.
+
+**Mitä tehdä:** Käytä `conflictingRuleId`-arvoa olemassa olevan säännön lukemiseen ja päivitä, arkistoi tai käytä sitä uudelleen kaksoiskappaleen luomisen sijaan.
+
+**Uudelleenyritysohje:** Älä uudelleenyritä muuttamatonta pyyntöä. Toteuta yllä oleva toimenpide ennen uuden pyynnön lähettämistä.
+
+**Asiaankuuluvat API-toiminnot:**
+
+- [`POST /v3/customers/{customerId}/rules`](/api-reference/rules/post-v3-customers-by-customer-id-rules) (`postV3CustomersByCustomerIdRules`, tila `409`)
+
+**Vastauksen lisäkentät:**
+
+- `conflictingRuleId`: Olemassa oleva aktiivinen sääntö, joka on ristiriidassa tämän pyynnön kanssa.
+
+<a id="rule-archived" className="block scroll-mt-32">
+  <span className="sr-only">rule_archived error</span>
+</a>
+
+### `rule_archived`
+
+**HTTP-tila:** `409`<br />
+**Uudelleenyritettävä:** Ei<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/rule-archived`
+
+**Merkitys:** Sääntö on arkistoitu, eikä sitä voi enää muuttaa.
+
+**Milloin se ilmenee:** Päivität tai arkistoit sääntöä, joka on jo saavuttanut lopullisen arkistoidun tilansa.
+
+**Mitä tehdä:** Lue arkistoitu sääntö historiaa varten ja luo uusi sääntö, kun tarvitset aktiivisen korvaajan.
+
+**Uudelleenyritysohje:** Älä uudelleenyritä muuttamatonta pyyntöä. Toteuta yllä oleva toimenpide ennen uuden pyynnön lähettämistä.
+
+**Asiaankuuluvat API-toiminnot:**
+
+- [`DELETE /v3/customers/{customerId}/rules/{ruleId}`](/api-reference/rules/delete-v3-customers-by-customer-id-rules-by-rule-id) (`deleteV3CustomersByCustomerIdRulesByRuleId`, tila `409`)
+- [`PATCH /v3/customers/{customerId}/rules/{ruleId}`](/api-reference/rules/patch-v3-customers-by-customer-id-rules-by-rule-id) (`patchV3CustomersByCustomerIdRulesByRuleId`, tila `409`)
+
+<a id="rule-not-found" className="block scroll-mt-32">
+  <span className="sr-only">rule_not_found error</span>
+</a>
+
+### `rule_not_found`
+
+**HTTP-tila:** `404`<br />
+**Uudelleenyritettävä:** Ei palauteta<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/rule-not-found`
+
+**Merkitys:** Sääntöä ei löytynyt määritetyn asiakkaan alta.
+
+**Milloin se ilmenee:** Sääntötunniste puuttuu, kuuluu toiselle asiakkaalle tai ei ole käytettävissä nykyisessä ympäristössä.
+
+**Mitä tehdä:** Vahvista asiakas- ja sääntötunnisteet, listaa asiakkaan säännöt ja uudelleenyritä käytettävissä olevalla säännöllä.
+
+**Uudelleenyritysohje:** Tämä ongelma ei palauta `retryable`-kenttää. Älä oleta, että muuttamaton uudelleenyritys on turvallinen; noudata yllä olevaa toimenpidettä ja toiminnon idempotenssivaatimuksia.
+
+**Asiaankuuluvat API-toiminnot:**
+
+- [`DELETE /v3/customers/{customerId}/rules/{ruleId}`](/api-reference/rules/delete-v3-customers-by-customer-id-rules-by-rule-id) (`deleteV3CustomersByCustomerIdRulesByRuleId`, tila `404`)
+- [`GET /v3/customers/{customerId}/rules/{ruleId}`](/api-reference/rules/get-v3-customers-by-customer-id-rules-by-rule-id) (`getV3CustomersByCustomerIdRulesByRuleId`, tila `404`)
+- [`PATCH /v3/customers/{customerId}/rules/{ruleId}`](/api-reference/rules/patch-v3-customers-by-customer-id-rules-by-rule-id) (`patchV3CustomersByCustomerIdRulesByRuleId`, tila `404`)
+
+<a id="rule-target-invalid" className="block scroll-mt-32">
+  <span className="sr-only">rule_target_invalid error</span>
+</a>
+
+### `rule_target_invalid`
+
+**HTTP-tila:** `400`<br />
+**Uudelleenyritettävä:** Ei palauteta<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/rule-target-invalid`
+
+**Merkitys:** Säännön toimintokohde on virheellinen tälle asiakkaalle tai sääntötyypille.
+
+**Milloin se ilmenee:** Säännön luonti valitsee toimintokohteekseen puuttuvan, käyttökelvottoman, arkistoidun tai yhteensopimattoman tilin tai kohteen.
+
+**Mitä tehdä:** Valitse asiakkaalle palautettu aktiivinen kohde, jota säännön toimintoskeema tukee, ja luo sitten uusi sääntöpyyntö.
+
+**Uudelleenyritysohje:** Tämä ongelma ei palauta `retryable`-kenttää. Älä oleta, että muuttamaton uudelleenyritys on turvallinen; noudata yllä olevaa toimenpidettä ja toiminnon idempotenssivaatimuksia.
+
+**Asiaankuuluvat API-toiminnot:**
+
+- [`POST /v3/customers/{customerId}/rules`](/api-reference/rules/post-v3-customers-by-customer-id-rules) (`postV3CustomersByCustomerIdRules`, tila `400`)
+
+<a id="rule-trigger-account-invalid" className="block scroll-mt-32">
+  <span className="sr-only">rule_trigger_account_invalid error</span>
+</a>
+
+### `rule_trigger_account_invalid`
+
+**HTTP-tila:** `400`<br />
+**Uudelleenyritettävä:** Ei palauteta<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/rule-trigger-account-invalid`
+
+**Merkitys:** Säännön laukaisimeksi valittu tili on virheellinen.
+
+**Milloin se ilmenee:** Säännön luonti käyttää tiliä, joka puuttuu, on arkistoitu, ei ole käytettävissä tai ei ole kelvollinen toimimaan laukaisimena.
+
+**Mitä tehdä:** Valitse asiakkaalle palautettu aktiivinen ja kelvollinen tili ja luo sitten uusi sääntöpyyntö.
+
+**Uudelleenyritysohje:** Tämä ongelma ei palauta `retryable`-kenttää. Älä oleta, että muuttamaton uudelleenyritys on turvallinen; noudata yllä olevaa toimenpidettä ja toiminnon idempotenssivaatimuksia.
+
+**Asiaankuuluvat API-toiminnot:**
+
+- [`POST /v3/customers/{customerId}/rules`](/api-reference/rules/post-v3-customers-by-customer-id-rules) (`postV3CustomersByCustomerIdRules`, tila `400`)
+
+## Idempotenssi- ja alustavirheet
+
+<a id="conflict" className="block scroll-mt-32">
+  <span className="sr-only">conflict error</span>
+</a>
+
+### `conflict`
+
+**HTTP-tila:** `409`<br />
+**Uudelleenyritettävä:** Ei<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/conflict`
+
+**Merkitys:** Pyydetty toiminto on ristiriidassa resurssin nykyisen tilan kanssa.
+
+**Milloin se ilmenee:** Toiminto ei voi edetä, koska resurssi on muuttunut, on arkistoitu, siltä puuttuu vaadittu suoritettu vaihe tai sillä on muu tilaristiriita ilman tarkempaa julkista koodia.
+
+**Mitä tehdä:** Hae kyseinen resurssi uudelleen, käytä `detail`-kenttää nykyisen edellytyksen tunnistamiseen, muuta pyyntöä tai resurssin tilaa ja lähetä sitten uusi pyyntö.
+
+**Uudelleenyritysohje:** Älä uudelleenyritä muuttamatonta pyyntöä. Toteuta yllä oleva toimenpide ennen uuden pyynnön lähettämistä.
+
+**Asiaankuuluvat API-toiminnot:**
+
+- [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) (`postV3CustomersByCustomerIdAccounts`, tila `409`)
+- [`DELETE /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/delete-v3-customers-by-customer-id-accounts-by-account-id) (`deleteV3CustomersByCustomerIdAccountsByAccountId`, tila `409`)
+- [`PATCH /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/patch-v3-customers-by-customer-id-accounts-by-account-id) (`patchV3CustomersByCustomerIdAccountsByAccountId`, tila `409`)
+- [`POST /v3/customers/{customerId}/export`](/api-reference/customers/post-v3-customers-by-customer-id-export) (`postV3CustomersByCustomerIdExport`, tila `409`)
+- [`POST /v3/sandbox/accounts/{accountId}/topup`](/api-reference/sandbox/post-v3-sandbox-accounts-by-account-id-topup) (`postV3SandboxAccountsByAccountIdTopup`, tila `409`)
+- [`POST /v3/sandbox/tasks/{taskId}/review`](/api-reference/sandbox/post-v3-sandbox-tasks-by-task-id-review) (`postV3SandboxTasksByTaskIdReview`, tila `409`)
+
+<a id="idempotency-conflict" className="block scroll-mt-32">
+  <span className="sr-only">idempotency_conflict error</span>
+</a>
+
+### `idempotency_conflict`
+
+**HTTP-tila:** `409`<br />
+**Uudelleenyritettävä:** Ei<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/idempotency-conflict`
+
+**Merkitys:** Idempotency-avainta on jo käytetty eri pyyntöön.
+
+**Milloin se ilmenee:** Kirjoitus käyttää uudelleen olemassa olevaa `Idempotency-Key`-avainta muuttuneella menetelmällä, polulla, rungolla tai aiotulla toiminnolla.
+
+**Mitä tehdä:** Älä uudelleenyritä muuttunutta pyyntöä tällä avaimella. Nouda alkuperäisen toiminnon tulos tarvittaessa tai käytä uutta avainta aidosti uudelle toiminnolle.
+
+**Uudelleenyritysohje:** Älä uudelleenyritä muuttamatonta pyyntöä. Toteuta yllä oleva toimenpide ennen uuden pyynnön lähettämistä. Idempotency-avain identifioi pysyvästi alkuperäisen pyyntönsä; hyötykuorman muuttaminen vaatii uuden avaimen.
+
+<Accordion title="Asiaankuuluvat API-toiminnot (30)">
+
+- [`POST /v3/customers`](/api-reference/customers/post-v3-customers) (`postV3Customers`, tila `409`)
+- [`DELETE /v3/customers/{customerId}`](/api-reference/customers/delete-v3-customers-by-customer-id) (`deleteV3CustomersByCustomerId`, tila `409`)
+- [`PATCH /v3/customers/{customerId}`](/api-reference/customers/patch-v3-customers-by-customer-id) (`patchV3CustomersByCustomerId`, tila `409`)
+- [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) (`postV3CustomersByCustomerIdAccounts`, tila `409`)
+- [`DELETE /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/delete-v3-customers-by-customer-id-accounts-by-account-id) (`deleteV3CustomersByCustomerIdAccountsByAccountId`, tila `409`)
+- [`PATCH /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/patch-v3-customers-by-customer-id-accounts-by-account-id) (`patchV3CustomersByCustomerIdAccountsByAccountId`, tila `409`)
+- [`PUT /v3/customers/{customerId}/accounts/{accountId}/fees`](/api-reference/accounts/put-v3-customers-by-customer-id-accounts-by-account-id-fees) (`putV3CustomersByCustomerIdAccountsByAccountIdFees`, tila `409`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, tila `409`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}/cancel`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id-cancel) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityIdCancel`, tila `409`)
+- [`POST /v3/customers/{customerId}/documents`](/api-reference/documents/post-v3-customers-by-customer-id-documents) (`postV3CustomersByCustomerIdDocuments`, tila `409`)
+- [`DELETE /v3/customers/{customerId}/documents/{documentId}`](/api-reference/documents/delete-v3-customers-by-customer-id-documents-by-document-id) (`deleteV3CustomersByCustomerIdDocumentsByDocumentId`, tila `409`)
+- [`POST /v3/customers/{customerId}/export`](/api-reference/customers/post-v3-customers-by-customer-id-export) (`postV3CustomersByCustomerIdExport`, tila `409`)
+- [`POST /v3/customers/{customerId}/recipients`](/api-reference/recipients/post-v3-customers-by-customer-id-recipients) (`postV3CustomersByCustomerIdRecipients`, tila `409`)
+- [`DELETE /v3/customers/{customerId}/recipients/{recipientId}`](/api-reference/recipients/delete-v3-customers-by-customer-id-recipients-by-recipient-id) (`deleteV3CustomersByCustomerIdRecipientsByRecipientId`, tila `409`)
+- [`PATCH /v3/customers/{customerId}/recipients/{recipientId}`](/api-reference/recipients/patch-v3-customers-by-customer-id-recipients-by-recipient-id) (`patchV3CustomersByCustomerIdRecipientsByRecipientId`, tila `409`)
+- [`POST /v3/customers/{customerId}/recipients/{recipientId}/destinations`](/api-reference/recipients/post-v3-customers-by-customer-id-recipients-by-recipient-id-destinations) (`postV3CustomersByCustomerIdRecipientsByRecipientIdDestinations`, tila `409`)
+- [`DELETE /v3/customers/{customerId}/recipients/{recipientId}/destinations/{destinationId}`](/api-reference/recipients/delete-v3-customers-by-customer-id-recipients-by-recipient-id-destinations-by-destination-id) (`deleteV3CustomersByCustomerIdRecipientsByRecipientIdDestinationsByDestinationId`, tila `409`)
+- [`POST /v3/customers/{customerId}/related-parties`](/api-reference/customers/post-v3-customers-by-customer-id-related-parties) (`postV3CustomersByCustomerIdRelated-parties`, tila `409`)
+- [`DELETE /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/delete-v3-customers-by-customer-id-related-parties-by-related-party-id) (`deleteV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, tila `409`)
+- [`PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/patch-v3-customers-by-customer-id-related-parties-by-related-party-id) (`patchV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, tila `409`)
+- [`POST /v3/customers/{customerId}/rules`](/api-reference/rules/post-v3-customers-by-customer-id-rules) (`postV3CustomersByCustomerIdRules`, tila `409`)
+- [`DELETE /v3/customers/{customerId}/rules/{ruleId}`](/api-reference/rules/delete-v3-customers-by-customer-id-rules-by-rule-id) (`deleteV3CustomersByCustomerIdRulesByRuleId`, tila `409`)
+- [`PATCH /v3/customers/{customerId}/rules/{ruleId}`](/api-reference/rules/patch-v3-customers-by-customer-id-rules-by-rule-id) (`patchV3CustomersByCustomerIdRulesByRuleId`, tila `409`)
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, tila `409`)
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, tila `409`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, tila `409`)
+- [`POST /v3/transfers/{transferId}/cancel`](/api-reference/money-movement/post-v3-transfers-by-transfer-id-cancel) (`postV3TransfersByTransferIdCancel`, tila `409`)
+- [`POST /v3/webhooks`](/api-reference/webhooks/post-v3-webhooks) (`postV3Webhooks`, tila `409`)
+- [`DELETE /v3/webhooks/{webhookId}`](/api-reference/webhooks/delete-v3-webhooks-by-webhook-id) (`deleteV3WebhooksByWebhookId`, tila `409`)
+- [`PATCH /v3/webhooks/{webhookId}`](/api-reference/webhooks/patch-v3-webhooks-by-webhook-id) (`patchV3WebhooksByWebhookId`, tila `409`)
+
+</Accordion>
+
+**Esimerkki:**
+
+```json
+{
+  "type": "https://docs.swipelux.com/errors/idempotency-conflict",
+  "title": "Idempotency Conflict",
+  "status": 409,
+  "code": "idempotency_conflict",
+  "detail": "Idempotency-Key was already used with a different request.",
+  "correlationId": "cor_01JMM23TRANSFERERRORS",
+  "retryable": false
+}
+```
+
+<a id="idempotency-request-in-progress" className="block scroll-mt-32">
+  <span className="sr-only">idempotency_request_in_progress error</span>
+</a>
+
+### `idempotency_request_in_progress`
+
+**HTTP-tila:** `409`<br />
+**Uudelleenyritettävä:** Kyllä<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/idempotency-request-in-progress`
+
+**Merkitys:** Vastaavaa pyyntöä samalla idempotency-avaimella käsitellään vielä.
+
+**Milloin se ilmenee:** Sama idempotentti kirjoitus lähetetään uudelleen ennen kuin ensimmäinen yritys valmistuu.
+
+**Mitä tehdä:** Odota hetki ja uudelleenyritä sitten identtistä pyyntöä samalla `Idempotency-Key`-avaimella, kunnes alkuperäinen tulos on saatavilla.
+
+**Uudelleenyritysohje:** Uudelleenyritä viiveen jälkeen. Idempotentissa kirjoituksessa käytä uudelleen alkuperäistä idempotency-avainta ja muuttamatonta pyyntöä. Pidä menetelmä, polku ja runko tavu tavulta yhtenevinä alkuperäisen aikomuksen kanssa.
+
+<Accordion title="Asiaankuuluvat API-toiminnot (13)">
+
+- [`POST /v3/customers`](/api-reference/customers/post-v3-customers) (`postV3Customers`, tila `409`)
+- [`DELETE /v3/customers/{customerId}`](/api-reference/customers/delete-v3-customers-by-customer-id) (`deleteV3CustomersByCustomerId`, tila `409`)
+- [`PATCH /v3/customers/{customerId}`](/api-reference/customers/patch-v3-customers-by-customer-id) (`patchV3CustomersByCustomerId`, tila `409`)
+- [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) (`postV3CustomersByCustomerIdAccounts`, tila `409`)
+- [`DELETE /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/delete-v3-customers-by-customer-id-accounts-by-account-id) (`deleteV3CustomersByCustomerIdAccountsByAccountId`, tila `409`)
+- [`PATCH /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/patch-v3-customers-by-customer-id-accounts-by-account-id) (`patchV3CustomersByCustomerIdAccountsByAccountId`, tila `409`)
+- [`PUT /v3/customers/{customerId}/accounts/{accountId}/fees`](/api-reference/accounts/put-v3-customers-by-customer-id-accounts-by-account-id-fees) (`putV3CustomersByCustomerIdAccountsByAccountIdFees`, tila `409`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}/cancel`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id-cancel) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityIdCancel`, tila `409`)
+- [`POST /v3/customers/{customerId}/export`](/api-reference/customers/post-v3-customers-by-customer-id-export) (`postV3CustomersByCustomerIdExport`, tila `409`)
+- [`POST /v3/customers/{customerId}/related-parties`](/api-reference/customers/post-v3-customers-by-customer-id-related-parties) (`postV3CustomersByCustomerIdRelated-parties`, tila `409`)
+- [`DELETE /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/delete-v3-customers-by-customer-id-related-parties-by-related-party-id) (`deleteV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, tila `409`)
+- [`PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/patch-v3-customers-by-customer-id-related-parties-by-related-party-id) (`patchV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, tila `409`)
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, tila `409`)
+
+</Accordion>
+
+**Esimerkki:**
+
+```json
+{
+  "type": "https://docs.swipelux.com/errors/idempotency-request-in-progress",
+  "title": "Idempotency Request In Progress",
+  "status": 409,
+  "code": "idempotency_request_in_progress",
+  "detail": "A request with this Idempotency-Key is still in progress.",
+  "correlationId": "01JERRORIDEMPOTENCY",
+  "retryable": true
+}
+```
+
+<a id="internal-error" className="block scroll-mt-32">
+  <span className="sr-only">internal_error error</span>
+</a>
+
+### `internal_error`
+
+**HTTP-tila:** `500`<br />
+**Uudelleenyritettävä:** Kyllä<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/internal-error`
+
+**Merkitys:** Swipelux kohtasi odottamattoman palvelinvirheen toimintoa käsitellessään.
+
+**Milloin se ilmenee:** Pyyntö kohtaa käsittelemättömän alustavirheen tarkemman julkisen ongelman sijaan.
+
+**Mitä tehdä:** Säilytä `correlationId`, uudelleenyritä viiveen jälkeen ja ota yhteyttä Swipeluxin tukeen, jos virhe jatkuu.
+
+**Uudelleenyritysohje:** Uudelleenyritä viiveen jälkeen. Idempotentissa kirjoituksessa käytä uudelleen alkuperäistä idempotency-avainta ja muuttamatonta pyyntöä.
+
+**Asiaankuuluvat API-toiminnot:** Kaikki julkiset API-toiminnot.
+
+<a id="not-found" className="block scroll-mt-32">
+  <span className="sr-only">not_found error</span>
+</a>
+
+### `not_found`
+
+**HTTP-tila:** `404`<br />
+**Uudelleenyritettävä:** Ei<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/not-found`
+
+**Merkitys:** Pyydettyä resurssia ei löytynyt tälle API-avaimelle ja pyyntöpolulle.
+
+**Milloin se ilmenee:** Resurssitunniste puuttuu, kuuluu toiseen ympäristöön tai ylätason resurssiin tai ei ole enää kutsujan käytettävissä.
+
+**Mitä tehdä:** Vahvista tunniste, ylätason resurssi ja API-avainympäristö, lue tai listaa sitten resurssi ennen toiminnon uudelleenyrittämistä.
+
+**Uudelleenyritysohje:** Älä uudelleenyritä muuttamatonta pyyntöä. Toteuta yllä oleva toimenpide ennen uuden pyynnön lähettämistä.
+
+<Accordion title="Asiaankuuluvat API-toiminnot (36)">
+
+- [`GET /kyc/redirect/{customerId}/{taskId}/{verificationSessionId}`](/api-reference/tasks/start-kyc-verification-session) (`startKycVerificationSession`, tila `404`)
+- [`GET /v3/customers/{customerId}/accounts`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts) (`getV3CustomersByCustomerIdAccounts`, tila `404`)
+- [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) (`postV3CustomersByCustomerIdAccounts`, tila `404`)
+- [`DELETE /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/delete-v3-customers-by-customer-id-accounts-by-account-id) (`deleteV3CustomersByCustomerIdAccountsByAccountId`, tila `404`)
+- [`GET /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts-by-account-id) (`getV3CustomersByCustomerIdAccountsByAccountId`, tila `404`)
+- [`PATCH /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/patch-v3-customers-by-customer-id-accounts-by-account-id) (`patchV3CustomersByCustomerIdAccountsByAccountId`, tila `404`)
+- [`GET /v3/customers/{customerId}/accounts/{accountId}/fees`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts-by-account-id-fees) (`getV3CustomersByCustomerIdAccountsByAccountIdFees`, tila `404`)
+- [`PUT /v3/customers/{customerId}/accounts/{accountId}/fees`](/api-reference/accounts/put-v3-customers-by-customer-id-accounts-by-account-id-fees) (`putV3CustomersByCustomerIdAccountsByAccountIdFees`, tila `404`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityId`, tila `404`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}/applications`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id-applications) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityIdApplications`, tila `404`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}/applications/{applicationId}/history`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id-applications-by-application-id-history) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityIdApplicationsByApplicationIdHistory`, tila `404`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}/cancel`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id-cancel) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityIdCancel`, tila `404`)
+- [`GET /v3/customers/{customerId}/recipients`](/api-reference/recipients/get-v3-customers-by-customer-id-recipients) (`getV3CustomersByCustomerIdRecipients`, tila `404`)
+- [`POST /v3/customers/{customerId}/recipients`](/api-reference/recipients/post-v3-customers-by-customer-id-recipients) (`postV3CustomersByCustomerIdRecipients`, tila `404`)
+- [`DELETE /v3/customers/{customerId}/recipients/{recipientId}`](/api-reference/recipients/delete-v3-customers-by-customer-id-recipients-by-recipient-id) (`deleteV3CustomersByCustomerIdRecipientsByRecipientId`, tila `404`)
+- [`GET /v3/customers/{customerId}/recipients/{recipientId}`](/api-reference/recipients/get-v3-customers-by-customer-id-recipients-by-recipient-id) (`getV3CustomersByCustomerIdRecipientsByRecipientId`, tila `404`)
+- [`PATCH /v3/customers/{customerId}/recipients/{recipientId}`](/api-reference/recipients/patch-v3-customers-by-customer-id-recipients-by-recipient-id) (`patchV3CustomersByCustomerIdRecipientsByRecipientId`, tila `404`)
+- [`GET /v3/customers/{customerId}/recipients/{recipientId}/destinations`](/api-reference/recipients/get-v3-customers-by-customer-id-recipients-by-recipient-id-destinations) (`getV3CustomersByCustomerIdRecipientsByRecipientIdDestinations`, tila `404`)
+- [`POST /v3/customers/{customerId}/recipients/{recipientId}/destinations`](/api-reference/recipients/post-v3-customers-by-customer-id-recipients-by-recipient-id-destinations) (`postV3CustomersByCustomerIdRecipientsByRecipientIdDestinations`, tila `404`)
+- [`DELETE /v3/customers/{customerId}/recipients/{recipientId}/destinations/{destinationId}`](/api-reference/recipients/delete-v3-customers-by-customer-id-recipients-by-recipient-id-destinations-by-destination-id) (`deleteV3CustomersByCustomerIdRecipientsByRecipientIdDestinationsByDestinationId`, tila `404`)
+- [`GET /v3/customers/{customerId}/recipients/{recipientId}/destinations/{destinationId}`](/api-reference/recipients/get-v3-customers-by-customer-id-recipients-by-recipient-id-destinations-by-destination-id) (`getV3CustomersByCustomerIdRecipientsByRecipientIdDestinationsByDestinationId`, tila `404`)
+- [`GET /v3/customers/{customerId}/rules`](/api-reference/rules/get-v3-customers-by-customer-id-rules) (`getV3CustomersByCustomerIdRules`, tila `404`)
+- [`POST /v3/customers/{customerId}/rules`](/api-reference/rules/post-v3-customers-by-customer-id-rules) (`postV3CustomersByCustomerIdRules`, tila `404`)
+- [`DELETE /v3/customers/{customerId}/rules/{ruleId}`](/api-reference/rules/delete-v3-customers-by-customer-id-rules-by-rule-id) (`deleteV3CustomersByCustomerIdRulesByRuleId`, tila `404`)
+- [`GET /v3/customers/{customerId}/rules/{ruleId}`](/api-reference/rules/get-v3-customers-by-customer-id-rules-by-rule-id) (`getV3CustomersByCustomerIdRulesByRuleId`, tila `404`)
+- [`PATCH /v3/customers/{customerId}/rules/{ruleId}`](/api-reference/rules/patch-v3-customers-by-customer-id-rules-by-rule-id) (`patchV3CustomersByCustomerIdRulesByRuleId`, tila `404`)
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, tila `404`)
+- [`GET /v3/quotes/{quoteId}`](/api-reference/money-movement/get-v3-quotes-by-quote-id) (`getV3QuotesByQuoteId`, tila `404`)
+- [`POST /v3/sandbox/accounts/{accountId}/topup`](/api-reference/sandbox/post-v3-sandbox-accounts-by-account-id-topup) (`postV3SandboxAccountsByAccountIdTopup`, tila `404`)
+- [`POST /v3/sandbox/customers/{customerId}/capabilities/{capabilityId}/status`](/api-reference/sandbox/post-v3-sandbox-customers-by-customer-id-capabilities-by-capability-id-status) (`postV3SandboxCustomersByCustomerIdCapabilitiesByCapabilityIdStatus`, tila `404`)
+- [`POST /v3/sandbox/customers/{customerId}/verification`](/api-reference/sandbox/post-v3-sandbox-customers-by-customer-id-verification) (`postV3SandboxCustomersByCustomerIdVerification`, tila `404`)
+- [`POST /v3/sandbox/tasks`](/api-reference/sandbox/post-v3-sandbox-tasks) (`postV3SandboxTasks`, tila `404`)
+- [`POST /v3/sandbox/transfers/{transferId}/state`](/api-reference/sandbox/post-v3-sandbox-transfers-by-transfer-id-state) (`postV3SandboxTransfersByTransferIdState`, tila `404`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, tila `404`)
+- [`DELETE /v3/webhooks/{webhookId}`](/api-reference/webhooks/delete-v3-webhooks-by-webhook-id) (`deleteV3WebhooksByWebhookId`, tila `404`)
+- [`PATCH /v3/webhooks/{webhookId}`](/api-reference/webhooks/patch-v3-webhooks-by-webhook-id) (`patchV3WebhooksByWebhookId`, tila `404`)
+
+</Accordion>
+
+<a id="request-failed" className="block scroll-mt-32">
+  <span className="sr-only">request_failed error</span>
+</a>
+
+### `request_failed`
+
+**HTTP-tila:** `502`, `503`<br />
+**Uudelleenyritettävä:** Tilannekohtainen<br />
+**Ongelmatyyppi:** `https://docs.swipelux.com/errors/request-failed`
+
+**Merkitys:** Toiminnon suorittamiseen tarvittava palvelu ei käsitellyt pyyntöä onnistuneesti.
+
+**Milloin se ilmenee:** Asiakkaan vienti, webhookien hallinta tai sandbox-vahvistus kohtaa ulkoisen palvelun virheen tai käyttökelvottoman kokoonpanon.
+
+**Mitä tehdä:** Tarkista `retryable`. Uudelleenyritä myöhemmin, kun se on `true`; muussa tapauksessa säilytä `correlationId`, tarkista pyynnön edellytykset ja ota yhteyttä tukeen, jos virhe jatkuu.
+
+**Uudelleenyritysohje:** Lue vastauksen `retryable`-arvo. Uudelleenyritä myöhemmin vain, kun se on `true`. Idempotentissa kirjoituksessa käytä uudelleen alkuperäistä idempotency-avainta ja muuttamatonta pyyntöä.
+
+<Accordion title="Asiaankuuluvat API-toiminnot (9)">
+
+- [`POST /v3/customers/{customerId}/export`](/api-reference/customers/post-v3-customers-by-customer-id-export) (`postV3CustomersByCustomerIdExport`, tila `502`)
+- [`POST /v3/customers/{customerId}/export`](/api-reference/customers/post-v3-customers-by-customer-id-export) (`postV3CustomersByCustomerIdExport`, tila `503`)
+- [`POST /v3/sandbox/customers/{customerId}/verification`](/api-reference/sandbox/post-v3-sandbox-customers-by-customer-id-verification) (`postV3SandboxCustomersByCustomerIdVerification`, tila `502`)
+- [`POST /v3/sandbox/customers/{customerId}/verification`](/api-reference/sandbox/post-v3-sandbox-customers-by-customer-id-verification) (`postV3SandboxCustomersByCustomerIdVerification`, tila `503`)
+- [`GET /v3/webhooks`](/api-reference/webhooks/get-v3-webhooks) (`getV3Webhooks`, tila `502`)
+- [`POST /v3/webhooks`](/api-reference/webhooks/post-v3-webhooks) (`postV3Webhooks`, tila `502`)
+- [`DELETE /v3/webhooks/{webhookId}`](/api-reference/webhooks/delete-v3-webhooks-by-webhook-id) (`deleteV3WebhooksByWebhookId`, tila `502`)
+- [`PATCH /v3/webhooks/{webhookId}`](/api-reference/webhooks/patch-v3-webhooks-by-webhook-id) (`patchV3WebhooksByWebhookId`, tila `502`)
+- [`GET /v3/webhooks/portal`](/api-reference/webhooks/get-v3-webhooks-portal) (`getV3WebhooksPortal`, tila `502`)
+
+</Accordion>
+
+## Seuraava vaihe
+
+Käytä yllä olevia toimintolinkkejä vahvistaaksesi käsittelemäsi tarkan pyyntö- ja vastausskeeman, ja harjoittele sitten virhepolkua osiossa [Sandbox-testaus](/fi/integration/sandbox).

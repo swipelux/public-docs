@@ -1,0 +1,2631 @@
+---
+title: "Feil og nye forsøk"
+description: "Håndter hver offentlig problemkode i Swipelux API-et, avgjør når du skal prøve på nytt, og løs validerings-, tilstands-, idempotens- og plattformfeil."
+---
+
+Swipelux API-feil bruker medietypen `application/problem+json`. Forgren applikasjonsatferden din på den stabile `code`-verdien, og bruk deretter operasjonen og veiledningen nedenfor for å løse feilen.
+
+| Felt | Slik bruker du det |
+| --- | --- |
+| `type` | Stabil dokumentasjons-URI for problemkoden. |
+| `title` | Kort menneskelesbar problemtittel. |
+| `status` | HTTP-status knyttet til denne responsen. |
+| `code` | Stabil maskinlesbar verdi for applikasjonslogikk. |
+| `detail` | Kontekstuell menneskelesbar tekst for denne forekomsten. Ikke parse eller sammenlign den. |
+| `correlationId` | Forespørselsidentifikator som du bør lagre i logger og inkludere når du kontakter support. |
+| `retryable` | Når `true`, kan den samme forespørselen lykkes senere. Når `false`, endre forespørselen eller oppfyll en forutsetning før du prøver igjen. |
+| `errors[]` | Valideringsdetaljer på feltnivå, inkludert en JSON Pointer når tilgjengelig. |
+
+Prøv idempotente skrivinger på nytt med den opprinnelige `Idempotency-Key` og uendret metode, sti og body. Gjenbruk aldri den nøkkelen for en annen tiltenkt operasjon.
+
+```json
+{
+  "type": "https://docs.swipelux.com/errors/validation-error",
+  "title": "Validation Error",
+  "status": 400,
+  "code": "validation_error",
+  "detail": "The request contains invalid fields.",
+  "correlationId": "01JERRORVALIDATION",
+  "retryable": false,
+  "errors": [
+    {
+      "pointer": "/externalId",
+      "code": "invalid_format",
+      "message": "Use a valid external identifier."
+    }
+  ]
+}
+```
+
+## Feilindeks
+
+| Feilkode | Status | Kan prøves på nytt | Betydning |
+| --- | --- | --- | --- |
+| [`absence_conflicts_with_profile`](#absence-conflicts-with-profile) | `409` | Nei | Et oppgavesvar som erklærer en verdi som fraværende, er i konflikt med data som allerede finnes på kundeprofilen. |
+| [`account_has_active_transfers`](#account-has-active-transfers) | `409` | Ja | Kontoen kan ikke arkiveres mens én eller flere overføringer fortsatt er aktive. |
+| [`account_method_not_supported`](#account-method-not-supported) | `422` | Nei | Den valgte kontoen støtter ikke betalingsmetoden som tilbudet ber om. |
+| [`account_not_ready`](#account-not-ready) | `409` | Kontekstavhengig | Kontoen finnes, men dens gjeldende status tillater ikke tilbudet eller overføringen. |
+| [`account_unavailable`](#account-unavailable) | `409` | Nei | Den valgte kontoen er utilgjengelig for den forespurte pengebevegelsen. |
+| [`amount_not_deliverable`](#amount-not-deliverable) | `422` | Nei | Det forespurte beløpet kan ikke leveres med de valgte valutaene, kontoene eller metoden. |
+| [`amount_side_ambiguous`](#amount-side-ambiguous) | `400` | Nei | Tilbudsforespørselen identifiserer ikke entydig hvilken side av konverteringen som har det faste beløpet. |
+| [`bank_not_supported_for_customer`](#bank-not-supported-for-customer) | `422` | Returneres ikke | Den valgte institusjonen er ikke tilgjengelig for denne kunden og capability-forespørselen. |
+| [`capability_already_exists`](#capability-already-exists) | `409` | Nei | Kunden har allerede den forespurte capability-en. |
+| [`capability_direction_unsupported`](#capability-direction-unsupported) | `422` | Nei | Den valgte capability-en støtter ikke pengebevegelsesretningen som tilbudet eller overføringen krever. |
+| [`capability_ineligible`](#capability-ineligible) | `422` | Nei | Kunden er ikke kvalifisert for den forespurte capability-en med sin gjeldende profil og konfigurasjon. |
+| [`capability_institutions_required`](#capability-institutions-required) | `422` | Returneres ikke | Capability-forespørselen krever ett eller flere institusjonsvalg. |
+| [`capability_institutions_unsupported`](#capability-institutions-unsupported) | `422` | Nei | Én eller flere valgte institusjoner støttes ikke for den forespurte capability-en. |
+| [`capability_intent_unsupported`](#capability-intent-unsupported) | `422` | Returneres ikke | Den forespurte capability-intensjonen støttes ikke for denne capability-varianten. |
+| [`capability_key_unsupported`](#capability-key-unsupported) | `422` | Nei | Capability-nøkkelen støttes ikke av denne operasjonen. |
+| [`capability_not_cancelable`](#capability-not-cancelable) | `409` | Nei | Capability-en kan ikke kanselleres fra sin gjeldende status. |
+| [`capability_not_ready`](#capability-not-ready) | `409` | Kontekstavhengig | En capability som kreves av den forespurte kontoen eller pengebevegelsen, er ikke klar. |
+| [`capability_not_supported_for_customer_type`](#capability-not-supported-for-customer-type) | `422` | Returneres ikke | Capability-en støttes ikke for denne kundetypen. |
+| [`capability_provider_resolution_failed`](#capability-provider-resolution-failed) | `422` | Returneres ikke | Swipelux kunne ikke utlede en fullstendig prosesseringskonfigurasjon for capability-forespørselen. |
+| [`capability_snapshot_corrupted`](#capability-snapshot-corrupted) | `500` | Nei | Swipelux kunne ikke evaluere kundens capability-tilstand. |
+| [`capability_terminally_rejected`](#capability-terminally-rejected) | `409` | Nei | Capability-en er allerede avvist i en terminal tilstand. |
+| [`capability_variant_unavailable`](#capability-variant-unavailable) | `409`, `422` | Kontekstavhengig | Den forespurte capability-varianten er utilgjengelig for den valgte kombinasjonen av kunde, intensjon eller institusjon. |
+| [`conflict`](#conflict) | `409` | Nei | Den forespurte operasjonen er i konflikt med ressursens gjeldende tilstand. |
+| [`customer_has_active_resources`](#customer-has-active-resources) | `409` | Nei | Kunden kan ikke arkiveres mens aktive ressurser fortsatt avhenger av den. |
+| [`customer_not_found`](#customer-not-found) | `404` | Nei | Kunden finnes ikke i gjeldende API-nøkkelmiljø eller er ikke lenger tilgjengelig. |
+| [`destination_not_ready`](#destination-not-ready) | `409` | Kontekstavhengig | Mottakerdestinasjonen finnes, men den er ikke klar for det forespurte tilbudet. |
+| [`developer_fee_invalid`](#developer-fee-invalid) | `422` | Nei | Utviklergebyr-konfigurasjonen er ugyldig for den valgte kontoen eller pengebevegelsen. |
+| [`document_not_found`](#document-not-found) | `404` | Returneres ikke | Det forespurte kundedokumentet ble ikke funnet. |
+| [`duplicate_external_id`](#duplicate-external-id) | `409` | Nei | Den oppgitte `externalId` er allerede tildelt en annen ressurs i samme omfang. |
+| [`field_required_by_open_task`](#field-required-by-open-task) | `409` | Nei | Forespørselen prøver å tømme et profilfelt som en åpen oppgave fortsatt krever. |
+| [`forbidden`](#forbidden) | `403` | Nei | API-nøkkelen er gyldig, men har ikke tillatelse til å utføre denne operasjonen. |
+| [`idempotency_conflict`](#idempotency-conflict) | `409` | Nei | Idempotensnøkkelen er allerede brukt for en annen forespørsel. |
+| [`idempotency_request_in_progress`](#idempotency-request-in-progress) | `409` | Ja | En samsvarende forespørsel med samme idempotensnøkkel behandles fortsatt. |
+| [`initial_application_identity_conflict`](#initial-application-identity-conflict) | `409` | Nei | Identiteten til den innledende søknaden endret seg før den ble lagret. |
+| [`initial_application_owner_unavailable`](#initial-application-owner-unavailable) | `503` | Nei | Ingen gyldig eierrute er tilgjengelig for den innledende søknaden. |
+| [`initial_application_scope_unavailable`](#initial-application-scope-unavailable) | `503` | Kontekstavhengig | Swipelux kunne ikke utlede omfanget som kreves for den innledende søknaden. |
+| [`insufficient_balance`](#insufficient-balance) | `409` | Nei | Kildekontoen har ikke nok tilgjengelig saldo for overføringen. |
+| [`internal_error`](#internal-error) | `500` | Ja | Swipelux støtte på en uventet serverfeil under behandlingen av operasjonen. |
+| [`invalid_capability`](#invalid-capability) | `400`, `422` | Returneres ikke | Capability-referansen eller den forespurte capability-verdien er ugyldig for denne operasjonen. |
+| [`invalid_document_reference`](#invalid-document-reference) | `400` | Nei | En oppgaveinnsending inneholder en dokumentreferanse som ikke kan oppfylle det valgte kravet. |
+| [`invalid_field_for_type`](#invalid-field-for-type) | `400`, `422` | Returneres ikke | Forespørselen inneholder felter som ikke er gyldige for den valgte ressurstypen. |
+| [`invalid_settlement_target`](#invalid-settlement-target) | `400` | Returneres ikke | Det forespurte oppgjørsmålet er ugyldig for kontoen. |
+| [`kyc_configuration_unavailable`](#kyc-configuration-unavailable) | `503` | Nei | Verifiseringskonfigurasjonen som capability-en krever, er utilgjengelig. |
+| [`kyc_level_configuration_invalid`](#kyc-level-configuration-invalid) | `503` | Nei | Den aktive konfigurasjonen for verifiseringsnivå er ugyldig. |
+| [`kyc_process_conflict`](#kyc-process-conflict) | `409` | Ja | Verifiseringsprosessen endret seg før operasjonen ble fullført. |
+| [`kyc_provider_unavailable`](#kyc-provider-unavailable) | `502` | Ja | Verifiseringstjenesten er midlertidig utilgjengelig. |
+| [`kyc_session_terminal`](#kyc-session-terminal) | `410` | Nei | Verifiseringsøkten kan ikke lenger brukes. |
+| [`merchant_kyb_not_approved`](#merchant-kyb-not-approved) | `422` | Returneres ikke | Den integrerende virksomheten er ikke godkjent for den forespurte kundeopprettelsesflyten. |
+| [`not_found`](#not-found) | `404` | Nei | Den forespurte ressursen ble ikke funnet for denne API-nøkkelen og forespørselsstien. |
+| [`ops_rail_handoff_conflict`](#ops-rail-handoff-conflict) | `409` | Nei | Oppgaveinnsendingen er blokkert av motstridende bank-rail-oppsett. |
+| [`payout_target_relationship_invalid`](#payout-target-relationship-invalid) | `400` | Returneres ikke | Det valgte payout-målet har ikke en gyldig relasjon til kunden eller mottakeren i tilbudet. |
+| [`profile_obligation_crossheal_failed`](#profile-obligation-crossheal-failed) | `500` | Nei | Swipelux kunne ikke oppdatere kundens profilkrav. |
+| [`provider_conflict`](#provider-conflict) | `400`, `422` | Nei | Den forespurte capability- eller verifiseringshandlingen er i konflikt med gjeldende prosesseringskonfigurasjon. |
+| [`quote_already_executed`](#quote-already-executed) | `409` | Nei | Tilbudet er allerede utført og har en eksisterende overføring. |
+| [`quote_destination_missing`](#quote-destination-missing) | `409`, `500` | Kontekstavhengig | Tilbudet eller overføringen inneholder ikke destinasjonen som operasjonen krever. |
+| [`quote_direction_invalid`](#quote-direction-invalid) | `422`, `500` | Kontekstavhengig | Kilden og destinasjonen danner ikke en støttet tilbudsretning. |
+| [`quote_execution_consumed`](#quote-execution-consumed) | `409` | Nei | Tilbudets ene utførelsesmulighet er allerede brukt opp. |
+| [`quote_expired`](#quote-expired) | `409` | Nei | Tilbudet utløp før det ble utført. |
+| [`quote_failed`](#quote-failed) | `500`, `502` | Kontekstavhengig | Swipelux kunne ikke opprette et brukbart tilbud for forespørselen. |
+| [`quote_mode_invalid`](#quote-mode-invalid) | `500` | Ja | Tilbudet kan ikke tolkes i modusen som operasjonen krever. |
+| [`quote_not_found`](#quote-not-found) | `404` | Returneres ikke | Tilbudet ble ikke funnet for denne API-nøkkelen. |
+| [`rail_not_ready`](#rail-not-ready) | `409` | Nei | Den valgte betalings-railen er ikke klar for denne kunden. |
+| [`rail_temporarily_unavailable`](#rail-temporarily-unavailable) | `503` | Ja | Den valgte betalings-railen er midlertidig utilgjengelig. |
+| [`rate_unavailable`](#rate-unavailable) | `502` | Ja | En nødvendig valutakurs er midlertidig utilgjengelig. |
+| [`recipient_account_unsupported`](#recipient-account-unsupported) | `400` | Returneres ikke | Mottakerens kontoopplysninger støttes ikke for den forespurte destinasjonen. |
+| [`recipient_address_required`](#recipient-address-required) | `422` | Nei | Mottakeren trenger en adresse før denne fiat-destinasjonen kan opprettes. |
+| [`recipient_destination_invalid`](#recipient-destination-invalid) | `400`, `422` | Nei | Mottakerdestinasjonen er ugyldig eller inkompatibel med den forespurte operasjonen. |
+| [`recipient_name_invalid`](#recipient-name-invalid) | `400` | Returneres ikke | Mottakernavnet oppfyller ikke forespørselsskjemaet. |
+| [`related_party_in_review`](#related-party-in-review) | `409` | Nei | Den relaterte parten kan ikke arkiveres mens den er under vurdering. |
+| [`related_party_not_found`](#related-party-not-found) | `404` | Returneres ikke | Den relaterte parten ble ikke funnet under den angitte kunden. |
+| [`request_body_too_large`](#request-body-too-large) | `413` | Nei | Forespørselens body overskrider størrelsen operasjonen godtar. |
+| [`request_failed`](#request-failed) | `502`, `503` | Kontekstavhengig | En tjeneste som trengs for å fullføre operasjonen, behandlet ikke forespørselen vellykket. |
+| [`rule_already_exists`](#rule-already-exists) | `409` | Nei | Utløserkontoen har allerede en aktiv regel. |
+| [`rule_archived`](#rule-archived) | `409` | Nei | Regelen er arkivert og kan ikke lenger endres. |
+| [`rule_not_found`](#rule-not-found) | `404` | Returneres ikke | Regelen ble ikke funnet under den angitte kunden. |
+| [`rule_target_invalid`](#rule-target-invalid) | `400` | Returneres ikke | Regelhandlingsmålet er ugyldig for denne kunden eller regeltypen. |
+| [`rule_trigger_account_invalid`](#rule-trigger-account-invalid) | `400` | Returneres ikke | Kontoen som er valgt som regelutløser, er ugyldig. |
+| [`submission_channel_not_allowed`](#submission-channel-not-allowed) | `409` | Nei | Direkte API-innsending er ikke tillatt for denne oppgaven. |
+| [`submission_not_found`](#submission-not-found) | `404` | Nei | Den forespurte oppgaveinnsendingen ble ikke funnet. |
+| [`supporting_document_not_found`](#supporting-document-not-found) | `422` | Nei | Et støttedokument referert av overføringsforespørselen ble ikke funnet. |
+| [`task_changed`](#task-changed) | `409` | Nei | Oppgaven endret seg etter at klienten din sist leste den. |
+| [`task_not_found`](#task-not-found) | `404` | Nei | Oppgaven ble ikke funnet for den angitte kunden eller API-nøkkelen. |
+| [`task_obligation_conflict`](#task-obligation-conflict) | `409` | Nei | Oppgaven har motstridende forpliktelsestilstand og kan ikke godta innsendingen. |
+| [`task_submission_incomplete`](#task-submission-incomplete) | `422` | Nei | Innsendingen besvarer ikke alle gjeldende handlingsbare krav. |
+| [`transfer_execution_failed`](#transfer-execution-failed) | `500` | Nei | Overføringen kunne ikke fullføres under tilbudsutførelsen. |
+| [`transfer_has_no_instructions`](#transfer-has-no-instructions) | `404` | Returneres ikke | Overføringen finnes, men gir ikke betalingsinstruksjoner. |
+| [`transfer_not_cancelable`](#transfer-not-cancelable) | `409` | Nei | Overføringen kan ikke kanselleres fra sin gjeldende tilstand. |
+| [`transfer_not_found`](#transfer-not-found) | `404` | Returneres ikke | Overføringen ble ikke funnet for denne API-nøkkelen. |
+| [`transfer_state_invalid`](#transfer-state-invalid) | `400`, `500` | Ja | Overføringen er i en tilstand som ikke støtter den forespurte operasjonen eller overgangen. |
+| [`unauthorized`](#unauthorized) | `401` | Nei | Forespørselen mangler en gyldig API-nøkkel. |
+| [`unknown_parameter`](#unknown-parameter) | `400` | Nei | Forespørselen inneholder en ustøttet eller ukjent parameter. |
+| [`validation_error`](#validation-error) | `400`, `422` | Nei | Forespørselen oppfyller ikke operasjonens input-skjema. |
+| [`verification_collection_mapping_invalid`](#verification-collection-mapping-invalid) | `503` | Nei | Oppgavens verifiseringskrav kan ikke gjøres om til en brukbar verifiseringsflyt. |
+| [`wallet_destination_not_supported`](#wallet-destination-not-supported) | `409` | Nei | Den valgte pengebevegelsesmetoden støtter ikke en lommebokdestinasjon. |
+
+## Forespørsel og autentisering
+
+<a id="forbidden" className="block scroll-mt-32">
+  <span className="sr-only">forbidden error</span>
+</a>
+
+### `forbidden`
+
+**HTTP-status:** `403`<br />
+**Kan prøves på nytt:** Nei<br />
+**Problemtype:** `https://docs.swipelux.com/errors/forbidden`
+
+**Betydning:** API-nøkkelen er gyldig, men har ikke tillatelse til å utføre denne operasjonen.
+
+**Når den oppstår:** Legitimasjonen mangler en nødvendig tillatelse, eller en produksjonslegitimasjon kaller et endepunkt som kun er for sandbox.
+
+**Hva du skal gjøre:** Bruk en legitimasjon for riktig miljø med de nødvendige tillatelsene. Ikke eksponer eller erstatt nøkler i klientsidekode.
+
+**Veiledning for nye forsøk:** Ikke prøv den uendrede forespørselen på nytt. Utfør handlingen ovenfor før du sender en ny forespørsel.
+
+**Relevante API-operasjoner:** Alle autentiserte API-operasjoner.
+
+<a id="invalid-field-for-type" className="block scroll-mt-32">
+  <span className="sr-only">invalid_field_for_type error</span>
+</a>
+
+### `invalid_field_for_type`
+
+**HTTP-status:** `400`, `422`<br />
+**Kan prøves på nytt:** Returneres ikke<br />
+**Problemtype:** `https://docs.swipelux.com/errors/invalid-field-for-type`
+
+**Betydning:** Forespørselen inneholder felter som ikke er gyldige for den valgte ressurstypen.
+
+**Når den oppstår:** En diskriminert forespørsel, som en privatperson-kontra-bedrift-profil, inneholder felter fra en annen variant eller utelater felter som den valgte typen krever.
+
+**Hva du skal gjøre:** Bruk den valgte typens skjema, fjern felter som tilhører andre varianter, oppgi dens påkrevde felter, og send en korrigert forespørsel.
+
+**Veiledning for nye forsøk:** Dette problemet returnerer ikke `retryable`. Ikke anta at et uendret nytt forsøk er trygt; følg handlingen ovenfor og operasjonens idempotenskrav.
+
+**Relevante API-operasjoner:**
+
+- [`POST /v3/customers`](/api-reference/customers/post-v3-customers) (`postV3Customers`, status `400`)
+- [`PATCH /v3/customers/{customerId}`](/api-reference/customers/patch-v3-customers-by-customer-id) (`patchV3CustomersByCustomerId`, status `400`)
+- [`POST /v3/customers/{customerId}/export`](/api-reference/customers/post-v3-customers-by-customer-id-export) (`postV3CustomersByCustomerIdExport`, status `422`)
+- [`POST /v3/customers/{customerId}/related-parties`](/api-reference/customers/post-v3-customers-by-customer-id-related-parties) (`postV3CustomersByCustomerIdRelated-parties`, status `400`)
+- [`PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/patch-v3-customers-by-customer-id-related-parties-by-related-party-id) (`patchV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, status `400`)
+
+<a id="request-body-too-large" className="block scroll-mt-32">
+  <span className="sr-only">request_body_too_large error</span>
+</a>
+
+### `request_body_too_large`
+
+**HTTP-status:** `413`<br />
+**Kan prøves på nytt:** Nei<br />
+**Problemtype:** `https://docs.swipelux.com/errors/request-body-too-large`
+
+**Betydning:** Forespørselens body overskrider størrelsen operasjonen godtar.
+
+**Når den oppstår:** En oppgaveinnsending sender mer forespørselsdata enn API-et kan behandle i én body.
+
+**Hva du skal gjøre:** Fjern unødvendige data, bruk dokumentreferanser i stedet for å bygge inn filinnhold, og send en mindre innsending som fortsatt besvarer de gjeldende kravene.
+
+**Veiledning for nye forsøk:** Ikke prøv den uendrede forespørselen på nytt. Utfør handlingen ovenfor før du sender en ny forespørsel.
+
+**Relevante API-operasjoner:**
+
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, status `413`)
+
+<a id="unauthorized" className="block scroll-mt-32">
+  <span className="sr-only">unauthorized error</span>
+</a>
+
+### `unauthorized`
+
+**HTTP-status:** `401`<br />
+**Kan prøves på nytt:** Nei<br />
+**Problemtype:** `https://docs.swipelux.com/errors/unauthorized`
+
+**Betydning:** Forespørselen mangler en gyldig API-nøkkel.
+
+**Når den oppstår:** `X-API-Key`-headeren mangler, er ugyldig, utløpt eller ikke gjenkjent av API-et.
+
+**Hva du skal gjøre:** Send riktig miljøspesifikk nøkkel fra en beskyttet backend. Roter nøkkelen hvis den kan ha blitt eksponert.
+
+**Veiledning for nye forsøk:** Ikke prøv den uendrede forespørselen på nytt. Utfør handlingen ovenfor før du sender en ny forespørsel.
+
+**Relevante API-operasjoner:** Alle autentiserte API-operasjoner.
+
+<a id="unknown-parameter" className="block scroll-mt-32">
+  <span className="sr-only">unknown_parameter error</span>
+</a>
+
+### `unknown_parameter`
+
+**HTTP-status:** `400`<br />
+**Kan prøves på nytt:** Nei<br />
+**Problemtype:** `https://docs.swipelux.com/errors/unknown-parameter`
+
+**Betydning:** Forespørselen inneholder en ustøttet eller ukjent parameter.
+
+**Når den oppstår:** En query-streng eller operasjonsparameter er feilstavet, ustøttet eller ikke akseptert av det endepunktet.
+
+**Hva du skal gjøre:** Fjern den ukjente parameteren eller erstatt den med en eksakt parameter dokumentert for operasjonen.
+
+**Veiledning for nye forsøk:** Ikke prøv den uendrede forespørselen på nytt. Utfør handlingen ovenfor før du sender en ny forespørsel.
+
+<Accordion title="Relevante API-operasjoner (26)">
+
+- [`GET /v3/capabilities`](/api-reference/capabilities/get-v3-capabilities) (`getV3Capabilities`, status `400`)
+- [`GET /v3/customers`](/api-reference/customers/get-v3-customers) (`getV3Customers`, status `400`)
+- [`GET /v3/customers/{customerId}/accounts`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts) (`getV3CustomersByCustomerIdAccounts`, status `400`)
+- [`GET /v3/customers/{customerId}/capabilities`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities) (`getV3CustomersByCustomerIdCapabilities`, status `400`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}/applications`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id-applications) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityIdApplications`, status `400`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}/applications/{applicationId}/history`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id-applications-by-application-id-history) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityIdApplicationsByApplicationIdHistory`, status `400`)
+- [`GET /v3/customers/{customerId}/capabilities/supported`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-supported) (`getV3CustomersByCustomerIdCapabilitiesSupported`, status `400`)
+- [`GET /v3/customers/{customerId}/documents`](/api-reference/documents/get-v3-customers-by-customer-id-documents) (`getV3CustomersByCustomerIdDocuments`, status `400`)
+- [`GET /v3/customers/{customerId}/recipients`](/api-reference/recipients/get-v3-customers-by-customer-id-recipients) (`getV3CustomersByCustomerIdRecipients`, status `400`)
+- [`GET /v3/customers/{customerId}/recipients/{recipientId}/destinations`](/api-reference/recipients/get-v3-customers-by-customer-id-recipients-by-recipient-id-destinations) (`getV3CustomersByCustomerIdRecipientsByRecipientIdDestinations`, status `400`)
+- [`GET /v3/customers/{customerId}/related-parties`](/api-reference/customers/get-v3-customers-by-customer-id-related-parties) (`getV3CustomersByCustomerIdRelated-parties`, status `400`)
+- [`GET /v3/customers/{customerId}/rules`](/api-reference/rules/get-v3-customers-by-customer-id-rules) (`getV3CustomersByCustomerIdRules`, status `400`)
+- [`GET /v3/customers/{customerId}/tasks`](/api-reference/tasks/list-customer-tasks) (`listCustomerTasks`, status `400`)
+- [`GET /v3/customers/{customerId}/tasks/{taskId}`](/api-reference/tasks/get-customer-task) (`getCustomerTask`, status `400`)
+- [`GET /v3/customers/{customerId}/tasks/{taskId}/history`](/api-reference/tasks/list-customer-task-history) (`listCustomerTaskHistory`, status `400`)
+- [`GET /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/list-customer-task-submissions) (`listCustomerTaskSubmissions`, status `400`)
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, status `400`)
+- [`GET /v3/customers/{customerId}/tasks/{taskId}/submissions/{submissionId}`](/api-reference/task-submissions/get-customer-task-submission) (`getCustomerTaskSubmission`, status `400`)
+- [`GET /v3/institutions`](/api-reference/institutions/get-v3-institutions) (`getV3Institutions`, status `400`)
+- [`GET /v3/rates`](/api-reference/money-movement/get-v3-rates) (`getV3Rates`, status `400`)
+- [`POST /v3/sandbox/tasks`](/api-reference/sandbox/post-v3-sandbox-tasks) (`postV3SandboxTasks`, status `400`)
+- [`POST /v3/sandbox/tasks/{taskId}/review`](/api-reference/sandbox/post-v3-sandbox-tasks-by-task-id-review) (`postV3SandboxTasksByTaskIdReview`, status `400`)
+- [`GET /v3/tasks`](/api-reference/tasks/list-tasks) (`listTasks`, status `400`)
+- [`GET /v3/tasks/{taskId}`](/api-reference/tasks/get-task) (`getTask`, status `400`)
+- [`GET /v3/transfers`](/api-reference/money-movement/get-v3-transfers) (`getV3Transfers`, status `400`)
+- [`GET /v3/transfers/{transferId}/tasks`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-tasks) (`getV3TransfersByTransferIdTasks`, status `400`)
+
+</Accordion>
+
+<a id="validation-error" className="block scroll-mt-32">
+  <span className="sr-only">validation_error error</span>
+</a>
+
+### `validation_error`
+
+**HTTP-status:** `400`, `422`<br />
+**Kan prøves på nytt:** Nei<br />
+**Problemtype:** `https://docs.swipelux.com/errors/validation-error`
+
+**Betydning:** Forespørselen oppfyller ikke operasjonens input-skjema.
+
+**Når den oppstår:** Påkrevde verdier mangler, felter har ugyldige typer eller formater, eller forespørselsparametere feiler valideringen.
+
+**Hva du skal gjøre:** Bruk `errors[]` og hver JSON Pointer til å korrigere forespørselen, sammenlign den med operasjonsskjemaet, og send en ny forespørsel.
+
+**Veiledning for nye forsøk:** Ikke prøv den uendrede forespørselen på nytt. Utfør handlingen ovenfor før du sender en ny forespørsel.
+
+<Accordion title="Relevante API-operasjoner (55)">
+
+- [`GET /v3/capabilities`](/api-reference/capabilities/get-v3-capabilities) (`getV3Capabilities`, status `400`)
+- [`GET /v3/customers`](/api-reference/customers/get-v3-customers) (`getV3Customers`, status `400`)
+- [`POST /v3/customers`](/api-reference/customers/post-v3-customers) (`postV3Customers`, status `400`)
+- [`DELETE /v3/customers/{customerId}`](/api-reference/customers/delete-v3-customers-by-customer-id) (`deleteV3CustomersByCustomerId`, status `400`)
+- [`PATCH /v3/customers/{customerId}`](/api-reference/customers/patch-v3-customers-by-customer-id) (`patchV3CustomersByCustomerId`, status `400`)
+- [`GET /v3/customers/{customerId}/accounts`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts) (`getV3CustomersByCustomerIdAccounts`, status `400`)
+- [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) (`postV3CustomersByCustomerIdAccounts`, status `400`)
+- [`DELETE /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/delete-v3-customers-by-customer-id-accounts-by-account-id) (`deleteV3CustomersByCustomerIdAccountsByAccountId`, status `400`)
+- [`PATCH /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/patch-v3-customers-by-customer-id-accounts-by-account-id) (`patchV3CustomersByCustomerIdAccountsByAccountId`, status `400`)
+- [`PUT /v3/customers/{customerId}/accounts/{accountId}/fees`](/api-reference/accounts/put-v3-customers-by-customer-id-accounts-by-account-id-fees) (`putV3CustomersByCustomerIdAccountsByAccountIdFees`, status `400`)
+- [`GET /v3/customers/{customerId}/capabilities`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities) (`getV3CustomersByCustomerIdCapabilities`, status `400`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, status `400`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}/applications`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id-applications) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityIdApplications`, status `400`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}/cancel`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id-cancel) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityIdCancel`, status `400`)
+- [`GET /v3/customers/{customerId}/documents`](/api-reference/documents/get-v3-customers-by-customer-id-documents) (`getV3CustomersByCustomerIdDocuments`, status `400`)
+- [`POST /v3/customers/{customerId}/documents`](/api-reference/documents/post-v3-customers-by-customer-id-documents) (`postV3CustomersByCustomerIdDocuments`, status `400`)
+- [`DELETE /v3/customers/{customerId}/documents/{documentId}`](/api-reference/documents/delete-v3-customers-by-customer-id-documents-by-document-id) (`deleteV3CustomersByCustomerIdDocumentsByDocumentId`, status `400`)
+- [`POST /v3/customers/{customerId}/export`](/api-reference/customers/post-v3-customers-by-customer-id-export) (`postV3CustomersByCustomerIdExport`, status `400`)
+- [`GET /v3/customers/{customerId}/recipients`](/api-reference/recipients/get-v3-customers-by-customer-id-recipients) (`getV3CustomersByCustomerIdRecipients`, status `400`)
+- [`POST /v3/customers/{customerId}/recipients`](/api-reference/recipients/post-v3-customers-by-customer-id-recipients) (`postV3CustomersByCustomerIdRecipients`, status `400`)
+- [`DELETE /v3/customers/{customerId}/recipients/{recipientId}`](/api-reference/recipients/delete-v3-customers-by-customer-id-recipients-by-recipient-id) (`deleteV3CustomersByCustomerIdRecipientsByRecipientId`, status `400`)
+- [`PATCH /v3/customers/{customerId}/recipients/{recipientId}`](/api-reference/recipients/patch-v3-customers-by-customer-id-recipients-by-recipient-id) (`patchV3CustomersByCustomerIdRecipientsByRecipientId`, status `400`)
+- [`GET /v3/customers/{customerId}/recipients/{recipientId}/destinations`](/api-reference/recipients/get-v3-customers-by-customer-id-recipients-by-recipient-id-destinations) (`getV3CustomersByCustomerIdRecipientsByRecipientIdDestinations`, status `400`)
+- [`POST /v3/customers/{customerId}/recipients/{recipientId}/destinations`](/api-reference/recipients/post-v3-customers-by-customer-id-recipients-by-recipient-id-destinations) (`postV3CustomersByCustomerIdRecipientsByRecipientIdDestinations`, status `400`)
+- [`DELETE /v3/customers/{customerId}/recipients/{recipientId}/destinations/{destinationId}`](/api-reference/recipients/delete-v3-customers-by-customer-id-recipients-by-recipient-id-destinations-by-destination-id) (`deleteV3CustomersByCustomerIdRecipientsByRecipientIdDestinationsByDestinationId`, status `400`)
+- [`GET /v3/customers/{customerId}/related-parties`](/api-reference/customers/get-v3-customers-by-customer-id-related-parties) (`getV3CustomersByCustomerIdRelated-parties`, status `400`)
+- [`POST /v3/customers/{customerId}/related-parties`](/api-reference/customers/post-v3-customers-by-customer-id-related-parties) (`postV3CustomersByCustomerIdRelated-parties`, status `400`)
+- [`DELETE /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/delete-v3-customers-by-customer-id-related-parties-by-related-party-id) (`deleteV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, status `400`)
+- [`PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/patch-v3-customers-by-customer-id-related-parties-by-related-party-id) (`patchV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, status `400`)
+- [`GET /v3/customers/{customerId}/rules`](/api-reference/rules/get-v3-customers-by-customer-id-rules) (`getV3CustomersByCustomerIdRules`, status `400`)
+- [`POST /v3/customers/{customerId}/rules`](/api-reference/rules/post-v3-customers-by-customer-id-rules) (`postV3CustomersByCustomerIdRules`, status `400`)
+- [`DELETE /v3/customers/{customerId}/rules/{ruleId}`](/api-reference/rules/delete-v3-customers-by-customer-id-rules-by-rule-id) (`deleteV3CustomersByCustomerIdRulesByRuleId`, status `400`)
+- [`PATCH /v3/customers/{customerId}/rules/{ruleId}`](/api-reference/rules/patch-v3-customers-by-customer-id-rules-by-rule-id) (`patchV3CustomersByCustomerIdRulesByRuleId`, status `400`)
+- [`GET /v3/customers/{customerId}/tasks`](/api-reference/tasks/list-customer-tasks) (`listCustomerTasks`, status `400`)
+- [`GET /v3/customers/{customerId}/tasks/{taskId}/history`](/api-reference/tasks/list-customer-task-history) (`listCustomerTaskHistory`, status `400`)
+- [`GET /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/list-customer-task-submissions) (`listCustomerTaskSubmissions`, status `400`)
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, status `400`)
+- [`GET /v3/institutions`](/api-reference/institutions/get-v3-institutions) (`getV3Institutions`, status `400`)
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, status `400`)
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, status `422`)
+- [`GET /v3/rates`](/api-reference/money-movement/get-v3-rates) (`getV3Rates`, status `400`)
+- [`POST /v3/sandbox/accounts/{accountId}/topup`](/api-reference/sandbox/post-v3-sandbox-accounts-by-account-id-topup) (`postV3SandboxAccountsByAccountIdTopup`, status `400`)
+- [`POST /v3/sandbox/customers/{customerId}/capabilities/{capabilityId}/status`](/api-reference/sandbox/post-v3-sandbox-customers-by-customer-id-capabilities-by-capability-id-status) (`postV3SandboxCustomersByCustomerIdCapabilitiesByCapabilityIdStatus`, status `400`)
+- [`POST /v3/sandbox/customers/{customerId}/verification`](/api-reference/sandbox/post-v3-sandbox-customers-by-customer-id-verification) (`postV3SandboxCustomersByCustomerIdVerification`, status `400`)
+- [`POST /v3/sandbox/tasks`](/api-reference/sandbox/post-v3-sandbox-tasks) (`postV3SandboxTasks`, status `400`)
+- [`POST /v3/sandbox/tasks/{taskId}/review`](/api-reference/sandbox/post-v3-sandbox-tasks-by-task-id-review) (`postV3SandboxTasksByTaskIdReview`, status `400`)
+- [`POST /v3/sandbox/transfers/{transferId}/state`](/api-reference/sandbox/post-v3-sandbox-transfers-by-transfer-id-state) (`postV3SandboxTransfersByTransferIdState`, status `400`)
+- [`GET /v3/tasks`](/api-reference/tasks/list-tasks) (`listTasks`, status `400`)
+- [`GET /v3/transfers`](/api-reference/money-movement/get-v3-transfers) (`getV3Transfers`, status `400`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, status `400`)
+- [`POST /v3/transfers/{transferId}/cancel`](/api-reference/money-movement/post-v3-transfers-by-transfer-id-cancel) (`postV3TransfersByTransferIdCancel`, status `400`)
+- [`GET /v3/transfers/{transferId}/tasks`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-tasks) (`getV3TransfersByTransferIdTasks`, status `400`)
+- [`POST /v3/webhooks`](/api-reference/webhooks/post-v3-webhooks) (`postV3Webhooks`, status `400`)
+- [`DELETE /v3/webhooks/{webhookId}`](/api-reference/webhooks/delete-v3-webhooks-by-webhook-id) (`deleteV3WebhooksByWebhookId`, status `400`)
+- [`PATCH /v3/webhooks/{webhookId}`](/api-reference/webhooks/patch-v3-webhooks-by-webhook-id) (`patchV3WebhooksByWebhookId`, status `400`)
+
+</Accordion>
+
+## Kunder og profiler
+
+<a id="customer-has-active-resources" className="block scroll-mt-32">
+  <span className="sr-only">customer_has_active_resources error</span>
+</a>
+
+### `customer_has_active_resources`
+
+**HTTP-status:** `409`<br />
+**Kan prøves på nytt:** Nei<br />
+**Problemtype:** `https://docs.swipelux.com/errors/customer-has-active-resources`
+
+**Betydning:** Kunden kan ikke arkiveres mens aktive ressurser fortsatt avhenger av den.
+
+**Når den oppstår:** Du arkiverer en kunde som fortsatt har kontoer, overføringer eller andre ressurser som krever avklaring.
+
+**Hva du skal gjøre:** Følg hver `blockingResources[].requiredAction`, hent kunden på nytt etter at ressursene er avklart, og prøv arkiveringsoperasjonen på nytt.
+
+**Veiledning for nye forsøk:** Ikke prøv den uendrede forespørselen på nytt. Utfør handlingen ovenfor før du sender en ny forespørsel.
+
+**Relevante API-operasjoner:**
+
+- [`DELETE /v3/customers/{customerId}`](/api-reference/customers/delete-v3-customers-by-customer-id) (`deleteV3CustomersByCustomerId`, status `409`)
+
+**Ekstra responsfelter:**
+
+- `blockingResources`: Kunderessurser som må avklares før den forespurte operasjonen kan fortsette, sortert etter type og id.
+
+**Eksempel:**
+
+```json
+{
+  "type": "https://docs.swipelux.com/errors/customer-has-active-resources",
+  "title": "Customer Has Active Resources",
+  "status": 409,
+  "code": "customer_has_active_resources",
+  "detail": "Archive or resolve every blocking resource before retrying.",
+  "correlationId": "01JERRORCUSTOMERARCHIVE",
+  "retryable": false,
+  "blockingResources": [
+    {
+      "type": "account",
+      "id": "acc_01JACTIVE",
+      "requiredAction": "archive_account"
+    }
+  ]
+}
+```
+
+<a id="customer-not-found" className="block scroll-mt-32">
+  <span className="sr-only">customer_not_found error</span>
+</a>
+
+### `customer_not_found`
+
+**HTTP-status:** `404`<br />
+**Kan prøves på nytt:** Nei<br />
+**Problemtype:** `https://docs.swipelux.com/errors/customer-not-found`
+
+**Betydning:** Kunden finnes ikke i gjeldende API-nøkkelmiljø eller er ikke lenger tilgjengelig.
+
+**Når den oppstår:** En operasjon bruker en kundeidentifikator som mangler, tilhører et annet miljø, eller refererer til en arkivert kunde der operasjonen krever en aktiv.
+
+**Hva du skal gjøre:** Verifiser kundeidentifikatoren og API-nøkkelmiljøet, og les eller list deretter kunder før du prøver på nytt med en tilgjengelig kunde.
+
+**Veiledning for nye forsøk:** Ikke prøv den uendrede forespørselen på nytt. Utfør handlingen ovenfor før du sender en ny forespørsel.
+
+<Accordion title="Relevante API-operasjoner (22)">
+
+- [`DELETE /v3/customers/{customerId}`](/api-reference/customers/delete-v3-customers-by-customer-id) (`deleteV3CustomersByCustomerId`, status `404`)
+- [`GET /v3/customers/{customerId}`](/api-reference/customers/get-v3-customers-by-customer-id) (`getV3CustomersByCustomerId`, status `404`)
+- [`PATCH /v3/customers/{customerId}`](/api-reference/customers/patch-v3-customers-by-customer-id) (`patchV3CustomersByCustomerId`, status `404`)
+- [`GET /v3/customers/{customerId}/capabilities`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities) (`getV3CustomersByCustomerIdCapabilities`, status `404`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityId`, status `404`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, status `404`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}/applications`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id-applications) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityIdApplications`, status `404`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}/applications/{applicationId}/history`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id-applications-by-application-id-history) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityIdApplicationsByApplicationIdHistory`, status `404`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}/cancel`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id-cancel) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityIdCancel`, status `404`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}/tasks-preview`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id-tasks-preview) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityIdTasks-preview`, status `404`)
+- [`GET /v3/customers/{customerId}/capabilities/supported`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-supported) (`getV3CustomersByCustomerIdCapabilitiesSupported`, status `404`)
+- [`GET /v3/customers/{customerId}/documents`](/api-reference/documents/get-v3-customers-by-customer-id-documents) (`getV3CustomersByCustomerIdDocuments`, status `404`)
+- [`POST /v3/customers/{customerId}/documents`](/api-reference/documents/post-v3-customers-by-customer-id-documents) (`postV3CustomersByCustomerIdDocuments`, status `404`)
+- [`DELETE /v3/customers/{customerId}/documents/{documentId}`](/api-reference/documents/delete-v3-customers-by-customer-id-documents-by-document-id) (`deleteV3CustomersByCustomerIdDocumentsByDocumentId`, status `404`)
+- [`GET /v3/customers/{customerId}/documents/{documentId}`](/api-reference/documents/get-v3-customers-by-customer-id-documents-by-document-id) (`getV3CustomersByCustomerIdDocumentsByDocumentId`, status `404`)
+- [`POST /v3/customers/{customerId}/export`](/api-reference/customers/post-v3-customers-by-customer-id-export) (`postV3CustomersByCustomerIdExport`, status `404`)
+- [`GET /v3/customers/{customerId}/related-parties`](/api-reference/customers/get-v3-customers-by-customer-id-related-parties) (`getV3CustomersByCustomerIdRelated-parties`, status `404`)
+- [`POST /v3/customers/{customerId}/related-parties`](/api-reference/customers/post-v3-customers-by-customer-id-related-parties) (`postV3CustomersByCustomerIdRelated-parties`, status `404`)
+- [`DELETE /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/delete-v3-customers-by-customer-id-related-parties-by-related-party-id) (`deleteV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, status `404`)
+- [`GET /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/get-v3-customers-by-customer-id-related-parties-by-related-party-id) (`getV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, status `404`)
+- [`PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/patch-v3-customers-by-customer-id-related-parties-by-related-party-id) (`patchV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, status `404`)
+- [`GET /v3/customers/{customerId}/tasks`](/api-reference/tasks/list-customer-tasks) (`listCustomerTasks`, status `404`)
+
+</Accordion>
+
+<a id="document-not-found" className="block scroll-mt-32">
+  <span className="sr-only">document_not_found error</span>
+</a>
+
+### `document_not_found`
+
+**HTTP-status:** `404`<br />
+**Kan prøves på nytt:** Returneres ikke<br />
+**Problemtype:** `https://docs.swipelux.com/errors/document-not-found`
+
+**Betydning:** Det forespurte kundedokumentet ble ikke funnet.
+
+**Når den oppstår:** Dokumentidentifikatoren mangler, er arkivert, eller tilhører ikke kunden i forespørselsstien.
+
+**Hva du skal gjøre:** Verifiser kunde- og dokumentidentifikatorene, list kundens dokumenter, og last opp en erstatning når det påkrevde dokumentet mangler.
+
+**Veiledning for nye forsøk:** Dette problemet returnerer ikke `retryable`. Ikke anta at et uendret nytt forsøk er trygt; følg handlingen ovenfor og operasjonens idempotenskrav.
+
+**Relevante API-operasjoner:**
+
+- [`DELETE /v3/customers/{customerId}/documents/{documentId}`](/api-reference/documents/delete-v3-customers-by-customer-id-documents-by-document-id) (`deleteV3CustomersByCustomerIdDocumentsByDocumentId`, status `404`)
+- [`GET /v3/customers/{customerId}/documents/{documentId}`](/api-reference/documents/get-v3-customers-by-customer-id-documents-by-document-id) (`getV3CustomersByCustomerIdDocumentsByDocumentId`, status `404`)
+
+<a id="duplicate-external-id" className="block scroll-mt-32">
+  <span className="sr-only">duplicate_external_id error</span>
+</a>
+
+### `duplicate_external_id`
+
+**HTTP-status:** `409`<br />
+**Kan prøves på nytt:** Nei<br />
+**Problemtype:** `https://docs.swipelux.com/errors/duplicate-external-id`
+
+**Betydning:** Den oppgitte `externalId` er allerede tildelt en annen ressurs i samme omfang.
+
+**Når den oppstår:** En opprettelses- eller oppdateringsforespørsel prøver å gjenbruke en utviklerkontrollert identifikator som må være unik.
+
+**Hva du skal gjøre:** Les ressursen som allerede er knyttet til den identifikatoren, eller bruk en ny unik `externalId` for en genuint annen ressurs.
+
+**Veiledning for nye forsøk:** Ikke prøv den uendrede forespørselen på nytt. Utfør handlingen ovenfor før du sender en ny forespørsel.
+
+**Relevante API-operasjoner:**
+
+- [`POST /v3/customers`](/api-reference/customers/post-v3-customers) (`postV3Customers`, status `409`)
+- [`PATCH /v3/customers/{customerId}`](/api-reference/customers/patch-v3-customers-by-customer-id) (`patchV3CustomersByCustomerId`, status `409`)
+- [`POST /v3/customers/{customerId}/related-parties`](/api-reference/customers/post-v3-customers-by-customer-id-related-parties) (`postV3CustomersByCustomerIdRelated-parties`, status `409`)
+- [`PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/patch-v3-customers-by-customer-id-related-parties-by-related-party-id) (`patchV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, status `409`)
+
+<a id="field-required-by-open-task" className="block scroll-mt-32">
+  <span className="sr-only">field_required_by_open_task error</span>
+</a>
+
+### `field_required_by_open_task`
+
+**HTTP-status:** `409`<br />
+**Kan prøves på nytt:** Nei<br />
+**Problemtype:** `https://docs.swipelux.com/errors/field-required-by-open-task`
+
+**Betydning:** Forespørselen prøver å tømme et profilfelt som en åpen oppgave fortsatt krever.
+
+**Når den oppstår:** En oppdatering av kunde eller relatert part fjerner en verdi som oppgaven i `taskId` har låst som påkrevd.
+
+**Hva du skal gjøre:** Les `taskId` og profilpekerne eller kravnøklene i `fields`, og gjenopprett deretter de påkrevde verdiene eller fullfør eller kanseller oppgaven før du sender oppdateringen på nytt.
+
+**Veiledning for nye forsøk:** Ikke prøv den uendrede forespørselen på nytt. Utfør handlingen ovenfor før du sender en ny forespørsel.
+
+**Relevante API-operasjoner:**
+
+- [`PATCH /v3/customers/{customerId}`](/api-reference/customers/patch-v3-customers-by-customer-id) (`patchV3CustomersByCustomerId`, status `409`)
+- [`PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/patch-v3-customers-by-customer-id-related-parties-by-related-party-id) (`patchV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, status `409`)
+
+**Ekstra responsfelter:**
+
+- `fields`: Profilpekere eller kravnøkler blokkert av den åpne oppgaven.
+- `taskId`: Gjeldende oppgaveidentifikator.
+
+<a id="merchant-kyb-not-approved" className="block scroll-mt-32">
+  <span className="sr-only">merchant_kyb_not_approved error</span>
+</a>
+
+### `merchant_kyb_not_approved`
+
+**HTTP-status:** `422`<br />
+**Kan prøves på nytt:** Returneres ikke<br />
+**Problemtype:** `https://docs.swipelux.com/errors/merchant-kyb-not-approved`
+
+**Betydning:** Den integrerende virksomheten er ikke godkjent for den forespurte kundeopprettelsesflyten.
+
+**Når den oppstår:** En produksjonsforespørsel om kundeopprettelse gjøres før den integrerende virksomheten og produksjonsområdet er godkjent.
+
+**Hva du skal gjøre:** Fullfør verifiseringsflyten for den integrerende virksomheten og vent på produksjonsgodkjenning før du oppretter produksjonskunder.
+
+**Veiledning for nye forsøk:** Dette problemet returnerer ikke `retryable`. Ikke anta at et uendret nytt forsøk er trygt; følg handlingen ovenfor og operasjonens idempotenskrav.
+
+**Relevante API-operasjoner:**
+
+- [`POST /v3/customers`](/api-reference/customers/post-v3-customers) (`postV3Customers`, status `422`)
+
+<a id="profile-obligation-crossheal-failed" className="block scroll-mt-32">
+  <span className="sr-only">profile_obligation_crossheal_failed error</span>
+</a>
+
+### `profile_obligation_crossheal_failed`
+
+**HTTP-status:** `500`<br />
+**Kan prøves på nytt:** Nei<br />
+**Problemtype:** `https://docs.swipelux.com/errors/profile-obligation-crossheal-failed`
+
+**Betydning:** Swipelux kunne ikke oppdatere kundens profilkrav.
+
+**Når den oppstår:** En oppdatering av kunde eller relatert part kan ikke forene profilendringen med dens gjeldende oppgavekrav.
+
+**Hva du skal gjøre:** Behold `correlationId` og kontakt Swipelux-support. Ikke prøv den uendrede oppdateringen på nytt gjentatte ganger.
+
+**Veiledning for nye forsøk:** Ikke prøv den uendrede forespørselen på nytt. Utfør handlingen ovenfor før du sender en ny forespørsel.
+
+**Relevante API-operasjoner:**
+
+- [`PATCH /v3/customers/{customerId}`](/api-reference/customers/patch-v3-customers-by-customer-id) (`patchV3CustomersByCustomerId`, status `500`)
+- [`PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/patch-v3-customers-by-customer-id-related-parties-by-related-party-id) (`patchV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, status `500`)
+
+<a id="related-party-in-review" className="block scroll-mt-32">
+  <span className="sr-only">related_party_in_review error</span>
+</a>
+
+### `related_party_in_review`
+
+**HTTP-status:** `409`<br />
+**Kan prøves på nytt:** Nei<br />
+**Problemtype:** `https://docs.swipelux.com/errors/related-party-in-review`
+
+**Betydning:** Den relaterte parten kan ikke arkiveres mens den er under vurdering.
+
+**Når den oppstår:** Du prøver å arkivere en relatert part hvis verifiserings- eller vurderingsarbeidsflyt fortsatt er aktiv.
+
+**Hva du skal gjøre:** Vent på at vurderingstilstanden endrer seg, hent den relaterte parten på nytt, og arkiver den kun når dens gjeldende status tillater operasjonen.
+
+**Veiledning for nye forsøk:** Ikke prøv den uendrede forespørselen på nytt. Utfør handlingen ovenfor før du sender en ny forespørsel.
+
+**Relevante API-operasjoner:**
+
+- [`DELETE /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/delete-v3-customers-by-customer-id-related-parties-by-related-party-id) (`deleteV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, status `409`)
+
+<a id="related-party-not-found" className="block scroll-mt-32">
+  <span className="sr-only">related_party_not_found error</span>
+</a>
+
+### `related_party_not_found`
+
+**HTTP-status:** `404`<br />
+**Kan prøves på nytt:** Returneres ikke<br />
+**Problemtype:** `https://docs.swipelux.com/errors/related-party-not-found`
+
+**Betydning:** Den relaterte parten ble ikke funnet under den angitte kunden.
+
+**Når den oppstår:** Identifikatoren for den relaterte parten mangler, er arkivert, tilhører en annen kunde, eller er ikke tilgjengelig i gjeldende miljø.
+
+**Hva du skal gjøre:** Verifiser identifikatorene for kunden og den relaterte parten, list kundens relaterte parter, og prøv på nytt med en tilgjengelig ressurs.
+
+**Veiledning for nye forsøk:** Dette problemet returnerer ikke `retryable`. Ikke anta at et uendret nytt forsøk er trygt; følg handlingen ovenfor og operasjonens idempotenskrav.
+
+**Relevante API-operasjoner:**
+
+- [`DELETE /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/delete-v3-customers-by-customer-id-related-parties-by-related-party-id) (`deleteV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, status `404`)
+- [`GET /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/get-v3-customers-by-customer-id-related-parties-by-related-party-id) (`getV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, status `404`)
+- [`PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/patch-v3-customers-by-customer-id-related-parties-by-related-party-id) (`patchV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, status `404`)
+
+## Capabilities, KYC og oppgaver
+
+<a id="absence-conflicts-with-profile" className="block scroll-mt-32">
+  <span className="sr-only">absence_conflicts_with_profile error</span>
+</a>
+
+### `absence_conflicts_with_profile`
+
+**HTTP-status:** `409`<br />
+**Kan prøves på nytt:** Nei<br />
+**Problemtype:** `https://docs.swipelux.com/errors/absence-conflicts-with-profile`
+
+**Betydning:** Et oppgavesvar som erklærer en verdi som fraværende, er i konflikt med data som allerede finnes på kundeprofilen.
+
+**Når den oppstår:** En innsending markerer et profilbasert krav som fraværende mens det kanoniske profilfeltet identifisert av `profilePointer` fortsatt har en verdi.
+
+**Hva du skal gjøre:** Gjennomgå `profilePointer`, oppdater kundeprofilen eller send inn et svar som er konsistent med den, hent oppgaven på nytt, og send inn gjeldende revisjon.
+
+**Veiledning for nye forsøk:** Ikke prøv den uendrede forespørselen på nytt. Utfør handlingen ovenfor før du sender en ny forespørsel.
+
+**Relevante API-operasjoner:**
+
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, status `409`)
+
+**Ekstra responsfelter:**
+
+- `profilePointer`: Kanonisk profilfelt knyttet til konflikten.
+
+<a id="capability-already-exists" className="block scroll-mt-32">
+  <span className="sr-only">capability_already_exists error</span>
+</a>
+
+### `capability_already_exists`
+
+**HTTP-status:** `409`<br />
+**Kan prøves på nytt:** Nei<br />
+**Problemtype:** `https://docs.swipelux.com/errors/capability-already-exists`
+
+**Betydning:** Kunden har allerede den forespurte capability-en.
+
+**Når den oppstår:** Du ber om en capability der en gjeldende eller eksisterende søknad allerede representerer den samme kunde-capability-en.
+
+**Hva du skal gjøre:** Les den eksisterende capability-en og fortsett fra dens gjeldende status i stedet for å opprette en duplikat.
+
+**Veiledning for nye forsøk:** Ikke prøv den uendrede forespørselen på nytt. Utfør handlingen ovenfor før du sender en ny forespørsel.
+
+**Relevante API-operasjoner:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, status `409`)
+
+<a id="capability-ineligible" className="block scroll-mt-32">
+  <span className="sr-only">capability_ineligible error</span>
+</a>
+
+### `capability_ineligible`
+
+**HTTP-status:** `422`<br />
+**Kan prøves på nytt:** Nei<br />
+**Problemtype:** `https://docs.swipelux.com/errors/capability-ineligible`
+
+**Betydning:** Kunden er ikke kvalifisert for den forespurte capability-en med sin gjeldende profil og konfigurasjon.
+
+**Når den oppstår:** Capability-evalueringen fastslår at det forespurte alternativet ikke er tilgjengelig for denne kunden.
+
+**Hva du skal gjøre:** Gjennomgå supported-capabilities-responsen og gjeldende oppgaver, og velg deretter en kvalifisert capability eller fullfør en eksponert forutsetning før du gjør en ny forespørsel.
+
+**Veiledning for nye forsøk:** Ikke prøv den uendrede forespørselen på nytt. Utfør handlingen ovenfor før du sender en ny forespørsel.
+
+**Relevante API-operasjoner:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, status `422`)
+
+<a id="capability-institutions-required" className="block scroll-mt-32">
+  <span className="sr-only">capability_institutions_required error</span>
+</a>
+
+### `capability_institutions_required`
+
+**HTTP-status:** `422`<br />
+**Kan prøves på nytt:** Returneres ikke<br />
+**Problemtype:** `https://docs.swipelux.com/errors/capability-institutions-required`
+
+**Betydning:** Capability-forespørselen krever ett eller flere institusjonsvalg.
+
+**Når den oppstår:** Du ber om en capability-variant som krever institusjoner, men utelater institusjonsvalget.
+
+**Hva du skal gjøre:** List støttede institusjoner for kunden, inkluder de påkrevde institusjonsidentifikatorene, og send inn en ny forespørsel.
+
+**Veiledning for nye forsøk:** Dette problemet returnerer ikke `retryable`. Ikke anta at et uendret nytt forsøk er trygt; følg handlingen ovenfor og operasjonens idempotenskrav.
+
+**Relevante API-operasjoner:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, status `422`)
+
+<a id="capability-institutions-unsupported" className="block scroll-mt-32">
+  <span className="sr-only">capability_institutions_unsupported error</span>
+</a>
+
+### `capability_institutions_unsupported`
+
+**HTTP-status:** `422`<br />
+**Kan prøves på nytt:** Nei<br />
+**Problemtype:** `https://docs.swipelux.com/errors/capability-institutions-unsupported`
+
+**Betydning:** Én eller flere valgte institusjoner støttes ikke for den forespurte capability-en.
+
+**Når den oppstår:** Forespørselen inneholder en institusjon utenfor capability-alternativene som er tilgjengelige for kunden.
+
+**Hva du skal gjøre:** Erstatt det ustøttede valget med institusjoner returnert av supported-capabilities-flyten, og send deretter inn en ny forespørsel.
+
+**Veiledning for nye forsøk:** Ikke prøv den uendrede forespørselen på nytt. Utfør handlingen ovenfor før du sender en ny forespørsel.
+
+**Relevante API-operasjoner:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, status `422`)
+
+<a id="capability-intent-unsupported" className="block scroll-mt-32">
+  <span className="sr-only">capability_intent_unsupported error</span>
+</a>
+
+### `capability_intent_unsupported`
+
+**HTTP-status:** `422`<br />
+**Kan prøves på nytt:** Returneres ikke<br />
+**Problemtype:** `https://docs.swipelux.com/errors/capability-intent-unsupported`
+
+**Betydning:** Den forespurte capability-intensjonen støttes ikke for denne capability-varianten.
+
+**Når den oppstår:** Forespørselen kombinerer en capability med en intensjon som ikke tilbys for de valgte kunde- eller institusjonsalternativene.
+
+**Hva du skal gjøre:** Bruk en intensjon eksponert av supported-capabilities-responsen, eller velg en annen støttet capability-variant.
+
+**Veiledning for nye forsøk:** Dette problemet returnerer ikke `retryable`. Ikke anta at et uendret nytt forsøk er trygt; følg handlingen ovenfor og operasjonens idempotenskrav.
+
+**Relevante API-operasjoner:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, status `422`)
+
+<a id="capability-key-unsupported" className="block scroll-mt-32">
+  <span className="sr-only">capability_key_unsupported error</span>
+</a>
+
+### `capability_key_unsupported`
+
+**HTTP-status:** `422`<br />
+**Kan prøves på nytt:** Nei<br />
+**Problemtype:** `https://docs.swipelux.com/errors/capability-key-unsupported`
+
+**Betydning:** Capability-nøkkelen støttes ikke av denne operasjonen.
+
+**Når den oppstår:** Forespørselen eller oppgaveforhåndsvisningen bruker en capability-identifikator som ikke kan forespørres for kunden.
+
+**Hva du skal gjøre:** List støttede capabilities og bruk en eksakt capability-identifikator returnert for kunden.
+
+**Veiledning for nye forsøk:** Ikke prøv den uendrede forespørselen på nytt. Utfør handlingen ovenfor før du sender en ny forespørsel.
+
+**Relevante API-operasjoner:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, status `422`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}/tasks-preview`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id-tasks-preview) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityIdTasks-preview`, status `422`)
+
+<a id="capability-not-cancelable" className="block scroll-mt-32">
+  <span className="sr-only">capability_not_cancelable error</span>
+</a>
+
+### `capability_not_cancelable`
+
+**HTTP-status:** `409`<br />
+**Kan prøves på nytt:** Nei<br />
+**Problemtype:** `https://docs.swipelux.com/errors/capability-not-cancelable`
+
+**Betydning:** Capability-en kan ikke kanselleres fra sin gjeldende status.
+
+**Når den oppstår:** En kanselleringsforespørsel ankommer etter at capability-en har gått inn i en tilstand som ikke kan kanselleres, eller mens ressurser fortsatt blokkerer kansellering.
+
+**Hva du skal gjøre:** Inspiser `statusReason` og `blockingResources`, avklar eller vent på de opplistede ressursene, hent capability-en på nytt, og velg den neste handlingen som dens gjeldende status tillater.
+
+**Veiledning for nye forsøk:** Ikke prøv den uendrede forespørselen på nytt. Utfør handlingen ovenfor før du sender en ny forespørsel.
+
+**Relevante API-operasjoner:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}/cancel`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id-cancel) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityIdCancel`, status `409`)
+
+**Ekstra responsfelter:**
+
+- `blockingResources`: Kunderessurser som må avklares før den forespurte operasjonen kan fortsette, sortert etter type og id.
+- `statusReason`: Strukturert årsak til en tilstandskonflikt når den feilede operasjonen avhenger av ressursens gjeldende status.
+
+<a id="capability-not-ready" className="block scroll-mt-32">
+  <span className="sr-only">capability_not_ready error</span>
+</a>
+
+### `capability_not_ready`
+
+**HTTP-status:** `409`<br />
+**Kan prøves på nytt:** Kontekstavhengig<br />
+**Problemtype:** `https://docs.swipelux.com/errors/capability-not-ready`
+
+**Betydning:** En capability som kreves av den forespurte kontoen eller pengebevegelsen, er ikke klar.
+
+**Når den oppstår:** Operasjonen avhenger av én eller flere kunde-capabilities som ikke har nådd en brukbar tilstand.
+
+**Hva du skal gjøre:** Les capability-identifikatorene i `capabilities`, fullfør eventuelle åpne oppgaver eller vent på at tilstanden deres går videre, hent dem på nytt, og send en ny forespørsel etter at de er klare.
+
+**Veiledning for nye forsøk:** Les `retryable` i denne responsen. Prøv på nytt senere bare når den er `true`. For en idempotent skriving, gjenbruk den opprinnelige idempotensnøkkelen og den uendrede forespørselen.
+
+**Relevante API-operasjoner:**
+
+- [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) (`postV3CustomersByCustomerIdAccounts`, status `409`)
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, status `409`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, status `409`)
+
+**Ekstra responsfelter:**
+
+- `capabilities`: Capability-ID-er som oppfyller den feilede operasjonen.
+
+<a id="capability-not-supported-for-customer-type" className="block scroll-mt-32">
+  <span className="sr-only">capability_not_supported_for_customer_type error</span>
+</a>
+
+### `capability_not_supported_for_customer_type`
+
+**HTTP-status:** `422`<br />
+**Kan prøves på nytt:** Returneres ikke<br />
+**Problemtype:** `https://docs.swipelux.com/errors/capability-not-supported-for-customer-type`
+
+**Betydning:** Capability-en støttes ikke for denne kundetypen.
+
+**Når den oppstår:** En privatperson- eller bedriftskunde ber om en capability som kun tilbys en annen kundetype.
+
+**Hva du skal gjøre:** Bruk supported-capabilities-responsen for denne kunden og be om en capability som tilbys for dens eksisterende type.
+
+**Veiledning for nye forsøk:** Dette problemet returnerer ikke `retryable`. Ikke anta at et uendret nytt forsøk er trygt; følg handlingen ovenfor og operasjonens idempotenskrav.
+
+**Relevante API-operasjoner:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, status `422`)
+
+<a id="capability-provider-resolution-failed" className="block scroll-mt-32">
+  <span className="sr-only">capability_provider_resolution_failed error</span>
+</a>
+
+### `capability_provider_resolution_failed`
+
+**HTTP-status:** `422`<br />
+**Kan prøves på nytt:** Returneres ikke<br />
+**Problemtype:** `https://docs.swipelux.com/errors/capability-provider-resolution-failed`
+
+**Betydning:** Swipelux kunne ikke utlede en fullstendig prosesseringskonfigurasjon for capability-forespørselen.
+
+**Når den oppstår:** Den forespurte capability-kombinasjonen er gyldig i form, men det tilgjengelige capability-oppsettet er ufullstendig.
+
+**Hva du skal gjøre:** Bekreft forespørselen mot supported-capabilities-responsen. Hvis den fortsatt tilbys, behold `correlationId` og kontakt Swipelux-support.
+
+**Veiledning for nye forsøk:** Dette problemet returnerer ikke `retryable`. Ikke anta at et uendret nytt forsøk er trygt; følg handlingen ovenfor og operasjonens idempotenskrav.
+
+**Relevante API-operasjoner:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, status `422`)
+
+<a id="capability-snapshot-corrupted" className="block scroll-mt-32">
+  <span className="sr-only">capability_snapshot_corrupted error</span>
+</a>
+
+### `capability_snapshot_corrupted`
+
+**HTTP-status:** `500`<br />
+**Kan prøves på nytt:** Nei<br />
+**Problemtype:** `https://docs.swipelux.com/errors/capability-snapshot-corrupted`
+
+**Betydning:** Swipelux kunne ikke evaluere kundens capability-tilstand.
+
+**Når den oppstår:** En capability-relatert operasjon støter på et ugyldig lagret capability-øyeblikksbilde.
+
+**Hva du skal gjøre:** Behold `correlationId` og kontakt Swipelux-support. Ikke prøv den uendrede forespørselen på nytt gjentatte ganger.
+
+**Veiledning for nye forsøk:** Ikke prøv den uendrede forespørselen på nytt. Utfør handlingen ovenfor før du sender en ny forespørsel.
+
+<Accordion title="Relevante API-operasjoner (11)">
+
+- [`PATCH /v3/customers/{customerId}`](/api-reference/customers/patch-v3-customers-by-customer-id) (`patchV3CustomersByCustomerId`, status `500`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, status `500`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}/cancel`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id-cancel) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityIdCancel`, status `500`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}/tasks-preview`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id-tasks-preview) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityIdTasks-preview`, status `500`)
+- [`POST /v3/customers/{customerId}/related-parties`](/api-reference/customers/post-v3-customers-by-customer-id-related-parties) (`postV3CustomersByCustomerIdRelated-parties`, status `500`)
+- [`DELETE /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/delete-v3-customers-by-customer-id-related-parties-by-related-party-id) (`deleteV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, status `500`)
+- [`PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/patch-v3-customers-by-customer-id-related-parties-by-related-party-id) (`patchV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, status `500`)
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, status `500`)
+- [`POST /v3/sandbox/customers/{customerId}/capabilities/{capabilityId}/status`](/api-reference/sandbox/post-v3-sandbox-customers-by-customer-id-capabilities-by-capability-id-status) (`postV3SandboxCustomersByCustomerIdCapabilitiesByCapabilityIdStatus`, status `500`)
+- [`POST /v3/sandbox/tasks`](/api-reference/sandbox/post-v3-sandbox-tasks) (`postV3SandboxTasks`, status `500`)
+- [`POST /v3/sandbox/tasks/{taskId}/review`](/api-reference/sandbox/post-v3-sandbox-tasks-by-task-id-review) (`postV3SandboxTasksByTaskIdReview`, status `500`)
+
+</Accordion>
+
+<a id="capability-terminally-rejected" className="block scroll-mt-32">
+  <span className="sr-only">capability_terminally_rejected error</span>
+</a>
+
+### `capability_terminally_rejected`
+
+**HTTP-status:** `409`<br />
+**Kan prøves på nytt:** Nei<br />
+**Problemtype:** `https://docs.swipelux.com/errors/capability-terminally-rejected`
+
+**Betydning:** Capability-en er allerede avvist i en terminal tilstand.
+
+**Når den oppstår:** Du ber om en capability der den eksisterende livssyklusen ikke lenger kan gå tilbake til en tilstand som kan forespørres.
+
+**Hva du skal gjøre:** Les den eksisterende capability-en og eksponerte oppgaver eller statusinformasjon, og velg deretter et annet støttet alternativ eller kontakt support hvis tilstanden er uventet.
+
+**Veiledning for nye forsøk:** Ikke prøv den uendrede forespørselen på nytt. Utfør handlingen ovenfor før du sender en ny forespørsel.
+
+**Relevante API-operasjoner:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, status `409`)
+
+<a id="capability-variant-unavailable" className="block scroll-mt-32">
+  <span className="sr-only">capability_variant_unavailable error</span>
+</a>
+
+### `capability_variant_unavailable`
+
+**HTTP-status:** `409`, `422`<br />
+**Kan prøves på nytt:** Kontekstavhengig<br />
+**Problemtype:** `https://docs.swipelux.com/errors/capability-variant-unavailable`
+
+**Betydning:** Den forespurte capability-varianten er utilgjengelig for den valgte kombinasjonen av kunde, intensjon eller institusjon.
+
+**Når den oppstår:** Capability-evalueringen finner enten et midlertidig tilgjengelighetsproblem eller en strukturelt ustøttet kombinasjon.
+
+**Hva du skal gjøre:** Inspiser `retryable`. Prøv på nytt senere når den er `true`; ellers velg en annen variant fra supported-capabilities-responsen.
+
+**Veiledning for nye forsøk:** Les `retryable` i denne responsen. Prøv på nytt senere bare når den er `true`. For en idempotent skriving, gjenbruk den opprinnelige idempotensnøkkelen og den uendrede forespørselen. Ikke endre forespørselen når du prøver på nytt ved et midlertidig variantavbrudd; endre capability-valget når responsen ikke kan prøves på nytt.
+
+**Relevante API-operasjoner:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, status `409`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, status `422`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}/tasks-preview`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id-tasks-preview) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityIdTasks-preview`, status `422`)
+
+<a id="initial-application-identity-conflict" className="block scroll-mt-32">
+  <span className="sr-only">initial_application_identity_conflict error</span>
+</a>
+
+### `initial_application_identity_conflict`
+
+**HTTP-status:** `409`<br />
+**Kan prøves på nytt:** Nei<br />
+**Problemtype:** `https://docs.swipelux.com/errors/initial-application-identity-conflict`
+
+**Betydning:** Identiteten til den innledende søknaden endret seg før den ble lagret.
+
+**Når den oppstår:** Kundeopprettelse eller en capability-forespørsel finner motstridende identitet for den innledende søknaden den oppretter.
+
+**Hva du skal gjøre:** Behold `correlationId` og kontakt Swipelux-support før du prøver capability-forespørselen på nytt.
+
+**Veiledning for nye forsøk:** Ikke prøv den uendrede forespørselen på nytt. Utfør handlingen ovenfor før du sender en ny forespørsel.
+
+**Relevante API-operasjoner:**
+
+- [`POST /v3/customers`](/api-reference/customers/post-v3-customers) (`postV3Customers`, status `409`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, status `409`)
+
+<a id="initial-application-owner-unavailable" className="block scroll-mt-32">
+  <span className="sr-only">initial_application_owner_unavailable error</span>
+</a>
+
+### `initial_application_owner_unavailable`
+
+**HTTP-status:** `503`<br />
+**Kan prøves på nytt:** Nei<br />
+**Problemtype:** `https://docs.swipelux.com/errors/initial-application-owner-unavailable`
+
+**Betydning:** Ingen gyldig eierrute er tilgjengelig for den innledende søknaden.
+
+**Når den oppstår:** En capability-forespørsel kan ikke tilordne den innledende søknaden til et støttet institusjonsalternativ.
+
+**Hva du skal gjøre:** Velg en støttet institusjon returnert av capability-katalogen, eller behold `correlationId` og kontakt Swipelux-support når ingen er tilgjengelig.
+
+**Veiledning for nye forsøk:** Ikke prøv den uendrede forespørselen på nytt. Utfør handlingen ovenfor før du sender en ny forespørsel.
+
+**Relevante API-operasjoner:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, status `503`)
+
+<a id="initial-application-scope-unavailable" className="block scroll-mt-32">
+  <span className="sr-only">initial_application_scope_unavailable error</span>
+</a>
+
+### `initial_application_scope_unavailable`
+
+**HTTP-status:** `503`<br />
+**Kan prøves på nytt:** Kontekstavhengig<br />
+**Problemtype:** `https://docs.swipelux.com/errors/initial-application-scope-unavailable`
+
+**Betydning:** Swipelux kunne ikke utlede omfanget som kreves for den innledende søknaden.
+
+**Når den oppstår:** Kundeopprettelse eller en capability-forespørsel kan ikke utlede API-nøkkelmiljøet og compliance-konteksten som trengs for å opprette den innledende søknaden.
+
+**Hva du skal gjøre:** Verifiser API-nøkkelmiljøet og behold `correlationId`. Følg `retryable` når den er til stede; ellers kontakt Swipelux-support før du prøver på nytt.
+
+**Veiledning for nye forsøk:** Les `retryable` i denne responsen. Prøv på nytt senere bare når den er `true`. For en idempotent skriving, gjenbruk den opprinnelige idempotensnøkkelen og den uendrede forespørselen.
+
+**Relevante API-operasjoner:**
+
+- [`POST /v3/customers`](/api-reference/customers/post-v3-customers) (`postV3Customers`, status `503`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, status `503`)
+
+<a id="invalid-capability" className="block scroll-mt-32">
+  <span className="sr-only">invalid_capability error</span>
+</a>
+
+### `invalid_capability`
+
+**HTTP-status:** `400`, `422`<br />
+**Kan prøves på nytt:** Returneres ikke<br />
+**Problemtype:** `https://docs.swipelux.com/errors/invalid-capability`
+
+**Betydning:** Capability-referansen eller den forespurte capability-verdien er ugyldig for denne operasjonen.
+
+**Når den oppstår:** En capability-forespørsel eller sandbox-statusendring bruker en ukjent eller inkompatibel capability-identifikator eller -verdi.
+
+**Hva du skal gjøre:** Les kundens capabilities, bruk en eksakt gjeldende capability-identifikator, og korriger forespørselen slik at den samsvarer med operasjonsskjemaet.
+
+**Veiledning for nye forsøk:** Dette problemet returnerer ikke `retryable`. Ikke anta at et uendret nytt forsøk er trygt; følg handlingen ovenfor og operasjonens idempotenskrav.
+
+**Relevante API-operasjoner:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, status `400`)
+- [`POST /v3/sandbox/customers/{customerId}/capabilities/{capabilityId}/status`](/api-reference/sandbox/post-v3-sandbox-customers-by-customer-id-capabilities-by-capability-id-status) (`postV3SandboxCustomersByCustomerIdCapabilitiesByCapabilityIdStatus`, status `422`)
+
+<a id="invalid-document-reference" className="block scroll-mt-32">
+  <span className="sr-only">invalid_document_reference error</span>
+</a>
+
+### `invalid_document_reference`
+
+**HTTP-status:** `400`<br />
+**Kan prøves på nytt:** Nei<br />
+**Problemtype:** `https://docs.swipelux.com/errors/invalid-document-reference`
+
+**Betydning:** En oppgaveinnsending inneholder en dokumentreferanse som ikke kan oppfylle det valgte kravet.
+
+**Når den oppstår:** Det refererte dokumentet mangler, er utilgjengelig for kunden, eller samsvarer ikke med oppgavekravet som besvares.
+
+**Hva du skal gjøre:** List eller last opp kundens dokumenter, bruk riktig dokumentidentifikator for kravet, hent oppgaven på nytt, og send inn dens gjeldende revisjon.
+
+**Veiledning for nye forsøk:** Ikke prøv den uendrede forespørselen på nytt. Utfør handlingen ovenfor før du sender en ny forespørsel.
+
+**Relevante API-operasjoner:**
+
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, status `400`)
+
+<a id="kyc-configuration-unavailable" className="block scroll-mt-32">
+  <span className="sr-only">kyc_configuration_unavailable error</span>
+</a>
+
+### `kyc_configuration_unavailable`
+
+**HTTP-status:** `503`<br />
+**Kan prøves på nytt:** Nei<br />
+**Problemtype:** `https://docs.swipelux.com/errors/kyc-configuration-unavailable`
+
+**Betydning:** Verifiseringskonfigurasjonen som capability-en krever, er utilgjengelig.
+
+**Når den oppstår:** Swipelux kan ikke klargjøre den forespurte verifiseringsflyten fra den aktive offentlige konfigurasjonen.
+
+**Hva du skal gjøre:** Behold `correlationId` og kontakt Swipelux-support. Ikke prøv den uendrede forespørselen på nytt gjentatte ganger.
+
+**Veiledning for nye forsøk:** Ikke prøv den uendrede forespørselen på nytt. Utfør handlingen ovenfor før du sender en ny forespørsel.
+
+**Relevante API-operasjoner:**
+
+- [`GET /kyc/redirect/{customerId}/{taskId}/{verificationSessionId}`](/api-reference/tasks/start-kyc-verification-session) (`startKycVerificationSession`, status `503`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, status `503`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}/tasks-preview`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id-tasks-preview) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityIdTasks-preview`, status `503`)
+
+<a id="kyc-level-configuration-invalid" className="block scroll-mt-32">
+  <span className="sr-only">kyc_level_configuration_invalid error</span>
+</a>
+
+### `kyc_level_configuration_invalid`
+
+**HTTP-status:** `503`<br />
+**Kan prøves på nytt:** Nei<br />
+**Problemtype:** `https://docs.swipelux.com/errors/kyc-level-configuration-invalid`
+
+**Betydning:** Den aktive konfigurasjonen for verifiseringsnivå er ugyldig.
+
+**Når den oppstår:** En vertsbasert verifiseringsøkt kan ikke starte fordi det konfigurerte verifiseringsnivået ikke er brukbart.
+
+**Hva du skal gjøre:** Behold `correlationId` og kontakt Swipelux-support slik at konfigurasjonen kan korrigeres før du prøver igjen.
+
+**Veiledning for nye forsøk:** Ikke prøv den uendrede forespørselen på nytt. Utfør handlingen ovenfor før du sender en ny forespørsel.
+
+**Relevante API-operasjoner:**
+
+- [`GET /kyc/redirect/{customerId}/{taskId}/{verificationSessionId}`](/api-reference/tasks/start-kyc-verification-session) (`startKycVerificationSession`, status `503`)
+
+<a id="kyc-process-conflict" className="block scroll-mt-32">
+  <span className="sr-only">kyc_process_conflict error</span>
+</a>
+
+### `kyc_process_conflict`
+
+**HTTP-status:** `409`<br />
+**Kan prøves på nytt:** Ja<br />
+**Problemtype:** `https://docs.swipelux.com/errors/kyc-process-conflict`
+
+**Betydning:** Verifiseringsprosessen endret seg før operasjonen ble fullført.
+
+**Når den oppstår:** En annen handling flytter frem eller erstatter oppgaven eller verifiseringsøkten mens forespørselen din pågår.
+
+**Hva du skal gjøre:** Last inn oppgaven og dens tilgjengelige verifiseringsmetoder på nytt, og prøv deretter på nytt mot gjeldende prosesstilstand.
+
+**Veiledning for nye forsøk:** Prøv på nytt etter en forsinkelse. For en idempotent skriving, gjenbruk den opprinnelige idempotensnøkkelen og den uendrede forespørselen.
+
+**Relevante API-operasjoner:**
+
+- [`GET /kyc/redirect/{customerId}/{taskId}/{verificationSessionId}`](/api-reference/tasks/start-kyc-verification-session) (`startKycVerificationSession`, status `409`)
+- [`PATCH /v3/customers/{customerId}`](/api-reference/customers/patch-v3-customers-by-customer-id) (`patchV3CustomersByCustomerId`, status `409`)
+- [`PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/patch-v3-customers-by-customer-id-related-parties-by-related-party-id) (`patchV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, status `409`)
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, status `409`)
+
+<a id="kyc-provider-unavailable" className="block scroll-mt-32">
+  <span className="sr-only">kyc_provider_unavailable error</span>
+</a>
+
+### `kyc_provider_unavailable`
+
+**HTTP-status:** `502`<br />
+**Kan prøves på nytt:** Ja<br />
+**Problemtype:** `https://docs.swipelux.com/errors/kyc-provider-unavailable`
+
+**Betydning:** Verifiseringstjenesten er midlertidig utilgjengelig.
+
+**Når den oppstår:** En vertsbasert verifiseringsøkt kan ikke opprettes eller fortsettes fordi verifiseringstjenesten ikke fullførte forespørselen.
+
+**Hva du skal gjøre:** Prøv på nytt etter en forsinkelse. Behold oppgave- og øktidentifikatorene, og hent oppgaven på nytt hvis avbruddet varer lenge nok til at tilstanden dens endrer seg.
+
+**Veiledning for nye forsøk:** Prøv på nytt etter en forsinkelse. For en idempotent skriving, gjenbruk den opprinnelige idempotensnøkkelen og den uendrede forespørselen.
+
+**Relevante API-operasjoner:**
+
+- [`GET /kyc/redirect/{customerId}/{taskId}/{verificationSessionId}`](/api-reference/tasks/start-kyc-verification-session) (`startKycVerificationSession`, status `502`)
+
+<a id="kyc-session-terminal" className="block scroll-mt-32">
+  <span className="sr-only">kyc_session_terminal error</span>
+</a>
+
+### `kyc_session_terminal`
+
+**HTTP-status:** `410`<br />
+**Kan prøves på nytt:** Nei<br />
+**Problemtype:** `https://docs.swipelux.com/errors/kyc-session-terminal`
+
+**Betydning:** Verifiseringsøkten kan ikke lenger brukes.
+
+**Når den oppstår:** Den forespurte vertsbaserte økten er allerede fullført, feilet, utløpt, eller har på annen måte nådd en terminal tilstand.
+
+**Hva du skal gjøre:** Hent oppgaven på nytt og bruk en aktiv økt, eller start en ny verifiseringsmetode eksponert av den gjeldende oppgaven.
+
+**Veiledning for nye forsøk:** Ikke prøv den uendrede forespørselen på nytt. Utfør handlingen ovenfor før du sender en ny forespørsel.
+
+**Relevante API-operasjoner:**
+
+- [`GET /kyc/redirect/{customerId}/{taskId}/{verificationSessionId}`](/api-reference/tasks/start-kyc-verification-session) (`startKycVerificationSession`, status `410`)
+
+<a id="ops-rail-handoff-conflict" className="block scroll-mt-32">
+  <span className="sr-only">ops_rail_handoff_conflict error</span>
+</a>
+
+### `ops_rail_handoff_conflict`
+
+**HTTP-status:** `409`<br />
+**Kan prøves på nytt:** Nei<br />
+**Problemtype:** `https://docs.swipelux.com/errors/ops-rail-handoff-conflict`
+
+**Betydning:** Oppgaveinnsendingen er blokkert av motstridende bank-rail-oppsett.
+
+**Når den oppstår:** En dokumentoppgaveinnsending kan ikke forene kundens gjeldende bank-rail-tilstand.
+
+**Hva du skal gjøre:** Behold de opplastede dokumentidentifikatorene, behold `correlationId`, og kontakt Swipelux-support før du prøver den samme innsendingen på nytt. Ikke last opp erstatningskopier utelukkende på grunn av denne konflikten.
+
+**Veiledning for nye forsøk:** Ikke prøv den uendrede forespørselen på nytt. Utfør handlingen ovenfor før du sender en ny forespørsel.
+
+**Relevante API-operasjoner:**
+
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, status `409`)
+
+<a id="provider-conflict" className="block scroll-mt-32">
+  <span className="sr-only">provider_conflict error</span>
+</a>
+
+### `provider_conflict`
+
+**HTTP-status:** `400`, `422`<br />
+**Kan prøves på nytt:** Nei<br />
+**Problemtype:** `https://docs.swipelux.com/errors/provider-conflict`
+
+**Betydning:** Den forespurte capability- eller verifiseringshandlingen er i konflikt med gjeldende prosesseringskonfigurasjon.
+
+**Når den oppstår:** Forespørselen er gyldig i form, men kan ikke forenes med kundens eksisterende capability- eller verifiseringsoppsett.
+
+**Hva du skal gjøre:** Hent kundens capabilities og oppgaver på nytt og velg et støttet gjeldende alternativ. Hvis konflikten fortsatt er uventet, behold `correlationId` og kontakt support.
+
+**Veiledning for nye forsøk:** Ikke prøv den uendrede forespørselen på nytt. Utfør handlingen ovenfor før du sender en ny forespørsel.
+
+**Relevante API-operasjoner:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, status `400`)
+- [`POST /v3/sandbox/customers/{customerId}/verification`](/api-reference/sandbox/post-v3-sandbox-customers-by-customer-id-verification) (`postV3SandboxCustomersByCustomerIdVerification`, status `422`)
+
+<a id="submission-channel-not-allowed" className="block scroll-mt-32">
+  <span className="sr-only">submission_channel_not_allowed error</span>
+</a>
+
+### `submission_channel_not_allowed`
+
+**HTTP-status:** `409`<br />
+**Kan prøves på nytt:** Nei<br />
+**Problemtype:** `https://docs.swipelux.com/errors/submission-channel-not-allowed`
+
+**Betydning:** Direkte API-innsending er ikke tillatt for denne oppgaven.
+
+**Når den oppstår:** Oppgaven krever en annen verifiseringsmetode og avviser svar sendt inn gjennom det direkte innsendingsendepunktet.
+
+**Hva du skal gjøre:** Hent oppgaven på nytt og bruk en av verifiseringsmetodene eller lenkene eksponert av dens gjeldende krav.
+
+**Veiledning for nye forsøk:** Ikke prøv den uendrede forespørselen på nytt. Utfør handlingen ovenfor før du sender en ny forespørsel.
+
+**Relevante API-operasjoner:**
+
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, status `409`)
+
+<a id="submission-not-found" className="block scroll-mt-32">
+  <span className="sr-only">submission_not_found error</span>
+</a>
+
+### `submission_not_found`
+
+**HTTP-status:** `404`<br />
+**Kan prøves på nytt:** Nei<br />
+**Problemtype:** `https://docs.swipelux.com/errors/submission-not-found`
+
+**Betydning:** Den forespurte oppgaveinnsendingen ble ikke funnet.
+
+**Når den oppstår:** Innsendingsidentifikatoren er feil, tilhører en annen oppgave eller kunde, eller er ikke tilgjengelig i gjeldende miljø.
+
+**Hva du skal gjøre:** Verifiser kunde-, oppgave- og innsendingsidentifikatorene, og list deretter innsendinger for den gjeldende oppgaven før du prøver på nytt.
+
+**Veiledning for nye forsøk:** Ikke prøv den uendrede forespørselen på nytt. Utfør handlingen ovenfor før du sender en ny forespørsel.
+
+**Relevante API-operasjoner:**
+
+- [`GET /v3/customers/{customerId}/tasks/{taskId}/submissions/{submissionId}`](/api-reference/task-submissions/get-customer-task-submission) (`getCustomerTaskSubmission`, status `404`)
+
+<a id="task-changed" className="block scroll-mt-32">
+  <span className="sr-only">task_changed error</span>
+</a>
+
+### `task_changed`
+
+**HTTP-status:** `409`<br />
+**Kan prøves på nytt:** Nei<br />
+**Problemtype:** `https://docs.swipelux.com/errors/task-changed`
+
+**Betydning:** Oppgaven endret seg etter at klienten din sist leste den.
+
+**Når den oppstår:** En innsending bruker en utdatert oppgaverevisjon eller -status etter at en annen handling oppdaterte oppgaven.
+
+**Hva du skal gjøre:** Bruk `taskUrl` eller `taskId` til å hente oppgaven på nytt, bygg svarene på nytt for `currentRevision` og `currentStatus`, og send inn de gjeldende kravene.
+
+**Veiledning for nye forsøk:** Ikke prøv den uendrede forespørselen på nytt. Utfør handlingen ovenfor før du sender en ny forespørsel. Fordi forespørselens body må endres til den nye revisjonen, bruk en ny idempotensnøkkel for den reviderte innsendingen.
+
+**Relevante API-operasjoner:**
+
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, status `409`)
+
+**Ekstra responsfelter:**
+
+- `currentRevision`: Gjeldende oppgaverevisjon.
+- `currentStatus`: Gjeldende oppgavestatus.
+- `taskId`: Gjeldende oppgaveidentifikator.
+- `taskUrl`: Ytterligere problemkontekst.
+
+<a id="task-not-found" className="block scroll-mt-32">
+  <span className="sr-only">task_not_found error</span>
+</a>
+
+### `task_not_found`
+
+**HTTP-status:** `404`<br />
+**Kan prøves på nytt:** Nei<br />
+**Problemtype:** `https://docs.swipelux.com/errors/task-not-found`
+
+**Betydning:** Oppgaven ble ikke funnet for den angitte kunden eller API-nøkkelen.
+
+**Når den oppstår:** Oppgaveidentifikatoren mangler, tilhører en annen kunde eller et annet omfang, eller er ikke tilgjengelig i gjeldende miljø.
+
+**Hva du skal gjøre:** Verifiser kunde- og oppgaveidentifikatorene, list gjeldende oppgaver, og fortsett med en tilgjengelig oppgave.
+
+**Veiledning for nye forsøk:** Ikke prøv den uendrede forespørselen på nytt. Utfør handlingen ovenfor før du sender en ny forespørsel.
+
+**Relevante API-operasjoner:**
+
+- [`GET /v3/customers/{customerId}/tasks/{taskId}`](/api-reference/tasks/get-customer-task) (`getCustomerTask`, status `404`)
+- [`GET /v3/customers/{customerId}/tasks/{taskId}/history`](/api-reference/tasks/list-customer-task-history) (`listCustomerTaskHistory`, status `404`)
+- [`GET /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/list-customer-task-submissions) (`listCustomerTaskSubmissions`, status `404`)
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, status `404`)
+- [`POST /v3/sandbox/tasks/{taskId}/review`](/api-reference/sandbox/post-v3-sandbox-tasks-by-task-id-review) (`postV3SandboxTasksByTaskIdReview`, status `404`)
+- [`GET /v3/tasks/{taskId}`](/api-reference/tasks/get-task) (`getTask`, status `404`)
+
+<a id="task-obligation-conflict" className="block scroll-mt-32">
+  <span className="sr-only">task_obligation_conflict error</span>
+</a>
+
+### `task_obligation_conflict`
+
+**HTTP-status:** `409`<br />
+**Kan prøves på nytt:** Nei<br />
+**Problemtype:** `https://docs.swipelux.com/errors/task-obligation-conflict`
+
+**Betydning:** Oppgaven har motstridende forpliktelsestilstand og kan ikke godta innsendingen.
+
+**Når den oppstår:** Oppgavens gjeldende krav inneholder en inkonsistent tilstand som den direkte innsendingsflyten ikke trygt kan løse.
+
+**Hva du skal gjøre:** Behold `correlationId`, hent oppgaven på nytt én gang, og kontakt Swipelux-support hvis konflikten vedvarer.
+
+**Veiledning for nye forsøk:** Ikke prøv den uendrede forespørselen på nytt. Utfør handlingen ovenfor før du sender en ny forespørsel.
+
+**Relevante API-operasjoner:**
+
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, status `409`)
+
+<a id="task-submission-incomplete" className="block scroll-mt-32">
+  <span className="sr-only">task_submission_incomplete error</span>
+</a>
+
+### `task_submission_incomplete`
+
+**HTTP-status:** `422`<br />
+**Kan prøves på nytt:** Nei<br />
+**Problemtype:** `https://docs.swipelux.com/errors/task-submission-incomplete`
+
+**Betydning:** Innsendingen besvarer ikke alle gjeldende handlingsbare krav.
+
+**Når den oppstår:** Én eller flere kravidentifikatorer oppført i `missingRequirementIds` har ikke noe gyldig svar i forespørselen.
+
+**Hva du skal gjøre:** Hent oppgaven på nytt, gi et svar for hver identifikator i `missingRequirementIds`, og send inn gjeldende oppgaverevisjon.
+
+**Veiledning for nye forsøk:** Ikke prøv den uendrede forespørselen på nytt. Utfør handlingen ovenfor før du sender en ny forespørsel.
+
+**Relevante API-operasjoner:**
+
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, status `422`)
+
+**Ekstra responsfelter:**
+
+- `missingRequirementIds`: Ordnede handlingsbare krav-ID-er som fortsatt mangler.
+
+<a id="verification-collection-mapping-invalid" className="block scroll-mt-32">
+  <span className="sr-only">verification_collection_mapping_invalid error</span>
+</a>
+
+### `verification_collection_mapping_invalid`
+
+**HTTP-status:** `503`<br />
+**Kan prøves på nytt:** Nei<br />
+**Problemtype:** `https://docs.swipelux.com/errors/verification-collection-mapping-invalid`
+
+**Betydning:** Oppgavens verifiseringskrav kan ikke gjøres om til en brukbar verifiseringsflyt.
+
+**Når den oppstår:** Swipelux kan ikke koble de gjeldende offentlige oppgavekravene til verifiseringsinnsamlingen som capability-en trenger.
+
+**Hva du skal gjøre:** Behold `correlationId` og kontakt Swipelux-support. Ikke prøv den uendrede forespørselen på nytt gjentatte ganger.
+
+**Veiledning for nye forsøk:** Ikke prøv den uendrede forespørselen på nytt. Utfør handlingen ovenfor før du sender en ny forespørsel.
+
+**Relevante API-operasjoner:**
+
+- [`GET /kyc/redirect/{customerId}/{taskId}/{verificationSessionId}`](/api-reference/tasks/start-kyc-verification-session) (`startKycVerificationSession`, status `503`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, status `503`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}/tasks-preview`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id-tasks-preview) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityIdTasks-preview`, status `503`)
+
+## Kontoer og betalings-rails
+
+<a id="account-has-active-transfers" className="block scroll-mt-32">
+  <span className="sr-only">account_has_active_transfers error</span>
+</a>
+
+### `account_has_active_transfers`
+
+**HTTP-status:** `409`<br />
+**Kan prøves på nytt:** Ja<br />
+**Problemtype:** `https://docs.swipelux.com/errors/account-has-active-transfers`
+
+**Betydning:** Kontoen kan ikke arkiveres mens én eller flere overføringer fortsatt er aktive.
+
+**Når den oppstår:** Du prøver å arkivere en konto som refereres av en pågående overføring.
+
+**Hva du skal gjøre:** Vent på at de aktive overføringene når en terminal tilstand, eller kanseller eller avklar overføringer som fortsatt kan endres, og arkiver deretter kontoen.
+
+**Veiledning for nye forsøk:** Prøv på nytt etter en forsinkelse. For en idempotent skriving, gjenbruk den opprinnelige idempotensnøkkelen og den uendrede forespørselen.
+
+**Relevante API-operasjoner:**
+
+- [`DELETE /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/delete-v3-customers-by-customer-id-accounts-by-account-id) (`deleteV3CustomersByCustomerIdAccountsByAccountId`, status `409`)
+
+<a id="account-method-not-supported" className="block scroll-mt-32">
+  <span className="sr-only">account_method_not_supported error</span>
+</a>
+
+### `account_method_not_supported`
+
+**HTTP-status:** `422`<br />
+**Kan prøves på nytt:** Nei<br />
+**Problemtype:** `https://docs.swipelux.com/errors/account-method-not-supported`
+
+**Betydning:** Den valgte kontoen støtter ikke betalingsmetoden som tilbudet ber om.
+
+**Når den oppstår:** Tilbudets kilde- eller destinasjonskonto er inkompatibel med den valgte pengebevegelsesmetoden.
+
+**Hva du skal gjøre:** Velg en konto- og metodekombinasjon som støttes av den gjeldende capability-en, og be deretter om et nytt tilbud.
+
+**Veiledning for nye forsøk:** Ikke prøv den uendrede forespørselen på nytt. Utfør handlingen ovenfor før du sender en ny forespørsel.
+
+**Relevante API-operasjoner:**
+
+- [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) (`postV3CustomersByCustomerIdAccounts`, status `422`)
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, status `422`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, status `422`)
+
+<a id="account-not-ready" className="block scroll-mt-32">
+  <span className="sr-only">account_not_ready error</span>
+</a>
+
+### `account_not_ready`
+
+**HTTP-status:** `409`<br />
+**Kan prøves på nytt:** Kontekstavhengig<br />
+**Problemtype:** `https://docs.swipelux.com/errors/account-not-ready`
+
+**Betydning:** Kontoen finnes, men dens gjeldende status tillater ikke tilbudet eller overføringen.
+
+**Når den oppstår:** En pengebevegelsesoperasjon krever en klar konto, og den valgte kontoen har ikke nådd den tilstanden.
+
+**Hva du skal gjøre:** Inspiser `statusReason`, fullfør det nødvendige oppsettet eller vent på at kontotilstanden går videre, hent kontoen på nytt, og send en ny forespørsel når den er klar.
+
+**Veiledning for nye forsøk:** Les `retryable` i denne responsen. Prøv på nytt senere bare når den er `true`. For en idempotent skriving, gjenbruk den opprinnelige idempotensnøkkelen og den uendrede forespørselen.
+
+**Relevante API-operasjoner:**
+
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, status `409`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, status `409`)
+
+**Ekstra responsfelter:**
+
+- `statusReason`: Strukturert årsak til en tilstandskonflikt når den feilede operasjonen avhenger av ressursens gjeldende status.
+
+<a id="account-unavailable" className="block scroll-mt-32">
+  <span className="sr-only">account_unavailable error</span>
+</a>
+
+### `account_unavailable`
+
+**HTTP-status:** `409`<br />
+**Kan prøves på nytt:** Nei<br />
+**Problemtype:** `https://docs.swipelux.com/errors/account-unavailable`
+
+**Betydning:** Den valgte kontoen er utilgjengelig for den forespurte pengebevegelsen.
+
+**Når den oppstår:** Operasjonen kan ikke bruke kontoen i dens gjeldende tilgjengelighetstilstand.
+
+**Hva du skal gjøre:** Hent kontoen på nytt og velg en tilgjengelig konto, eller avklar kontotilstanden før du oppretter en ny tilbuds- eller overføringsforespørsel.
+
+**Veiledning for nye forsøk:** Ikke prøv den uendrede forespørselen på nytt. Utfør handlingen ovenfor før du sender en ny forespørsel.
+
+**Relevante API-operasjoner:**
+
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, status `409`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, status `409`)
+
+<a id="bank-not-supported-for-customer" className="block scroll-mt-32">
+  <span className="sr-only">bank_not_supported_for_customer error</span>
+</a>
+
+### `bank_not_supported_for_customer`
+
+**HTTP-status:** `422`<br />
+**Kan prøves på nytt:** Returneres ikke<br />
+**Problemtype:** `https://docs.swipelux.com/errors/bank-not-supported-for-customer`
+
+**Betydning:** Den valgte institusjonen er ikke tilgjengelig for denne kunden og capability-forespørselen.
+
+**Når den oppstår:** En capability-forespørsel velger en institusjon som ikke er blant de støttede alternativene for kunden.
+
+**Hva du skal gjøre:** List kundens støttede capabilities og institusjoner, velg et tilgjengelig alternativ, og send inn en ny capability-forespørsel.
+
+**Veiledning for nye forsøk:** Dette problemet returnerer ikke `retryable`. Ikke anta at et uendret nytt forsøk er trygt; følg handlingen ovenfor og operasjonens idempotenskrav.
+
+**Relevante API-operasjoner:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, status `422`)
+
+<a id="developer-fee-invalid" className="block scroll-mt-32">
+  <span className="sr-only">developer_fee_invalid error</span>
+</a>
+
+### `developer_fee_invalid`
+
+**HTTP-status:** `422`<br />
+**Kan prøves på nytt:** Nei<br />
+**Problemtype:** `https://docs.swipelux.com/errors/developer-fee-invalid`
+
+**Betydning:** Utviklergebyr-konfigurasjonen er ugyldig for den valgte kontoen eller pengebevegelsen.
+
+**Når den oppstår:** Gebyrverdien er ugyldig, eller den valgte kontoen tilbyr ikke et kompatibelt oppgjørsmål for gebyret.
+
+**Hva du skal gjøre:** Korriger gebyrverdien og bruk en kvalifisert konto og oppgjørskonfigurasjon, og opprett deretter en ny konto-, tilbuds- eller overføringsforespørsel etter behov.
+
+**Veiledning for nye forsøk:** Ikke prøv den uendrede forespørselen på nytt. Utfør handlingen ovenfor før du sender en ny forespørsel.
+
+**Relevante API-operasjoner:**
+
+- [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) (`postV3CustomersByCustomerIdAccounts`, status `422`)
+- [`PUT /v3/customers/{customerId}/accounts/{accountId}/fees`](/api-reference/accounts/put-v3-customers-by-customer-id-accounts-by-account-id-fees) (`putV3CustomersByCustomerIdAccountsByAccountIdFees`, status `422`)
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, status `422`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, status `422`)
+
+<a id="invalid-settlement-target" className="block scroll-mt-32">
+  <span className="sr-only">invalid_settlement_target error</span>
+</a>
+
+### `invalid_settlement_target`
+
+**HTTP-status:** `400`<br />
+**Kan prøves på nytt:** Returneres ikke<br />
+**Problemtype:** `https://docs.swipelux.com/errors/invalid-settlement-target`
+
+**Betydning:** Det forespurte oppgjørsmålet er ugyldig for kontoen.
+
+**Når den oppstår:** Kontoopprettelse eller -oppdatering velger et oppgjørsmål som mangler, er inkompatibelt eller ustøttet for den kontokonfigurasjonen.
+
+**Hva du skal gjøre:** Velg et dokumentert oppgjørsmål som er kompatibelt med kontoen og capability-en, og send deretter en korrigert kontoforespørsel.
+
+**Veiledning for nye forsøk:** Dette problemet returnerer ikke `retryable`. Ikke anta at et uendret nytt forsøk er trygt; følg handlingen ovenfor og operasjonens idempotenskrav.
+
+**Relevante API-operasjoner:**
+
+- [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) (`postV3CustomersByCustomerIdAccounts`, status `400`)
+- [`PATCH /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/patch-v3-customers-by-customer-id-accounts-by-account-id) (`patchV3CustomersByCustomerIdAccountsByAccountId`, status `400`)
+
+<a id="rail-not-ready" className="block scroll-mt-32">
+  <span className="sr-only">rail_not_ready error</span>
+</a>
+
+### `rail_not_ready`
+
+**HTTP-status:** `409`<br />
+**Kan prøves på nytt:** Nei<br />
+**Problemtype:** `https://docs.swipelux.com/errors/rail-not-ready`
+
+**Betydning:** Den valgte betalings-railen er ikke klar for denne kunden.
+
+**Når den oppstår:** En destinasjon, et tilbud eller en overføring krever en kunde-rail som ikke har fullført sitt påkrevde oppsett eller sin klarhetsovergang.
+
+**Hva du skal gjøre:** Fullfør det påkrevde rail-oppsettet, vent til railen er klar til bruk, og opprett deretter en ny forespørsel.
+
+**Veiledning for nye forsøk:** Ikke prøv den uendrede forespørselen på nytt. Utfør handlingen ovenfor før du sender en ny forespørsel.
+
+**Relevante API-operasjoner:**
+
+- [`POST /v3/customers/{customerId}/recipients/{recipientId}/destinations`](/api-reference/recipients/post-v3-customers-by-customer-id-recipients-by-recipient-id-destinations) (`postV3CustomersByCustomerIdRecipientsByRecipientIdDestinations`, status `409`)
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, status `409`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, status `409`)
+
+<a id="rail-temporarily-unavailable" className="block scroll-mt-32">
+  <span className="sr-only">rail_temporarily_unavailable error</span>
+</a>
+
+### `rail_temporarily_unavailable`
+
+**HTTP-status:** `503`<br />
+**Kan prøves på nytt:** Ja<br />
+**Problemtype:** `https://docs.swipelux.com/errors/rail-temporarily-unavailable`
+
+**Betydning:** Den valgte betalings-railen er midlertidig utilgjengelig.
+
+**Når den oppstår:** Tilbudsopprettelsen kan ikke bruke en normalt støttet rail fordi railen har et midlertidig tilgjengelighetsproblem.
+
+**Hva du skal gjøre:** Prøv tilbudsforespørselen på nytt etter en forsinkelse, eller velg en annen støttet rail når bevegelsen ikke kan vente.
+
+**Veiledning for nye forsøk:** Prøv på nytt etter en forsinkelse. For en idempotent skriving, gjenbruk den opprinnelige idempotensnøkkelen og den uendrede forespørselen.
+
+**Relevante API-operasjoner:**
+
+- [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) (`postV3CustomersByCustomerIdAccounts`, status `503`)
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, status `503`)
+
+## Mottakere og destinasjoner
+
+<a id="destination-not-ready" className="block scroll-mt-32">
+  <span className="sr-only">destination_not_ready error</span>
+</a>
+
+### `destination_not_ready`
+
+**HTTP-status:** `409`<br />
+**Kan prøves på nytt:** Kontekstavhengig<br />
+**Problemtype:** `https://docs.swipelux.com/errors/destination-not-ready`
+
+**Betydning:** Mottakerdestinasjonen finnes, men den er ikke klar for det forespurte tilbudet.
+
+**Når den oppstår:** Et tilbud avhenger av en destinasjon hvis gjeldende status ikke tillater pengebevegelse.
+
+**Hva du skal gjøre:** Inspiser `statusReason`, fullfør det eksponerte destinasjonsoppsettet eller vent på at statusen går videre, hent den på nytt, og be om et nytt tilbud når den er klar.
+
+**Veiledning for nye forsøk:** Les `retryable` i denne responsen. Prøv på nytt senere bare når den er `true`. For en idempotent skriving, gjenbruk den opprinnelige idempotensnøkkelen og den uendrede forespørselen.
+
+**Relevante API-operasjoner:**
+
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, status `409`)
+
+**Ekstra responsfelter:**
+
+- `statusReason`: Strukturert årsak til en tilstandskonflikt når den feilede operasjonen avhenger av ressursens gjeldende status.
+
+<a id="payout-target-relationship-invalid" className="block scroll-mt-32">
+  <span className="sr-only">payout_target_relationship_invalid error</span>
+</a>
+
+### `payout_target_relationship_invalid`
+
+**HTTP-status:** `400`<br />
+**Kan prøves på nytt:** Returneres ikke<br />
+**Problemtype:** `https://docs.swipelux.com/errors/payout-target-relationship-invalid`
+
+**Betydning:** Det valgte payout-målet har ikke en gyldig relasjon til kunden eller mottakeren i tilbudet.
+
+**Når den oppstår:** Et tilbud peker på et mål som ikke eies av, eller ikke er en tillatt destinasjon for, den tiltenkte payout-relasjonen.
+
+**Hva du skal gjøre:** Velg en konto eller mottakerdestinasjon returnert under den tiltenkte kunden, og be deretter om et nytt tilbud.
+
+**Veiledning for nye forsøk:** Dette problemet returnerer ikke `retryable`. Ikke anta at et uendret nytt forsøk er trygt; følg handlingen ovenfor og operasjonens idempotenskrav.
+
+**Relevante API-operasjoner:**
+
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, status `400`)
+
+<a id="recipient-account-unsupported" className="block scroll-mt-32">
+  <span className="sr-only">recipient_account_unsupported error</span>
+</a>
+
+### `recipient_account_unsupported`
+
+**HTTP-status:** `400`<br />
+**Kan prøves på nytt:** Returneres ikke<br />
+**Problemtype:** `https://docs.swipelux.com/errors/recipient-account-unsupported`
+
+**Betydning:** Mottakerens kontoopplysninger støttes ikke for den forespurte destinasjonen.
+
+**Når den oppstår:** Destinasjonsopprettelsen mottar en kontotype eller kombinasjon av kontoopplysninger som den valgte railen ikke godtar.
+
+**Hva du skal gjøre:** Bruk en destinasjonstype og et kontoopplysningsskjema som støttes av den valgte railen, og opprett deretter en ny destinasjonsforespørsel.
+
+**Veiledning for nye forsøk:** Dette problemet returnerer ikke `retryable`. Ikke anta at et uendret nytt forsøk er trygt; følg handlingen ovenfor og operasjonens idempotenskrav.
+
+**Relevante API-operasjoner:**
+
+- [`POST /v3/customers/{customerId}/recipients/{recipientId}/destinations`](/api-reference/recipients/post-v3-customers-by-customer-id-recipients-by-recipient-id-destinations) (`postV3CustomersByCustomerIdRecipientsByRecipientIdDestinations`, status `400`)
+
+<a id="recipient-address-required" className="block scroll-mt-32">
+  <span className="sr-only">recipient_address_required error</span>
+</a>
+
+### `recipient_address_required`
+
+**HTTP-status:** `422`<br />
+**Kan prøves på nytt:** Nei<br />
+**Problemtype:** `https://docs.swipelux.com/errors/recipient-address-required`
+
+**Betydning:** Mottakeren trenger en adresse før denne fiat-destinasjonen kan opprettes.
+
+**Når den oppstår:** Destinasjonsopprettelsen velger en fiat-payout-metode som krever mottakerens adressedata, og mottakerprofilen oppgir dem ikke.
+
+**Hva du skal gjøre:** Oppdater mottakeren med de påkrevde adressefeltene, og opprett deretter destinasjonen på nytt.
+
+**Veiledning for nye forsøk:** Ikke prøv den uendrede forespørselen på nytt. Utfør handlingen ovenfor før du sender en ny forespørsel.
+
+**Relevante API-operasjoner:**
+
+- [`POST /v3/customers/{customerId}/recipients/{recipientId}/destinations`](/api-reference/recipients/post-v3-customers-by-customer-id-recipients-by-recipient-id-destinations) (`postV3CustomersByCustomerIdRecipientsByRecipientIdDestinations`, status `422`)
+
+<a id="recipient-destination-invalid" className="block scroll-mt-32">
+  <span className="sr-only">recipient_destination_invalid error</span>
+</a>
+
+### `recipient_destination_invalid`
+
+**HTTP-status:** `400`, `422`<br />
+**Kan prøves på nytt:** Nei<br />
+**Problemtype:** `https://docs.swipelux.com/errors/recipient-destination-invalid`
+
+**Betydning:** Mottakerdestinasjonen er ugyldig eller inkompatibel med den forespurte operasjonen.
+
+**Når den oppstår:** Destinasjonsopprettelse, tilbudsopprettelse eller overføringsutførelse bruker destinasjonsopplysninger som ikke oppfyller kravene for den valgte destinasjonen eller ruten.
+
+**Hva du skal gjøre:** Korriger destinasjonsopplysningene eller opprett en støttet erstatningsdestinasjon, og be deretter om et nytt tilbud eller en ny overføring etter behov.
+
+**Veiledning for nye forsøk:** Ikke prøv den uendrede forespørselen på nytt. Utfør handlingen ovenfor før du sender en ny forespørsel.
+
+**Relevante API-operasjoner:**
+
+- [`POST /v3/customers/{customerId}/recipients/{recipientId}/destinations`](/api-reference/recipients/post-v3-customers-by-customer-id-recipients-by-recipient-id-destinations) (`postV3CustomersByCustomerIdRecipientsByRecipientIdDestinations`, status `400`)
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, status `422`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, status `422`)
+
+<a id="recipient-name-invalid" className="block scroll-mt-32">
+  <span className="sr-only">recipient_name_invalid error</span>
+</a>
+
+### `recipient_name_invalid`
+
+**HTTP-status:** `400`<br />
+**Kan prøves på nytt:** Returneres ikke<br />
+**Problemtype:** `https://docs.swipelux.com/errors/recipient-name-invalid`
+
+**Betydning:** Mottakernavnet oppfyller ikke forespørselsskjemaet.
+
+**Når den oppstår:** Mottakeropprettelsen mottar et navn som mangler, er tomt eller har ugyldig format.
+
+**Hva du skal gjøre:** Oppgi et mottakernavn som samsvarer med det dokumenterte skjemaet, og send en korrigert opprettelsesforespørsel.
+
+**Veiledning for nye forsøk:** Dette problemet returnerer ikke `retryable`. Ikke anta at et uendret nytt forsøk er trygt; følg handlingen ovenfor og operasjonens idempotenskrav.
+
+**Relevante API-operasjoner:**
+
+- [`POST /v3/customers/{customerId}/recipients`](/api-reference/recipients/post-v3-customers-by-customer-id-recipients) (`postV3CustomersByCustomerIdRecipients`, status `400`)
+
+<a id="wallet-destination-not-supported" className="block scroll-mt-32">
+  <span className="sr-only">wallet_destination_not_supported error</span>
+</a>
+
+### `wallet_destination_not_supported`
+
+**HTTP-status:** `409`<br />
+**Kan prøves på nytt:** Nei<br />
+**Problemtype:** `https://docs.swipelux.com/errors/wallet-destination-not-supported`
+
+**Betydning:** Den valgte pengebevegelsesmetoden støtter ikke en lommebokdestinasjon.
+
+**Når den oppstår:** Tilbudsopprettelsen kombinerer en lommebokdestinasjon med en rail eller capability som er tiltenkt en annen destinasjonstype.
+
+**Hva du skal gjøre:** Velg en kompatibel konto- eller mottakerdestinasjon, eller velg en støttet lommebokoverføringsmetode, og be deretter om et nytt tilbud.
+
+**Veiledning for nye forsøk:** Ikke prøv den uendrede forespørselen på nytt. Utfør handlingen ovenfor før du sender en ny forespørsel.
+
+**Relevante API-operasjoner:**
+
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, status `409`)
+
+## Tilbud og overføringer
+
+<a id="amount-not-deliverable" className="block scroll-mt-32">
+  <span className="sr-only">amount_not_deliverable error</span>
+</a>
+
+### `amount_not_deliverable`
+
+**HTTP-status:** `422`<br />
+**Kan prøves på nytt:** Nei<br />
+**Problemtype:** `https://docs.swipelux.com/errors/amount-not-deliverable`
+
+**Betydning:** Det forespurte beløpet kan ikke leveres med de valgte valutaene, kontoene eller metoden.
+
+**Når den oppstår:** Tilbudsforespørselen er gyldig i form, men kan ikke produsere et leverbart destinasjonsbeløp for den valgte ruten.
+
+**Hva du skal gjøre:** Juster beløpet, valutaen, kontoen, destinasjonen eller metoden, og be deretter om et nytt tilbud.
+
+**Veiledning for nye forsøk:** Ikke prøv den uendrede forespørselen på nytt. Utfør handlingen ovenfor før du sender en ny forespørsel.
+
+**Relevante API-operasjoner:**
+
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, status `422`)
+
+<a id="amount-side-ambiguous" className="block scroll-mt-32">
+  <span className="sr-only">amount_side_ambiguous error</span>
+</a>
+
+### `amount_side_ambiguous`
+
+**HTTP-status:** `400`<br />
+**Kan prøves på nytt:** Nei<br />
+**Problemtype:** `https://docs.swipelux.com/errors/amount-side-ambiguous`
+
+**Betydning:** Tilbudsforespørselen identifiserer ikke entydig hvilken side av konverteringen som har det faste beløpet.
+
+**Når den oppstår:** Beløpsfelter er oppgitt i en kombinasjon som gjør intensjonen for kilde-kontra-destinasjonsbeløpet uklar.
+
+**Hva du skal gjøre:** Sett beløpet på nøyaktig den støttede siden for den tiltenkte tilbudsretningen, og be deretter om et nytt tilbud.
+
+**Veiledning for nye forsøk:** Ikke prøv den uendrede forespørselen på nytt. Utfør handlingen ovenfor før du sender en ny forespørsel.
+
+**Relevante API-operasjoner:**
+
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, status `400`)
+
+<a id="capability-direction-unsupported" className="block scroll-mt-32">
+  <span className="sr-only">capability_direction_unsupported error</span>
+</a>
+
+### `capability_direction_unsupported`
+
+**HTTP-status:** `422`<br />
+**Kan prøves på nytt:** Nei<br />
+**Problemtype:** `https://docs.swipelux.com/errors/capability-direction-unsupported`
+
+**Betydning:** Den valgte capability-en støtter ikke pengebevegelsesretningen som tilbudet eller overføringen krever.
+
+**Når den oppstår:** Tilbudsopprettelsen utleder en retning som den valgte capability-en ikke annonserer, eller overføringsopprettelsen finner at tilbudets låste capability ikke lenger støtter sin lagrede retning.
+
+**Hva du skal gjøre:** Velg en capability som støtter den tiltenkte retningen, og be om et nytt tilbud før du oppretter overføringen.
+
+**Veiledning for nye forsøk:** Ikke prøv den uendrede forespørselen på nytt. Utfør handlingen ovenfor før du sender en ny forespørsel.
+
+**Relevante API-operasjoner:**
+
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, status `422`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, status `422`)
+
+<a id="insufficient-balance" className="block scroll-mt-32">
+  <span className="sr-only">insufficient_balance error</span>
+</a>
+
+### `insufficient_balance`
+
+**HTTP-status:** `409`<br />
+**Kan prøves på nytt:** Nei<br />
+**Problemtype:** `https://docs.swipelux.com/errors/insufficient-balance`
+
+**Betydning:** Kildekontoen har ikke nok tilgjengelig saldo for overføringen.
+
+**Når den oppstår:** Overføringsutførelsen sjekker kildekontoen, og det tilgjengelige beløpet er lavere enn den påkrevde belastningen.
+
+**Hva du skal gjøre:** Finansier kildekontoen eller reduser overføringsbeløpet, hent deretter et nytt tilbud og opprett en ny overføringsforespørsel.
+
+**Veiledning for nye forsøk:** Ikke prøv den uendrede forespørselen på nytt. Utfør handlingen ovenfor før du sender en ny forespørsel.
+
+**Relevante API-operasjoner:**
+
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, status `409`)
+
+<a id="quote-already-executed" className="block scroll-mt-32">
+  <span className="sr-only">quote_already_executed error</span>
+</a>
+
+### `quote_already_executed`
+
+**HTTP-status:** `409`<br />
+**Kan prøves på nytt:** Nei<br />
+**Problemtype:** `https://docs.swipelux.com/errors/quote-already-executed`
+
+**Betydning:** Tilbudet er allerede utført og har en eksisterende overføring.
+
+**Når den oppstår:** En andre utførelsesforespørsel ankommer etter at en annen forespørsel har brukt opp tilbudet.
+
+**Hva du skal gjøre:** Bruk `transferId` til å lese og følge den eksisterende overføringen. Ikke opprett en ny overføring fra det samme tilbudet.
+
+**Veiledning for nye forsøk:** Ikke prøv den uendrede forespørselen på nytt. Utfør handlingen ovenfor før du sender en ny forespørsel. Behandle den returnerte overføringen som resultatet av den opprinnelige intensjonen i stedet for å prøve tilbudsutførelsen på nytt.
+
+**Relevante API-operasjoner:**
+
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, status `409`)
+
+**Ekstra responsfelter:**
+
+- `transferId`: Eksisterende overføring som brukte opp tilbudet.
+
+**Eksempel:**
+
+```json
+{
+  "type": "https://docs.swipelux.com/errors/quote-already-executed",
+  "title": "Quote Already Executed",
+  "status": 409,
+  "code": "quote_already_executed",
+  "detail": "This quote was already executed by another request.",
+  "correlationId": "cor_01JMM23TRANSFERERRORS",
+  "retryable": false,
+  "transferId": "tr_6dV8xN2pQ4rT7mA9sL1kBc"
+}
+```
+
+<a id="quote-destination-missing" className="block scroll-mt-32">
+  <span className="sr-only">quote_destination_missing error</span>
+</a>
+
+### `quote_destination_missing`
+
+**HTTP-status:** `409`, `500`<br />
+**Kan prøves på nytt:** Kontekstavhengig<br />
+**Problemtype:** `https://docs.swipelux.com/errors/quote-destination-missing`
+
+**Betydning:** Tilbudet eller overføringen inneholder ikke destinasjonen som operasjonen krever.
+
+**Når den oppstår:** Et nytt tilbud utelater en påkrevd destinasjon, eller en eksisterende tilbudsbasert ressurs kan ikke slå opp sin registrerte destinasjon.
+
+**Hva du skal gjøre:** For en ny forespørsel, oppgi en gyldig konto- eller mottakerdestinasjon og be om et nytt tilbud. For en eksisterende ressurs, behold `correlationId` og kontakt support hvis ny henting ikke løser det.
+
+**Veiledning for nye forsøk:** Les `retryable` i denne responsen. Prøv på nytt senere bare når den er `true`. For en idempotent skriving, gjenbruk den opprinnelige idempotensnøkkelen og den uendrede forespørselen.
+
+**Relevante API-operasjoner:**
+
+- [`GET /v3/quotes/{quoteId}`](/api-reference/money-movement/get-v3-quotes-by-quote-id) (`getV3QuotesByQuoteId`, status `500`)
+- [`GET /v3/transfers`](/api-reference/money-movement/get-v3-transfers) (`getV3Transfers`, status `500`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, status `409`)
+- [`GET /v3/transfers/{transferId}`](/api-reference/money-movement/get-v3-transfers-by-transfer-id) (`getV3TransfersByTransferId`, status `500`)
+- [`POST /v3/transfers/{transferId}/cancel`](/api-reference/money-movement/post-v3-transfers-by-transfer-id-cancel) (`postV3TransfersByTransferIdCancel`, status `500`)
+- [`GET /v3/transfers/{transferId}/instructions`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-instructions) (`getV3TransfersByTransferIdInstructions`, status `500`)
+- [`GET /v3/transfers/{transferId}/tasks`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-tasks) (`getV3TransfersByTransferIdTasks`, status `500`)
+
+<a id="quote-direction-invalid" className="block scroll-mt-32">
+  <span className="sr-only">quote_direction_invalid error</span>
+</a>
+
+### `quote_direction_invalid`
+
+**HTTP-status:** `422`, `500`<br />
+**Kan prøves på nytt:** Kontekstavhengig<br />
+**Problemtype:** `https://docs.swipelux.com/errors/quote-direction-invalid`
+
+**Betydning:** Kilden og destinasjonen danner ikke en støttet tilbudsretning.
+
+**Når den oppstår:** Den valgte kontoen, destinasjonen, valutaene eller metoden plasserer bevegelsen i en ugyldig kilde-til-destinasjon-retning.
+
+**Hva du skal gjøre:** Korriger kilde- og destinasjonsrollene ved å bruke en støttet pengeflyt, og be deretter om et nytt tilbud.
+
+**Veiledning for nye forsøk:** Les `retryable` i denne responsen. Prøv på nytt senere bare når den er `true`. For en idempotent skriving, gjenbruk den opprinnelige idempotensnøkkelen og den uendrede forespørselen.
+
+**Relevante API-operasjoner:**
+
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, status `422`)
+- [`GET /v3/quotes/{quoteId}`](/api-reference/money-movement/get-v3-quotes-by-quote-id) (`getV3QuotesByQuoteId`, status `500`)
+- [`GET /v3/transfers`](/api-reference/money-movement/get-v3-transfers) (`getV3Transfers`, status `500`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, status `500`)
+- [`GET /v3/transfers/{transferId}`](/api-reference/money-movement/get-v3-transfers-by-transfer-id) (`getV3TransfersByTransferId`, status `500`)
+- [`POST /v3/transfers/{transferId}/cancel`](/api-reference/money-movement/post-v3-transfers-by-transfer-id-cancel) (`postV3TransfersByTransferIdCancel`, status `500`)
+- [`GET /v3/transfers/{transferId}/instructions`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-instructions) (`getV3TransfersByTransferIdInstructions`, status `500`)
+- [`GET /v3/transfers/{transferId}/tasks`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-tasks) (`getV3TransfersByTransferIdTasks`, status `500`)
+
+<a id="quote-execution-consumed" className="block scroll-mt-32">
+  <span className="sr-only">quote_execution_consumed error</span>
+</a>
+
+### `quote_execution_consumed`
+
+**HTTP-status:** `409`<br />
+**Kan prøves på nytt:** Nei<br />
+**Problemtype:** `https://docs.swipelux.com/errors/quote-execution-consumed`
+
+**Betydning:** Tilbudets ene utførelsesmulighet er allerede brukt opp.
+
+**Når den oppstår:** Et tidligere eller konkurrerende utførelsesforsøk flyttet tilbudet inn i en tilstand som ikke kan utføres igjen, uten en eksisterende vellykket overføring å returnere.
+
+**Hva du skal gjøre:** Be om et nytt tilbud for den tiltenkte bevegelsen, og utfør det nye tilbudet én gang.
+
+**Veiledning for nye forsøk:** Ikke prøv den uendrede forespørselen på nytt. Utfør handlingen ovenfor før du sender en ny forespørsel.
+
+**Relevante API-operasjoner:**
+
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, status `409`)
+
+<a id="quote-expired" className="block scroll-mt-32">
+  <span className="sr-only">quote_expired error</span>
+</a>
+
+### `quote_expired`
+
+**HTTP-status:** `409`<br />
+**Kan prøves på nytt:** Nei<br />
+**Problemtype:** `https://docs.swipelux.com/errors/quote-expired`
+
+**Betydning:** Tilbudet utløp før det ble utført.
+
+**Når den oppstår:** Overføringsopprettelsen bruker et tilbud etter at gyldighetsvinduet er utløpt.
+
+**Hva du skal gjøre:** Be om et ferskt tilbud og utfør det før det nye utløpstidspunktet.
+
+**Veiledning for nye forsøk:** Ikke prøv den uendrede forespørselen på nytt. Utfør handlingen ovenfor før du sender en ny forespørsel.
+
+**Relevante API-operasjoner:**
+
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, status `409`)
+
+<a id="quote-failed" className="block scroll-mt-32">
+  <span className="sr-only">quote_failed error</span>
+</a>
+
+### `quote_failed`
+
+**HTTP-status:** `500`, `502`<br />
+**Kan prøves på nytt:** Kontekstavhengig<br />
+**Problemtype:** `https://docs.swipelux.com/errors/quote-failed`
+
+**Betydning:** Swipelux kunne ikke opprette et brukbart tilbud for forespørselen.
+
+**Når den oppstår:** Tilbudsopprettelsen støter på enten en midlertidig tjenestefeil eller en terminal feil for den valgte ruten.
+
+**Hva du skal gjøre:** Inspiser `retryable`. Prøv den samme tilbudsforespørselen på nytt senere når den er `true`; ellers endre rute-inndataene eller kontakt support med `correlationId`.
+
+**Veiledning for nye forsøk:** Les `retryable` i denne responsen. Prøv på nytt senere bare når den er `true`. For en idempotent skriving, gjenbruk den opprinnelige idempotensnøkkelen og den uendrede forespørselen.
+
+**Relevante API-operasjoner:**
+
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, status `500`)
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, status `502`)
+
+<a id="quote-mode-invalid" className="block scroll-mt-32">
+  <span className="sr-only">quote_mode_invalid error</span>
+</a>
+
+### `quote_mode_invalid`
+
+**HTTP-status:** `500`<br />
+**Kan prøves på nytt:** Ja<br />
+**Problemtype:** `https://docs.swipelux.com/errors/quote-mode-invalid`
+
+**Betydning:** Tilbudet kan ikke tolkes i modusen som operasjonen krever.
+
+**Når den oppstår:** En eksisterende tilbudsbasert ressurs inneholder en modus som lese- eller utførelsesstien ikke kan behandle.
+
+**Hva du skal gjøre:** Prøv på nytt etter en forsinkelse. Hvis det samme tilbudet fortsetter å feile, behold `correlationId` og kontakt support i stedet for å endre det lagrede tilbudet.
+
+**Veiledning for nye forsøk:** Prøv på nytt etter en forsinkelse. For en idempotent skriving, gjenbruk den opprinnelige idempotensnøkkelen og den uendrede forespørselen.
+
+**Relevante API-operasjoner:**
+
+- [`GET /v3/quotes/{quoteId}`](/api-reference/money-movement/get-v3-quotes-by-quote-id) (`getV3QuotesByQuoteId`, status `500`)
+- [`GET /v3/transfers`](/api-reference/money-movement/get-v3-transfers) (`getV3Transfers`, status `500`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, status `500`)
+- [`GET /v3/transfers/{transferId}`](/api-reference/money-movement/get-v3-transfers-by-transfer-id) (`getV3TransfersByTransferId`, status `500`)
+- [`POST /v3/transfers/{transferId}/cancel`](/api-reference/money-movement/post-v3-transfers-by-transfer-id-cancel) (`postV3TransfersByTransferIdCancel`, status `500`)
+- [`GET /v3/transfers/{transferId}/instructions`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-instructions) (`getV3TransfersByTransferIdInstructions`, status `500`)
+- [`GET /v3/transfers/{transferId}/tasks`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-tasks) (`getV3TransfersByTransferIdTasks`, status `500`)
+
+<a id="quote-not-found" className="block scroll-mt-32">
+  <span className="sr-only">quote_not_found error</span>
+</a>
+
+### `quote_not_found`
+
+**HTTP-status:** `404`<br />
+**Kan prøves på nytt:** Returneres ikke<br />
+**Problemtype:** `https://docs.swipelux.com/errors/quote-not-found`
+
+**Betydning:** Tilbudet ble ikke funnet for denne API-nøkkelen.
+
+**Når den oppstår:** Tilbudsidentifikatoren er feil, tilhører et annet miljø, eller er ikke tilgjengelig for kalleren.
+
+**Hva du skal gjøre:** Verifiser tilbudsidentifikatoren og API-nøkkelmiljøet. Be om et nytt tilbud når det tiltenkte tilbudet er utilgjengelig.
+
+**Veiledning for nye forsøk:** Dette problemet returnerer ikke `retryable`. Ikke anta at et uendret nytt forsøk er trygt; følg handlingen ovenfor og operasjonens idempotenskrav.
+
+**Relevante API-operasjoner:**
+
+- [`GET /v3/quotes/{quoteId}`](/api-reference/money-movement/get-v3-quotes-by-quote-id) (`getV3QuotesByQuoteId`, status `404`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, status `404`)
+
+<a id="rate-unavailable" className="block scroll-mt-32">
+  <span className="sr-only">rate_unavailable error</span>
+</a>
+
+### `rate_unavailable`
+
+**HTTP-status:** `502`<br />
+**Kan prøves på nytt:** Ja<br />
+**Problemtype:** `https://docs.swipelux.com/errors/rate-unavailable`
+
+**Betydning:** En nødvendig valutakurs er midlertidig utilgjengelig.
+
+**Når den oppstår:** Kurs- eller tilbudsoperasjonen kan ikke hente kursen som trengs for det forespurte valutaparet.
+
+**Hva du skal gjøre:** Prøv på nytt etter en forsinkelse. Be om et nytt tilbud i stedet for å gjenbruke en tidligere kursantakelse.
+
+**Veiledning for nye forsøk:** Prøv på nytt etter en forsinkelse. For en idempotent skriving, gjenbruk den opprinnelige idempotensnøkkelen og den uendrede forespørselen.
+
+**Relevante API-operasjoner:**
+
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, status `502`)
+- [`GET /v3/rates`](/api-reference/money-movement/get-v3-rates) (`getV3Rates`, status `502`)
+
+<a id="supporting-document-not-found" className="block scroll-mt-32">
+  <span className="sr-only">supporting_document_not_found error</span>
+</a>
+
+### `supporting_document_not_found`
+
+**HTTP-status:** `422`<br />
+**Kan prøves på nytt:** Nei<br />
+**Problemtype:** `https://docs.swipelux.com/errors/supporting-document-not-found`
+
+**Betydning:** Et støttedokument referert av overføringsforespørselen ble ikke funnet.
+
+**Når den oppstår:** Overføringsopprettelsen refererer til et kundedokument som mangler, er utilgjengelig eller feil.
+
+**Hva du skal gjøre:** List eller last opp det påkrevde kundedokumentet, bruk dets riktige identifikator, og send inn en ny overføringsforespørsel.
+
+**Veiledning for nye forsøk:** Ikke prøv den uendrede forespørselen på nytt. Utfør handlingen ovenfor før du sender en ny forespørsel.
+
+**Relevante API-operasjoner:**
+
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, status `422`)
+
+<a id="transfer-execution-failed" className="block scroll-mt-32">
+  <span className="sr-only">transfer_execution_failed error</span>
+</a>
+
+### `transfer_execution_failed`
+
+**HTTP-status:** `500`<br />
+**Kan prøves på nytt:** Nei<br />
+**Problemtype:** `https://docs.swipelux.com/errors/transfer-execution-failed`
+
+**Betydning:** Overføringen kunne ikke fullføres under tilbudsutførelsen.
+
+**Når den oppstår:** Overføringsopprettelsen starter utførelsen, men støter på en terminal feil i stedet for å opprette en brukbar overføring.
+
+**Hva du skal gjøre:** Behold `correlationId`, les tilbuds- og overføringstilstanden, og kontakt support før du forsøker den tiltenkte bevegelsen igjen med et nytt tilbud.
+
+**Veiledning for nye forsøk:** Ikke prøv den uendrede forespørselen på nytt. Utfør handlingen ovenfor før du sender en ny forespørsel.
+
+**Relevante API-operasjoner:**
+
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, status `500`)
+
+<a id="transfer-has-no-instructions" className="block scroll-mt-32">
+  <span className="sr-only">transfer_has_no_instructions error</span>
+</a>
+
+### `transfer_has_no_instructions`
+
+**HTTP-status:** `404`<br />
+**Kan prøves på nytt:** Returneres ikke<br />
+**Problemtype:** `https://docs.swipelux.com/errors/transfer-has-no-instructions`
+
+**Betydning:** Overføringen finnes, men gir ikke betalingsinstruksjoner.
+
+**Når den oppstår:** Du ber om instruksjoner for en overføringstype eller -tilstand som ikke eksponerer et instruksjonssett.
+
+**Hva du skal gjøre:** Les overføringsressursen og følg dens gjeldende tilstand. Bruk instruksjonsendepunktet kun for overføringer som returnerer betalingsinstruksjoner.
+
+**Veiledning for nye forsøk:** Dette problemet returnerer ikke `retryable`. Ikke anta at et uendret nytt forsøk er trygt; følg handlingen ovenfor og operasjonens idempotenskrav.
+
+**Relevante API-operasjoner:**
+
+- [`GET /v3/transfers/{transferId}/instructions`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-instructions) (`getV3TransfersByTransferIdInstructions`, status `404`)
+
+<a id="transfer-not-cancelable" className="block scroll-mt-32">
+  <span className="sr-only">transfer_not_cancelable error</span>
+</a>
+
+### `transfer_not_cancelable`
+
+**HTTP-status:** `409`<br />
+**Kan prøves på nytt:** Nei<br />
+**Problemtype:** `https://docs.swipelux.com/errors/transfer-not-cancelable`
+
+**Betydning:** Overføringen kan ikke kanselleres fra sin gjeldende tilstand.
+
+**Når den oppstår:** En kanselleringsforespørsel ankommer etter at overføringen har gått forbi en tilstand som kan kanselleres.
+
+**Hva du skal gjøre:** Hent overføringen på nytt og fortsett å håndtere dens gjeldende tilstand i stedet for å gjenta kanselleringsforespørselen.
+
+**Veiledning for nye forsøk:** Ikke prøv den uendrede forespørselen på nytt. Utfør handlingen ovenfor før du sender en ny forespørsel.
+
+**Relevante API-operasjoner:**
+
+- [`POST /v3/transfers/{transferId}/cancel`](/api-reference/money-movement/post-v3-transfers-by-transfer-id-cancel) (`postV3TransfersByTransferIdCancel`, status `409`)
+
+<a id="transfer-not-found" className="block scroll-mt-32">
+  <span className="sr-only">transfer_not_found error</span>
+</a>
+
+### `transfer_not_found`
+
+**HTTP-status:** `404`<br />
+**Kan prøves på nytt:** Returneres ikke<br />
+**Problemtype:** `https://docs.swipelux.com/errors/transfer-not-found`
+
+**Betydning:** Overføringen ble ikke funnet for denne API-nøkkelen.
+
+**Når den oppstår:** Overføringsidentifikatoren er feil, tilhører et annet miljø, eller er ikke tilgjengelig for kalleren.
+
+**Hva du skal gjøre:** Verifiser overføringsidentifikatoren og API-nøkkelmiljøet, og list eller les deretter overføringer før du prøver på nytt med en tilgjengelig overføring.
+
+**Veiledning for nye forsøk:** Dette problemet returnerer ikke `retryable`. Ikke anta at et uendret nytt forsøk er trygt; følg handlingen ovenfor og operasjonens idempotenskrav.
+
+**Relevante API-operasjoner:**
+
+- [`POST /v3/sandbox/transfers/{transferId}/state`](/api-reference/sandbox/post-v3-sandbox-transfers-by-transfer-id-state) (`postV3SandboxTransfersByTransferIdState`, status `404`)
+- [`GET /v3/transfers`](/api-reference/money-movement/get-v3-transfers) (`getV3Transfers`, status `404`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, status `404`)
+- [`GET /v3/transfers/{transferId}`](/api-reference/money-movement/get-v3-transfers-by-transfer-id) (`getV3TransfersByTransferId`, status `404`)
+- [`POST /v3/transfers/{transferId}/cancel`](/api-reference/money-movement/post-v3-transfers-by-transfer-id-cancel) (`postV3TransfersByTransferIdCancel`, status `404`)
+- [`GET /v3/transfers/{transferId}/instructions`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-instructions) (`getV3TransfersByTransferIdInstructions`, status `404`)
+- [`GET /v3/transfers/{transferId}/tasks`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-tasks) (`getV3TransfersByTransferIdTasks`, status `404`)
+
+<a id="transfer-state-invalid" className="block scroll-mt-32">
+  <span className="sr-only">transfer_state_invalid error</span>
+</a>
+
+### `transfer_state_invalid`
+
+**HTTP-status:** `400`, `500`<br />
+**Kan prøves på nytt:** Ja<br />
+**Problemtype:** `https://docs.swipelux.com/errors/transfer-state-invalid`
+
+**Betydning:** Overføringen er i en tilstand som ikke støtter den forespurte operasjonen eller overgangen.
+
+**Når den oppstår:** En overføringslesing, -utførelse, -kansellering eller sandbox-tilstandsendring støter på en tilstand som for øyeblikket ikke kan oppfylle operasjonen.
+
+**Hva du skal gjøre:** Hent overføringen på nytt, vent på eller velg en gyldig neste tilstand, og prøv på nytt først etter at den gjeldende tilstanden tillater operasjonen.
+
+**Veiledning for nye forsøk:** Prøv på nytt etter en forsinkelse. For en idempotent skriving, gjenbruk den opprinnelige idempotensnøkkelen og den uendrede forespørselen.
+
+**Relevante API-operasjoner:**
+
+- [`POST /v3/sandbox/transfers/{transferId}/state`](/api-reference/sandbox/post-v3-sandbox-transfers-by-transfer-id-state) (`postV3SandboxTransfersByTransferIdState`, status `400`)
+- [`GET /v3/transfers`](/api-reference/money-movement/get-v3-transfers) (`getV3Transfers`, status `500`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, status `500`)
+- [`GET /v3/transfers/{transferId}`](/api-reference/money-movement/get-v3-transfers-by-transfer-id) (`getV3TransfersByTransferId`, status `500`)
+- [`POST /v3/transfers/{transferId}/cancel`](/api-reference/money-movement/post-v3-transfers-by-transfer-id-cancel) (`postV3TransfersByTransferIdCancel`, status `500`)
+- [`GET /v3/transfers/{transferId}/instructions`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-instructions) (`getV3TransfersByTransferIdInstructions`, status `500`)
+- [`GET /v3/transfers/{transferId}/tasks`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-tasks) (`getV3TransfersByTransferIdTasks`, status `500`)
+
+## Regler
+
+<a id="rule-already-exists" className="block scroll-mt-32">
+  <span className="sr-only">rule_already_exists error</span>
+</a>
+
+### `rule_already_exists`
+
+**HTTP-status:** `409`<br />
+**Kan prøves på nytt:** Nei<br />
+**Problemtype:** `https://docs.swipelux.com/errors/rule-already-exists`
+
+**Betydning:** Utløserkontoen har allerede en aktiv regel.
+
+**Når den oppstår:** Regelopprettelsen retter seg mot en konto som allerede overvåkes av en ikke-arkivert regel.
+
+**Hva du skal gjøre:** Bruk `conflictingRuleId` til å lese den eksisterende regelen, og oppdater, arkiver eller gjenbruk den i stedet for å opprette en duplikat.
+
+**Veiledning for nye forsøk:** Ikke prøv den uendrede forespørselen på nytt. Utfør handlingen ovenfor før du sender en ny forespørsel.
+
+**Relevante API-operasjoner:**
+
+- [`POST /v3/customers/{customerId}/rules`](/api-reference/rules/post-v3-customers-by-customer-id-rules) (`postV3CustomersByCustomerIdRules`, status `409`)
+
+**Ekstra responsfelter:**
+
+- `conflictingRuleId`: Eksisterende aktiv regel som er i konflikt med denne forespørselen.
+
+<a id="rule-archived" className="block scroll-mt-32">
+  <span className="sr-only">rule_archived error</span>
+</a>
+
+### `rule_archived`
+
+**HTTP-status:** `409`<br />
+**Kan prøves på nytt:** Nei<br />
+**Problemtype:** `https://docs.swipelux.com/errors/rule-archived`
+
+**Betydning:** Regelen er arkivert og kan ikke lenger endres.
+
+**Når den oppstår:** Du oppdaterer eller arkiverer en regel som allerede har nådd sin terminale arkiverte tilstand.
+
+**Hva du skal gjøre:** Les den arkiverte regelen for historikk, og opprett en ny regel når du trenger en aktiv erstatning.
+
+**Veiledning for nye forsøk:** Ikke prøv den uendrede forespørselen på nytt. Utfør handlingen ovenfor før du sender en ny forespørsel.
+
+**Relevante API-operasjoner:**
+
+- [`DELETE /v3/customers/{customerId}/rules/{ruleId}`](/api-reference/rules/delete-v3-customers-by-customer-id-rules-by-rule-id) (`deleteV3CustomersByCustomerIdRulesByRuleId`, status `409`)
+- [`PATCH /v3/customers/{customerId}/rules/{ruleId}`](/api-reference/rules/patch-v3-customers-by-customer-id-rules-by-rule-id) (`patchV3CustomersByCustomerIdRulesByRuleId`, status `409`)
+
+<a id="rule-not-found" className="block scroll-mt-32">
+  <span className="sr-only">rule_not_found error</span>
+</a>
+
+### `rule_not_found`
+
+**HTTP-status:** `404`<br />
+**Kan prøves på nytt:** Returneres ikke<br />
+**Problemtype:** `https://docs.swipelux.com/errors/rule-not-found`
+
+**Betydning:** Regelen ble ikke funnet under den angitte kunden.
+
+**Når den oppstår:** Regelidentifikatoren mangler, tilhører en annen kunde, eller er ikke tilgjengelig i gjeldende miljø.
+
+**Hva du skal gjøre:** Verifiser kunde- og regelidentifikatorene, list kundens regler, og prøv på nytt med en tilgjengelig regel.
+
+**Veiledning for nye forsøk:** Dette problemet returnerer ikke `retryable`. Ikke anta at et uendret nytt forsøk er trygt; følg handlingen ovenfor og operasjonens idempotenskrav.
+
+**Relevante API-operasjoner:**
+
+- [`DELETE /v3/customers/{customerId}/rules/{ruleId}`](/api-reference/rules/delete-v3-customers-by-customer-id-rules-by-rule-id) (`deleteV3CustomersByCustomerIdRulesByRuleId`, status `404`)
+- [`GET /v3/customers/{customerId}/rules/{ruleId}`](/api-reference/rules/get-v3-customers-by-customer-id-rules-by-rule-id) (`getV3CustomersByCustomerIdRulesByRuleId`, status `404`)
+- [`PATCH /v3/customers/{customerId}/rules/{ruleId}`](/api-reference/rules/patch-v3-customers-by-customer-id-rules-by-rule-id) (`patchV3CustomersByCustomerIdRulesByRuleId`, status `404`)
+
+<a id="rule-target-invalid" className="block scroll-mt-32">
+  <span className="sr-only">rule_target_invalid error</span>
+</a>
+
+### `rule_target_invalid`
+
+**HTTP-status:** `400`<br />
+**Kan prøves på nytt:** Returneres ikke<br />
+**Problemtype:** `https://docs.swipelux.com/errors/rule-target-invalid`
+
+**Betydning:** Regelhandlingsmålet er ugyldig for denne kunden eller regeltypen.
+
+**Når den oppstår:** Regelopprettelsen velger en konto eller destinasjon som mangler, er utilgjengelig, arkivert eller inkompatibel, som sitt handlingsmål.
+
+**Hva du skal gjøre:** Velg et aktivt mål returnert for kunden og støttet av regelhandlingsskjemaet, og opprett deretter en ny regelforespørsel.
+
+**Veiledning for nye forsøk:** Dette problemet returnerer ikke `retryable`. Ikke anta at et uendret nytt forsøk er trygt; følg handlingen ovenfor og operasjonens idempotenskrav.
+
+**Relevante API-operasjoner:**
+
+- [`POST /v3/customers/{customerId}/rules`](/api-reference/rules/post-v3-customers-by-customer-id-rules) (`postV3CustomersByCustomerIdRules`, status `400`)
+
+<a id="rule-trigger-account-invalid" className="block scroll-mt-32">
+  <span className="sr-only">rule_trigger_account_invalid error</span>
+</a>
+
+### `rule_trigger_account_invalid`
+
+**HTTP-status:** `400`<br />
+**Kan prøves på nytt:** Returneres ikke<br />
+**Problemtype:** `https://docs.swipelux.com/errors/rule-trigger-account-invalid`
+
+**Betydning:** Kontoen som er valgt som regelutløser, er ugyldig.
+
+**Når den oppstår:** Regelopprettelsen bruker en konto som mangler, er arkivert, utilgjengelig eller ikke kvalifisert til å fungere som utløser.
+
+**Hva du skal gjøre:** Velg en aktiv kvalifisert konto returnert for kunden, og opprett deretter en ny regelforespørsel.
+
+**Veiledning for nye forsøk:** Dette problemet returnerer ikke `retryable`. Ikke anta at et uendret nytt forsøk er trygt; følg handlingen ovenfor og operasjonens idempotenskrav.
+
+**Relevante API-operasjoner:**
+
+- [`POST /v3/customers/{customerId}/rules`](/api-reference/rules/post-v3-customers-by-customer-id-rules) (`postV3CustomersByCustomerIdRules`, status `400`)
+
+## Idempotens- og plattformfeil
+
+<a id="conflict" className="block scroll-mt-32">
+  <span className="sr-only">conflict error</span>
+</a>
+
+### `conflict`
+
+**HTTP-status:** `409`<br />
+**Kan prøves på nytt:** Nei<br />
+**Problemtype:** `https://docs.swipelux.com/errors/conflict`
+
+**Betydning:** Den forespurte operasjonen er i konflikt med ressursens gjeldende tilstand.
+
+**Når den oppstår:** Operasjonen kan ikke fortsette fordi en ressurs har endret seg, er arkivert, mangler et påkrevd fullført trinn, eller på annen måte har en tilstandskonflikt uten en mer spesifikk offentlig kode.
+
+**Hva du skal gjøre:** Hent den berørte ressursen på nytt, bruk `detail` til å identifisere den gjeldende forutsetningen, endre forespørselen eller ressurstilstanden, og send deretter en ny forespørsel.
+
+**Veiledning for nye forsøk:** Ikke prøv den uendrede forespørselen på nytt. Utfør handlingen ovenfor før du sender en ny forespørsel.
+
+**Relevante API-operasjoner:**
+
+- [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) (`postV3CustomersByCustomerIdAccounts`, status `409`)
+- [`DELETE /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/delete-v3-customers-by-customer-id-accounts-by-account-id) (`deleteV3CustomersByCustomerIdAccountsByAccountId`, status `409`)
+- [`PATCH /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/patch-v3-customers-by-customer-id-accounts-by-account-id) (`patchV3CustomersByCustomerIdAccountsByAccountId`, status `409`)
+- [`POST /v3/customers/{customerId}/export`](/api-reference/customers/post-v3-customers-by-customer-id-export) (`postV3CustomersByCustomerIdExport`, status `409`)
+- [`POST /v3/sandbox/accounts/{accountId}/topup`](/api-reference/sandbox/post-v3-sandbox-accounts-by-account-id-topup) (`postV3SandboxAccountsByAccountIdTopup`, status `409`)
+- [`POST /v3/sandbox/tasks/{taskId}/review`](/api-reference/sandbox/post-v3-sandbox-tasks-by-task-id-review) (`postV3SandboxTasksByTaskIdReview`, status `409`)
+
+<a id="idempotency-conflict" className="block scroll-mt-32">
+  <span className="sr-only">idempotency_conflict error</span>
+</a>
+
+### `idempotency_conflict`
+
+**HTTP-status:** `409`<br />
+**Kan prøves på nytt:** Nei<br />
+**Problemtype:** `https://docs.swipelux.com/errors/idempotency-conflict`
+
+**Betydning:** Idempotensnøkkelen er allerede brukt for en annen forespørsel.
+
+**Når den oppstår:** En skriving gjenbruker en eksisterende `Idempotency-Key` med endret metode, sti, body eller tiltenkt operasjon.
+
+**Hva du skal gjøre:** Ikke prøv den endrede forespørselen på nytt med den nøkkelen. Hent den opprinnelige operasjonens resultat når det er hensiktsmessig, eller bruk en ny nøkkel for en genuint ny operasjon.
+
+**Veiledning for nye forsøk:** Ikke prøv den uendrede forespørselen på nytt. Utfør handlingen ovenfor før du sender en ny forespørsel. En idempotensnøkkel identifiserer permanent sin opprinnelige forespørsel; endring av nyttelasten krever en ny nøkkel.
+
+<Accordion title="Relevante API-operasjoner (30)">
+
+- [`POST /v3/customers`](/api-reference/customers/post-v3-customers) (`postV3Customers`, status `409`)
+- [`DELETE /v3/customers/{customerId}`](/api-reference/customers/delete-v3-customers-by-customer-id) (`deleteV3CustomersByCustomerId`, status `409`)
+- [`PATCH /v3/customers/{customerId}`](/api-reference/customers/patch-v3-customers-by-customer-id) (`patchV3CustomersByCustomerId`, status `409`)
+- [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) (`postV3CustomersByCustomerIdAccounts`, status `409`)
+- [`DELETE /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/delete-v3-customers-by-customer-id-accounts-by-account-id) (`deleteV3CustomersByCustomerIdAccountsByAccountId`, status `409`)
+- [`PATCH /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/patch-v3-customers-by-customer-id-accounts-by-account-id) (`patchV3CustomersByCustomerIdAccountsByAccountId`, status `409`)
+- [`PUT /v3/customers/{customerId}/accounts/{accountId}/fees`](/api-reference/accounts/put-v3-customers-by-customer-id-accounts-by-account-id-fees) (`putV3CustomersByCustomerIdAccountsByAccountIdFees`, status `409`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, status `409`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}/cancel`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id-cancel) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityIdCancel`, status `409`)
+- [`POST /v3/customers/{customerId}/documents`](/api-reference/documents/post-v3-customers-by-customer-id-documents) (`postV3CustomersByCustomerIdDocuments`, status `409`)
+- [`DELETE /v3/customers/{customerId}/documents/{documentId}`](/api-reference/documents/delete-v3-customers-by-customer-id-documents-by-document-id) (`deleteV3CustomersByCustomerIdDocumentsByDocumentId`, status `409`)
+- [`POST /v3/customers/{customerId}/export`](/api-reference/customers/post-v3-customers-by-customer-id-export) (`postV3CustomersByCustomerIdExport`, status `409`)
+- [`POST /v3/customers/{customerId}/recipients`](/api-reference/recipients/post-v3-customers-by-customer-id-recipients) (`postV3CustomersByCustomerIdRecipients`, status `409`)
+- [`DELETE /v3/customers/{customerId}/recipients/{recipientId}`](/api-reference/recipients/delete-v3-customers-by-customer-id-recipients-by-recipient-id) (`deleteV3CustomersByCustomerIdRecipientsByRecipientId`, status `409`)
+- [`PATCH /v3/customers/{customerId}/recipients/{recipientId}`](/api-reference/recipients/patch-v3-customers-by-customer-id-recipients-by-recipient-id) (`patchV3CustomersByCustomerIdRecipientsByRecipientId`, status `409`)
+- [`POST /v3/customers/{customerId}/recipients/{recipientId}/destinations`](/api-reference/recipients/post-v3-customers-by-customer-id-recipients-by-recipient-id-destinations) (`postV3CustomersByCustomerIdRecipientsByRecipientIdDestinations`, status `409`)
+- [`DELETE /v3/customers/{customerId}/recipients/{recipientId}/destinations/{destinationId}`](/api-reference/recipients/delete-v3-customers-by-customer-id-recipients-by-recipient-id-destinations-by-destination-id) (`deleteV3CustomersByCustomerIdRecipientsByRecipientIdDestinationsByDestinationId`, status `409`)
+- [`POST /v3/customers/{customerId}/related-parties`](/api-reference/customers/post-v3-customers-by-customer-id-related-parties) (`postV3CustomersByCustomerIdRelated-parties`, status `409`)
+- [`DELETE /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/delete-v3-customers-by-customer-id-related-parties-by-related-party-id) (`deleteV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, status `409`)
+- [`PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/patch-v3-customers-by-customer-id-related-parties-by-related-party-id) (`patchV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, status `409`)
+- [`POST /v3/customers/{customerId}/rules`](/api-reference/rules/post-v3-customers-by-customer-id-rules) (`postV3CustomersByCustomerIdRules`, status `409`)
+- [`DELETE /v3/customers/{customerId}/rules/{ruleId}`](/api-reference/rules/delete-v3-customers-by-customer-id-rules-by-rule-id) (`deleteV3CustomersByCustomerIdRulesByRuleId`, status `409`)
+- [`PATCH /v3/customers/{customerId}/rules/{ruleId}`](/api-reference/rules/patch-v3-customers-by-customer-id-rules-by-rule-id) (`patchV3CustomersByCustomerIdRulesByRuleId`, status `409`)
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, status `409`)
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, status `409`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, status `409`)
+- [`POST /v3/transfers/{transferId}/cancel`](/api-reference/money-movement/post-v3-transfers-by-transfer-id-cancel) (`postV3TransfersByTransferIdCancel`, status `409`)
+- [`POST /v3/webhooks`](/api-reference/webhooks/post-v3-webhooks) (`postV3Webhooks`, status `409`)
+- [`DELETE /v3/webhooks/{webhookId}`](/api-reference/webhooks/delete-v3-webhooks-by-webhook-id) (`deleteV3WebhooksByWebhookId`, status `409`)
+- [`PATCH /v3/webhooks/{webhookId}`](/api-reference/webhooks/patch-v3-webhooks-by-webhook-id) (`patchV3WebhooksByWebhookId`, status `409`)
+
+</Accordion>
+
+**Eksempel:**
+
+```json
+{
+  "type": "https://docs.swipelux.com/errors/idempotency-conflict",
+  "title": "Idempotency Conflict",
+  "status": 409,
+  "code": "idempotency_conflict",
+  "detail": "Idempotency-Key was already used with a different request.",
+  "correlationId": "cor_01JMM23TRANSFERERRORS",
+  "retryable": false
+}
+```
+
+<a id="idempotency-request-in-progress" className="block scroll-mt-32">
+  <span className="sr-only">idempotency_request_in_progress error</span>
+</a>
+
+### `idempotency_request_in_progress`
+
+**HTTP-status:** `409`<br />
+**Kan prøves på nytt:** Ja<br />
+**Problemtype:** `https://docs.swipelux.com/errors/idempotency-request-in-progress`
+
+**Betydning:** En samsvarende forespørsel med samme idempotensnøkkel behandles fortsatt.
+
+**Når den oppstår:** Den samme idempotente skrivingen sendes inn igjen før det første forsøket er ferdig.
+
+**Hva du skal gjøre:** Vent litt, og prøv deretter den identiske forespørselen på nytt med samme `Idempotency-Key` til det opprinnelige resultatet er tilgjengelig.
+
+**Veiledning for nye forsøk:** Prøv på nytt etter en forsinkelse. For en idempotent skriving, gjenbruk den opprinnelige idempotensnøkkelen og den uendrede forespørselen. Hold metoden, stien og body-en byte-for-byte ekvivalent med den opprinnelige intensjonen.
+
+<Accordion title="Relevante API-operasjoner (13)">
+
+- [`POST /v3/customers`](/api-reference/customers/post-v3-customers) (`postV3Customers`, status `409`)
+- [`DELETE /v3/customers/{customerId}`](/api-reference/customers/delete-v3-customers-by-customer-id) (`deleteV3CustomersByCustomerId`, status `409`)
+- [`PATCH /v3/customers/{customerId}`](/api-reference/customers/patch-v3-customers-by-customer-id) (`patchV3CustomersByCustomerId`, status `409`)
+- [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) (`postV3CustomersByCustomerIdAccounts`, status `409`)
+- [`DELETE /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/delete-v3-customers-by-customer-id-accounts-by-account-id) (`deleteV3CustomersByCustomerIdAccountsByAccountId`, status `409`)
+- [`PATCH /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/patch-v3-customers-by-customer-id-accounts-by-account-id) (`patchV3CustomersByCustomerIdAccountsByAccountId`, status `409`)
+- [`PUT /v3/customers/{customerId}/accounts/{accountId}/fees`](/api-reference/accounts/put-v3-customers-by-customer-id-accounts-by-account-id-fees) (`putV3CustomersByCustomerIdAccountsByAccountIdFees`, status `409`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}/cancel`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id-cancel) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityIdCancel`, status `409`)
+- [`POST /v3/customers/{customerId}/export`](/api-reference/customers/post-v3-customers-by-customer-id-export) (`postV3CustomersByCustomerIdExport`, status `409`)
+- [`POST /v3/customers/{customerId}/related-parties`](/api-reference/customers/post-v3-customers-by-customer-id-related-parties) (`postV3CustomersByCustomerIdRelated-parties`, status `409`)
+- [`DELETE /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/delete-v3-customers-by-customer-id-related-parties-by-related-party-id) (`deleteV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, status `409`)
+- [`PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/patch-v3-customers-by-customer-id-related-parties-by-related-party-id) (`patchV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, status `409`)
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, status `409`)
+
+</Accordion>
+
+**Eksempel:**
+
+```json
+{
+  "type": "https://docs.swipelux.com/errors/idempotency-request-in-progress",
+  "title": "Idempotency Request In Progress",
+  "status": 409,
+  "code": "idempotency_request_in_progress",
+  "detail": "A request with this Idempotency-Key is still in progress.",
+  "correlationId": "01JERRORIDEMPOTENCY",
+  "retryable": true
+}
+```
+
+<a id="internal-error" className="block scroll-mt-32">
+  <span className="sr-only">internal_error error</span>
+</a>
+
+### `internal_error`
+
+**HTTP-status:** `500`<br />
+**Kan prøves på nytt:** Ja<br />
+**Problemtype:** `https://docs.swipelux.com/errors/internal-error`
+
+**Betydning:** Swipelux støtte på en uventet serverfeil under behandlingen av operasjonen.
+
+**Når den oppstår:** Forespørselen treffer en uhåndtert plattformfeil i stedet for et mer spesifikt offentlig problem.
+
+**Hva du skal gjøre:** Behold `correlationId`, prøv på nytt etter en forsinkelse, og kontakt Swipelux-support hvis feilen vedvarer.
+
+**Veiledning for nye forsøk:** Prøv på nytt etter en forsinkelse. For en idempotent skriving, gjenbruk den opprinnelige idempotensnøkkelen og den uendrede forespørselen.
+
+**Relevante API-operasjoner:** Alle offentlige API-operasjoner.
+
+<a id="not-found" className="block scroll-mt-32">
+  <span className="sr-only">not_found error</span>
+</a>
+
+### `not_found`
+
+**HTTP-status:** `404`<br />
+**Kan prøves på nytt:** Nei<br />
+**Problemtype:** `https://docs.swipelux.com/errors/not-found`
+
+**Betydning:** Den forespurte ressursen ble ikke funnet for denne API-nøkkelen og forespørselsstien.
+
+**Når den oppstår:** En ressursidentifikator mangler, tilhører et annet miljø eller en annen overordnet ressurs, eller er ikke lenger tilgjengelig for kalleren.
+
+**Hva du skal gjøre:** Verifiser identifikatoren, den overordnede ressursen og API-nøkkelmiljøet, og les eller list deretter ressursen før du prøver operasjonen igjen.
+
+**Veiledning for nye forsøk:** Ikke prøv den uendrede forespørselen på nytt. Utfør handlingen ovenfor før du sender en ny forespørsel.
+
+<Accordion title="Relevante API-operasjoner (36)">
+
+- [`GET /kyc/redirect/{customerId}/{taskId}/{verificationSessionId}`](/api-reference/tasks/start-kyc-verification-session) (`startKycVerificationSession`, status `404`)
+- [`GET /v3/customers/{customerId}/accounts`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts) (`getV3CustomersByCustomerIdAccounts`, status `404`)
+- [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) (`postV3CustomersByCustomerIdAccounts`, status `404`)
+- [`DELETE /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/delete-v3-customers-by-customer-id-accounts-by-account-id) (`deleteV3CustomersByCustomerIdAccountsByAccountId`, status `404`)
+- [`GET /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts-by-account-id) (`getV3CustomersByCustomerIdAccountsByAccountId`, status `404`)
+- [`PATCH /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/patch-v3-customers-by-customer-id-accounts-by-account-id) (`patchV3CustomersByCustomerIdAccountsByAccountId`, status `404`)
+- [`GET /v3/customers/{customerId}/accounts/{accountId}/fees`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts-by-account-id-fees) (`getV3CustomersByCustomerIdAccountsByAccountIdFees`, status `404`)
+- [`PUT /v3/customers/{customerId}/accounts/{accountId}/fees`](/api-reference/accounts/put-v3-customers-by-customer-id-accounts-by-account-id-fees) (`putV3CustomersByCustomerIdAccountsByAccountIdFees`, status `404`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityId`, status `404`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}/applications`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id-applications) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityIdApplications`, status `404`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}/applications/{applicationId}/history`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id-applications-by-application-id-history) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityIdApplicationsByApplicationIdHistory`, status `404`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}/cancel`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id-cancel) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityIdCancel`, status `404`)
+- [`GET /v3/customers/{customerId}/recipients`](/api-reference/recipients/get-v3-customers-by-customer-id-recipients) (`getV3CustomersByCustomerIdRecipients`, status `404`)
+- [`POST /v3/customers/{customerId}/recipients`](/api-reference/recipients/post-v3-customers-by-customer-id-recipients) (`postV3CustomersByCustomerIdRecipients`, status `404`)
+- [`DELETE /v3/customers/{customerId}/recipients/{recipientId}`](/api-reference/recipients/delete-v3-customers-by-customer-id-recipients-by-recipient-id) (`deleteV3CustomersByCustomerIdRecipientsByRecipientId`, status `404`)
+- [`GET /v3/customers/{customerId}/recipients/{recipientId}`](/api-reference/recipients/get-v3-customers-by-customer-id-recipients-by-recipient-id) (`getV3CustomersByCustomerIdRecipientsByRecipientId`, status `404`)
+- [`PATCH /v3/customers/{customerId}/recipients/{recipientId}`](/api-reference/recipients/patch-v3-customers-by-customer-id-recipients-by-recipient-id) (`patchV3CustomersByCustomerIdRecipientsByRecipientId`, status `404`)
+- [`GET /v3/customers/{customerId}/recipients/{recipientId}/destinations`](/api-reference/recipients/get-v3-customers-by-customer-id-recipients-by-recipient-id-destinations) (`getV3CustomersByCustomerIdRecipientsByRecipientIdDestinations`, status `404`)
+- [`POST /v3/customers/{customerId}/recipients/{recipientId}/destinations`](/api-reference/recipients/post-v3-customers-by-customer-id-recipients-by-recipient-id-destinations) (`postV3CustomersByCustomerIdRecipientsByRecipientIdDestinations`, status `404`)
+- [`DELETE /v3/customers/{customerId}/recipients/{recipientId}/destinations/{destinationId}`](/api-reference/recipients/delete-v3-customers-by-customer-id-recipients-by-recipient-id-destinations-by-destination-id) (`deleteV3CustomersByCustomerIdRecipientsByRecipientIdDestinationsByDestinationId`, status `404`)
+- [`GET /v3/customers/{customerId}/recipients/{recipientId}/destinations/{destinationId}`](/api-reference/recipients/get-v3-customers-by-customer-id-recipients-by-recipient-id-destinations-by-destination-id) (`getV3CustomersByCustomerIdRecipientsByRecipientIdDestinationsByDestinationId`, status `404`)
+- [`GET /v3/customers/{customerId}/rules`](/api-reference/rules/get-v3-customers-by-customer-id-rules) (`getV3CustomersByCustomerIdRules`, status `404`)
+- [`POST /v3/customers/{customerId}/rules`](/api-reference/rules/post-v3-customers-by-customer-id-rules) (`postV3CustomersByCustomerIdRules`, status `404`)
+- [`DELETE /v3/customers/{customerId}/rules/{ruleId}`](/api-reference/rules/delete-v3-customers-by-customer-id-rules-by-rule-id) (`deleteV3CustomersByCustomerIdRulesByRuleId`, status `404`)
+- [`GET /v3/customers/{customerId}/rules/{ruleId}`](/api-reference/rules/get-v3-customers-by-customer-id-rules-by-rule-id) (`getV3CustomersByCustomerIdRulesByRuleId`, status `404`)
+- [`PATCH /v3/customers/{customerId}/rules/{ruleId}`](/api-reference/rules/patch-v3-customers-by-customer-id-rules-by-rule-id) (`patchV3CustomersByCustomerIdRulesByRuleId`, status `404`)
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, status `404`)
+- [`GET /v3/quotes/{quoteId}`](/api-reference/money-movement/get-v3-quotes-by-quote-id) (`getV3QuotesByQuoteId`, status `404`)
+- [`POST /v3/sandbox/accounts/{accountId}/topup`](/api-reference/sandbox/post-v3-sandbox-accounts-by-account-id-topup) (`postV3SandboxAccountsByAccountIdTopup`, status `404`)
+- [`POST /v3/sandbox/customers/{customerId}/capabilities/{capabilityId}/status`](/api-reference/sandbox/post-v3-sandbox-customers-by-customer-id-capabilities-by-capability-id-status) (`postV3SandboxCustomersByCustomerIdCapabilitiesByCapabilityIdStatus`, status `404`)
+- [`POST /v3/sandbox/customers/{customerId}/verification`](/api-reference/sandbox/post-v3-sandbox-customers-by-customer-id-verification) (`postV3SandboxCustomersByCustomerIdVerification`, status `404`)
+- [`POST /v3/sandbox/tasks`](/api-reference/sandbox/post-v3-sandbox-tasks) (`postV3SandboxTasks`, status `404`)
+- [`POST /v3/sandbox/transfers/{transferId}/state`](/api-reference/sandbox/post-v3-sandbox-transfers-by-transfer-id-state) (`postV3SandboxTransfersByTransferIdState`, status `404`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, status `404`)
+- [`DELETE /v3/webhooks/{webhookId}`](/api-reference/webhooks/delete-v3-webhooks-by-webhook-id) (`deleteV3WebhooksByWebhookId`, status `404`)
+- [`PATCH /v3/webhooks/{webhookId}`](/api-reference/webhooks/patch-v3-webhooks-by-webhook-id) (`patchV3WebhooksByWebhookId`, status `404`)
+
+</Accordion>
+
+<a id="request-failed" className="block scroll-mt-32">
+  <span className="sr-only">request_failed error</span>
+</a>
+
+### `request_failed`
+
+**HTTP-status:** `502`, `503`<br />
+**Kan prøves på nytt:** Kontekstavhengig<br />
+**Problemtype:** `https://docs.swipelux.com/errors/request-failed`
+
+**Betydning:** En tjeneste som trengs for å fullføre operasjonen, behandlet ikke forespørselen vellykket.
+
+**Når den oppstår:** Kundeeksport, webhook-administrasjon eller sandbox-verifisering treffer en ekstern tjenestefeil eller en utilgjengelig konfigurasjon.
+
+**Hva du skal gjøre:** Inspiser `retryable`. Prøv på nytt senere når den er `true`; ellers behold `correlationId`, verifiser forespørselens forutsetninger, og kontakt support hvis feilen vedvarer.
+
+**Veiledning for nye forsøk:** Les `retryable` i denne responsen. Prøv på nytt senere bare når den er `true`. For en idempotent skriving, gjenbruk den opprinnelige idempotensnøkkelen og den uendrede forespørselen.
+
+<Accordion title="Relevante API-operasjoner (9)">
+
+- [`POST /v3/customers/{customerId}/export`](/api-reference/customers/post-v3-customers-by-customer-id-export) (`postV3CustomersByCustomerIdExport`, status `502`)
+- [`POST /v3/customers/{customerId}/export`](/api-reference/customers/post-v3-customers-by-customer-id-export) (`postV3CustomersByCustomerIdExport`, status `503`)
+- [`POST /v3/sandbox/customers/{customerId}/verification`](/api-reference/sandbox/post-v3-sandbox-customers-by-customer-id-verification) (`postV3SandboxCustomersByCustomerIdVerification`, status `502`)
+- [`POST /v3/sandbox/customers/{customerId}/verification`](/api-reference/sandbox/post-v3-sandbox-customers-by-customer-id-verification) (`postV3SandboxCustomersByCustomerIdVerification`, status `503`)
+- [`GET /v3/webhooks`](/api-reference/webhooks/get-v3-webhooks) (`getV3Webhooks`, status `502`)
+- [`POST /v3/webhooks`](/api-reference/webhooks/post-v3-webhooks) (`postV3Webhooks`, status `502`)
+- [`DELETE /v3/webhooks/{webhookId}`](/api-reference/webhooks/delete-v3-webhooks-by-webhook-id) (`deleteV3WebhooksByWebhookId`, status `502`)
+- [`PATCH /v3/webhooks/{webhookId}`](/api-reference/webhooks/patch-v3-webhooks-by-webhook-id) (`patchV3WebhooksByWebhookId`, status `502`)
+- [`GET /v3/webhooks/portal`](/api-reference/webhooks/get-v3-webhooks-portal) (`getV3WebhooksPortal`, status `502`)
+
+</Accordion>
+
+## Neste steg
+
+Bruk operasjonslenkene ovenfor for å bekrefte det nøyaktige forespørsels- og responsskjemaet du håndterer, og test deretter feilstien i [Sandbox-testing](/no/integration/sandbox).

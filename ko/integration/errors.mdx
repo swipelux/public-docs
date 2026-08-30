@@ -1,0 +1,2631 @@
+---
+title: "오류 및 재시도"
+description: "모든 공개 Swipelux API 문제 코드를 처리하고, 재시도 시점을 판단하고, 유효성 검사, 상태, 멱등성 및 플랫폼 오류를 해결하세요."
+---
+
+Swipelux API 오류는 `application/problem+json` 미디어 타입을 사용합니다. 안정적인 `code` 값에 따라 애플리케이션 동작을 분기한 다음, 아래의 작업과 지침을 사용하여 오류를 해결하세요.
+
+| 필드 | 사용 방법 |
+| --- | --- |
+| `type` | 문제 코드에 대한 안정적인 문서 URI입니다. |
+| `title` | 사람이 읽을 수 있는 짧은 문제 제목입니다. |
+| `status` | 이 응답과 연결된 HTTP 상태입니다. |
+| `code` | 애플리케이션 로직에 사용하는 안정적인 기계 판독 가능 값입니다. |
+| `detail` | 이번 발생에 대한 상황별 텍스트입니다. 파싱하거나 비교하지 마세요. |
+| `correlationId` | 로그에 저장하고 지원팀에 문의할 때 포함할 요청 식별자입니다. |
+| `retryable` | `true`이면 동일한 요청이 나중에 성공할 수 있습니다. `false`이면 다시 시도하기 전에 요청을 변경하거나 전제 조건을 충족하세요. |
+| `errors[]` | 사용 가능한 경우 JSON 포인터를 포함하는 필드 수준 유효성 검사 세부 정보입니다. |
+
+멱등한 쓰기 작업은 원래의 `Idempotency-Key`와 변경하지 않은 메서드, 경로, 본문으로 재시도하세요. 해당 키를 의도가 다른 작업에 절대 재사용하지 마세요.
+
+```json
+{
+  "type": "https://docs.swipelux.com/errors/validation-error",
+  "title": "Validation Error",
+  "status": 400,
+  "code": "validation_error",
+  "detail": "The request contains invalid fields.",
+  "correlationId": "01JERRORVALIDATION",
+  "retryable": false,
+  "errors": [
+    {
+      "pointer": "/externalId",
+      "code": "invalid_format",
+      "message": "Use a valid external identifier."
+    }
+  ]
+}
+```
+
+## 오류 색인
+
+| 코드 | 상태 | 재시도 가능 | 의미 |
+| --- | --- | --- | --- |
+| [`absence_conflicts_with_profile`](#absence-conflicts-with-profile) | `409` | 아니요 | 값이 없다고 선언하는 태스크 답변이 고객 프로필에 이미 존재하는 데이터와 충돌합니다. |
+| [`account_has_active_transfers`](#account-has-active-transfers) | `409` | 예 | 하나 이상의 전송이 아직 활성 상태인 동안에는 계좌를 보관 처리할 수 없습니다. |
+| [`account_method_not_supported`](#account-method-not-supported) | `422` | 아니요 | 선택한 계좌가 견적에서 요청한 결제 방법을 지원하지 않습니다. |
+| [`account_not_ready`](#account-not-ready) | `409` | 상황에 따라 다름 | 계좌는 존재하지만 현재 상태에서는 해당 견적 또는 전송이 허용되지 않습니다. |
+| [`account_unavailable`](#account-unavailable) | `409` | 아니요 | 선택한 계좌는 요청된 자금 이동에 사용할 수 없습니다. |
+| [`amount_not_deliverable`](#amount-not-deliverable) | `422` | 아니요 | 요청한 금액은 선택한 통화, 계좌 또는 방법으로 전달할 수 없습니다. |
+| [`amount_side_ambiguous`](#amount-side-ambiguous) | `400` | 아니요 | 견적 요청이 변환의 어느 쪽 금액이 고정되어 있는지 명확하게 식별하지 못합니다. |
+| [`bank_not_supported_for_customer`](#bank-not-supported-for-customer) | `422` | 반환되지 않음 | 선택한 기관은 이 고객 및 케이퍼빌리티 요청에 사용할 수 없습니다. |
+| [`capability_already_exists`](#capability-already-exists) | `409` | 아니요 | 고객이 이미 요청한 케이퍼빌리티를 보유하고 있습니다. |
+| [`capability_direction_unsupported`](#capability-direction-unsupported) | `422` | 아니요 | 선택한 케이퍼빌리티가 견적 또는 전송에 필요한 자금 이동 방향을 지원하지 않습니다. |
+| [`capability_ineligible`](#capability-ineligible) | `422` | 아니요 | 고객이 현재 프로필과 구성에서는 요청한 케이퍼빌리티에 대한 자격이 없습니다. |
+| [`capability_institutions_required`](#capability-institutions-required) | `422` | 반환되지 않음 | 케이퍼빌리티 요청에 하나 이상의 기관 선택이 필요합니다. |
+| [`capability_institutions_unsupported`](#capability-institutions-unsupported) | `422` | 아니요 | 선택한 기관 중 하나 이상이 요청한 케이퍼빌리티에서 지원되지 않습니다. |
+| [`capability_intent_unsupported`](#capability-intent-unsupported) | `422` | 반환되지 않음 | 요청한 케이퍼빌리티 인텐트가 이 케이퍼빌리티 변형에서 지원되지 않습니다. |
+| [`capability_key_unsupported`](#capability-key-unsupported) | `422` | 아니요 | 케이퍼빌리티 키가 이 작업에서 지원되지 않습니다. |
+| [`capability_not_cancelable`](#capability-not-cancelable) | `409` | 아니요 | 현재 상태에서는 케이퍼빌리티를 취소할 수 없습니다. |
+| [`capability_not_ready`](#capability-not-ready) | `409` | 상황에 따라 다름 | 요청한 계좌 또는 자금 이동에 필요한 케이퍼빌리티가 준비되지 않았습니다. |
+| [`capability_not_supported_for_customer_type`](#capability-not-supported-for-customer-type) | `422` | 반환되지 않음 | 이 고객 유형에서는 해당 케이퍼빌리티가 지원되지 않습니다. |
+| [`capability_provider_resolution_failed`](#capability-provider-resolution-failed) | `422` | 반환되지 않음 | Swipelux가 케이퍼빌리티 요청에 대한 완전한 처리 구성을 결정하지 못했습니다. |
+| [`capability_snapshot_corrupted`](#capability-snapshot-corrupted) | `500` | 아니요 | Swipelux가 고객의 케이퍼빌리티 상태를 평가하지 못했습니다. |
+| [`capability_terminally_rejected`](#capability-terminally-rejected) | `409` | 아니요 | 케이퍼빌리티가 이미 최종 상태로 거부되었습니다. |
+| [`capability_variant_unavailable`](#capability-variant-unavailable) | `409`, `422` | 상황에 따라 다름 | 선택한 고객, 인텐트 또는 기관 조합에서는 요청한 케이퍼빌리티 변형을 사용할 수 없습니다. |
+| [`conflict`](#conflict) | `409` | 아니요 | 요청한 작업이 리소스의 현재 상태와 충돌합니다. |
+| [`customer_has_active_resources`](#customer-has-active-resources) | `409` | 아니요 | 활성 리소스가 아직 고객에 의존하는 동안에는 고객을 보관 처리할 수 없습니다. |
+| [`customer_not_found`](#customer-not-found) | `404` | 아니요 | 고객이 현재 API 키 환경에 존재하지 않거나 더 이상 접근할 수 없습니다. |
+| [`destination_not_ready`](#destination-not-ready) | `409` | 상황에 따라 다름 | 수취인 대상은 존재하지만 요청한 견적에 대한 준비가 되지 않았습니다. |
+| [`developer_fee_invalid`](#developer-fee-invalid) | `422` | 아니요 | 개발자 수수료 구성이 선택한 계좌 또는 자금 이동에 유효하지 않습니다. |
+| [`document_not_found`](#document-not-found) | `404` | 반환되지 않음 | 요청한 고객 문서를 찾을 수 없습니다. |
+| [`duplicate_external_id`](#duplicate-external-id) | `409` | 아니요 | 제공된 `externalId`가 동일한 범위의 다른 리소스에 이미 할당되어 있습니다. |
+| [`field_required_by_open_task`](#field-required-by-open-task) | `409` | 아니요 | 요청이 열려 있는 태스크에서 아직 필요로 하는 프로필 필드를 지우려고 합니다. |
+| [`forbidden`](#forbidden) | `403` | 아니요 | API 키는 유효하지만 이 작업을 수행할 권한이 없습니다. |
+| [`idempotency_conflict`](#idempotency-conflict) | `409` | 아니요 | 멱등성 키가 이미 다른 요청에 사용되었습니다. |
+| [`idempotency_request_in_progress`](#idempotency-request-in-progress) | `409` | 예 | 동일한 멱등성 키를 가진 일치하는 요청이 아직 처리 중입니다. |
+| [`initial_application_identity_conflict`](#initial-application-identity-conflict) | `409` | 아니요 | 초기 신청 아이덴티티가 저장되기 전에 변경되었습니다. |
+| [`initial_application_owner_unavailable`](#initial-application-owner-unavailable) | `503` | 아니요 | 초기 신청에 사용할 수 있는 유효한 소유자 경로가 없습니다. |
+| [`initial_application_scope_unavailable`](#initial-application-scope-unavailable) | `503` | 상황에 따라 다름 | Swipelux가 초기 신청에 필요한 범위를 결정하지 못했습니다. |
+| [`insufficient_balance`](#insufficient-balance) | `409` | 아니요 | 원천 계좌에 전송에 필요한 사용 가능 잔액이 부족합니다. |
+| [`internal_error`](#internal-error) | `500` | 예 | Swipelux가 작업을 처리하는 동안 예기치 않은 서버 오류가 발생했습니다. |
+| [`invalid_capability`](#invalid-capability) | `400`, `422` | 반환되지 않음 | 케이퍼빌리티 참조 또는 요청한 케이퍼빌리티 값이 이 작업에 유효하지 않습니다. |
+| [`invalid_document_reference`](#invalid-document-reference) | `400` | 아니요 | 태스크 제출에 선택한 요구 사항을 충족할 수 없는 문서 참조가 포함되어 있습니다. |
+| [`invalid_field_for_type`](#invalid-field-for-type) | `400`, `422` | 반환되지 않음 | 요청에 선택한 리소스 유형에 유효하지 않은 필드가 포함되어 있습니다. |
+| [`invalid_settlement_target`](#invalid-settlement-target) | `400` | 반환되지 않음 | 요청한 정산 대상이 해당 계좌에 유효하지 않습니다. |
+| [`kyc_configuration_unavailable`](#kyc-configuration-unavailable) | `503` | 아니요 | 케이퍼빌리티에 필요한 검증 구성을 사용할 수 없습니다. |
+| [`kyc_level_configuration_invalid`](#kyc-level-configuration-invalid) | `503` | 아니요 | 활성 검증 수준 구성이 유효하지 않습니다. |
+| [`kyc_process_conflict`](#kyc-process-conflict) | `409` | 예 | 작업이 완료되기 전에 검증 프로세스가 변경되었습니다. |
+| [`kyc_provider_unavailable`](#kyc-provider-unavailable) | `502` | 예 | 검증 서비스를 일시적으로 사용할 수 없습니다. |
+| [`kyc_session_terminal`](#kyc-session-terminal) | `410` | 아니요 | 검증 세션에서 더 이상 조치를 취할 수 없습니다. |
+| [`merchant_kyb_not_approved`](#merchant-kyb-not-approved) | `422` | 반환되지 않음 | 연동 비즈니스가 요청한 고객 생성 플로우에 대해 승인되지 않았습니다. |
+| [`not_found`](#not-found) | `404` | 아니요 | 이 API 키와 요청 경로에서 요청한 리소스를 찾을 수 없습니다. |
+| [`ops_rail_handoff_conflict`](#ops-rail-handoff-conflict) | `409` | 아니요 | 태스크 제출이 충돌하는 은행 레일 설정으로 인해 차단되었습니다. |
+| [`payout_target_relationship_invalid`](#payout-target-relationship-invalid) | `400` | 반환되지 않음 | 선택한 지급 대상이 견적의 고객 또는 수취인과 유효한 관계를 갖고 있지 않습니다. |
+| [`profile_obligation_crossheal_failed`](#profile-obligation-crossheal-failed) | `500` | 아니요 | Swipelux가 고객의 프로필 요구 사항을 업데이트하지 못했습니다. |
+| [`provider_conflict`](#provider-conflict) | `400`, `422` | 아니요 | 요청한 케이퍼빌리티 또는 검증 작업이 현재 처리 구성과 충돌합니다. |
+| [`quote_already_executed`](#quote-already-executed) | `409` | 아니요 | 견적이 이미 실행되었으며 기존 전송이 있습니다. |
+| [`quote_destination_missing`](#quote-destination-missing) | `409`, `500` | 상황에 따라 다름 | 견적 또는 전송에 작업에 필요한 대상이 포함되어 있지 않습니다. |
+| [`quote_direction_invalid`](#quote-direction-invalid) | `422`, `500` | 상황에 따라 다름 | 원천과 대상이 지원되는 견적 방향을 구성하지 않습니다. |
+| [`quote_execution_consumed`](#quote-execution-consumed) | `409` | 아니요 | 견적의 단일 실행 기회가 이미 소진되었습니다. |
+| [`quote_expired`](#quote-expired) | `409` | 아니요 | 견적이 실행되기 전에 만료되었습니다. |
+| [`quote_failed`](#quote-failed) | `500`, `502` | 상황에 따라 다름 | Swipelux가 요청에 사용할 수 있는 견적을 생성하지 못했습니다. |
+| [`quote_mode_invalid`](#quote-mode-invalid) | `500` | 예 | 작업에 필요한 모드로 견적을 해석할 수 없습니다. |
+| [`quote_not_found`](#quote-not-found) | `404` | 반환되지 않음 | 이 API 키로 견적을 찾을 수 없습니다. |
+| [`rail_not_ready`](#rail-not-ready) | `409` | 아니요 | 선택한 결제 레일이 이 고객에 대해 준비되지 않았습니다. |
+| [`rail_temporarily_unavailable`](#rail-temporarily-unavailable) | `503` | 예 | 선택한 결제 레일을 일시적으로 사용할 수 없습니다. |
+| [`rate_unavailable`](#rate-unavailable) | `502` | 예 | 필요한 통화 환율을 일시적으로 사용할 수 없습니다. |
+| [`recipient_account_unsupported`](#recipient-account-unsupported) | `400` | 반환되지 않음 | 수취인 계좌 정보가 요청한 대상에서 지원되지 않습니다. |
+| [`recipient_address_required`](#recipient-address-required) | `422` | 아니요 | 이 법정화폐 대상을 생성하려면 먼저 수취인에게 주소가 필요합니다. |
+| [`recipient_destination_invalid`](#recipient-destination-invalid) | `400`, `422` | 아니요 | 수취인 대상이 유효하지 않거나 요청한 작업과 호환되지 않습니다. |
+| [`recipient_name_invalid`](#recipient-name-invalid) | `400` | 반환되지 않음 | 수취인 이름이 요청 스키마를 충족하지 않습니다. |
+| [`related_party_in_review`](#related-party-in-review) | `409` | 아니요 | 검토 중인 동안에는 관계자를 보관 처리할 수 없습니다. |
+| [`related_party_not_found`](#related-party-not-found) | `404` | 반환되지 않음 | 지정된 고객 아래에서 관계자를 찾을 수 없습니다. |
+| [`request_body_too_large`](#request-body-too-large) | `413` | 아니요 | 요청 본문이 작업에서 허용하는 크기를 초과합니다. |
+| [`request_failed`](#request-failed) | `502`, `503` | 상황에 따라 다름 | 작업을 완료하는 데 필요한 서비스가 요청을 성공적으로 처리하지 못했습니다. |
+| [`rule_already_exists`](#rule-already-exists) | `409` | 아니요 | 트리거 계좌에 이미 활성 규칙이 있습니다. |
+| [`rule_archived`](#rule-archived) | `409` | 아니요 | 규칙이 보관 처리되어 더 이상 변경할 수 없습니다. |
+| [`rule_not_found`](#rule-not-found) | `404` | 반환되지 않음 | 지정된 고객 아래에서 규칙을 찾을 수 없습니다. |
+| [`rule_target_invalid`](#rule-target-invalid) | `400` | 반환되지 않음 | 규칙 작업 대상이 이 고객 또는 규칙 유형에 유효하지 않습니다. |
+| [`rule_trigger_account_invalid`](#rule-trigger-account-invalid) | `400` | 반환되지 않음 | 규칙 트리거로 선택한 계좌가 유효하지 않습니다. |
+| [`submission_channel_not_allowed`](#submission-channel-not-allowed) | `409` | 아니요 | 이 태스크에서는 직접 API 제출이 허용되지 않습니다. |
+| [`submission_not_found`](#submission-not-found) | `404` | 아니요 | 요청한 태스크 제출을 찾을 수 없습니다. |
+| [`supporting_document_not_found`](#supporting-document-not-found) | `422` | 아니요 | 전송 요청에서 참조하는 증빙 문서를 찾을 수 없습니다. |
+| [`task_changed`](#task-changed) | `409` | 아니요 | 클라이언트가 마지막으로 읽은 이후 태스크가 변경되었습니다. |
+| [`task_not_found`](#task-not-found) | `404` | 아니요 | 지정된 고객 또는 API 키에서 태스크를 찾을 수 없습니다. |
+| [`task_obligation_conflict`](#task-obligation-conflict) | `409` | 아니요 | 태스크에 충돌하는 의무 상태가 있어 제출을 수락할 수 없습니다. |
+| [`task_submission_incomplete`](#task-submission-incomplete) | `422` | 아니요 | 제출이 현재 조치 가능한 모든 요구 사항에 답하지 않습니다. |
+| [`transfer_execution_failed`](#transfer-execution-failed) | `500` | 아니요 | 견적 실행 중에 전송을 완료할 수 없었습니다. |
+| [`transfer_has_no_instructions`](#transfer-has-no-instructions) | `404` | 반환되지 않음 | 전송은 존재하지만 결제 지침을 제공하지 않습니다. |
+| [`transfer_not_cancelable`](#transfer-not-cancelable) | `409` | 아니요 | 현재 상태에서는 전송을 취소할 수 없습니다. |
+| [`transfer_not_found`](#transfer-not-found) | `404` | 반환되지 않음 | 이 API 키로 전송을 찾을 수 없습니다. |
+| [`transfer_state_invalid`](#transfer-state-invalid) | `400`, `500` | 예 | 전송이 요청한 작업 또는 전환을 지원하지 않는 상태에 있습니다. |
+| [`unauthorized`](#unauthorized) | `401` | 아니요 | 요청에 유효한 API 키가 없습니다. |
+| [`unknown_parameter`](#unknown-parameter) | `400` | 아니요 | 요청에 지원되지 않거나 알 수 없는 매개변수가 포함되어 있습니다. |
+| [`validation_error`](#validation-error) | `400`, `422` | 아니요 | 요청이 작업의 입력 스키마를 충족하지 않습니다. |
+| [`verification_collection_mapping_invalid`](#verification-collection-mapping-invalid) | `503` | 아니요 | 태스크의 검증 요구 사항을 조치 가능한 검증 플로우로 준비할 수 없습니다. |
+| [`wallet_destination_not_supported`](#wallet-destination-not-supported) | `409` | 아니요 | 선택한 자금 이동 방법이 지갑 대상을 지원하지 않습니다. |
+
+## 요청 및 인증
+
+<a id="forbidden" className="block scroll-mt-32">
+  <span className="sr-only">forbidden error</span>
+</a>
+
+### `forbidden`
+
+**HTTP 상태:** `403`<br />
+**재시도 가능:** 아니요<br />
+**문제 유형:** `https://docs.swipelux.com/errors/forbidden`
+
+**의미:** API 키는 유효하지만 이 작업을 수행할 권한이 없습니다.
+
+**발생 시점:** 자격 증명에 필요한 권한이 없거나, 프로덕션 자격 증명이 샌드박스 전용 엔드포인트를 호출합니다.
+
+**해결 방법:** 필요한 권한이 있는 올바른 환경의 자격 증명을 사용하세요. 클라이언트 측 코드에서 키를 노출하거나 교체하지 마세요.
+
+**재시도 지침:** 변경하지 않은 요청을 재시도하지 마세요. 다른 요청을 보내기 전에 위의 조치를 적용하세요.
+
+**관련 API 작업:** 인증이 필요한 모든 API 작업.
+
+<a id="invalid-field-for-type" className="block scroll-mt-32">
+  <span className="sr-only">invalid_field_for_type error</span>
+</a>
+
+### `invalid_field_for_type`
+
+**HTTP 상태:** `400`, `422`<br />
+**재시도 가능:** 반환되지 않음<br />
+**문제 유형:** `https://docs.swipelux.com/errors/invalid-field-for-type`
+
+**의미:** 요청에 선택한 리소스 유형에 유효하지 않은 필드가 포함되어 있습니다.
+
+**발생 시점:** 개인/비즈니스 프로필과 같이 유형으로 구분되는 요청에 다른 변형의 필드가 포함되어 있거나, 선택한 유형에 필요한 필드가 누락되어 있습니다.
+
+**해결 방법:** 선택한 유형의 스키마를 사용하고, 다른 변형에 속한 필드를 제거하고, 해당 유형의 필수 필드를 제공한 다음 수정된 요청을 보내세요.
+
+**재시도 지침:** 이 문제는 `retryable`을 반환하지 않습니다. 변경하지 않은 재시도가 안전하다고 가정하지 말고, 위의 조치와 해당 작업의 멱등성 요구 사항을 따르세요.
+
+**관련 API 작업:**
+
+- [`POST /v3/customers`](/api-reference/customers/post-v3-customers) (`postV3Customers`, 상태 `400`)
+- [`PATCH /v3/customers/{customerId}`](/api-reference/customers/patch-v3-customers-by-customer-id) (`patchV3CustomersByCustomerId`, 상태 `400`)
+- [`POST /v3/customers/{customerId}/export`](/api-reference/customers/post-v3-customers-by-customer-id-export) (`postV3CustomersByCustomerIdExport`, 상태 `422`)
+- [`POST /v3/customers/{customerId}/related-parties`](/api-reference/customers/post-v3-customers-by-customer-id-related-parties) (`postV3CustomersByCustomerIdRelated-parties`, 상태 `400`)
+- [`PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/patch-v3-customers-by-customer-id-related-parties-by-related-party-id) (`patchV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, 상태 `400`)
+
+<a id="request-body-too-large" className="block scroll-mt-32">
+  <span className="sr-only">request_body_too_large error</span>
+</a>
+
+### `request_body_too_large`
+
+**HTTP 상태:** `413`<br />
+**재시도 가능:** 아니요<br />
+**문제 유형:** `https://docs.swipelux.com/errors/request-body-too-large`
+
+**의미:** 요청 본문이 작업에서 허용하는 크기를 초과합니다.
+
+**발생 시점:** 태스크 제출이 API가 하나의 본문에서 처리할 수 있는 것보다 많은 요청 데이터를 보냅니다.
+
+**해결 방법:** 불필요한 데이터를 제거하고, 파일 콘텐츠를 포함하는 대신 문서 참조를 사용하고, 현재 요구 사항에 여전히 답하는 더 작은 제출을 보내세요.
+
+**재시도 지침:** 변경하지 않은 요청을 재시도하지 마세요. 다른 요청을 보내기 전에 위의 조치를 적용하세요.
+
+**관련 API 작업:**
+
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, 상태 `413`)
+
+<a id="unauthorized" className="block scroll-mt-32">
+  <span className="sr-only">unauthorized error</span>
+</a>
+
+### `unauthorized`
+
+**HTTP 상태:** `401`<br />
+**재시도 가능:** 아니요<br />
+**문제 유형:** `https://docs.swipelux.com/errors/unauthorized`
+
+**의미:** 요청에 유효한 API 키가 없습니다.
+
+**발생 시점:** `X-API-Key` 헤더가 없거나, 유효하지 않거나, 만료되었거나, API에서 인식되지 않습니다.
+
+**해결 방법:** 보호된 백엔드에서 올바른 환경별 키를 보내세요. 키가 노출되었을 가능성이 있다면 키를 교체하세요.
+
+**재시도 지침:** 변경하지 않은 요청을 재시도하지 마세요. 다른 요청을 보내기 전에 위의 조치를 적용하세요.
+
+**관련 API 작업:** 인증이 필요한 모든 API 작업.
+
+<a id="unknown-parameter" className="block scroll-mt-32">
+  <span className="sr-only">unknown_parameter error</span>
+</a>
+
+### `unknown_parameter`
+
+**HTTP 상태:** `400`<br />
+**재시도 가능:** 아니요<br />
+**문제 유형:** `https://docs.swipelux.com/errors/unknown-parameter`
+
+**의미:** 요청에 지원되지 않거나 알 수 없는 매개변수가 포함되어 있습니다.
+
+**발생 시점:** 쿼리 문자열 또는 작업 매개변수의 철자가 잘못되었거나, 지원되지 않거나, 해당 엔드포인트에서 허용되지 않습니다.
+
+**해결 방법:** 알 수 없는 매개변수를 제거하거나 해당 작업에 문서화된 정확한 매개변수로 교체하세요.
+
+**재시도 지침:** 변경하지 않은 요청을 재시도하지 마세요. 다른 요청을 보내기 전에 위의 조치를 적용하세요.
+
+<Accordion title="관련 API 작업 (26)">
+
+- [`GET /v3/capabilities`](/api-reference/capabilities/get-v3-capabilities) (`getV3Capabilities`, 상태 `400`)
+- [`GET /v3/customers`](/api-reference/customers/get-v3-customers) (`getV3Customers`, 상태 `400`)
+- [`GET /v3/customers/{customerId}/accounts`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts) (`getV3CustomersByCustomerIdAccounts`, 상태 `400`)
+- [`GET /v3/customers/{customerId}/capabilities`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities) (`getV3CustomersByCustomerIdCapabilities`, 상태 `400`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}/applications`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id-applications) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityIdApplications`, 상태 `400`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}/applications/{applicationId}/history`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id-applications-by-application-id-history) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityIdApplicationsByApplicationIdHistory`, 상태 `400`)
+- [`GET /v3/customers/{customerId}/capabilities/supported`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-supported) (`getV3CustomersByCustomerIdCapabilitiesSupported`, 상태 `400`)
+- [`GET /v3/customers/{customerId}/documents`](/api-reference/documents/get-v3-customers-by-customer-id-documents) (`getV3CustomersByCustomerIdDocuments`, 상태 `400`)
+- [`GET /v3/customers/{customerId}/recipients`](/api-reference/recipients/get-v3-customers-by-customer-id-recipients) (`getV3CustomersByCustomerIdRecipients`, 상태 `400`)
+- [`GET /v3/customers/{customerId}/recipients/{recipientId}/destinations`](/api-reference/recipients/get-v3-customers-by-customer-id-recipients-by-recipient-id-destinations) (`getV3CustomersByCustomerIdRecipientsByRecipientIdDestinations`, 상태 `400`)
+- [`GET /v3/customers/{customerId}/related-parties`](/api-reference/customers/get-v3-customers-by-customer-id-related-parties) (`getV3CustomersByCustomerIdRelated-parties`, 상태 `400`)
+- [`GET /v3/customers/{customerId}/rules`](/api-reference/rules/get-v3-customers-by-customer-id-rules) (`getV3CustomersByCustomerIdRules`, 상태 `400`)
+- [`GET /v3/customers/{customerId}/tasks`](/api-reference/tasks/list-customer-tasks) (`listCustomerTasks`, 상태 `400`)
+- [`GET /v3/customers/{customerId}/tasks/{taskId}`](/api-reference/tasks/get-customer-task) (`getCustomerTask`, 상태 `400`)
+- [`GET /v3/customers/{customerId}/tasks/{taskId}/history`](/api-reference/tasks/list-customer-task-history) (`listCustomerTaskHistory`, 상태 `400`)
+- [`GET /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/list-customer-task-submissions) (`listCustomerTaskSubmissions`, 상태 `400`)
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, 상태 `400`)
+- [`GET /v3/customers/{customerId}/tasks/{taskId}/submissions/{submissionId}`](/api-reference/task-submissions/get-customer-task-submission) (`getCustomerTaskSubmission`, 상태 `400`)
+- [`GET /v3/institutions`](/api-reference/institutions/get-v3-institutions) (`getV3Institutions`, 상태 `400`)
+- [`GET /v3/rates`](/api-reference/money-movement/get-v3-rates) (`getV3Rates`, 상태 `400`)
+- [`POST /v3/sandbox/tasks`](/api-reference/sandbox/post-v3-sandbox-tasks) (`postV3SandboxTasks`, 상태 `400`)
+- [`POST /v3/sandbox/tasks/{taskId}/review`](/api-reference/sandbox/post-v3-sandbox-tasks-by-task-id-review) (`postV3SandboxTasksByTaskIdReview`, 상태 `400`)
+- [`GET /v3/tasks`](/api-reference/tasks/list-tasks) (`listTasks`, 상태 `400`)
+- [`GET /v3/tasks/{taskId}`](/api-reference/tasks/get-task) (`getTask`, 상태 `400`)
+- [`GET /v3/transfers`](/api-reference/money-movement/get-v3-transfers) (`getV3Transfers`, 상태 `400`)
+- [`GET /v3/transfers/{transferId}/tasks`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-tasks) (`getV3TransfersByTransferIdTasks`, 상태 `400`)
+
+</Accordion>
+
+<a id="validation-error" className="block scroll-mt-32">
+  <span className="sr-only">validation_error error</span>
+</a>
+
+### `validation_error`
+
+**HTTP 상태:** `400`, `422`<br />
+**재시도 가능:** 아니요<br />
+**문제 유형:** `https://docs.swipelux.com/errors/validation-error`
+
+**의미:** 요청이 작업의 입력 스키마를 충족하지 않습니다.
+
+**발생 시점:** 필수 값이 누락되었거나, 필드의 타입 또는 형식이 유효하지 않거나, 요청 매개변수가 유효성 검사를 통과하지 못합니다.
+
+**해결 방법:** `errors[]`와 각 JSON 포인터를 사용하여 요청을 수정하고, 작업 스키마와 비교한 다음 새 요청을 보내세요.
+
+**재시도 지침:** 변경하지 않은 요청을 재시도하지 마세요. 다른 요청을 보내기 전에 위의 조치를 적용하세요.
+
+<Accordion title="관련 API 작업 (55)">
+
+- [`GET /v3/capabilities`](/api-reference/capabilities/get-v3-capabilities) (`getV3Capabilities`, 상태 `400`)
+- [`GET /v3/customers`](/api-reference/customers/get-v3-customers) (`getV3Customers`, 상태 `400`)
+- [`POST /v3/customers`](/api-reference/customers/post-v3-customers) (`postV3Customers`, 상태 `400`)
+- [`DELETE /v3/customers/{customerId}`](/api-reference/customers/delete-v3-customers-by-customer-id) (`deleteV3CustomersByCustomerId`, 상태 `400`)
+- [`PATCH /v3/customers/{customerId}`](/api-reference/customers/patch-v3-customers-by-customer-id) (`patchV3CustomersByCustomerId`, 상태 `400`)
+- [`GET /v3/customers/{customerId}/accounts`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts) (`getV3CustomersByCustomerIdAccounts`, 상태 `400`)
+- [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) (`postV3CustomersByCustomerIdAccounts`, 상태 `400`)
+- [`DELETE /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/delete-v3-customers-by-customer-id-accounts-by-account-id) (`deleteV3CustomersByCustomerIdAccountsByAccountId`, 상태 `400`)
+- [`PATCH /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/patch-v3-customers-by-customer-id-accounts-by-account-id) (`patchV3CustomersByCustomerIdAccountsByAccountId`, 상태 `400`)
+- [`PUT /v3/customers/{customerId}/accounts/{accountId}/fees`](/api-reference/accounts/put-v3-customers-by-customer-id-accounts-by-account-id-fees) (`putV3CustomersByCustomerIdAccountsByAccountIdFees`, 상태 `400`)
+- [`GET /v3/customers/{customerId}/capabilities`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities) (`getV3CustomersByCustomerIdCapabilities`, 상태 `400`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, 상태 `400`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}/applications`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id-applications) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityIdApplications`, 상태 `400`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}/cancel`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id-cancel) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityIdCancel`, 상태 `400`)
+- [`GET /v3/customers/{customerId}/documents`](/api-reference/documents/get-v3-customers-by-customer-id-documents) (`getV3CustomersByCustomerIdDocuments`, 상태 `400`)
+- [`POST /v3/customers/{customerId}/documents`](/api-reference/documents/post-v3-customers-by-customer-id-documents) (`postV3CustomersByCustomerIdDocuments`, 상태 `400`)
+- [`DELETE /v3/customers/{customerId}/documents/{documentId}`](/api-reference/documents/delete-v3-customers-by-customer-id-documents-by-document-id) (`deleteV3CustomersByCustomerIdDocumentsByDocumentId`, 상태 `400`)
+- [`POST /v3/customers/{customerId}/export`](/api-reference/customers/post-v3-customers-by-customer-id-export) (`postV3CustomersByCustomerIdExport`, 상태 `400`)
+- [`GET /v3/customers/{customerId}/recipients`](/api-reference/recipients/get-v3-customers-by-customer-id-recipients) (`getV3CustomersByCustomerIdRecipients`, 상태 `400`)
+- [`POST /v3/customers/{customerId}/recipients`](/api-reference/recipients/post-v3-customers-by-customer-id-recipients) (`postV3CustomersByCustomerIdRecipients`, 상태 `400`)
+- [`DELETE /v3/customers/{customerId}/recipients/{recipientId}`](/api-reference/recipients/delete-v3-customers-by-customer-id-recipients-by-recipient-id) (`deleteV3CustomersByCustomerIdRecipientsByRecipientId`, 상태 `400`)
+- [`PATCH /v3/customers/{customerId}/recipients/{recipientId}`](/api-reference/recipients/patch-v3-customers-by-customer-id-recipients-by-recipient-id) (`patchV3CustomersByCustomerIdRecipientsByRecipientId`, 상태 `400`)
+- [`GET /v3/customers/{customerId}/recipients/{recipientId}/destinations`](/api-reference/recipients/get-v3-customers-by-customer-id-recipients-by-recipient-id-destinations) (`getV3CustomersByCustomerIdRecipientsByRecipientIdDestinations`, 상태 `400`)
+- [`POST /v3/customers/{customerId}/recipients/{recipientId}/destinations`](/api-reference/recipients/post-v3-customers-by-customer-id-recipients-by-recipient-id-destinations) (`postV3CustomersByCustomerIdRecipientsByRecipientIdDestinations`, 상태 `400`)
+- [`DELETE /v3/customers/{customerId}/recipients/{recipientId}/destinations/{destinationId}`](/api-reference/recipients/delete-v3-customers-by-customer-id-recipients-by-recipient-id-destinations-by-destination-id) (`deleteV3CustomersByCustomerIdRecipientsByRecipientIdDestinationsByDestinationId`, 상태 `400`)
+- [`GET /v3/customers/{customerId}/related-parties`](/api-reference/customers/get-v3-customers-by-customer-id-related-parties) (`getV3CustomersByCustomerIdRelated-parties`, 상태 `400`)
+- [`POST /v3/customers/{customerId}/related-parties`](/api-reference/customers/post-v3-customers-by-customer-id-related-parties) (`postV3CustomersByCustomerIdRelated-parties`, 상태 `400`)
+- [`DELETE /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/delete-v3-customers-by-customer-id-related-parties-by-related-party-id) (`deleteV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, 상태 `400`)
+- [`PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/patch-v3-customers-by-customer-id-related-parties-by-related-party-id) (`patchV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, 상태 `400`)
+- [`GET /v3/customers/{customerId}/rules`](/api-reference/rules/get-v3-customers-by-customer-id-rules) (`getV3CustomersByCustomerIdRules`, 상태 `400`)
+- [`POST /v3/customers/{customerId}/rules`](/api-reference/rules/post-v3-customers-by-customer-id-rules) (`postV3CustomersByCustomerIdRules`, 상태 `400`)
+- [`DELETE /v3/customers/{customerId}/rules/{ruleId}`](/api-reference/rules/delete-v3-customers-by-customer-id-rules-by-rule-id) (`deleteV3CustomersByCustomerIdRulesByRuleId`, 상태 `400`)
+- [`PATCH /v3/customers/{customerId}/rules/{ruleId}`](/api-reference/rules/patch-v3-customers-by-customer-id-rules-by-rule-id) (`patchV3CustomersByCustomerIdRulesByRuleId`, 상태 `400`)
+- [`GET /v3/customers/{customerId}/tasks`](/api-reference/tasks/list-customer-tasks) (`listCustomerTasks`, 상태 `400`)
+- [`GET /v3/customers/{customerId}/tasks/{taskId}/history`](/api-reference/tasks/list-customer-task-history) (`listCustomerTaskHistory`, 상태 `400`)
+- [`GET /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/list-customer-task-submissions) (`listCustomerTaskSubmissions`, 상태 `400`)
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, 상태 `400`)
+- [`GET /v3/institutions`](/api-reference/institutions/get-v3-institutions) (`getV3Institutions`, 상태 `400`)
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, 상태 `400`)
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, 상태 `422`)
+- [`GET /v3/rates`](/api-reference/money-movement/get-v3-rates) (`getV3Rates`, 상태 `400`)
+- [`POST /v3/sandbox/accounts/{accountId}/topup`](/api-reference/sandbox/post-v3-sandbox-accounts-by-account-id-topup) (`postV3SandboxAccountsByAccountIdTopup`, 상태 `400`)
+- [`POST /v3/sandbox/customers/{customerId}/capabilities/{capabilityId}/status`](/api-reference/sandbox/post-v3-sandbox-customers-by-customer-id-capabilities-by-capability-id-status) (`postV3SandboxCustomersByCustomerIdCapabilitiesByCapabilityIdStatus`, 상태 `400`)
+- [`POST /v3/sandbox/customers/{customerId}/verification`](/api-reference/sandbox/post-v3-sandbox-customers-by-customer-id-verification) (`postV3SandboxCustomersByCustomerIdVerification`, 상태 `400`)
+- [`POST /v3/sandbox/tasks`](/api-reference/sandbox/post-v3-sandbox-tasks) (`postV3SandboxTasks`, 상태 `400`)
+- [`POST /v3/sandbox/tasks/{taskId}/review`](/api-reference/sandbox/post-v3-sandbox-tasks-by-task-id-review) (`postV3SandboxTasksByTaskIdReview`, 상태 `400`)
+- [`POST /v3/sandbox/transfers/{transferId}/state`](/api-reference/sandbox/post-v3-sandbox-transfers-by-transfer-id-state) (`postV3SandboxTransfersByTransferIdState`, 상태 `400`)
+- [`GET /v3/tasks`](/api-reference/tasks/list-tasks) (`listTasks`, 상태 `400`)
+- [`GET /v3/transfers`](/api-reference/money-movement/get-v3-transfers) (`getV3Transfers`, 상태 `400`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, 상태 `400`)
+- [`POST /v3/transfers/{transferId}/cancel`](/api-reference/money-movement/post-v3-transfers-by-transfer-id-cancel) (`postV3TransfersByTransferIdCancel`, 상태 `400`)
+- [`GET /v3/transfers/{transferId}/tasks`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-tasks) (`getV3TransfersByTransferIdTasks`, 상태 `400`)
+- [`POST /v3/webhooks`](/api-reference/webhooks/post-v3-webhooks) (`postV3Webhooks`, 상태 `400`)
+- [`DELETE /v3/webhooks/{webhookId}`](/api-reference/webhooks/delete-v3-webhooks-by-webhook-id) (`deleteV3WebhooksByWebhookId`, 상태 `400`)
+- [`PATCH /v3/webhooks/{webhookId}`](/api-reference/webhooks/patch-v3-webhooks-by-webhook-id) (`patchV3WebhooksByWebhookId`, 상태 `400`)
+
+</Accordion>
+
+## 고객 및 프로필
+
+<a id="customer-has-active-resources" className="block scroll-mt-32">
+  <span className="sr-only">customer_has_active_resources error</span>
+</a>
+
+### `customer_has_active_resources`
+
+**HTTP 상태:** `409`<br />
+**재시도 가능:** 아니요<br />
+**문제 유형:** `https://docs.swipelux.com/errors/customer-has-active-resources`
+
+**의미:** 활성 리소스가 아직 고객에 의존하는 동안에는 고객을 보관 처리할 수 없습니다.
+
+**발생 시점:** 해결이 필요한 계좌, 전송 또는 기타 리소스가 아직 남아 있는 고객을 보관 처리합니다.
+
+**해결 방법:** 각 `blockingResources[].requiredAction`을 따르고, 리소스가 해결된 후 고객을 다시 조회한 다음 보관 처리 작업을 재시도하세요.
+
+**재시도 지침:** 변경하지 않은 요청을 재시도하지 마세요. 다른 요청을 보내기 전에 위의 조치를 적용하세요.
+
+**관련 API 작업:**
+
+- [`DELETE /v3/customers/{customerId}`](/api-reference/customers/delete-v3-customers-by-customer-id) (`deleteV3CustomersByCustomerId`, 상태 `409`)
+
+**추가 응답 필드:**
+
+- `blockingResources`: 요청한 작업을 진행하기 전에 해결해야 하는 고객 리소스로, 유형과 id 순으로 정렬됩니다.
+
+**예시:**
+
+```json
+{
+  "type": "https://docs.swipelux.com/errors/customer-has-active-resources",
+  "title": "Customer Has Active Resources",
+  "status": 409,
+  "code": "customer_has_active_resources",
+  "detail": "Archive or resolve every blocking resource before retrying.",
+  "correlationId": "01JERRORCUSTOMERARCHIVE",
+  "retryable": false,
+  "blockingResources": [
+    {
+      "type": "account",
+      "id": "acc_01JACTIVE",
+      "requiredAction": "archive_account"
+    }
+  ]
+}
+```
+
+<a id="customer-not-found" className="block scroll-mt-32">
+  <span className="sr-only">customer_not_found error</span>
+</a>
+
+### `customer_not_found`
+
+**HTTP 상태:** `404`<br />
+**재시도 가능:** 아니요<br />
+**문제 유형:** `https://docs.swipelux.com/errors/customer-not-found`
+
+**의미:** 고객이 현재 API 키 환경에 존재하지 않거나 더 이상 접근할 수 없습니다.
+
+**발생 시점:** 작업이 존재하지 않거나 다른 환경에 속한 고객 식별자를 사용하거나, 활성 고객이 필요한 작업에서 보관 처리된 고객을 참조합니다.
+
+**해결 방법:** 고객 식별자와 API 키 환경을 확인한 다음, 접근 가능한 고객으로 재시도하기 전에 고객을 조회하거나 목록을 확인하세요.
+
+**재시도 지침:** 변경하지 않은 요청을 재시도하지 마세요. 다른 요청을 보내기 전에 위의 조치를 적용하세요.
+
+<Accordion title="관련 API 작업 (22)">
+
+- [`DELETE /v3/customers/{customerId}`](/api-reference/customers/delete-v3-customers-by-customer-id) (`deleteV3CustomersByCustomerId`, 상태 `404`)
+- [`GET /v3/customers/{customerId}`](/api-reference/customers/get-v3-customers-by-customer-id) (`getV3CustomersByCustomerId`, 상태 `404`)
+- [`PATCH /v3/customers/{customerId}`](/api-reference/customers/patch-v3-customers-by-customer-id) (`patchV3CustomersByCustomerId`, 상태 `404`)
+- [`GET /v3/customers/{customerId}/capabilities`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities) (`getV3CustomersByCustomerIdCapabilities`, 상태 `404`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityId`, 상태 `404`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, 상태 `404`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}/applications`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id-applications) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityIdApplications`, 상태 `404`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}/applications/{applicationId}/history`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id-applications-by-application-id-history) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityIdApplicationsByApplicationIdHistory`, 상태 `404`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}/cancel`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id-cancel) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityIdCancel`, 상태 `404`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}/tasks-preview`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id-tasks-preview) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityIdTasks-preview`, 상태 `404`)
+- [`GET /v3/customers/{customerId}/capabilities/supported`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-supported) (`getV3CustomersByCustomerIdCapabilitiesSupported`, 상태 `404`)
+- [`GET /v3/customers/{customerId}/documents`](/api-reference/documents/get-v3-customers-by-customer-id-documents) (`getV3CustomersByCustomerIdDocuments`, 상태 `404`)
+- [`POST /v3/customers/{customerId}/documents`](/api-reference/documents/post-v3-customers-by-customer-id-documents) (`postV3CustomersByCustomerIdDocuments`, 상태 `404`)
+- [`DELETE /v3/customers/{customerId}/documents/{documentId}`](/api-reference/documents/delete-v3-customers-by-customer-id-documents-by-document-id) (`deleteV3CustomersByCustomerIdDocumentsByDocumentId`, 상태 `404`)
+- [`GET /v3/customers/{customerId}/documents/{documentId}`](/api-reference/documents/get-v3-customers-by-customer-id-documents-by-document-id) (`getV3CustomersByCustomerIdDocumentsByDocumentId`, 상태 `404`)
+- [`POST /v3/customers/{customerId}/export`](/api-reference/customers/post-v3-customers-by-customer-id-export) (`postV3CustomersByCustomerIdExport`, 상태 `404`)
+- [`GET /v3/customers/{customerId}/related-parties`](/api-reference/customers/get-v3-customers-by-customer-id-related-parties) (`getV3CustomersByCustomerIdRelated-parties`, 상태 `404`)
+- [`POST /v3/customers/{customerId}/related-parties`](/api-reference/customers/post-v3-customers-by-customer-id-related-parties) (`postV3CustomersByCustomerIdRelated-parties`, 상태 `404`)
+- [`DELETE /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/delete-v3-customers-by-customer-id-related-parties-by-related-party-id) (`deleteV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, 상태 `404`)
+- [`GET /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/get-v3-customers-by-customer-id-related-parties-by-related-party-id) (`getV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, 상태 `404`)
+- [`PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/patch-v3-customers-by-customer-id-related-parties-by-related-party-id) (`patchV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, 상태 `404`)
+- [`GET /v3/customers/{customerId}/tasks`](/api-reference/tasks/list-customer-tasks) (`listCustomerTasks`, 상태 `404`)
+
+</Accordion>
+
+<a id="document-not-found" className="block scroll-mt-32">
+  <span className="sr-only">document_not_found error</span>
+</a>
+
+### `document_not_found`
+
+**HTTP 상태:** `404`<br />
+**재시도 가능:** 반환되지 않음<br />
+**문제 유형:** `https://docs.swipelux.com/errors/document-not-found`
+
+**의미:** 요청한 고객 문서를 찾을 수 없습니다.
+
+**발생 시점:** 문서 식별자가 존재하지 않거나, 보관 처리되었거나, 요청 경로의 고객에 속하지 않습니다.
+
+**해결 방법:** 고객 및 문서 식별자를 확인하고, 고객의 문서 목록을 조회하고, 필요한 문서가 없는 경우 대체 문서를 업로드하세요.
+
+**재시도 지침:** 이 문제는 `retryable`을 반환하지 않습니다. 변경하지 않은 재시도가 안전하다고 가정하지 말고, 위의 조치와 해당 작업의 멱등성 요구 사항을 따르세요.
+
+**관련 API 작업:**
+
+- [`DELETE /v3/customers/{customerId}/documents/{documentId}`](/api-reference/documents/delete-v3-customers-by-customer-id-documents-by-document-id) (`deleteV3CustomersByCustomerIdDocumentsByDocumentId`, 상태 `404`)
+- [`GET /v3/customers/{customerId}/documents/{documentId}`](/api-reference/documents/get-v3-customers-by-customer-id-documents-by-document-id) (`getV3CustomersByCustomerIdDocumentsByDocumentId`, 상태 `404`)
+
+<a id="duplicate-external-id" className="block scroll-mt-32">
+  <span className="sr-only">duplicate_external_id error</span>
+</a>
+
+### `duplicate_external_id`
+
+**HTTP 상태:** `409`<br />
+**재시도 가능:** 아니요<br />
+**문제 유형:** `https://docs.swipelux.com/errors/duplicate-external-id`
+
+**의미:** 제공된 `externalId`가 동일한 범위의 다른 리소스에 이미 할당되어 있습니다.
+
+**발생 시점:** 생성 또는 업데이트 요청이 고유해야 하는 개발자 제어 식별자를 재사용하려고 시도합니다.
+
+**해결 방법:** 해당 식별자와 이미 연결된 리소스를 조회하거나, 실제로 다른 리소스에는 새로운 고유 `externalId`를 사용하세요.
+
+**재시도 지침:** 변경하지 않은 요청을 재시도하지 마세요. 다른 요청을 보내기 전에 위의 조치를 적용하세요.
+
+**관련 API 작업:**
+
+- [`POST /v3/customers`](/api-reference/customers/post-v3-customers) (`postV3Customers`, 상태 `409`)
+- [`PATCH /v3/customers/{customerId}`](/api-reference/customers/patch-v3-customers-by-customer-id) (`patchV3CustomersByCustomerId`, 상태 `409`)
+- [`POST /v3/customers/{customerId}/related-parties`](/api-reference/customers/post-v3-customers-by-customer-id-related-parties) (`postV3CustomersByCustomerIdRelated-parties`, 상태 `409`)
+- [`PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/patch-v3-customers-by-customer-id-related-parties-by-related-party-id) (`patchV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, 상태 `409`)
+
+<a id="field-required-by-open-task" className="block scroll-mt-32">
+  <span className="sr-only">field_required_by_open_task error</span>
+</a>
+
+### `field_required_by_open_task`
+
+**HTTP 상태:** `409`<br />
+**재시도 가능:** 아니요<br />
+**문제 유형:** `https://docs.swipelux.com/errors/field-required-by-open-task`
+
+**의미:** 요청이 열려 있는 태스크에서 아직 필요로 하는 프로필 필드를 지우려고 합니다.
+
+**발생 시점:** 고객 또는 관계자 업데이트가 `taskId`의 태스크에서 필수로 고정한 값을 제거합니다.
+
+**해결 방법:** `taskId`와 `fields`의 프로필 포인터 또는 요구 사항 키를 확인한 다음, 필요한 값을 복원하거나 태스크를 완료 또는 취소한 후 업데이트를 다시 보내세요.
+
+**재시도 지침:** 변경하지 않은 요청을 재시도하지 마세요. 다른 요청을 보내기 전에 위의 조치를 적용하세요.
+
+**관련 API 작업:**
+
+- [`PATCH /v3/customers/{customerId}`](/api-reference/customers/patch-v3-customers-by-customer-id) (`patchV3CustomersByCustomerId`, 상태 `409`)
+- [`PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/patch-v3-customers-by-customer-id-related-parties-by-related-party-id) (`patchV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, 상태 `409`)
+
+**추가 응답 필드:**
+
+- `fields`: 열려 있는 태스크에 의해 차단된 프로필 포인터 또는 요구 사항 키입니다.
+- `taskId`: 현재 태스크 식별자입니다.
+
+<a id="merchant-kyb-not-approved" className="block scroll-mt-32">
+  <span className="sr-only">merchant_kyb_not_approved error</span>
+</a>
+
+### `merchant_kyb_not_approved`
+
+**HTTP 상태:** `422`<br />
+**재시도 가능:** 반환되지 않음<br />
+**문제 유형:** `https://docs.swipelux.com/errors/merchant-kyb-not-approved`
+
+**의미:** 연동 비즈니스가 요청한 고객 생성 플로우에 대해 승인되지 않았습니다.
+
+**발생 시점:** 연동 비즈니스와 프로덕션 스페이스가 승인되기 전에 프로덕션 고객 생성 요청이 이루어집니다.
+
+**해결 방법:** 프로덕션 고객을 생성하기 전에 연동 비즈니스 검증 플로우를 완료하고 프로덕션 승인을 기다리세요.
+
+**재시도 지침:** 이 문제는 `retryable`을 반환하지 않습니다. 변경하지 않은 재시도가 안전하다고 가정하지 말고, 위의 조치와 해당 작업의 멱등성 요구 사항을 따르세요.
+
+**관련 API 작업:**
+
+- [`POST /v3/customers`](/api-reference/customers/post-v3-customers) (`postV3Customers`, 상태 `422`)
+
+<a id="profile-obligation-crossheal-failed" className="block scroll-mt-32">
+  <span className="sr-only">profile_obligation_crossheal_failed error</span>
+</a>
+
+### `profile_obligation_crossheal_failed`
+
+**HTTP 상태:** `500`<br />
+**재시도 가능:** 아니요<br />
+**문제 유형:** `https://docs.swipelux.com/errors/profile-obligation-crossheal-failed`
+
+**의미:** Swipelux가 고객의 프로필 요구 사항을 업데이트하지 못했습니다.
+
+**발생 시점:** 고객 또는 관계자 업데이트가 프로필 변경 사항을 현재 태스크 요구 사항과 조정하지 못합니다.
+
+**해결 방법:** `correlationId`를 보관하고 Swipelux 지원팀에 문의하세요. 변경하지 않은 업데이트를 반복해서 재시도하지 마세요.
+
+**재시도 지침:** 변경하지 않은 요청을 재시도하지 마세요. 다른 요청을 보내기 전에 위의 조치를 적용하세요.
+
+**관련 API 작업:**
+
+- [`PATCH /v3/customers/{customerId}`](/api-reference/customers/patch-v3-customers-by-customer-id) (`patchV3CustomersByCustomerId`, 상태 `500`)
+- [`PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/patch-v3-customers-by-customer-id-related-parties-by-related-party-id) (`patchV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, 상태 `500`)
+
+<a id="related-party-in-review" className="block scroll-mt-32">
+  <span className="sr-only">related_party_in_review error</span>
+</a>
+
+### `related_party_in_review`
+
+**HTTP 상태:** `409`<br />
+**재시도 가능:** 아니요<br />
+**문제 유형:** `https://docs.swipelux.com/errors/related-party-in-review`
+
+**의미:** 검토 중인 동안에는 관계자를 보관 처리할 수 없습니다.
+
+**발생 시점:** 검증 또는 검토 워크플로가 아직 활성 상태인 관계자를 보관 처리하려고 시도합니다.
+
+**해결 방법:** 검토 상태가 변경될 때까지 기다렸다가 관계자를 다시 조회하고, 현재 상태에서 해당 작업이 허용될 때만 보관 처리하세요.
+
+**재시도 지침:** 변경하지 않은 요청을 재시도하지 마세요. 다른 요청을 보내기 전에 위의 조치를 적용하세요.
+
+**관련 API 작업:**
+
+- [`DELETE /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/delete-v3-customers-by-customer-id-related-parties-by-related-party-id) (`deleteV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, 상태 `409`)
+
+<a id="related-party-not-found" className="block scroll-mt-32">
+  <span className="sr-only">related_party_not_found error</span>
+</a>
+
+### `related_party_not_found`
+
+**HTTP 상태:** `404`<br />
+**재시도 가능:** 반환되지 않음<br />
+**문제 유형:** `https://docs.swipelux.com/errors/related-party-not-found`
+
+**의미:** 지정된 고객 아래에서 관계자를 찾을 수 없습니다.
+
+**발생 시점:** 관계자 식별자가 존재하지 않거나, 보관 처리되었거나, 다른 고객에 속하거나, 현재 환경에서 접근할 수 없습니다.
+
+**해결 방법:** 고객 및 관계자 식별자를 확인하고, 고객의 관계자 목록을 조회한 다음, 접근 가능한 리소스로 재시도하세요.
+
+**재시도 지침:** 이 문제는 `retryable`을 반환하지 않습니다. 변경하지 않은 재시도가 안전하다고 가정하지 말고, 위의 조치와 해당 작업의 멱등성 요구 사항을 따르세요.
+
+**관련 API 작업:**
+
+- [`DELETE /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/delete-v3-customers-by-customer-id-related-parties-by-related-party-id) (`deleteV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, 상태 `404`)
+- [`GET /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/get-v3-customers-by-customer-id-related-parties-by-related-party-id) (`getV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, 상태 `404`)
+- [`PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/patch-v3-customers-by-customer-id-related-parties-by-related-party-id) (`patchV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, 상태 `404`)
+
+## 케이퍼빌리티, KYC 및 태스크
+
+<a id="absence-conflicts-with-profile" className="block scroll-mt-32">
+  <span className="sr-only">absence_conflicts_with_profile error</span>
+</a>
+
+### `absence_conflicts_with_profile`
+
+**HTTP 상태:** `409`<br />
+**재시도 가능:** 아니요<br />
+**문제 유형:** `https://docs.swipelux.com/errors/absence-conflicts-with-profile`
+
+**의미:** 값이 없다고 선언하는 태스크 답변이 고객 프로필에 이미 존재하는 데이터와 충돌합니다.
+
+**발생 시점:** `profilePointer`로 식별되는 표준 프로필 필드에 아직 값이 있는데도 제출이 프로필 기반 요구 사항을 없음으로 표시합니다.
+
+**해결 방법:** `profilePointer`를 검토하고, 고객 프로필을 업데이트하거나 그와 일치하는 답변을 제출하고, 태스크를 다시 조회한 후 현재 리비전을 제출하세요.
+
+**재시도 지침:** 변경하지 않은 요청을 재시도하지 마세요. 다른 요청을 보내기 전에 위의 조치를 적용하세요.
+
+**관련 API 작업:**
+
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, 상태 `409`)
+
+**추가 응답 필드:**
+
+- `profilePointer`: 충돌과 연결된 표준 프로필 필드입니다.
+
+<a id="capability-already-exists" className="block scroll-mt-32">
+  <span className="sr-only">capability_already_exists error</span>
+</a>
+
+### `capability_already_exists`
+
+**HTTP 상태:** `409`<br />
+**재시도 가능:** 아니요<br />
+**문제 유형:** `https://docs.swipelux.com/errors/capability-already-exists`
+
+**의미:** 고객이 이미 요청한 케이퍼빌리티를 보유하고 있습니다.
+
+**발생 시점:** 현재 또는 기존 신청이 이미 동일한 고객 케이퍼빌리티를 나타내는 케이퍼빌리티를 요청합니다.
+
+**해결 방법:** 중복을 생성하는 대신 기존 케이퍼빌리티를 조회하고 현재 상태에서 계속 진행하세요.
+
+**재시도 지침:** 변경하지 않은 요청을 재시도하지 마세요. 다른 요청을 보내기 전에 위의 조치를 적용하세요.
+
+**관련 API 작업:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, 상태 `409`)
+
+<a id="capability-ineligible" className="block scroll-mt-32">
+  <span className="sr-only">capability_ineligible error</span>
+</a>
+
+### `capability_ineligible`
+
+**HTTP 상태:** `422`<br />
+**재시도 가능:** 아니요<br />
+**문제 유형:** `https://docs.swipelux.com/errors/capability-ineligible`
+
+**의미:** 고객이 현재 프로필과 구성에서는 요청한 케이퍼빌리티에 대한 자격이 없습니다.
+
+**발생 시점:** 케이퍼빌리티 평가에서 요청한 옵션을 이 고객이 사용할 수 없다고 판단합니다.
+
+**해결 방법:** 지원되는 케이퍼빌리티 응답과 현재 태스크를 검토한 다음, 자격이 있는 케이퍼빌리티를 선택하거나 노출된 전제 조건을 완료한 후 새 요청을 보내세요.
+
+**재시도 지침:** 변경하지 않은 요청을 재시도하지 마세요. 다른 요청을 보내기 전에 위의 조치를 적용하세요.
+
+**관련 API 작업:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, 상태 `422`)
+
+<a id="capability-institutions-required" className="block scroll-mt-32">
+  <span className="sr-only">capability_institutions_required error</span>
+</a>
+
+### `capability_institutions_required`
+
+**HTTP 상태:** `422`<br />
+**재시도 가능:** 반환되지 않음<br />
+**문제 유형:** `https://docs.swipelux.com/errors/capability-institutions-required`
+
+**의미:** 케이퍼빌리티 요청에 하나 이상의 기관 선택이 필요합니다.
+
+**발생 시점:** 기관이 필요한 케이퍼빌리티 변형을 요청하면서 기관 선택을 생략합니다.
+
+**해결 방법:** 고객에 대해 지원되는 기관 목록을 조회하고, 필요한 기관 식별자를 포함하여 새 요청을 제출하세요.
+
+**재시도 지침:** 이 문제는 `retryable`을 반환하지 않습니다. 변경하지 않은 재시도가 안전하다고 가정하지 말고, 위의 조치와 해당 작업의 멱등성 요구 사항을 따르세요.
+
+**관련 API 작업:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, 상태 `422`)
+
+<a id="capability-institutions-unsupported" className="block scroll-mt-32">
+  <span className="sr-only">capability_institutions_unsupported error</span>
+</a>
+
+### `capability_institutions_unsupported`
+
+**HTTP 상태:** `422`<br />
+**재시도 가능:** 아니요<br />
+**문제 유형:** `https://docs.swipelux.com/errors/capability-institutions-unsupported`
+
+**의미:** 선택한 기관 중 하나 이상이 요청한 케이퍼빌리티에서 지원되지 않습니다.
+
+**발생 시점:** 요청에 고객이 사용할 수 있는 케이퍼빌리티 옵션에 속하지 않는 기관이 포함되어 있습니다.
+
+**해결 방법:** 지원되지 않는 선택 항목을 지원되는 케이퍼빌리티 플로우에서 반환된 기관으로 교체한 다음 새 요청을 제출하세요.
+
+**재시도 지침:** 변경하지 않은 요청을 재시도하지 마세요. 다른 요청을 보내기 전에 위의 조치를 적용하세요.
+
+**관련 API 작업:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, 상태 `422`)
+
+<a id="capability-intent-unsupported" className="block scroll-mt-32">
+  <span className="sr-only">capability_intent_unsupported error</span>
+</a>
+
+### `capability_intent_unsupported`
+
+**HTTP 상태:** `422`<br />
+**재시도 가능:** 반환되지 않음<br />
+**문제 유형:** `https://docs.swipelux.com/errors/capability-intent-unsupported`
+
+**의미:** 요청한 케이퍼빌리티 인텐트가 이 케이퍼빌리티 변형에서 지원되지 않습니다.
+
+**발생 시점:** 요청이 선택한 고객 또는 기관 옵션에 제공되지 않는 인텐트와 케이퍼빌리티를 결합합니다.
+
+**해결 방법:** 지원되는 케이퍼빌리티 응답에서 노출된 인텐트를 사용하거나, 지원되는 다른 케이퍼빌리티 변형을 선택하세요.
+
+**재시도 지침:** 이 문제는 `retryable`을 반환하지 않습니다. 변경하지 않은 재시도가 안전하다고 가정하지 말고, 위의 조치와 해당 작업의 멱등성 요구 사항을 따르세요.
+
+**관련 API 작업:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, 상태 `422`)
+
+<a id="capability-key-unsupported" className="block scroll-mt-32">
+  <span className="sr-only">capability_key_unsupported error</span>
+</a>
+
+### `capability_key_unsupported`
+
+**HTTP 상태:** `422`<br />
+**재시도 가능:** 아니요<br />
+**문제 유형:** `https://docs.swipelux.com/errors/capability-key-unsupported`
+
+**의미:** 케이퍼빌리티 키가 이 작업에서 지원되지 않습니다.
+
+**발생 시점:** 요청 또는 태스크 미리보기가 고객에 대해 요청할 수 없는 케이퍼빌리티 식별자를 사용합니다.
+
+**해결 방법:** 지원되는 케이퍼빌리티 목록을 조회하고 고객에 대해 반환된 정확한 케이퍼빌리티 식별자를 사용하세요.
+
+**재시도 지침:** 변경하지 않은 요청을 재시도하지 마세요. 다른 요청을 보내기 전에 위의 조치를 적용하세요.
+
+**관련 API 작업:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, 상태 `422`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}/tasks-preview`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id-tasks-preview) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityIdTasks-preview`, 상태 `422`)
+
+<a id="capability-not-cancelable" className="block scroll-mt-32">
+  <span className="sr-only">capability_not_cancelable error</span>
+</a>
+
+### `capability_not_cancelable`
+
+**HTTP 상태:** `409`<br />
+**재시도 가능:** 아니요<br />
+**문제 유형:** `https://docs.swipelux.com/errors/capability-not-cancelable`
+
+**의미:** 현재 상태에서는 케이퍼빌리티를 취소할 수 없습니다.
+
+**발생 시점:** 케이퍼빌리티가 취소 불가능한 상태에 진입한 후 또는 리소스가 아직 취소를 차단하는 동안 취소 요청이 도착합니다.
+
+**해결 방법:** `statusReason`과 `blockingResources`를 확인하고, 나열된 리소스를 해결하거나 기다린 다음, 케이퍼빌리티를 다시 조회하고 현재 상태에서 허용되는 다음 조치를 선택하세요.
+
+**재시도 지침:** 변경하지 않은 요청을 재시도하지 마세요. 다른 요청을 보내기 전에 위의 조치를 적용하세요.
+
+**관련 API 작업:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}/cancel`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id-cancel) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityIdCancel`, 상태 `409`)
+
+**추가 응답 필드:**
+
+- `blockingResources`: 요청한 작업을 진행하기 전에 해결해야 하는 고객 리소스로, 유형과 id 순으로 정렬됩니다.
+- `statusReason`: 실패한 작업이 리소스의 현재 상태에 의존하는 경우 상태 충돌에 대한 구조화된 이유입니다.
+
+<a id="capability-not-ready" className="block scroll-mt-32">
+  <span className="sr-only">capability_not_ready error</span>
+</a>
+
+### `capability_not_ready`
+
+**HTTP 상태:** `409`<br />
+**재시도 가능:** 상황에 따라 다름<br />
+**문제 유형:** `https://docs.swipelux.com/errors/capability-not-ready`
+
+**의미:** 요청한 계좌 또는 자금 이동에 필요한 케이퍼빌리티가 준비되지 않았습니다.
+
+**발생 시점:** 작업이 사용 가능한 상태에 도달하지 못한 하나 이상의 고객 케이퍼빌리티에 의존합니다.
+
+**해결 방법:** `capabilities`의 케이퍼빌리티 식별자를 확인하고, 열려 있는 태스크를 완료하거나 상태가 진행될 때까지 기다린 다음, 케이퍼빌리티를 다시 조회하고 준비가 완료된 후 새 요청을 보내세요.
+
+**재시도 지침:** 이 응답의 `retryable`을 읽으세요. 값이 `true`인 경우에만 나중에 재시도하세요. 멱등한 쓰기 작업의 경우 원래의 멱등성 키와 변경하지 않은 요청을 재사용하세요.
+
+**관련 API 작업:**
+
+- [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) (`postV3CustomersByCustomerIdAccounts`, 상태 `409`)
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, 상태 `409`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, 상태 `409`)
+
+**추가 응답 필드:**
+
+- `capabilities`: 실패한 작업을 충족하는 케이퍼빌리티 id입니다.
+
+<a id="capability-not-supported-for-customer-type" className="block scroll-mt-32">
+  <span className="sr-only">capability_not_supported_for_customer_type error</span>
+</a>
+
+### `capability_not_supported_for_customer_type`
+
+**HTTP 상태:** `422`<br />
+**재시도 가능:** 반환되지 않음<br />
+**문제 유형:** `https://docs.swipelux.com/errors/capability-not-supported-for-customer-type`
+
+**의미:** 이 고객 유형에서는 해당 케이퍼빌리티가 지원되지 않습니다.
+
+**발생 시점:** 개인 또는 비즈니스 고객이 다른 고객 유형에만 제공되는 케이퍼빌리티를 요청합니다.
+
+**해결 방법:** 이 고객에 대한 지원되는 케이퍼빌리티 응답을 사용하고 기존 유형에 제공되는 케이퍼빌리티를 요청하세요.
+
+**재시도 지침:** 이 문제는 `retryable`을 반환하지 않습니다. 변경하지 않은 재시도가 안전하다고 가정하지 말고, 위의 조치와 해당 작업의 멱등성 요구 사항을 따르세요.
+
+**관련 API 작업:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, 상태 `422`)
+
+<a id="capability-provider-resolution-failed" className="block scroll-mt-32">
+  <span className="sr-only">capability_provider_resolution_failed error</span>
+</a>
+
+### `capability_provider_resolution_failed`
+
+**HTTP 상태:** `422`<br />
+**재시도 가능:** 반환되지 않음<br />
+**문제 유형:** `https://docs.swipelux.com/errors/capability-provider-resolution-failed`
+
+**의미:** Swipelux가 케이퍼빌리티 요청에 대한 완전한 처리 구성을 확인할 수 없었습니다.
+
+**발생 시점:** 요청된 케이퍼빌리티 조합은 형식상 유효하지만, 사용 가능한 케이퍼빌리티 설정이 불완전할 때 발생합니다.
+
+**해결 방법:** 지원되는 케이퍼빌리티 응답과 비교하여 요청을 확인하세요. 여전히 제공되는 조합이라면 `correlationId`를 보관하고 Swipelux 지원팀에 문의하세요.
+
+**재시도 지침:** 이 문제는 `retryable`을 반환하지 않습니다. 변경하지 않은 재시도가 안전하다고 가정하지 말고, 위의 조치와 해당 작업의 멱등성 요구 사항을 따르세요.
+
+**관련 API 작업:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, 상태 `422`)
+
+<a id="capability-snapshot-corrupted" className="block scroll-mt-32">
+  <span className="sr-only">capability_snapshot_corrupted error</span>
+</a>
+
+### `capability_snapshot_corrupted`
+
+**HTTP 상태:** `500`<br />
+**재시도 가능:** 아니요<br />
+**문제 유형:** `https://docs.swipelux.com/errors/capability-snapshot-corrupted`
+
+**의미:** Swipelux가 고객의 케이퍼빌리티 상태를 평가할 수 없었습니다.
+
+**발생 시점:** 케이퍼빌리티 관련 작업이 유효하지 않은 저장된 케이퍼빌리티 스냅샷을 발견할 때 발생합니다.
+
+**해결 방법:** `correlationId`를 보관하고 Swipelux 지원팀에 문의하세요. 변경하지 않은 요청을 반복해서 재시도하지 마세요.
+
+**재시도 지침:** 변경하지 않은 요청을 재시도하지 마세요. 다른 요청을 보내기 전에 위의 조치를 적용하세요.
+
+<Accordion title="관련 API 작업 (11)">
+
+- [`PATCH /v3/customers/{customerId}`](/api-reference/customers/patch-v3-customers-by-customer-id) (`patchV3CustomersByCustomerId`, 상태 `500`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, 상태 `500`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}/cancel`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id-cancel) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityIdCancel`, 상태 `500`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}/tasks-preview`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id-tasks-preview) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityIdTasks-preview`, 상태 `500`)
+- [`POST /v3/customers/{customerId}/related-parties`](/api-reference/customers/post-v3-customers-by-customer-id-related-parties) (`postV3CustomersByCustomerIdRelated-parties`, 상태 `500`)
+- [`DELETE /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/delete-v3-customers-by-customer-id-related-parties-by-related-party-id) (`deleteV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, 상태 `500`)
+- [`PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/patch-v3-customers-by-customer-id-related-parties-by-related-party-id) (`patchV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, 상태 `500`)
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, 상태 `500`)
+- [`POST /v3/sandbox/customers/{customerId}/capabilities/{capabilityId}/status`](/api-reference/sandbox/post-v3-sandbox-customers-by-customer-id-capabilities-by-capability-id-status) (`postV3SandboxCustomersByCustomerIdCapabilitiesByCapabilityIdStatus`, 상태 `500`)
+- [`POST /v3/sandbox/tasks`](/api-reference/sandbox/post-v3-sandbox-tasks) (`postV3SandboxTasks`, 상태 `500`)
+- [`POST /v3/sandbox/tasks/{taskId}/review`](/api-reference/sandbox/post-v3-sandbox-tasks-by-task-id-review) (`postV3SandboxTasksByTaskIdReview`, 상태 `500`)
+
+</Accordion>
+
+<a id="capability-terminally-rejected" className="block scroll-mt-32">
+  <span className="sr-only">capability_terminally_rejected error</span>
+</a>
+
+### `capability_terminally_rejected`
+
+**HTTP 상태:** `409`<br />
+**재시도 가능:** 아니요<br />
+**문제 유형:** `https://docs.swipelux.com/errors/capability-terminally-rejected`
+
+**의미:** 케이퍼빌리티가 이미 최종 상태로 거부되었습니다.
+
+**발생 시점:** 기존 라이프사이클이 더 이상 요청 가능한 상태로 돌아갈 수 없는 케이퍼빌리티를 요청할 때 발생합니다.
+
+**해결 방법:** 기존 케이퍼빌리티와 노출된 태스크 또는 상태 정보를 읽은 다음, 지원되는 다른 옵션을 선택하거나 상태가 예상과 다른 경우 지원팀에 문의하세요.
+
+**재시도 지침:** 변경하지 않은 요청을 재시도하지 마세요. 다른 요청을 보내기 전에 위의 조치를 적용하세요.
+
+**관련 API 작업:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, 상태 `409`)
+
+<a id="capability-variant-unavailable" className="block scroll-mt-32">
+  <span className="sr-only">capability_variant_unavailable error</span>
+</a>
+
+### `capability_variant_unavailable`
+
+**HTTP 상태:** `409`, `422`<br />
+**재시도 가능:** 상황에 따라 다름<br />
+**문제 유형:** `https://docs.swipelux.com/errors/capability-variant-unavailable`
+
+**의미:** 요청된 케이퍼빌리티 변형을 선택한 고객, 의도 또는 기관 조합에 사용할 수 없습니다.
+
+**발생 시점:** 케이퍼빌리티 평가에서 일시적인 가용성 문제 또는 구조적으로 지원되지 않는 조합이 발견될 때 발생합니다.
+
+**해결 방법:** `retryable`을 확인하세요. `true`인 경우 나중에 재시도하고, 그렇지 않으면 지원되는 케이퍼빌리티 응답에서 다른 변형을 선택하세요.
+
+**재시도 지침:** 이 응답의 `retryable`을 확인하세요. `true`인 경우에만 나중에 재시도하세요. 멱등성이 있는 쓰기 작업의 경우 원래의 멱등성 키와 변경하지 않은 요청을 재사용하세요. 일시적인 변형 중단을 재시도할 때는 요청을 변경하지 말고, 응답이 재시도 불가능한 경우에는 케이퍼빌리티 선택을 변경하세요.
+
+**관련 API 작업:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, 상태 `409`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, 상태 `422`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}/tasks-preview`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id-tasks-preview) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityIdTasks-preview`, 상태 `422`)
+
+<a id="initial-application-identity-conflict" className="block scroll-mt-32">
+  <span className="sr-only">initial_application_identity_conflict error</span>
+</a>
+
+### `initial_application_identity_conflict`
+
+**HTTP 상태:** `409`<br />
+**재시도 가능:** 아니요<br />
+**문제 유형:** `https://docs.swipelux.com/errors/initial-application-identity-conflict`
+
+**의미:** 초기 신청의 신원 정보가 저장되기 전에 변경되었습니다.
+
+**발생 시점:** 고객 생성 또는 케이퍼빌리티 요청이 생성 중인 초기 신청에서 충돌하는 신원 정보를 발견할 때 발생합니다.
+
+**해결 방법:** 케이퍼빌리티 요청을 재시도하기 전에 `correlationId`를 보관하고 Swipelux 지원팀에 문의하세요.
+
+**재시도 지침:** 변경하지 않은 요청을 재시도하지 마세요. 다른 요청을 보내기 전에 위의 조치를 적용하세요.
+
+**관련 API 작업:**
+
+- [`POST /v3/customers`](/api-reference/customers/post-v3-customers) (`postV3Customers`, 상태 `409`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, 상태 `409`)
+
+<a id="initial-application-owner-unavailable" className="block scroll-mt-32">
+  <span className="sr-only">initial_application_owner_unavailable error</span>
+</a>
+
+### `initial_application_owner_unavailable`
+
+**HTTP 상태:** `503`<br />
+**재시도 가능:** 아니요<br />
+**문제 유형:** `https://docs.swipelux.com/errors/initial-application-owner-unavailable`
+
+**의미:** 초기 신청에 사용할 수 있는 유효한 소유자 경로가 없습니다.
+
+**발생 시점:** 케이퍼빌리티 요청이 초기 신청을 지원되는 기관 옵션에 할당할 수 없을 때 발생합니다.
+
+**해결 방법:** 케이퍼빌리티 카탈로그에서 반환된 지원되는 기관을 선택하거나, 사용 가능한 기관이 없는 경우 `correlationId`를 보관하고 Swipelux 지원팀에 문의하세요.
+
+**재시도 지침:** 변경하지 않은 요청을 재시도하지 마세요. 다른 요청을 보내기 전에 위의 조치를 적용하세요.
+
+**관련 API 작업:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, 상태 `503`)
+
+<a id="initial-application-scope-unavailable" className="block scroll-mt-32">
+  <span className="sr-only">initial_application_scope_unavailable error</span>
+</a>
+
+### `initial_application_scope_unavailable`
+
+**HTTP 상태:** `503`<br />
+**재시도 가능:** 상황에 따라 다름<br />
+**문제 유형:** `https://docs.swipelux.com/errors/initial-application-scope-unavailable`
+
+**의미:** Swipelux가 초기 신청에 필요한 범위를 확인할 수 없었습니다.
+
+**발생 시점:** 고객 생성 또는 케이퍼빌리티 요청이 초기 신청 생성에 필요한 API 키 환경 및 컴플라이언스 컨텍스트를 확인할 수 없을 때 발생합니다.
+
+**해결 방법:** API 키 환경을 확인하고 `correlationId`를 보관하세요. `retryable`이 있는 경우 이를 따르고, 그렇지 않으면 재시도하기 전에 Swipelux 지원팀에 문의하세요.
+
+**재시도 지침:** 이 응답의 `retryable`을 확인하세요. `true`인 경우에만 나중에 재시도하세요. 멱등성이 있는 쓰기 작업의 경우 원래의 멱등성 키와 변경하지 않은 요청을 재사용하세요.
+
+**관련 API 작업:**
+
+- [`POST /v3/customers`](/api-reference/customers/post-v3-customers) (`postV3Customers`, 상태 `503`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, 상태 `503`)
+
+<a id="invalid-capability" className="block scroll-mt-32">
+  <span className="sr-only">invalid_capability error</span>
+</a>
+
+### `invalid_capability`
+
+**HTTP 상태:** `400`, `422`<br />
+**재시도 가능:** 반환되지 않음<br />
+**문제 유형:** `https://docs.swipelux.com/errors/invalid-capability`
+
+**의미:** 케이퍼빌리티 참조 또는 요청된 케이퍼빌리티 값이 이 작업에 유효하지 않습니다.
+
+**발생 시점:** 케이퍼빌리티 요청 또는 샌드박스 상태 변경이 알 수 없거나 호환되지 않는 케이퍼빌리티 식별자 또는 값을 사용할 때 발생합니다.
+
+**해결 방법:** 고객의 케이퍼빌리티를 읽고, 정확한 현재 케이퍼빌리티 식별자를 사용하며, 작업 스키마에 맞게 요청을 수정하세요.
+
+**재시도 지침:** 이 문제는 `retryable`을 반환하지 않습니다. 변경하지 않은 재시도가 안전하다고 가정하지 말고, 위의 조치와 해당 작업의 멱등성 요구 사항을 따르세요.
+
+**관련 API 작업:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, 상태 `400`)
+- [`POST /v3/sandbox/customers/{customerId}/capabilities/{capabilityId}/status`](/api-reference/sandbox/post-v3-sandbox-customers-by-customer-id-capabilities-by-capability-id-status) (`postV3SandboxCustomersByCustomerIdCapabilitiesByCapabilityIdStatus`, 상태 `422`)
+
+<a id="invalid-document-reference" className="block scroll-mt-32">
+  <span className="sr-only">invalid_document_reference error</span>
+</a>
+
+### `invalid_document_reference`
+
+**HTTP 상태:** `400`<br />
+**재시도 가능:** 아니요<br />
+**문제 유형:** `https://docs.swipelux.com/errors/invalid-document-reference`
+
+**의미:** 태스크 제출에 선택한 요구 사항을 충족할 수 없는 문서 참조가 포함되어 있습니다.
+
+**발생 시점:** 참조된 문서가 없거나, 고객이 접근할 수 없거나, 답변 중인 태스크 요구 사항과 일치하지 않을 때 발생합니다.
+
+**해결 방법:** 고객의 문서를 조회하거나 업로드하고, 해당 요구 사항에 맞는 올바른 문서 식별자를 사용하며, 태스크를 다시 가져와 현재 리비전을 제출하세요.
+
+**재시도 지침:** 변경하지 않은 요청을 재시도하지 마세요. 다른 요청을 보내기 전에 위의 조치를 적용하세요.
+
+**관련 API 작업:**
+
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, 상태 `400`)
+
+<a id="kyc-configuration-unavailable" className="block scroll-mt-32">
+  <span className="sr-only">kyc_configuration_unavailable error</span>
+</a>
+
+### `kyc_configuration_unavailable`
+
+**HTTP 상태:** `503`<br />
+**재시도 가능:** 아니요<br />
+**문제 유형:** `https://docs.swipelux.com/errors/kyc-configuration-unavailable`
+
+**의미:** 케이퍼빌리티에 필요한 검증 구성을 사용할 수 없습니다.
+
+**발생 시점:** Swipelux가 현재 활성화된 공개 구성으로 요청된 검증 플로우를 준비할 수 없을 때 발생합니다.
+
+**해결 방법:** `correlationId`를 보관하고 Swipelux 지원팀에 문의하세요. 변경하지 않은 요청을 반복해서 재시도하지 마세요.
+
+**재시도 지침:** 변경하지 않은 요청을 재시도하지 마세요. 다른 요청을 보내기 전에 위의 조치를 적용하세요.
+
+**관련 API 작업:**
+
+- [`GET /kyc/redirect/{customerId}/{taskId}/{verificationSessionId}`](/api-reference/tasks/start-kyc-verification-session) (`startKycVerificationSession`, 상태 `503`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, 상태 `503`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}/tasks-preview`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id-tasks-preview) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityIdTasks-preview`, 상태 `503`)
+
+<a id="kyc-level-configuration-invalid" className="block scroll-mt-32">
+  <span className="sr-only">kyc_level_configuration_invalid error</span>
+</a>
+
+### `kyc_level_configuration_invalid`
+
+**HTTP 상태:** `503`<br />
+**재시도 가능:** 아니요<br />
+**문제 유형:** `https://docs.swipelux.com/errors/kyc-level-configuration-invalid`
+
+**의미:** 활성화된 검증 레벨 구성이 유효하지 않습니다.
+
+**발생 시점:** 구성된 검증 레벨을 사용할 수 없어 호스팅된 검증 세션을 시작할 수 없을 때 발생합니다.
+
+**해결 방법:** 다시 시도하기 전에 구성이 수정될 수 있도록 `correlationId`를 보관하고 Swipelux 지원팀에 문의하세요.
+
+**재시도 지침:** 변경하지 않은 요청을 재시도하지 마세요. 다른 요청을 보내기 전에 위의 조치를 적용하세요.
+
+**관련 API 작업:**
+
+- [`GET /kyc/redirect/{customerId}/{taskId}/{verificationSessionId}`](/api-reference/tasks/start-kyc-verification-session) (`startKycVerificationSession`, 상태 `503`)
+
+<a id="kyc-process-conflict" className="block scroll-mt-32">
+  <span className="sr-only">kyc_process_conflict error</span>
+</a>
+
+### `kyc_process_conflict`
+
+**HTTP 상태:** `409`<br />
+**재시도 가능:** 예<br />
+**문제 유형:** `https://docs.swipelux.com/errors/kyc-process-conflict`
+
+**의미:** 작업이 완료되기 전에 검증 프로세스가 변경되었습니다.
+
+**발생 시점:** 요청이 진행 중인 동안 다른 조치가 태스크 또는 검증 세션을 진행시키거나 대체할 때 발생합니다.
+
+**해결 방법:** 태스크와 사용 가능한 검증 방법을 다시 로드한 다음, 현재 프로세스 상태에 대해 재시도하세요.
+
+**재시도 지침:** 잠시 후 재시도하세요. 멱등성이 있는 쓰기 작업의 경우 원래의 멱등성 키와 변경하지 않은 요청을 재사용하세요.
+
+**관련 API 작업:**
+
+- [`GET /kyc/redirect/{customerId}/{taskId}/{verificationSessionId}`](/api-reference/tasks/start-kyc-verification-session) (`startKycVerificationSession`, 상태 `409`)
+- [`PATCH /v3/customers/{customerId}`](/api-reference/customers/patch-v3-customers-by-customer-id) (`patchV3CustomersByCustomerId`, 상태 `409`)
+- [`PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/patch-v3-customers-by-customer-id-related-parties-by-related-party-id) (`patchV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, 상태 `409`)
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, 상태 `409`)
+
+<a id="kyc-provider-unavailable" className="block scroll-mt-32">
+  <span className="sr-only">kyc_provider_unavailable error</span>
+</a>
+
+### `kyc_provider_unavailable`
+
+**HTTP 상태:** `502`<br />
+**재시도 가능:** 예<br />
+**문제 유형:** `https://docs.swipelux.com/errors/kyc-provider-unavailable`
+
+**의미:** 검증 서비스를 일시적으로 사용할 수 없습니다.
+
+**발생 시점:** 검증 서비스가 요청을 완료하지 못해 호스팅된 검증 세션을 생성하거나 계속할 수 없을 때 발생합니다.
+
+**해결 방법:** 잠시 후 재시도하세요. 태스크 및 세션 식별자를 유지하고, 중단이 태스크 상태가 변경될 만큼 오래 지속되면 태스크를 다시 가져오세요.
+
+**재시도 지침:** 잠시 후 재시도하세요. 멱등성이 있는 쓰기 작업의 경우 원래의 멱등성 키와 변경하지 않은 요청을 재사용하세요.
+
+**관련 API 작업:**
+
+- [`GET /kyc/redirect/{customerId}/{taskId}/{verificationSessionId}`](/api-reference/tasks/start-kyc-verification-session) (`startKycVerificationSession`, 상태 `502`)
+
+<a id="kyc-session-terminal" className="block scroll-mt-32">
+  <span className="sr-only">kyc_session_terminal error</span>
+</a>
+
+### `kyc_session_terminal`
+
+**HTTP 상태:** `410`<br />
+**재시도 가능:** 아니요<br />
+**문제 유형:** `https://docs.swipelux.com/errors/kyc-session-terminal`
+
+**의미:** 검증 세션에서 더 이상 조치를 취할 수 없습니다.
+
+**발생 시점:** 요청된 호스팅 세션이 이미 완료, 실패, 만료되었거나 기타 최종 상태에 도달했을 때 발생합니다.
+
+**해결 방법:** 태스크를 다시 가져와 활성 세션을 사용하거나 현재 태스크에서 노출하는 새 검증 방법을 시작하세요.
+
+**재시도 지침:** 변경하지 않은 요청을 재시도하지 마세요. 다른 요청을 보내기 전에 위의 조치를 적용하세요.
+
+**관련 API 작업:**
+
+- [`GET /kyc/redirect/{customerId}/{taskId}/{verificationSessionId}`](/api-reference/tasks/start-kyc-verification-session) (`startKycVerificationSession`, 상태 `410`)
+
+<a id="ops-rail-handoff-conflict" className="block scroll-mt-32">
+  <span className="sr-only">ops_rail_handoff_conflict error</span>
+</a>
+
+### `ops_rail_handoff_conflict`
+
+**HTTP 상태:** `409`<br />
+**재시도 가능:** 아니요<br />
+**문제 유형:** `https://docs.swipelux.com/errors/ops-rail-handoff-conflict`
+
+**의미:** 충돌하는 은행 레일 설정으로 인해 태스크 제출이 차단되었습니다.
+
+**발생 시점:** 문서 태스크 제출이 고객의 현재 은행 레일 상태를 조정할 수 없을 때 발생합니다.
+
+**해결 방법:** 업로드된 문서 식별자를 유지하고 `correlationId`를 보관한 후, 동일한 제출을 재시도하기 전에 Swipelux 지원팀에 문의하세요. 이 충돌만을 이유로 대체 사본을 업로드하지 마세요.
+
+**재시도 지침:** 변경하지 않은 요청을 재시도하지 마세요. 다른 요청을 보내기 전에 위의 조치를 적용하세요.
+
+**관련 API 작업:**
+
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, 상태 `409`)
+
+<a id="provider-conflict" className="block scroll-mt-32">
+  <span className="sr-only">provider_conflict error</span>
+</a>
+
+### `provider_conflict`
+
+**HTTP 상태:** `400`, `422`<br />
+**재시도 가능:** 아니요<br />
+**문제 유형:** `https://docs.swipelux.com/errors/provider-conflict`
+
+**의미:** 요청된 케이퍼빌리티 또는 검증 조치가 현재 처리 구성과 충돌합니다.
+
+**발생 시점:** 요청이 형식상 유효하지만 고객의 기존 케이퍼빌리티 또는 검증 설정과 조정할 수 없을 때 발생합니다.
+
+**해결 방법:** 고객의 케이퍼빌리티와 태스크를 다시 가져와 지원되는 현재 옵션을 선택하세요. 충돌이 계속 예상과 다른 경우 `correlationId`를 보관하고 지원팀에 문의하세요.
+
+**재시도 지침:** 변경하지 않은 요청을 재시도하지 마세요. 다른 요청을 보내기 전에 위의 조치를 적용하세요.
+
+**관련 API 작업:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, 상태 `400`)
+- [`POST /v3/sandbox/customers/{customerId}/verification`](/api-reference/sandbox/post-v3-sandbox-customers-by-customer-id-verification) (`postV3SandboxCustomersByCustomerIdVerification`, 상태 `422`)
+
+<a id="submission-channel-not-allowed" className="block scroll-mt-32">
+  <span className="sr-only">submission_channel_not_allowed error</span>
+</a>
+
+### `submission_channel_not_allowed`
+
+**HTTP 상태:** `409`<br />
+**재시도 가능:** 아니요<br />
+**문제 유형:** `https://docs.swipelux.com/errors/submission-channel-not-allowed`
+
+**의미:** 이 태스크에는 직접 API 제출이 허용되지 않습니다.
+
+**발생 시점:** 태스크가 다른 검증 방법을 요구하며 직접 제출 엔드포인트를 통해 제출된 답변을 거부할 때 발생합니다.
+
+**해결 방법:** 태스크를 다시 가져와 현재 요구 사항에서 노출하는 검증 방법 또는 링크 중 하나를 사용하세요.
+
+**재시도 지침:** 변경하지 않은 요청을 재시도하지 마세요. 다른 요청을 보내기 전에 위의 조치를 적용하세요.
+
+**관련 API 작업:**
+
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, 상태 `409`)
+
+<a id="submission-not-found" className="block scroll-mt-32">
+  <span className="sr-only">submission_not_found error</span>
+</a>
+
+### `submission_not_found`
+
+**HTTP 상태:** `404`<br />
+**재시도 가능:** 아니요<br />
+**문제 유형:** `https://docs.swipelux.com/errors/submission-not-found`
+
+**의미:** 요청된 태스크 제출을 찾을 수 없습니다.
+
+**발생 시점:** 제출 식별자가 잘못되었거나, 다른 태스크 또는 고객에 속하거나, 현재 환경에서 접근할 수 없을 때 발생합니다.
+
+**해결 방법:** 고객, 태스크 및 제출 식별자를 확인한 다음, 재시도하기 전에 현재 태스크의 제출 목록을 조회하세요.
+
+**재시도 지침:** 변경하지 않은 요청을 재시도하지 마세요. 다른 요청을 보내기 전에 위의 조치를 적용하세요.
+
+**관련 API 작업:**
+
+- [`GET /v3/customers/{customerId}/tasks/{taskId}/submissions/{submissionId}`](/api-reference/task-submissions/get-customer-task-submission) (`getCustomerTaskSubmission`, 상태 `404`)
+
+<a id="task-changed" className="block scroll-mt-32">
+  <span className="sr-only">task_changed error</span>
+</a>
+
+### `task_changed`
+
+**HTTP 상태:** `409`<br />
+**재시도 가능:** 아니요<br />
+**문제 유형:** `https://docs.swipelux.com/errors/task-changed`
+
+**의미:** 클라이언트가 마지막으로 읽은 이후 태스크가 변경되었습니다.
+
+**발생 시점:** 다른 조치가 태스크를 업데이트한 후 제출이 오래된 태스크 리비전 또는 상태를 사용할 때 발생합니다.
+
+**해결 방법:** `taskUrl` 또는 `taskId`를 사용하여 태스크를 다시 가져오고, `currentRevision`과 `currentStatus`에 맞게 답변을 다시 구성한 후, 현재 요구 사항을 제출하세요.
+
+**재시도 지침:** 변경하지 않은 요청을 재시도하지 마세요. 다른 요청을 보내기 전에 위의 조치를 적용하세요. 요청 본문을 새 리비전으로 변경해야 하므로, 수정된 제출에는 새 멱등성 키를 사용하세요.
+
+**관련 API 작업:**
+
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, 상태 `409`)
+
+**추가 응답 필드:**
+
+- `currentRevision`: 현재 태스크 리비전.
+- `currentStatus`: 현재 태스크 상태.
+- `taskId`: 현재 태스크 식별자.
+- `taskUrl`: 추가 문제 컨텍스트.
+
+<a id="task-not-found" className="block scroll-mt-32">
+  <span className="sr-only">task_not_found error</span>
+</a>
+
+### `task_not_found`
+
+**HTTP 상태:** `404`<br />
+**재시도 가능:** 아니요<br />
+**문제 유형:** `https://docs.swipelux.com/errors/task-not-found`
+
+**의미:** 지정한 고객 또는 API 키에 대한 태스크를 찾을 수 없습니다.
+
+**발생 시점:** 태스크 식별자가 없거나, 다른 고객 또는 범위에 속하거나, 현재 환경에서 접근할 수 없을 때 발생합니다.
+
+**해결 방법:** 고객 및 태스크 식별자를 확인하고, 현재 태스크 목록을 조회한 후, 접근 가능한 태스크로 계속 진행하세요.
+
+**재시도 지침:** 변경하지 않은 요청을 재시도하지 마세요. 다른 요청을 보내기 전에 위의 조치를 적용하세요.
+
+**관련 API 작업:**
+
+- [`GET /v3/customers/{customerId}/tasks/{taskId}`](/api-reference/tasks/get-customer-task) (`getCustomerTask`, 상태 `404`)
+- [`GET /v3/customers/{customerId}/tasks/{taskId}/history`](/api-reference/tasks/list-customer-task-history) (`listCustomerTaskHistory`, 상태 `404`)
+- [`GET /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/list-customer-task-submissions) (`listCustomerTaskSubmissions`, 상태 `404`)
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, 상태 `404`)
+- [`POST /v3/sandbox/tasks/{taskId}/review`](/api-reference/sandbox/post-v3-sandbox-tasks-by-task-id-review) (`postV3SandboxTasksByTaskIdReview`, 상태 `404`)
+- [`GET /v3/tasks/{taskId}`](/api-reference/tasks/get-task) (`getTask`, 상태 `404`)
+
+<a id="task-obligation-conflict" className="block scroll-mt-32">
+  <span className="sr-only">task_obligation_conflict error</span>
+</a>
+
+### `task_obligation_conflict`
+
+**HTTP 상태:** `409`<br />
+**재시도 가능:** 아니요<br />
+**문제 유형:** `https://docs.swipelux.com/errors/task-obligation-conflict`
+
+**의미:** 태스크에 충돌하는 의무 상태가 있어 제출을 수락할 수 없습니다.
+
+**발생 시점:** 태스크의 현재 요구 사항에 직접 제출 플로우가 안전하게 해결할 수 없는 일관성 없는 상태가 포함되어 있을 때 발생합니다.
+
+**해결 방법:** `correlationId`를 보관하고, 태스크를 한 번 다시 가져온 후, 충돌이 계속되면 Swipelux 지원팀에 문의하세요.
+
+**재시도 지침:** 변경하지 않은 요청을 재시도하지 마세요. 다른 요청을 보내기 전에 위의 조치를 적용하세요.
+
+**관련 API 작업:**
+
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, 상태 `409`)
+
+<a id="task-submission-incomplete" className="block scroll-mt-32">
+  <span className="sr-only">task_submission_incomplete error</span>
+</a>
+
+### `task_submission_incomplete`
+
+**HTTP 상태:** `422`<br />
+**재시도 가능:** 아니요<br />
+**문제 유형:** `https://docs.swipelux.com/errors/task-submission-incomplete`
+
+**의미:** 제출이 현재 조치 가능한 모든 요구 사항에 답하지 않습니다.
+
+**발생 시점:** `missingRequirementIds`에 나열된 하나 이상의 요구 사항 식별자에 대한 유효한 답변이 요청에 없을 때 발생합니다.
+
+**해결 방법:** 태스크를 다시 가져오고, `missingRequirementIds`의 모든 식별자에 대한 답변을 제공한 후, 현재 태스크 리비전을 제출하세요.
+
+**재시도 지침:** 변경하지 않은 요청을 재시도하지 마세요. 다른 요청을 보내기 전에 위의 조치를 적용하세요.
+
+**관련 API 작업:**
+
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, 상태 `422`)
+
+**추가 응답 필드:**
+
+- `missingRequirementIds`: 아직 누락된 조치 가능한 요구 사항 ID의 정렬된 목록.
+
+<a id="verification-collection-mapping-invalid" className="block scroll-mt-32">
+  <span className="sr-only">verification_collection_mapping_invalid error</span>
+</a>
+
+### `verification_collection_mapping_invalid`
+
+**HTTP 상태:** `503`<br />
+**재시도 가능:** 아니요<br />
+**문제 유형:** `https://docs.swipelux.com/errors/verification-collection-mapping-invalid`
+
+**의미:** 태스크의 검증 요구 사항을 조치 가능한 검증 플로우로 준비할 수 없습니다.
+
+**발생 시점:** Swipelux가 현재 공개 태스크 요구 사항을 케이퍼빌리티에 필요한 검증 컬렉션에 매핑할 수 없을 때 발생합니다.
+
+**해결 방법:** `correlationId`를 보관하고 Swipelux 지원팀에 문의하세요. 변경하지 않은 요청을 반복해서 재시도하지 마세요.
+
+**재시도 지침:** 변경하지 않은 요청을 재시도하지 마세요. 다른 요청을 보내기 전에 위의 조치를 적용하세요.
+
+**관련 API 작업:**
+
+- [`GET /kyc/redirect/{customerId}/{taskId}/{verificationSessionId}`](/api-reference/tasks/start-kyc-verification-session) (`startKycVerificationSession`, 상태 `503`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, 상태 `503`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}/tasks-preview`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id-tasks-preview) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityIdTasks-preview`, 상태 `503`)
+
+## 계좌 및 결제 레일
+
+<a id="account-has-active-transfers" className="block scroll-mt-32">
+  <span className="sr-only">account_has_active_transfers error</span>
+</a>
+
+### `account_has_active_transfers`
+
+**HTTP 상태:** `409`<br />
+**재시도 가능:** 예<br />
+**문제 유형:** `https://docs.swipelux.com/errors/account-has-active-transfers`
+
+**의미:** 하나 이상의 전송이 아직 활성 상태인 동안에는 계좌를 보관 처리할 수 없습니다.
+
+**발생 시점:** 진행 중인 전송이 참조하고 있는 계좌를 보관 처리하려고 할 때 발생합니다.
+
+**해결 방법:** 활성 전송이 최종 상태에 도달할 때까지 기다리거나, 아직 변경 가능한 전송을 취소 또는 해결한 후 계좌를 보관 처리하세요.
+
+**재시도 지침:** 잠시 후 재시도하세요. 멱등성이 있는 쓰기 작업의 경우 원래의 멱등성 키와 변경하지 않은 요청을 재사용하세요.
+
+**관련 API 작업:**
+
+- [`DELETE /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/delete-v3-customers-by-customer-id-accounts-by-account-id) (`deleteV3CustomersByCustomerIdAccountsByAccountId`, 상태 `409`)
+
+<a id="account-method-not-supported" className="block scroll-mt-32">
+  <span className="sr-only">account_method_not_supported error</span>
+</a>
+
+### `account_method_not_supported`
+
+**HTTP 상태:** `422`<br />
+**재시도 가능:** 아니요<br />
+**문제 유형:** `https://docs.swipelux.com/errors/account-method-not-supported`
+
+**의미:** 선택한 계좌가 견적에서 요청한 결제 방법을 지원하지 않습니다.
+
+**발생 시점:** 견적의 소스 또는 대상 계좌가 선택한 자금 이동 방법과 호환되지 않을 때 발생합니다.
+
+**해결 방법:** 현재 케이퍼빌리티에서 지원하는 계좌와 방법 조합을 선택한 다음, 새 견적을 요청하세요.
+
+**재시도 지침:** 변경하지 않은 요청을 재시도하지 마세요. 다른 요청을 보내기 전에 위의 조치를 적용하세요.
+
+**관련 API 작업:**
+
+- [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) (`postV3CustomersByCustomerIdAccounts`, 상태 `422`)
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, 상태 `422`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, 상태 `422`)
+
+<a id="account-not-ready" className="block scroll-mt-32">
+  <span className="sr-only">account_not_ready error</span>
+</a>
+
+### `account_not_ready`
+
+**HTTP 상태:** `409`<br />
+**재시도 가능:** 상황에 따라 다름<br />
+**문제 유형:** `https://docs.swipelux.com/errors/account-not-ready`
+
+**의미:** 계좌는 존재하지만 현재 상태에서는 견적 또는 전송이 허용되지 않습니다.
+
+**발생 시점:** 자금 이동 작업에 준비된 계좌가 필요하지만 선택한 계좌가 해당 상태에 도달하지 않았을 때 발생합니다.
+
+**해결 방법:** `statusReason`을 확인하고, 필요한 설정을 완료하거나 계좌 상태가 진행될 때까지 기다린 후, 계좌를 다시 가져오고, 준비되면 새 요청을 보내세요.
+
+**재시도 지침:** 이 응답의 `retryable`을 확인하세요. `true`인 경우에만 나중에 재시도하세요. 멱등성이 있는 쓰기 작업의 경우 원래의 멱등성 키와 변경하지 않은 요청을 재사용하세요.
+
+**관련 API 작업:**
+
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, 상태 `409`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, 상태 `409`)
+
+**추가 응답 필드:**
+
+- `statusReason`: 실패한 작업이 리소스의 현재 상태에 의존할 때 상태 충돌에 대한 구조화된 이유.
+
+<a id="account-unavailable" className="block scroll-mt-32">
+  <span className="sr-only">account_unavailable error</span>
+</a>
+
+### `account_unavailable`
+
+**HTTP 상태:** `409`<br />
+**재시도 가능:** 아니요<br />
+**문제 유형:** `https://docs.swipelux.com/errors/account-unavailable`
+
+**의미:** 선택한 계좌를 요청된 자금 이동에 사용할 수 없습니다.
+
+**발생 시점:** 작업이 현재 가용성 상태의 계좌를 사용할 수 없을 때 발생합니다.
+
+**해결 방법:** 계좌를 다시 가져와 사용 가능한 계좌를 선택하거나, 새 견적 또는 전송 요청을 생성하기 전에 계좌 상태를 해결하세요.
+
+**재시도 지침:** 변경하지 않은 요청을 재시도하지 마세요. 다른 요청을 보내기 전에 위의 조치를 적용하세요.
+
+**관련 API 작업:**
+
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, 상태 `409`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, 상태 `409`)
+
+<a id="bank-not-supported-for-customer" className="block scroll-mt-32">
+  <span className="sr-only">bank_not_supported_for_customer error</span>
+</a>
+
+### `bank_not_supported_for_customer`
+
+**HTTP 상태:** `422`<br />
+**재시도 가능:** 반환되지 않음<br />
+**문제 유형:** `https://docs.swipelux.com/errors/bank-not-supported-for-customer`
+
+**의미:** 선택한 기관은 이 고객 및 케이퍼빌리티 요청에 사용할 수 없습니다.
+
+**발생 시점:** 케이퍼빌리티 요청이 고객에 대해 지원되는 옵션에 포함되지 않은 기관을 선택할 때 발생합니다.
+
+**해결 방법:** 고객의 지원되는 케이퍼빌리티와 기관 목록을 조회하고, 사용 가능한 옵션을 선택한 후, 새 케이퍼빌리티 요청을 제출하세요.
+
+**재시도 지침:** 이 문제는 `retryable`을 반환하지 않습니다. 변경하지 않은 재시도가 안전하다고 가정하지 말고, 위의 조치와 해당 작업의 멱등성 요구 사항을 따르세요.
+
+**관련 API 작업:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, 상태 `422`)
+
+<a id="developer-fee-invalid" className="block scroll-mt-32">
+  <span className="sr-only">developer_fee_invalid error</span>
+</a>
+
+### `developer_fee_invalid`
+
+**HTTP 상태:** `422`<br />
+**재시도 가능:** 아니요<br />
+**문제 유형:** `https://docs.swipelux.com/errors/developer-fee-invalid`
+
+**의미:** 개발자 수수료 구성이 선택한 계좌 또는 자금 이동에 유효하지 않습니다.
+
+**발생 시점:** 수수료 값이 유효하지 않거나 선택한 계좌가 수수료에 대해 호환 가능한 정산 대상을 제공하지 않을 때 발생합니다.
+
+**해결 방법:** 수수료 값을 수정하고 적격 계좌와 정산 구성을 사용한 다음, 해당하는 경우 새 계좌, 견적 또는 전송 요청을 생성하세요.
+
+**재시도 지침:** 변경하지 않은 요청을 재시도하지 마세요. 다른 요청을 보내기 전에 위의 조치를 적용하세요.
+
+**관련 API 작업:**
+
+- [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) (`postV3CustomersByCustomerIdAccounts`, 상태 `422`)
+- [`PUT /v3/customers/{customerId}/accounts/{accountId}/fees`](/api-reference/accounts/put-v3-customers-by-customer-id-accounts-by-account-id-fees) (`putV3CustomersByCustomerIdAccountsByAccountIdFees`, 상태 `422`)
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, 상태 `422`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, 상태 `422`)
+
+<a id="invalid-settlement-target" className="block scroll-mt-32">
+  <span className="sr-only">invalid_settlement_target error</span>
+</a>
+
+### `invalid_settlement_target`
+
+**HTTP 상태:** `400`<br />
+**재시도 가능:** 반환되지 않음<br />
+**문제 유형:** `https://docs.swipelux.com/errors/invalid-settlement-target`
+
+**의미:** 요청된 정산 대상이 계좌에 유효하지 않습니다.
+
+**발생 시점:** 계좌 생성 또는 업데이트가 없거나, 호환되지 않거나, 해당 계좌 구성에서 지원되지 않는 정산 대상을 선택할 때 발생합니다.
+
+**해결 방법:** 계좌 및 케이퍼빌리티와 호환되는 문서화된 정산 대상을 선택한 다음, 수정된 계좌 요청을 보내세요.
+
+**재시도 지침:** 이 문제는 `retryable`을 반환하지 않습니다. 변경하지 않은 재시도가 안전하다고 가정하지 말고, 위의 조치와 해당 작업의 멱등성 요구 사항을 따르세요.
+
+**관련 API 작업:**
+
+- [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) (`postV3CustomersByCustomerIdAccounts`, 상태 `400`)
+- [`PATCH /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/patch-v3-customers-by-customer-id-accounts-by-account-id) (`patchV3CustomersByCustomerIdAccountsByAccountId`, 상태 `400`)
+
+<a id="rail-not-ready" className="block scroll-mt-32">
+  <span className="sr-only">rail_not_ready error</span>
+</a>
+
+### `rail_not_ready`
+
+**HTTP 상태:** `409`<br />
+**재시도 가능:** 아니요<br />
+**문제 유형:** `https://docs.swipelux.com/errors/rail-not-ready`
+
+**의미:** 선택한 결제 레일이 이 고객에 대해 준비되지 않았습니다.
+
+**발생 시점:** 대상, 견적 또는 전송에 필요한 고객 레일이 필수 설정 또는 준비 상태 전환을 완료하지 않았을 때 발생합니다.
+
+**해결 방법:** 필요한 레일 설정을 완료하고, 레일을 사용할 준비가 될 때까지 기다린 다음, 새 요청을 생성하세요.
+
+**재시도 지침:** 변경하지 않은 요청을 재시도하지 마세요. 다른 요청을 보내기 전에 위의 조치를 적용하세요.
+
+**관련 API 작업:**
+
+- [`POST /v3/customers/{customerId}/recipients/{recipientId}/destinations`](/api-reference/recipients/post-v3-customers-by-customer-id-recipients-by-recipient-id-destinations) (`postV3CustomersByCustomerIdRecipientsByRecipientIdDestinations`, 상태 `409`)
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, 상태 `409`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, 상태 `409`)
+
+<a id="rail-temporarily-unavailable" className="block scroll-mt-32">
+  <span className="sr-only">rail_temporarily_unavailable error</span>
+</a>
+
+### `rail_temporarily_unavailable`
+
+**HTTP 상태:** `503`<br />
+**재시도 가능:** 예<br />
+**문제 유형:** `https://docs.swipelux.com/errors/rail-temporarily-unavailable`
+
+**의미:** 선택한 결제 레일을 일시적으로 사용할 수 없습니다.
+
+**발생 시점:** 레일에 일시적인 가용성 문제가 발생하여 견적 생성이 일반적으로 지원되는 레일을 사용할 수 없을 때 발생합니다.
+
+**해결 방법:** 잠시 후 견적 요청을 재시도하거나, 자금 이동을 기다릴 수 없는 경우 지원되는 다른 레일을 선택하세요.
+
+**재시도 지침:** 잠시 후 재시도하세요. 멱등성이 있는 쓰기 작업의 경우 원래의 멱등성 키와 변경하지 않은 요청을 재사용하세요.
+
+**관련 API 작업:**
+
+- [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) (`postV3CustomersByCustomerIdAccounts`, 상태 `503`)
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, 상태 `503`)
+
+## 수취인 및 대상
+
+<a id="destination-not-ready" className="block scroll-mt-32">
+  <span className="sr-only">destination_not_ready error</span>
+</a>
+
+### `destination_not_ready`
+
+**HTTP 상태:** `409`<br />
+**재시도 가능:** 상황에 따라 다름<br />
+**문제 유형:** `https://docs.swipelux.com/errors/destination-not-ready`
+
+**의미:** 수취인 대상은 존재하지만 요청된 견적에 대해 준비되지 않았습니다.
+
+**발생 시점:** 견적이 현재 상태에서 자금 이동을 허용하지 않는 대상에 의존할 때 발생합니다.
+
+**해결 방법:** `statusReason`을 확인하고, 노출된 대상 설정을 완료하거나 상태가 진행될 때까지 기다린 후, 대상을 다시 가져오고, 준비되면 새 견적을 요청하세요.
+
+**재시도 지침:** 이 응답의 `retryable`을 확인하세요. `true`인 경우에만 나중에 재시도하세요. 멱등성이 있는 쓰기 작업의 경우 원래의 멱등성 키와 변경하지 않은 요청을 재사용하세요.
+
+**관련 API 작업:**
+
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, 상태 `409`)
+
+**추가 응답 필드:**
+
+- `statusReason`: 실패한 작업이 리소스의 현재 상태에 의존할 때 상태 충돌에 대한 구조화된 이유.
+
+<a id="payout-target-relationship-invalid" className="block scroll-mt-32">
+  <span className="sr-only">payout_target_relationship_invalid error</span>
+</a>
+
+### `payout_target_relationship_invalid`
+
+**HTTP 상태:** `400`<br />
+**재시도 가능:** 반환되지 않음<br />
+**문제 유형:** `https://docs.swipelux.com/errors/payout-target-relationship-invalid`
+
+**의미:** 선택한 지급 대상이 견적의 고객 또는 수취인과 유효한 관계를 갖고 있지 않습니다.
+
+**발생 시점:** 견적이 의도한 지급 관계가 소유하지 않거나 해당 관계에서 허용되는 대상이 아닌 대상을 가리킬 때 발생합니다.
+
+**해결 방법:** 의도한 고객 아래에서 반환된 계좌 또는 수취인 대상을 선택한 다음, 새 견적을 요청하세요.
+
+**재시도 지침:** 이 문제는 `retryable`을 반환하지 않습니다. 변경하지 않은 재시도가 안전하다고 가정하지 말고, 위의 조치와 해당 작업의 멱등성 요구 사항을 따르세요.
+
+**관련 API 작업:**
+
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, 상태 `400`)
+
+<a id="recipient-account-unsupported" className="block scroll-mt-32">
+  <span className="sr-only">recipient_account_unsupported error</span>
+</a>
+
+### `recipient_account_unsupported`
+
+**HTTP 상태:** `400`<br />
+**재시도 가능:** 반환되지 않음<br />
+**문제 유형:** `https://docs.swipelux.com/errors/recipient-account-unsupported`
+
+**의미:** 수취인 계좌 세부 정보가 요청된 대상에 대해 지원되지 않습니다.
+
+**발생 시점:** 대상 생성이 선택한 레일에서 허용하지 않는 계좌 유형 또는 계좌 세부 정보 조합을 수신할 때 발생합니다.
+
+**해결 방법:** 선택한 레일에서 지원하는 대상 유형과 계좌 세부 정보 스키마를 사용한 다음, 새 대상 요청을 생성하세요.
+
+**재시도 지침:** 이 문제는 `retryable`을 반환하지 않습니다. 변경하지 않은 재시도가 안전하다고 가정하지 말고, 위의 조치와 해당 작업의 멱등성 요구 사항을 따르세요.
+
+**관련 API 작업:**
+
+- [`POST /v3/customers/{customerId}/recipients/{recipientId}/destinations`](/api-reference/recipients/post-v3-customers-by-customer-id-recipients-by-recipient-id-destinations) (`postV3CustomersByCustomerIdRecipientsByRecipientIdDestinations`, 상태 `400`)
+
+<a id="recipient-address-required" className="block scroll-mt-32">
+  <span className="sr-only">recipient_address_required error</span>
+</a>
+
+### `recipient_address_required`
+
+**HTTP 상태:** `422`<br />
+**재시도 가능:** 아니요<br />
+**문제 유형:** `https://docs.swipelux.com/errors/recipient-address-required`
+
+**의미:** 이 법정화폐 대상을 생성하기 전에 수취인에게 주소가 필요합니다.
+
+**발생 시점:** 대상 생성이 수취인 주소 데이터가 필요한 법정화폐 지급 방법을 선택했지만 수취인 프로필에 해당 데이터가 없을 때 발생합니다.
+
+**해결 방법:** 필요한 주소 필드로 수취인을 업데이트한 다음, 대상을 다시 생성하세요.
+
+**재시도 지침:** 변경하지 않은 요청을 재시도하지 마세요. 다른 요청을 보내기 전에 위의 조치를 적용하세요.
+
+**관련 API 작업:**
+
+- [`POST /v3/customers/{customerId}/recipients/{recipientId}/destinations`](/api-reference/recipients/post-v3-customers-by-customer-id-recipients-by-recipient-id-destinations) (`postV3CustomersByCustomerIdRecipientsByRecipientIdDestinations`, 상태 `422`)
+
+<a id="recipient-destination-invalid" className="block scroll-mt-32">
+  <span className="sr-only">recipient_destination_invalid error</span>
+</a>
+
+### `recipient_destination_invalid`
+
+**HTTP 상태:** `400`, `422`<br />
+**재시도 가능:** 아니요<br />
+**문제 유형:** `https://docs.swipelux.com/errors/recipient-destination-invalid`
+
+**의미:** 수취인 대상이 유효하지 않거나 요청된 작업과 호환되지 않습니다.
+
+**발생 시점:** 대상 생성, 견적 생성 또는 전송 실행이 선택한 대상 또는 경로 요구 사항을 충족하지 못하는 대상 세부 정보를 사용할 때 발생합니다.
+
+**해결 방법:** 대상 세부 정보를 수정하거나 지원되는 대체 대상을 생성한 다음, 해당하는 경우 새 견적 또는 전송을 요청하세요.
+
+**재시도 지침:** 변경하지 않은 요청을 재시도하지 마세요. 다른 요청을 보내기 전에 위의 조치를 적용하세요.
+
+**관련 API 작업:**
+
+- [`POST /v3/customers/{customerId}/recipients/{recipientId}/destinations`](/api-reference/recipients/post-v3-customers-by-customer-id-recipients-by-recipient-id-destinations) (`postV3CustomersByCustomerIdRecipientsByRecipientIdDestinations`, 상태 `400`)
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, 상태 `422`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, 상태 `422`)
+
+<a id="recipient-name-invalid" className="block scroll-mt-32">
+  <span className="sr-only">recipient_name_invalid error</span>
+</a>
+
+### `recipient_name_invalid`
+
+**HTTP 상태:** `400`<br />
+**재시도 가능:** 반환되지 않음<br />
+**문제 유형:** `https://docs.swipelux.com/errors/recipient-name-invalid`
+
+**의미:** 수취인 이름이 요청 스키마를 충족하지 않습니다.
+
+**발생 시점:** 수취인 생성이 누락되었거나, 비어 있거나, 형식이 잘못된 이름을 수신할 때 발생합니다.
+
+**해결 방법:** 문서화된 스키마와 일치하는 수취인 이름을 제공하고 수정된 생성 요청을 보내세요.
+
+**재시도 지침:** 이 문제는 `retryable`을 반환하지 않습니다. 변경하지 않은 재시도가 안전하다고 가정하지 말고, 위의 조치와 해당 작업의 멱등성 요구 사항을 따르세요.
+
+**관련 API 작업:**
+
+- [`POST /v3/customers/{customerId}/recipients`](/api-reference/recipients/post-v3-customers-by-customer-id-recipients) (`postV3CustomersByCustomerIdRecipients`, 상태 `400`)
+
+<a id="wallet-destination-not-supported" className="block scroll-mt-32">
+  <span className="sr-only">wallet_destination_not_supported error</span>
+</a>
+
+### `wallet_destination_not_supported`
+
+**HTTP 상태:** `409`<br />
+**재시도 가능:** 아니요<br />
+**문제 유형:** `https://docs.swipelux.com/errors/wallet-destination-not-supported`
+
+**의미:** 선택한 자금 이동 방법이 지갑 대상을 지원하지 않습니다.
+
+**발생 시점:** 견적 생성이 지갑 대상을 다른 대상 유형을 위한 레일 또는 케이퍼빌리티와 결합할 때 발생합니다.
+
+**해결 방법:** 호환되는 계좌 또는 수취인 대상을 선택하거나 지원되는 지갑 전송 방법을 선택한 다음, 새 견적을 요청하세요.
+
+**재시도 지침:** 변경하지 않은 요청을 재시도하지 마세요. 다른 요청을 보내기 전에 위의 조치를 적용하세요.
+
+**관련 API 작업:**
+
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, 상태 `409`)
+
+## 견적 및 전송
+
+<a id="amount-not-deliverable" className="block scroll-mt-32">
+  <span className="sr-only">amount_not_deliverable error</span>
+</a>
+
+### `amount_not_deliverable`
+
+**HTTP 상태:** `422`<br />
+**재시도 가능:** 아니요<br />
+**문제 유형:** `https://docs.swipelux.com/errors/amount-not-deliverable`
+
+**의미:** 요청한 금액을 선택한 통화, 계좌 또는 방법으로 전달할 수 없습니다.
+
+**발생 시점:** 견적 요청의 형식은 유효하지만 선택한 경로에 대해 전달 가능한 대상 금액을 산출할 수 없습니다.
+
+**해결 방법:** 금액, 통화, 계좌, 대상 또는 방법을 조정한 다음 새 견적을 요청하세요.
+
+**재시도 지침:** 변경하지 않은 요청을 재시도하지 마세요. 다른 요청을 보내기 전에 위의 조치를 적용하세요.
+
+**관련 API 작업:**
+
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, 상태 `422`)
+
+<a id="amount-side-ambiguous" className="block scroll-mt-32">
+  <span className="sr-only">amount_side_ambiguous error</span>
+</a>
+
+### `amount_side_ambiguous`
+
+**HTTP 상태:** `400`<br />
+**재시도 가능:** 아니요<br />
+**문제 유형:** `https://docs.swipelux.com/errors/amount-side-ambiguous`
+
+**의미:** 견적 요청이 변환의 어느 쪽에 고정 금액이 있는지 명확하게 식별하지 못합니다.
+
+**발생 시점:** 금액 필드가 소스 금액과 대상 금액에 대한 의도를 불분명하게 만드는 조합으로 제공되었습니다.
+
+**해결 방법:** 의도한 견적 방향에 대해 지원되는 쪽에만 금액을 설정한 다음 새 견적을 요청하세요.
+
+**재시도 지침:** 변경하지 않은 요청을 재시도하지 마세요. 다른 요청을 보내기 전에 위의 조치를 적용하세요.
+
+**관련 API 작업:**
+
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, 상태 `400`)
+
+<a id="capability-direction-unsupported" className="block scroll-mt-32">
+  <span className="sr-only">capability_direction_unsupported error</span>
+</a>
+
+### `capability_direction_unsupported`
+
+**HTTP 상태:** `422`<br />
+**재시도 가능:** 아니요<br />
+**문제 유형:** `https://docs.swipelux.com/errors/capability-direction-unsupported`
+
+**의미:** 선택한 케이퍼빌리티가 견적 또는 전송에 필요한 자금 이동 방향을 지원하지 않습니다.
+
+**발생 시점:** 견적 생성이 선택한 케이퍼빌리티가 지원하지 않는 방향을 추론하거나, 전송 생성 시 견적에 고정된 케이퍼빌리티가 저장된 방향을 더 이상 지원하지 않는 것으로 확인됩니다.
+
+**해결 방법:** 의도한 방향을 지원하는 케이퍼빌리티를 선택하고 전송을 생성하기 전에 새 견적을 요청하세요.
+
+**재시도 지침:** 변경하지 않은 요청을 재시도하지 마세요. 다른 요청을 보내기 전에 위의 조치를 적용하세요.
+
+**관련 API 작업:**
+
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, 상태 `422`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, 상태 `422`)
+
+<a id="insufficient-balance" className="block scroll-mt-32">
+  <span className="sr-only">insufficient_balance error</span>
+</a>
+
+### `insufficient_balance`
+
+**HTTP 상태:** `409`<br />
+**재시도 가능:** 아니요<br />
+**문제 유형:** `https://docs.swipelux.com/errors/insufficient-balance`
+
+**의미:** 소스 계좌에 전송에 필요한 사용 가능 잔액이 충분하지 않습니다.
+
+**발생 시점:** 전송 실행이 소스 계좌를 확인한 결과 사용 가능한 금액이 필요한 출금액보다 적습니다.
+
+**해결 방법:** 소스 계좌에 자금을 충전하거나 전송 금액을 줄인 다음, 새 견적을 받아 새 전송 요청을 생성하세요.
+
+**재시도 지침:** 변경하지 않은 요청을 재시도하지 마세요. 다른 요청을 보내기 전에 위의 조치를 적용하세요.
+
+**관련 API 작업:**
+
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, 상태 `409`)
+
+<a id="quote-already-executed" className="block scroll-mt-32">
+  <span className="sr-only">quote_already_executed error</span>
+</a>
+
+### `quote_already_executed`
+
+**HTTP 상태:** `409`<br />
+**재시도 가능:** 아니요<br />
+**문제 유형:** `https://docs.swipelux.com/errors/quote-already-executed`
+
+**의미:** 견적이 이미 실행되어 기존 전송이 있습니다.
+
+**발생 시점:** 다른 요청이 견적을 성공적으로 소비한 후 두 번째 실행 요청이 도착했습니다.
+
+**해결 방법:** `transferId`를 사용하여 기존 전송을 읽고 추적하세요. 동일한 견적으로 다른 전송을 생성하지 마세요.
+
+**재시도 지침:** 변경하지 않은 요청을 재시도하지 마세요. 다른 요청을 보내기 전에 위의 조치를 적용하세요. 견적 실행을 재시도하는 대신 반환된 전송을 원래 의도의 결과로 처리하세요.
+
+**관련 API 작업:**
+
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, 상태 `409`)
+
+**추가 응답 필드:**
+
+- `transferId`: 견적을 소비한 기존 전송입니다.
+
+**예시:**
+
+```json
+{
+  "type": "https://docs.swipelux.com/errors/quote-already-executed",
+  "title": "Quote Already Executed",
+  "status": 409,
+  "code": "quote_already_executed",
+  "detail": "This quote was already executed by another request.",
+  "correlationId": "cor_01JMM23TRANSFERERRORS",
+  "retryable": false,
+  "transferId": "tr_6dV8xN2pQ4rT7mA9sL1kBc"
+}
+```
+
+<a id="quote-destination-missing" className="block scroll-mt-32">
+  <span className="sr-only">quote_destination_missing error</span>
+</a>
+
+### `quote_destination_missing`
+
+**HTTP 상태:** `409`, `500`<br />
+**재시도 가능:** 상황에 따라 다름<br />
+**문제 유형:** `https://docs.swipelux.com/errors/quote-destination-missing`
+
+**의미:** 견적 또는 전송에 작업에 필요한 대상이 포함되어 있지 않습니다.
+
+**발생 시점:** 새 견적에 필수 대상이 누락되었거나, 기존 견적 기반 리소스가 기록된 대상을 확인할 수 없습니다.
+
+**해결 방법:** 새 요청의 경우 유효한 계좌 또는 수취인 대상을 제공하고 새 견적을 요청하세요. 기존 리소스의 경우 `correlationId`를 보관하고 다시 조회해도 해결되지 않으면 지원팀에 문의하세요.
+
+**재시도 지침:** 이 응답의 `retryable`을 확인하세요. 값이 `true`일 때만 나중에 재시도하세요. 멱등성 쓰기의 경우 원래의 멱등성 키와 변경하지 않은 요청을 재사용하세요.
+
+**관련 API 작업:**
+
+- [`GET /v3/quotes/{quoteId}`](/api-reference/money-movement/get-v3-quotes-by-quote-id) (`getV3QuotesByQuoteId`, 상태 `500`)
+- [`GET /v3/transfers`](/api-reference/money-movement/get-v3-transfers) (`getV3Transfers`, 상태 `500`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, 상태 `409`)
+- [`GET /v3/transfers/{transferId}`](/api-reference/money-movement/get-v3-transfers-by-transfer-id) (`getV3TransfersByTransferId`, 상태 `500`)
+- [`POST /v3/transfers/{transferId}/cancel`](/api-reference/money-movement/post-v3-transfers-by-transfer-id-cancel) (`postV3TransfersByTransferIdCancel`, 상태 `500`)
+- [`GET /v3/transfers/{transferId}/instructions`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-instructions) (`getV3TransfersByTransferIdInstructions`, 상태 `500`)
+- [`GET /v3/transfers/{transferId}/tasks`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-tasks) (`getV3TransfersByTransferIdTasks`, 상태 `500`)
+
+<a id="quote-direction-invalid" className="block scroll-mt-32">
+  <span className="sr-only">quote_direction_invalid error</span>
+</a>
+
+### `quote_direction_invalid`
+
+**HTTP 상태:** `422`, `500`<br />
+**재시도 가능:** 상황에 따라 다름<br />
+**문제 유형:** `https://docs.swipelux.com/errors/quote-direction-invalid`
+
+**의미:** 소스와 대상이 지원되는 견적 방향을 형성하지 않습니다.
+
+**발생 시점:** 선택한 계좌, 대상, 통화 또는 방법으로 인해 자금 이동이 유효하지 않은 소스-대상 방향에 놓입니다.
+
+**해결 방법:** 지원되는 자금 흐름을 사용하여 소스와 대상 역할을 수정한 다음 새 견적을 요청하세요.
+
+**재시도 지침:** 이 응답의 `retryable`을 확인하세요. 값이 `true`일 때만 나중에 재시도하세요. 멱등성 쓰기의 경우 원래의 멱등성 키와 변경하지 않은 요청을 재사용하세요.
+
+**관련 API 작업:**
+
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, 상태 `422`)
+- [`GET /v3/quotes/{quoteId}`](/api-reference/money-movement/get-v3-quotes-by-quote-id) (`getV3QuotesByQuoteId`, 상태 `500`)
+- [`GET /v3/transfers`](/api-reference/money-movement/get-v3-transfers) (`getV3Transfers`, 상태 `500`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, 상태 `500`)
+- [`GET /v3/transfers/{transferId}`](/api-reference/money-movement/get-v3-transfers-by-transfer-id) (`getV3TransfersByTransferId`, 상태 `500`)
+- [`POST /v3/transfers/{transferId}/cancel`](/api-reference/money-movement/post-v3-transfers-by-transfer-id-cancel) (`postV3TransfersByTransferIdCancel`, 상태 `500`)
+- [`GET /v3/transfers/{transferId}/instructions`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-instructions) (`getV3TransfersByTransferIdInstructions`, 상태 `500`)
+- [`GET /v3/transfers/{transferId}/tasks`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-tasks) (`getV3TransfersByTransferIdTasks`, 상태 `500`)
+
+<a id="quote-execution-consumed" className="block scroll-mt-32">
+  <span className="sr-only">quote_execution_consumed error</span>
+</a>
+
+### `quote_execution_consumed`
+
+**HTTP 상태:** `409`<br />
+**재시도 가능:** 아니요<br />
+**문제 유형:** `https://docs.swipelux.com/errors/quote-execution-consumed`
+
+**의미:** 견적의 단일 실행 기회가 이미 소비되었습니다.
+
+**발생 시점:** 이전 또는 경쟁하는 실행 시도로 인해 견적이 다시 실행할 수 없는 상태가 되었으며, 반환할 기존의 성공한 전송이 없습니다.
+
+**해결 방법:** 의도한 자금 이동에 대해 새 견적을 요청하고 그 새 견적을 한 번만 실행하세요.
+
+**재시도 지침:** 변경하지 않은 요청을 재시도하지 마세요. 다른 요청을 보내기 전에 위의 조치를 적용하세요.
+
+**관련 API 작업:**
+
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, 상태 `409`)
+
+<a id="quote-expired" className="block scroll-mt-32">
+  <span className="sr-only">quote_expired error</span>
+</a>
+
+### `quote_expired`
+
+**HTTP 상태:** `409`<br />
+**재시도 가능:** 아니요<br />
+**문제 유형:** `https://docs.swipelux.com/errors/quote-expired`
+
+**의미:** 견적이 실행되기 전에 만료되었습니다.
+
+**발생 시점:** 전송 생성이 유효 기간이 끝난 후의 견적을 사용합니다.
+
+**해결 방법:** 새 견적을 요청하고 새 만료 시간 전에 실행하세요.
+
+**재시도 지침:** 변경하지 않은 요청을 재시도하지 마세요. 다른 요청을 보내기 전에 위의 조치를 적용하세요.
+
+**관련 API 작업:**
+
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, 상태 `409`)
+
+<a id="quote-failed" className="block scroll-mt-32">
+  <span className="sr-only">quote_failed error</span>
+</a>
+
+### `quote_failed`
+
+**HTTP 상태:** `500`, `502`<br />
+**재시도 가능:** 상황에 따라 다름<br />
+**문제 유형:** `https://docs.swipelux.com/errors/quote-failed`
+
+**의미:** Swipelux가 요청에 대해 사용 가능한 견적을 생성할 수 없습니다.
+
+**발생 시점:** 견적 생성이 일시적인 서비스 장애 또는 선택한 경로에 대한 최종 실패를 만납니다.
+
+**해결 방법:** `retryable`을 확인하세요. 값이 `true`이면 나중에 동일한 견적 요청을 재시도하고, 그렇지 않으면 경로 입력을 변경하거나 `correlationId`와 함께 지원팀에 문의하세요.
+
+**재시도 지침:** 이 응답의 `retryable`을 확인하세요. 값이 `true`일 때만 나중에 재시도하세요. 멱등성 쓰기의 경우 원래의 멱등성 키와 변경하지 않은 요청을 재사용하세요.
+
+**관련 API 작업:**
+
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, 상태 `500`)
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, 상태 `502`)
+
+<a id="quote-mode-invalid" className="block scroll-mt-32">
+  <span className="sr-only">quote_mode_invalid error</span>
+</a>
+
+### `quote_mode_invalid`
+
+**HTTP 상태:** `500`<br />
+**재시도 가능:** 예<br />
+**문제 유형:** `https://docs.swipelux.com/errors/quote-mode-invalid`
+
+**의미:** 작업에 필요한 모드로 견적을 해석할 수 없습니다.
+
+**발생 시점:** 기존 견적 기반 리소스에 읽기 또는 실행 경로가 처리할 수 없는 모드가 포함되어 있습니다.
+
+**해결 방법:** 잠시 후 재시도하세요. 동일한 견적이 계속 실패하면 저장된 견적을 변경하는 대신 `correlationId`를 보관하고 지원팀에 문의하세요.
+
+**재시도 지침:** 잠시 후 재시도하세요. 멱등성 쓰기의 경우 원래의 멱등성 키와 변경하지 않은 요청을 재사용하세요.
+
+**관련 API 작업:**
+
+- [`GET /v3/quotes/{quoteId}`](/api-reference/money-movement/get-v3-quotes-by-quote-id) (`getV3QuotesByQuoteId`, 상태 `500`)
+- [`GET /v3/transfers`](/api-reference/money-movement/get-v3-transfers) (`getV3Transfers`, 상태 `500`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, 상태 `500`)
+- [`GET /v3/transfers/{transferId}`](/api-reference/money-movement/get-v3-transfers-by-transfer-id) (`getV3TransfersByTransferId`, 상태 `500`)
+- [`POST /v3/transfers/{transferId}/cancel`](/api-reference/money-movement/post-v3-transfers-by-transfer-id-cancel) (`postV3TransfersByTransferIdCancel`, 상태 `500`)
+- [`GET /v3/transfers/{transferId}/instructions`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-instructions) (`getV3TransfersByTransferIdInstructions`, 상태 `500`)
+- [`GET /v3/transfers/{transferId}/tasks`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-tasks) (`getV3TransfersByTransferIdTasks`, 상태 `500`)
+
+<a id="quote-not-found" className="block scroll-mt-32">
+  <span className="sr-only">quote_not_found error</span>
+</a>
+
+### `quote_not_found`
+
+**HTTP 상태:** `404`<br />
+**재시도 가능:** 반환되지 않음<br />
+**문제 유형:** `https://docs.swipelux.com/errors/quote-not-found`
+
+**의미:** 이 API 키로 견적을 찾을 수 없습니다.
+
+**발생 시점:** 견적 식별자가 잘못되었거나, 다른 환경에 속하거나, 호출자가 접근할 수 없습니다.
+
+**해결 방법:** 견적 식별자와 API 키 환경을 확인하세요. 의도한 견적을 사용할 수 없는 경우 새 견적을 요청하세요.
+
+**재시도 지침:** 이 문제는 `retryable`을 반환하지 않습니다. 변경하지 않은 재시도가 안전하다고 가정하지 말고, 위의 조치와 해당 작업의 멱등성 요구 사항을 따르세요.
+
+**관련 API 작업:**
+
+- [`GET /v3/quotes/{quoteId}`](/api-reference/money-movement/get-v3-quotes-by-quote-id) (`getV3QuotesByQuoteId`, 상태 `404`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, 상태 `404`)
+
+<a id="rate-unavailable" className="block scroll-mt-32">
+  <span className="sr-only">rate_unavailable error</span>
+</a>
+
+### `rate_unavailable`
+
+**HTTP 상태:** `502`<br />
+**재시도 가능:** 예<br />
+**문제 유형:** `https://docs.swipelux.com/errors/rate-unavailable`
+
+**의미:** 필요한 통화 환율을 일시적으로 사용할 수 없습니다.
+
+**발생 시점:** 환율 또는 견적 작업이 요청된 통화 쌍에 필요한 환율을 가져올 수 없습니다.
+
+**해결 방법:** 잠시 후 재시도하세요. 이전 환율 가정을 재사용하는 대신 새 견적을 요청하세요.
+
+**재시도 지침:** 잠시 후 재시도하세요. 멱등성 쓰기의 경우 원래의 멱등성 키와 변경하지 않은 요청을 재사용하세요.
+
+**관련 API 작업:**
+
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, 상태 `502`)
+- [`GET /v3/rates`](/api-reference/money-movement/get-v3-rates) (`getV3Rates`, 상태 `502`)
+
+<a id="supporting-document-not-found" className="block scroll-mt-32">
+  <span className="sr-only">supporting_document_not_found error</span>
+</a>
+
+### `supporting_document_not_found`
+
+**HTTP 상태:** `422`<br />
+**재시도 가능:** 아니요<br />
+**문제 유형:** `https://docs.swipelux.com/errors/supporting-document-not-found`
+
+**의미:** 전송 요청이 참조하는 증빙 문서를 찾을 수 없습니다.
+
+**발생 시점:** 전송 생성이 누락되었거나, 접근할 수 없거나, 잘못된 고객 문서를 참조합니다.
+
+**해결 방법:** 필요한 고객 문서를 목록으로 조회하거나 업로드하고, 올바른 식별자를 사용하여 새 전송 요청을 제출하세요.
+
+**재시도 지침:** 변경하지 않은 요청을 재시도하지 마세요. 다른 요청을 보내기 전에 위의 조치를 적용하세요.
+
+**관련 API 작업:**
+
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, 상태 `422`)
+
+<a id="transfer-execution-failed" className="block scroll-mt-32">
+  <span className="sr-only">transfer_execution_failed error</span>
+</a>
+
+### `transfer_execution_failed`
+
+**HTTP 상태:** `500`<br />
+**재시도 가능:** 아니요<br />
+**문제 유형:** `https://docs.swipelux.com/errors/transfer-execution-failed`
+
+**의미:** 견적 실행 중에 전송을 완료할 수 없습니다.
+
+**발생 시점:** 전송 생성이 실행을 시작하지만 사용 가능한 전송을 생성하는 대신 최종 실패를 만납니다.
+
+**해결 방법:** `correlationId`를 보관하고, 견적과 전송 상태를 읽은 다음, 새 견적으로 의도한 자금 이동을 다시 시도하기 전에 지원팀에 문의하세요.
+
+**재시도 지침:** 변경하지 않은 요청을 재시도하지 마세요. 다른 요청을 보내기 전에 위의 조치를 적용하세요.
+
+**관련 API 작업:**
+
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, 상태 `500`)
+
+<a id="transfer-has-no-instructions" className="block scroll-mt-32">
+  <span className="sr-only">transfer_has_no_instructions error</span>
+</a>
+
+### `transfer_has_no_instructions`
+
+**HTTP 상태:** `404`<br />
+**재시도 가능:** 반환되지 않음<br />
+**문제 유형:** `https://docs.swipelux.com/errors/transfer-has-no-instructions`
+
+**의미:** 전송은 존재하지만 결제 지침을 제공하지 않습니다.
+
+**발생 시점:** 지침 세트를 노출하지 않는 전송 유형 또는 상태에 대해 지침을 요청합니다.
+
+**해결 방법:** 전송 리소스를 읽고 현재 상태를 따르세요. 결제 지침을 반환하는 전송에 대해서만 지침 엔드포인트를 사용하세요.
+
+**재시도 지침:** 이 문제는 `retryable`을 반환하지 않습니다. 변경하지 않은 재시도가 안전하다고 가정하지 말고, 위의 조치와 해당 작업의 멱등성 요구 사항을 따르세요.
+
+**관련 API 작업:**
+
+- [`GET /v3/transfers/{transferId}/instructions`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-instructions) (`getV3TransfersByTransferIdInstructions`, 상태 `404`)
+
+<a id="transfer-not-cancelable" className="block scroll-mt-32">
+  <span className="sr-only">transfer_not_cancelable error</span>
+</a>
+
+### `transfer_not_cancelable`
+
+**HTTP 상태:** `409`<br />
+**재시도 가능:** 아니요<br />
+**문제 유형:** `https://docs.swipelux.com/errors/transfer-not-cancelable`
+
+**의미:** 현재 상태에서 전송을 취소할 수 없습니다.
+
+**발생 시점:** 전송이 취소 가능한 상태를 지나 진행된 후 취소 요청이 도착했습니다.
+
+**해결 방법:** 취소 요청을 반복하는 대신 전송을 다시 조회하고 현재 상태에 맞게 계속 처리하세요.
+
+**재시도 지침:** 변경하지 않은 요청을 재시도하지 마세요. 다른 요청을 보내기 전에 위의 조치를 적용하세요.
+
+**관련 API 작업:**
+
+- [`POST /v3/transfers/{transferId}/cancel`](/api-reference/money-movement/post-v3-transfers-by-transfer-id-cancel) (`postV3TransfersByTransferIdCancel`, 상태 `409`)
+
+<a id="transfer-not-found" className="block scroll-mt-32">
+  <span className="sr-only">transfer_not_found error</span>
+</a>
+
+### `transfer_not_found`
+
+**HTTP 상태:** `404`<br />
+**재시도 가능:** 반환되지 않음<br />
+**문제 유형:** `https://docs.swipelux.com/errors/transfer-not-found`
+
+**의미:** 이 API 키로 전송을 찾을 수 없습니다.
+
+**발생 시점:** 전송 식별자가 잘못되었거나, 다른 환경에 속하거나, 호출자가 접근할 수 없습니다.
+
+**해결 방법:** 전송 식별자와 API 키 환경을 확인한 다음, 접근 가능한 전송으로 재시도하기 전에 전송을 목록으로 조회하거나 읽으세요.
+
+**재시도 지침:** 이 문제는 `retryable`을 반환하지 않습니다. 변경하지 않은 재시도가 안전하다고 가정하지 말고, 위의 조치와 해당 작업의 멱등성 요구 사항을 따르세요.
+
+**관련 API 작업:**
+
+- [`POST /v3/sandbox/transfers/{transferId}/state`](/api-reference/sandbox/post-v3-sandbox-transfers-by-transfer-id-state) (`postV3SandboxTransfersByTransferIdState`, 상태 `404`)
+- [`GET /v3/transfers`](/api-reference/money-movement/get-v3-transfers) (`getV3Transfers`, 상태 `404`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, 상태 `404`)
+- [`GET /v3/transfers/{transferId}`](/api-reference/money-movement/get-v3-transfers-by-transfer-id) (`getV3TransfersByTransferId`, 상태 `404`)
+- [`POST /v3/transfers/{transferId}/cancel`](/api-reference/money-movement/post-v3-transfers-by-transfer-id-cancel) (`postV3TransfersByTransferIdCancel`, 상태 `404`)
+- [`GET /v3/transfers/{transferId}/instructions`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-instructions) (`getV3TransfersByTransferIdInstructions`, 상태 `404`)
+- [`GET /v3/transfers/{transferId}/tasks`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-tasks) (`getV3TransfersByTransferIdTasks`, 상태 `404`)
+
+<a id="transfer-state-invalid" className="block scroll-mt-32">
+  <span className="sr-only">transfer_state_invalid error</span>
+</a>
+
+### `transfer_state_invalid`
+
+**HTTP 상태:** `400`, `500`<br />
+**재시도 가능:** 예<br />
+**문제 유형:** `https://docs.swipelux.com/errors/transfer-state-invalid`
+
+**의미:** 전송이 요청한 작업 또는 전환을 지원하지 않는 상태에 있습니다.
+
+**발생 시점:** 전송 읽기, 실행, 취소 또는 샌드박스 상태 변경이 현재 작업을 충족할 수 없는 상태를 만납니다.
+
+**해결 방법:** 전송을 다시 조회하고, 유효한 다음 상태를 기다리거나 선택한 다음, 현재 상태가 작업을 허용할 때만 재시도하세요.
+
+**재시도 지침:** 잠시 후 재시도하세요. 멱등성 쓰기의 경우 원래의 멱등성 키와 변경하지 않은 요청을 재사용하세요.
+
+**관련 API 작업:**
+
+- [`POST /v3/sandbox/transfers/{transferId}/state`](/api-reference/sandbox/post-v3-sandbox-transfers-by-transfer-id-state) (`postV3SandboxTransfersByTransferIdState`, 상태 `400`)
+- [`GET /v3/transfers`](/api-reference/money-movement/get-v3-transfers) (`getV3Transfers`, 상태 `500`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, 상태 `500`)
+- [`GET /v3/transfers/{transferId}`](/api-reference/money-movement/get-v3-transfers-by-transfer-id) (`getV3TransfersByTransferId`, 상태 `500`)
+- [`POST /v3/transfers/{transferId}/cancel`](/api-reference/money-movement/post-v3-transfers-by-transfer-id-cancel) (`postV3TransfersByTransferIdCancel`, 상태 `500`)
+- [`GET /v3/transfers/{transferId}/instructions`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-instructions) (`getV3TransfersByTransferIdInstructions`, 상태 `500`)
+- [`GET /v3/transfers/{transferId}/tasks`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-tasks) (`getV3TransfersByTransferIdTasks`, 상태 `500`)
+
+## 규칙
+
+<a id="rule-already-exists" className="block scroll-mt-32">
+  <span className="sr-only">rule_already_exists error</span>
+</a>
+
+### `rule_already_exists`
+
+**HTTP 상태:** `409`<br />
+**재시도 가능:** 아니요<br />
+**문제 유형:** `https://docs.swipelux.com/errors/rule-already-exists`
+
+**의미:** 트리거 계좌에 이미 활성 규칙이 있습니다.
+
+**발생 시점:** 규칙 생성이 보관되지 않은 규칙이 이미 감시하고 있는 계좌를 대상으로 합니다.
+
+**해결 방법:** `conflictingRuleId`를 사용하여 기존 규칙을 읽은 다음, 중복 규칙을 생성하는 대신 해당 규칙을 업데이트, 보관 또는 재사용하세요.
+
+**재시도 지침:** 변경하지 않은 요청을 재시도하지 마세요. 다른 요청을 보내기 전에 위의 조치를 적용하세요.
+
+**관련 API 작업:**
+
+- [`POST /v3/customers/{customerId}/rules`](/api-reference/rules/post-v3-customers-by-customer-id-rules) (`postV3CustomersByCustomerIdRules`, 상태 `409`)
+
+**추가 응답 필드:**
+
+- `conflictingRuleId`: 이 요청과 충돌하는 기존 활성 규칙입니다.
+
+<a id="rule-archived" className="block scroll-mt-32">
+  <span className="sr-only">rule_archived error</span>
+</a>
+
+### `rule_archived`
+
+**HTTP 상태:** `409`<br />
+**재시도 가능:** 아니요<br />
+**문제 유형:** `https://docs.swipelux.com/errors/rule-archived`
+
+**의미:** 규칙이 보관되어 더 이상 변경할 수 없습니다.
+
+**발생 시점:** 이미 최종 보관 상태에 도달한 규칙을 업데이트하거나 보관합니다.
+
+**해결 방법:** 이력을 확인하려면 보관된 규칙을 읽고, 활성 대체 규칙이 필요하면 새 규칙을 생성하세요.
+
+**재시도 지침:** 변경하지 않은 요청을 재시도하지 마세요. 다른 요청을 보내기 전에 위의 조치를 적용하세요.
+
+**관련 API 작업:**
+
+- [`DELETE /v3/customers/{customerId}/rules/{ruleId}`](/api-reference/rules/delete-v3-customers-by-customer-id-rules-by-rule-id) (`deleteV3CustomersByCustomerIdRulesByRuleId`, 상태 `409`)
+- [`PATCH /v3/customers/{customerId}/rules/{ruleId}`](/api-reference/rules/patch-v3-customers-by-customer-id-rules-by-rule-id) (`patchV3CustomersByCustomerIdRulesByRuleId`, 상태 `409`)
+
+<a id="rule-not-found" className="block scroll-mt-32">
+  <span className="sr-only">rule_not_found error</span>
+</a>
+
+### `rule_not_found`
+
+**HTTP 상태:** `404`<br />
+**재시도 가능:** 반환되지 않음<br />
+**문제 유형:** `https://docs.swipelux.com/errors/rule-not-found`
+
+**의미:** 지정된 고객 아래에서 규칙을 찾을 수 없습니다.
+
+**발생 시점:** 규칙 식별자가 없거나, 다른 고객에 속하거나, 현재 환경에서 접근할 수 없습니다.
+
+**해결 방법:** 고객 및 규칙 식별자를 확인하고, 고객의 규칙을 목록으로 조회한 다음, 접근 가능한 규칙으로 재시도하세요.
+
+**재시도 지침:** 이 문제는 `retryable`을 반환하지 않습니다. 변경하지 않은 재시도가 안전하다고 가정하지 말고, 위의 조치와 해당 작업의 멱등성 요구 사항을 따르세요.
+
+**관련 API 작업:**
+
+- [`DELETE /v3/customers/{customerId}/rules/{ruleId}`](/api-reference/rules/delete-v3-customers-by-customer-id-rules-by-rule-id) (`deleteV3CustomersByCustomerIdRulesByRuleId`, 상태 `404`)
+- [`GET /v3/customers/{customerId}/rules/{ruleId}`](/api-reference/rules/get-v3-customers-by-customer-id-rules-by-rule-id) (`getV3CustomersByCustomerIdRulesByRuleId`, 상태 `404`)
+- [`PATCH /v3/customers/{customerId}/rules/{ruleId}`](/api-reference/rules/patch-v3-customers-by-customer-id-rules-by-rule-id) (`patchV3CustomersByCustomerIdRulesByRuleId`, 상태 `404`)
+
+<a id="rule-target-invalid" className="block scroll-mt-32">
+  <span className="sr-only">rule_target_invalid error</span>
+</a>
+
+### `rule_target_invalid`
+
+**HTTP 상태:** `400`<br />
+**재시도 가능:** 반환되지 않음<br />
+**문제 유형:** `https://docs.swipelux.com/errors/rule-target-invalid`
+
+**의미:** 규칙 액션 대상이 이 고객 또는 규칙 유형에 유효하지 않습니다.
+
+**발생 시점:** 규칙 생성이 누락되었거나, 접근할 수 없거나, 보관되었거나, 호환되지 않는 계좌 또는 대상을 액션 대상으로 선택합니다.
+
+**해결 방법:** 고객에 대해 반환되고 규칙 액션 스키마에서 지원되는 활성 대상을 선택한 다음 새 규칙 요청을 생성하세요.
+
+**재시도 지침:** 이 문제는 `retryable`을 반환하지 않습니다. 변경하지 않은 재시도가 안전하다고 가정하지 말고, 위의 조치와 해당 작업의 멱등성 요구 사항을 따르세요.
+
+**관련 API 작업:**
+
+- [`POST /v3/customers/{customerId}/rules`](/api-reference/rules/post-v3-customers-by-customer-id-rules) (`postV3CustomersByCustomerIdRules`, 상태 `400`)
+
+<a id="rule-trigger-account-invalid" className="block scroll-mt-32">
+  <span className="sr-only">rule_trigger_account_invalid error</span>
+</a>
+
+### `rule_trigger_account_invalid`
+
+**HTTP 상태:** `400`<br />
+**재시도 가능:** 반환되지 않음<br />
+**문제 유형:** `https://docs.swipelux.com/errors/rule-trigger-account-invalid`
+
+**의미:** 규칙 트리거로 선택한 계좌가 유효하지 않습니다.
+
+**발생 시점:** 규칙 생성이 누락되었거나, 보관되었거나, 접근할 수 없거나, 트리거 역할을 할 자격이 없는 계좌를 사용합니다.
+
+**해결 방법:** 고객에 대해 반환된 활성 상태의 적격 계좌를 선택한 다음 새 규칙 요청을 생성하세요.
+
+**재시도 지침:** 이 문제는 `retryable`을 반환하지 않습니다. 변경하지 않은 재시도가 안전하다고 가정하지 말고, 위의 조치와 해당 작업의 멱등성 요구 사항을 따르세요.
+
+**관련 API 작업:**
+
+- [`POST /v3/customers/{customerId}/rules`](/api-reference/rules/post-v3-customers-by-customer-id-rules) (`postV3CustomersByCustomerIdRules`, 상태 `400`)
+
+## 멱등성 및 플랫폼 오류
+
+<a id="conflict" className="block scroll-mt-32">
+  <span className="sr-only">conflict error</span>
+</a>
+
+### `conflict`
+
+**HTTP 상태:** `409`<br />
+**재시도 가능:** 아니요<br />
+**문제 유형:** `https://docs.swipelux.com/errors/conflict`
+
+**의미:** 요청한 작업이 리소스의 현재 상태와 충돌합니다.
+
+**발생 시점:** 리소스가 변경되었거나, 보관되었거나, 필수 완료 단계가 없거나, 더 구체적인 공개 코드 없이 상태 충돌이 있어 작업을 진행할 수 없습니다.
+
+**해결 방법:** 영향을 받은 리소스를 다시 조회하고, `detail`을 사용하여 현재 전제 조건을 파악하고, 요청 또는 리소스 상태를 변경한 다음 새 요청을 보내세요.
+
+**재시도 지침:** 변경하지 않은 요청을 재시도하지 마세요. 다른 요청을 보내기 전에 위의 조치를 적용하세요.
+
+**관련 API 작업:**
+
+- [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) (`postV3CustomersByCustomerIdAccounts`, 상태 `409`)
+- [`DELETE /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/delete-v3-customers-by-customer-id-accounts-by-account-id) (`deleteV3CustomersByCustomerIdAccountsByAccountId`, 상태 `409`)
+- [`PATCH /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/patch-v3-customers-by-customer-id-accounts-by-account-id) (`patchV3CustomersByCustomerIdAccountsByAccountId`, 상태 `409`)
+- [`POST /v3/customers/{customerId}/export`](/api-reference/customers/post-v3-customers-by-customer-id-export) (`postV3CustomersByCustomerIdExport`, 상태 `409`)
+- [`POST /v3/sandbox/accounts/{accountId}/topup`](/api-reference/sandbox/post-v3-sandbox-accounts-by-account-id-topup) (`postV3SandboxAccountsByAccountIdTopup`, 상태 `409`)
+- [`POST /v3/sandbox/tasks/{taskId}/review`](/api-reference/sandbox/post-v3-sandbox-tasks-by-task-id-review) (`postV3SandboxTasksByTaskIdReview`, 상태 `409`)
+
+<a id="idempotency-conflict" className="block scroll-mt-32">
+  <span className="sr-only">idempotency_conflict error</span>
+</a>
+
+### `idempotency_conflict`
+
+**HTTP 상태:** `409`<br />
+**재시도 가능:** 아니요<br />
+**문제 유형:** `https://docs.swipelux.com/errors/idempotency-conflict`
+
+**의미:** 멱등성 키가 이미 다른 요청에 사용되었습니다.
+
+**발생 시점:** 쓰기 작업이 메서드, 경로, 본문 또는 의도한 작업을 변경한 채 기존 `Idempotency-Key`를 재사용합니다.
+
+**해결 방법:** 해당 키로 변경된 요청을 재시도하지 마세요. 적절한 경우 원래 작업의 결과를 조회하거나, 실제로 새로운 작업에는 새 키를 사용하세요.
+
+**재시도 지침:** 변경하지 않은 요청을 재시도하지 마세요. 다른 요청을 보내기 전에 위의 조치를 적용하세요. 멱등성 키는 원래 요청을 영구적으로 식별하며, 페이로드를 변경하려면 새 키가 필요합니다.
+
+<Accordion title="관련 API 작업 (30)">
+
+- [`POST /v3/customers`](/api-reference/customers/post-v3-customers) (`postV3Customers`, 상태 `409`)
+- [`DELETE /v3/customers/{customerId}`](/api-reference/customers/delete-v3-customers-by-customer-id) (`deleteV3CustomersByCustomerId`, 상태 `409`)
+- [`PATCH /v3/customers/{customerId}`](/api-reference/customers/patch-v3-customers-by-customer-id) (`patchV3CustomersByCustomerId`, 상태 `409`)
+- [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) (`postV3CustomersByCustomerIdAccounts`, 상태 `409`)
+- [`DELETE /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/delete-v3-customers-by-customer-id-accounts-by-account-id) (`deleteV3CustomersByCustomerIdAccountsByAccountId`, 상태 `409`)
+- [`PATCH /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/patch-v3-customers-by-customer-id-accounts-by-account-id) (`patchV3CustomersByCustomerIdAccountsByAccountId`, 상태 `409`)
+- [`PUT /v3/customers/{customerId}/accounts/{accountId}/fees`](/api-reference/accounts/put-v3-customers-by-customer-id-accounts-by-account-id-fees) (`putV3CustomersByCustomerIdAccountsByAccountIdFees`, 상태 `409`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, 상태 `409`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}/cancel`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id-cancel) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityIdCancel`, 상태 `409`)
+- [`POST /v3/customers/{customerId}/documents`](/api-reference/documents/post-v3-customers-by-customer-id-documents) (`postV3CustomersByCustomerIdDocuments`, 상태 `409`)
+- [`DELETE /v3/customers/{customerId}/documents/{documentId}`](/api-reference/documents/delete-v3-customers-by-customer-id-documents-by-document-id) (`deleteV3CustomersByCustomerIdDocumentsByDocumentId`, 상태 `409`)
+- [`POST /v3/customers/{customerId}/export`](/api-reference/customers/post-v3-customers-by-customer-id-export) (`postV3CustomersByCustomerIdExport`, 상태 `409`)
+- [`POST /v3/customers/{customerId}/recipients`](/api-reference/recipients/post-v3-customers-by-customer-id-recipients) (`postV3CustomersByCustomerIdRecipients`, 상태 `409`)
+- [`DELETE /v3/customers/{customerId}/recipients/{recipientId}`](/api-reference/recipients/delete-v3-customers-by-customer-id-recipients-by-recipient-id) (`deleteV3CustomersByCustomerIdRecipientsByRecipientId`, 상태 `409`)
+- [`PATCH /v3/customers/{customerId}/recipients/{recipientId}`](/api-reference/recipients/patch-v3-customers-by-customer-id-recipients-by-recipient-id) (`patchV3CustomersByCustomerIdRecipientsByRecipientId`, 상태 `409`)
+- [`POST /v3/customers/{customerId}/recipients/{recipientId}/destinations`](/api-reference/recipients/post-v3-customers-by-customer-id-recipients-by-recipient-id-destinations) (`postV3CustomersByCustomerIdRecipientsByRecipientIdDestinations`, 상태 `409`)
+- [`DELETE /v3/customers/{customerId}/recipients/{recipientId}/destinations/{destinationId}`](/api-reference/recipients/delete-v3-customers-by-customer-id-recipients-by-recipient-id-destinations-by-destination-id) (`deleteV3CustomersByCustomerIdRecipientsByRecipientIdDestinationsByDestinationId`, 상태 `409`)
+- [`POST /v3/customers/{customerId}/related-parties`](/api-reference/customers/post-v3-customers-by-customer-id-related-parties) (`postV3CustomersByCustomerIdRelated-parties`, 상태 `409`)
+- [`DELETE /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/delete-v3-customers-by-customer-id-related-parties-by-related-party-id) (`deleteV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, 상태 `409`)
+- [`PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/patch-v3-customers-by-customer-id-related-parties-by-related-party-id) (`patchV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, 상태 `409`)
+- [`POST /v3/customers/{customerId}/rules`](/api-reference/rules/post-v3-customers-by-customer-id-rules) (`postV3CustomersByCustomerIdRules`, 상태 `409`)
+- [`DELETE /v3/customers/{customerId}/rules/{ruleId}`](/api-reference/rules/delete-v3-customers-by-customer-id-rules-by-rule-id) (`deleteV3CustomersByCustomerIdRulesByRuleId`, 상태 `409`)
+- [`PATCH /v3/customers/{customerId}/rules/{ruleId}`](/api-reference/rules/patch-v3-customers-by-customer-id-rules-by-rule-id) (`patchV3CustomersByCustomerIdRulesByRuleId`, 상태 `409`)
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, 상태 `409`)
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, 상태 `409`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, 상태 `409`)
+- [`POST /v3/transfers/{transferId}/cancel`](/api-reference/money-movement/post-v3-transfers-by-transfer-id-cancel) (`postV3TransfersByTransferIdCancel`, 상태 `409`)
+- [`POST /v3/webhooks`](/api-reference/webhooks/post-v3-webhooks) (`postV3Webhooks`, 상태 `409`)
+- [`DELETE /v3/webhooks/{webhookId}`](/api-reference/webhooks/delete-v3-webhooks-by-webhook-id) (`deleteV3WebhooksByWebhookId`, 상태 `409`)
+- [`PATCH /v3/webhooks/{webhookId}`](/api-reference/webhooks/patch-v3-webhooks-by-webhook-id) (`patchV3WebhooksByWebhookId`, 상태 `409`)
+
+</Accordion>
+
+**예시:**
+
+```json
+{
+  "type": "https://docs.swipelux.com/errors/idempotency-conflict",
+  "title": "Idempotency Conflict",
+  "status": 409,
+  "code": "idempotency_conflict",
+  "detail": "Idempotency-Key was already used with a different request.",
+  "correlationId": "cor_01JMM23TRANSFERERRORS",
+  "retryable": false
+}
+```
+
+<a id="idempotency-request-in-progress" className="block scroll-mt-32">
+  <span className="sr-only">idempotency_request_in_progress error</span>
+</a>
+
+### `idempotency_request_in_progress`
+
+**HTTP 상태:** `409`<br />
+**재시도 가능:** 예<br />
+**문제 유형:** `https://docs.swipelux.com/errors/idempotency-request-in-progress`
+
+**의미:** 동일한 멱등성 키를 가진 일치하는 요청이 아직 처리 중입니다.
+
+**발생 시점:** 첫 번째 시도가 완료되기 전에 동일한 멱등성 쓰기가 다시 제출됩니다.
+
+**해결 방법:** 잠시 기다린 다음, 원래 결과를 사용할 수 있을 때까지 동일한 `Idempotency-Key`로 동일한 요청을 재시도하세요.
+
+**재시도 지침:** 잠시 후 재시도하세요. 멱등성 쓰기의 경우 원래의 멱등성 키와 변경하지 않은 요청을 재사용하세요. 메서드, 경로, 본문을 원래 의도와 바이트 단위로 동일하게 유지하세요.
+
+<Accordion title="관련 API 작업 (13)">
+
+- [`POST /v3/customers`](/api-reference/customers/post-v3-customers) (`postV3Customers`, 상태 `409`)
+- [`DELETE /v3/customers/{customerId}`](/api-reference/customers/delete-v3-customers-by-customer-id) (`deleteV3CustomersByCustomerId`, 상태 `409`)
+- [`PATCH /v3/customers/{customerId}`](/api-reference/customers/patch-v3-customers-by-customer-id) (`patchV3CustomersByCustomerId`, 상태 `409`)
+- [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) (`postV3CustomersByCustomerIdAccounts`, 상태 `409`)
+- [`DELETE /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/delete-v3-customers-by-customer-id-accounts-by-account-id) (`deleteV3CustomersByCustomerIdAccountsByAccountId`, 상태 `409`)
+- [`PATCH /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/patch-v3-customers-by-customer-id-accounts-by-account-id) (`patchV3CustomersByCustomerIdAccountsByAccountId`, 상태 `409`)
+- [`PUT /v3/customers/{customerId}/accounts/{accountId}/fees`](/api-reference/accounts/put-v3-customers-by-customer-id-accounts-by-account-id-fees) (`putV3CustomersByCustomerIdAccountsByAccountIdFees`, 상태 `409`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}/cancel`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id-cancel) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityIdCancel`, 상태 `409`)
+- [`POST /v3/customers/{customerId}/export`](/api-reference/customers/post-v3-customers-by-customer-id-export) (`postV3CustomersByCustomerIdExport`, 상태 `409`)
+- [`POST /v3/customers/{customerId}/related-parties`](/api-reference/customers/post-v3-customers-by-customer-id-related-parties) (`postV3CustomersByCustomerIdRelated-parties`, 상태 `409`)
+- [`DELETE /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/delete-v3-customers-by-customer-id-related-parties-by-related-party-id) (`deleteV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, 상태 `409`)
+- [`PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/patch-v3-customers-by-customer-id-related-parties-by-related-party-id) (`patchV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, 상태 `409`)
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, 상태 `409`)
+
+</Accordion>
+
+**예시:**
+
+```json
+{
+  "type": "https://docs.swipelux.com/errors/idempotency-request-in-progress",
+  "title": "Idempotency Request In Progress",
+  "status": 409,
+  "code": "idempotency_request_in_progress",
+  "detail": "A request with this Idempotency-Key is still in progress.",
+  "correlationId": "01JERRORIDEMPOTENCY",
+  "retryable": true
+}
+```
+
+<a id="internal-error" className="block scroll-mt-32">
+  <span className="sr-only">internal_error error</span>
+</a>
+
+### `internal_error`
+
+**HTTP 상태:** `500`<br />
+**재시도 가능:** 예<br />
+**문제 유형:** `https://docs.swipelux.com/errors/internal-error`
+
+**의미:** Swipelux가 작업을 처리하는 동안 예기치 않은 서버 오류가 발생했습니다.
+
+**발생 시점:** 요청이 더 구체적인 공개 문제가 아닌 처리되지 않은 플랫폼 장애에 도달합니다.
+
+**해결 방법:** `correlationId`를 보관하고, 잠시 후 재시도하고, 오류가 지속되면 Swipelux 지원팀에 문의하세요.
+
+**재시도 지침:** 잠시 후 재시도하세요. 멱등성 쓰기의 경우 원래의 멱등성 키와 변경하지 않은 요청을 재사용하세요.
+
+**관련 API 작업:** 모든 공개 API 작업.
+
+<a id="not-found" className="block scroll-mt-32">
+  <span className="sr-only">not_found error</span>
+</a>
+
+### `not_found`
+
+**HTTP 상태:** `404`<br />
+**재시도 가능:** 아니요<br />
+**문제 유형:** `https://docs.swipelux.com/errors/not-found`
+
+**의미:** 이 API 키와 요청 경로로 요청한 리소스를 찾을 수 없습니다.
+
+**발생 시점:** 리소스 식별자가 없거나, 다른 환경 또는 상위 리소스에 속하거나, 호출자가 더 이상 접근할 수 없습니다.
+
+**해결 방법:** 식별자, 상위 리소스, API 키 환경을 확인한 다음, 작업을 다시 시도하기 전에 리소스를 읽거나 목록으로 조회하세요.
+
+**재시도 지침:** 변경하지 않은 요청을 재시도하지 마세요. 다른 요청을 보내기 전에 위의 조치를 적용하세요.
+
+<Accordion title="관련 API 작업 (36)">
+
+- [`GET /kyc/redirect/{customerId}/{taskId}/{verificationSessionId}`](/api-reference/tasks/start-kyc-verification-session) (`startKycVerificationSession`, 상태 `404`)
+- [`GET /v3/customers/{customerId}/accounts`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts) (`getV3CustomersByCustomerIdAccounts`, 상태 `404`)
+- [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) (`postV3CustomersByCustomerIdAccounts`, 상태 `404`)
+- [`DELETE /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/delete-v3-customers-by-customer-id-accounts-by-account-id) (`deleteV3CustomersByCustomerIdAccountsByAccountId`, 상태 `404`)
+- [`GET /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts-by-account-id) (`getV3CustomersByCustomerIdAccountsByAccountId`, 상태 `404`)
+- [`PATCH /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/patch-v3-customers-by-customer-id-accounts-by-account-id) (`patchV3CustomersByCustomerIdAccountsByAccountId`, 상태 `404`)
+- [`GET /v3/customers/{customerId}/accounts/{accountId}/fees`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts-by-account-id-fees) (`getV3CustomersByCustomerIdAccountsByAccountIdFees`, 상태 `404`)
+- [`PUT /v3/customers/{customerId}/accounts/{accountId}/fees`](/api-reference/accounts/put-v3-customers-by-customer-id-accounts-by-account-id-fees) (`putV3CustomersByCustomerIdAccountsByAccountIdFees`, 상태 `404`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityId`, 상태 `404`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}/applications`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id-applications) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityIdApplications`, 상태 `404`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}/applications/{applicationId}/history`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id-applications-by-application-id-history) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityIdApplicationsByApplicationIdHistory`, 상태 `404`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}/cancel`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id-cancel) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityIdCancel`, 상태 `404`)
+- [`GET /v3/customers/{customerId}/recipients`](/api-reference/recipients/get-v3-customers-by-customer-id-recipients) (`getV3CustomersByCustomerIdRecipients`, 상태 `404`)
+- [`POST /v3/customers/{customerId}/recipients`](/api-reference/recipients/post-v3-customers-by-customer-id-recipients) (`postV3CustomersByCustomerIdRecipients`, 상태 `404`)
+- [`DELETE /v3/customers/{customerId}/recipients/{recipientId}`](/api-reference/recipients/delete-v3-customers-by-customer-id-recipients-by-recipient-id) (`deleteV3CustomersByCustomerIdRecipientsByRecipientId`, 상태 `404`)
+- [`GET /v3/customers/{customerId}/recipients/{recipientId}`](/api-reference/recipients/get-v3-customers-by-customer-id-recipients-by-recipient-id) (`getV3CustomersByCustomerIdRecipientsByRecipientId`, 상태 `404`)
+- [`PATCH /v3/customers/{customerId}/recipients/{recipientId}`](/api-reference/recipients/patch-v3-customers-by-customer-id-recipients-by-recipient-id) (`patchV3CustomersByCustomerIdRecipientsByRecipientId`, 상태 `404`)
+- [`GET /v3/customers/{customerId}/recipients/{recipientId}/destinations`](/api-reference/recipients/get-v3-customers-by-customer-id-recipients-by-recipient-id-destinations) (`getV3CustomersByCustomerIdRecipientsByRecipientIdDestinations`, 상태 `404`)
+- [`POST /v3/customers/{customerId}/recipients/{recipientId}/destinations`](/api-reference/recipients/post-v3-customers-by-customer-id-recipients-by-recipient-id-destinations) (`postV3CustomersByCustomerIdRecipientsByRecipientIdDestinations`, 상태 `404`)
+- [`DELETE /v3/customers/{customerId}/recipients/{recipientId}/destinations/{destinationId}`](/api-reference/recipients/delete-v3-customers-by-customer-id-recipients-by-recipient-id-destinations-by-destination-id) (`deleteV3CustomersByCustomerIdRecipientsByRecipientIdDestinationsByDestinationId`, 상태 `404`)
+- [`GET /v3/customers/{customerId}/recipients/{recipientId}/destinations/{destinationId}`](/api-reference/recipients/get-v3-customers-by-customer-id-recipients-by-recipient-id-destinations-by-destination-id) (`getV3CustomersByCustomerIdRecipientsByRecipientIdDestinationsByDestinationId`, 상태 `404`)
+- [`GET /v3/customers/{customerId}/rules`](/api-reference/rules/get-v3-customers-by-customer-id-rules) (`getV3CustomersByCustomerIdRules`, 상태 `404`)
+- [`POST /v3/customers/{customerId}/rules`](/api-reference/rules/post-v3-customers-by-customer-id-rules) (`postV3CustomersByCustomerIdRules`, 상태 `404`)
+- [`DELETE /v3/customers/{customerId}/rules/{ruleId}`](/api-reference/rules/delete-v3-customers-by-customer-id-rules-by-rule-id) (`deleteV3CustomersByCustomerIdRulesByRuleId`, 상태 `404`)
+- [`GET /v3/customers/{customerId}/rules/{ruleId}`](/api-reference/rules/get-v3-customers-by-customer-id-rules-by-rule-id) (`getV3CustomersByCustomerIdRulesByRuleId`, 상태 `404`)
+- [`PATCH /v3/customers/{customerId}/rules/{ruleId}`](/api-reference/rules/patch-v3-customers-by-customer-id-rules-by-rule-id) (`patchV3CustomersByCustomerIdRulesByRuleId`, 상태 `404`)
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, 상태 `404`)
+- [`GET /v3/quotes/{quoteId}`](/api-reference/money-movement/get-v3-quotes-by-quote-id) (`getV3QuotesByQuoteId`, 상태 `404`)
+- [`POST /v3/sandbox/accounts/{accountId}/topup`](/api-reference/sandbox/post-v3-sandbox-accounts-by-account-id-topup) (`postV3SandboxAccountsByAccountIdTopup`, 상태 `404`)
+- [`POST /v3/sandbox/customers/{customerId}/capabilities/{capabilityId}/status`](/api-reference/sandbox/post-v3-sandbox-customers-by-customer-id-capabilities-by-capability-id-status) (`postV3SandboxCustomersByCustomerIdCapabilitiesByCapabilityIdStatus`, 상태 `404`)
+- [`POST /v3/sandbox/customers/{customerId}/verification`](/api-reference/sandbox/post-v3-sandbox-customers-by-customer-id-verification) (`postV3SandboxCustomersByCustomerIdVerification`, 상태 `404`)
+- [`POST /v3/sandbox/tasks`](/api-reference/sandbox/post-v3-sandbox-tasks) (`postV3SandboxTasks`, 상태 `404`)
+- [`POST /v3/sandbox/transfers/{transferId}/state`](/api-reference/sandbox/post-v3-sandbox-transfers-by-transfer-id-state) (`postV3SandboxTransfersByTransferIdState`, 상태 `404`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, 상태 `404`)
+- [`DELETE /v3/webhooks/{webhookId}`](/api-reference/webhooks/delete-v3-webhooks-by-webhook-id) (`deleteV3WebhooksByWebhookId`, 상태 `404`)
+- [`PATCH /v3/webhooks/{webhookId}`](/api-reference/webhooks/patch-v3-webhooks-by-webhook-id) (`patchV3WebhooksByWebhookId`, 상태 `404`)
+
+</Accordion>
+
+<a id="request-failed" className="block scroll-mt-32">
+  <span className="sr-only">request_failed error</span>
+</a>
+
+### `request_failed`
+
+**HTTP 상태:** `502`, `503`<br />
+**재시도 가능:** 상황에 따라 다름<br />
+**문제 유형:** `https://docs.swipelux.com/errors/request-failed`
+
+**의미:** 작업을 완료하는 데 필요한 서비스가 요청을 성공적으로 처리하지 못했습니다.
+
+**발생 시점:** 고객 내보내기, 웹훅 관리 또는 샌드박스 검증이 외부 서비스 장애 또는 사용할 수 없는 구성에 도달합니다.
+
+**해결 방법:** `retryable`을 확인하세요. 값이 `true`이면 나중에 재시도하고, 그렇지 않으면 `correlationId`를 보관하고 요청 전제 조건을 확인한 후 장애가 지속되면 지원팀에 문의하세요.
+
+**재시도 지침:** 이 응답의 `retryable`을 확인하세요. 값이 `true`일 때만 나중에 재시도하세요. 멱등성 쓰기의 경우 원래의 멱등성 키와 변경하지 않은 요청을 재사용하세요.
+
+<Accordion title="관련 API 작업 (9)">
+
+- [`POST /v3/customers/{customerId}/export`](/api-reference/customers/post-v3-customers-by-customer-id-export) (`postV3CustomersByCustomerIdExport`, 상태 `502`)
+- [`POST /v3/customers/{customerId}/export`](/api-reference/customers/post-v3-customers-by-customer-id-export) (`postV3CustomersByCustomerIdExport`, 상태 `503`)
+- [`POST /v3/sandbox/customers/{customerId}/verification`](/api-reference/sandbox/post-v3-sandbox-customers-by-customer-id-verification) (`postV3SandboxCustomersByCustomerIdVerification`, 상태 `502`)
+- [`POST /v3/sandbox/customers/{customerId}/verification`](/api-reference/sandbox/post-v3-sandbox-customers-by-customer-id-verification) (`postV3SandboxCustomersByCustomerIdVerification`, 상태 `503`)
+- [`GET /v3/webhooks`](/api-reference/webhooks/get-v3-webhooks) (`getV3Webhooks`, 상태 `502`)
+- [`POST /v3/webhooks`](/api-reference/webhooks/post-v3-webhooks) (`postV3Webhooks`, 상태 `502`)
+- [`DELETE /v3/webhooks/{webhookId}`](/api-reference/webhooks/delete-v3-webhooks-by-webhook-id) (`deleteV3WebhooksByWebhookId`, 상태 `502`)
+- [`PATCH /v3/webhooks/{webhookId}`](/api-reference/webhooks/patch-v3-webhooks-by-webhook-id) (`patchV3WebhooksByWebhookId`, 상태 `502`)
+- [`GET /v3/webhooks/portal`](/api-reference/webhooks/get-v3-webhooks-portal) (`getV3WebhooksPortal`, 상태 `502`)
+
+</Accordion>
+
+## 다음 단계
+
+위의 작업 링크를 사용하여 처리 중인 요청 및 응답 스키마를 정확히 확인한 다음, [샌드박스 테스트](/ko/integration/sandbox)에서 실패 경로를 직접 실행해 보세요.
