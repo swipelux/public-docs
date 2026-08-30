@@ -362,7 +362,36 @@ test("capability onboarding follows discovery, request, requirements, and readin
   assert.match(text, /OPEN_TASK_IDS|`openTaskIds`/);
   assert.match(text, /APPLICATION_IDS|`applications\[\]\.id`/);
   assert.match(text, /verificationSessions[\s\S]{0,80}tosSessions/);
-  assert.match(text, /session `id`[\s\S]{0,80}(?:current )?`url`/i);
+  assert.match(text, /Store each session `id`[\s\S]{0,120}`action\.kind`/i);
+  assert.match(text, /Store `action\.url`[\s\S]{0,80}read the task again/i);
+  assert.match(text, /Task-list responses do not include these action links/i);
+  assert.match(text, /"kind": "available"/);
+  assert.match(text, /"kind": "unavailable"/);
+  assert.doesNotMatch(text, /completed[^.]*publish[^.]*unavailable/i);
+
+  const hostedSection = text.match(
+    /### Hosted actions\n([\s\S]*?)\n### Upload documents/,
+  )?.[1];
+  assert.ok(hostedSection, "Missing Hosted actions section");
+  const hostedExample = JSON.parse(
+    hostedSection.match(/```json\n([\s\S]*?)```/)?.[1] ?? "null",
+  );
+  assert.ok(hostedExample?.data, "Hosted-session example must include the data envelope");
+  const availableSession = hostedExample.data.verificationSessions?.[0];
+  const unavailableSession = hostedExample.data.tosSessions?.[0];
+  for (const session of [availableSession, unavailableSession]) {
+    assert.match(session?.id ?? "", /^vfy_[0-9A-Za-z]+$/);
+    for (const field of ["key", "type", "status", "action"]) {
+      assert.ok(Object.hasOwn(session ?? {}, field), `Session example must define ${field}`);
+    }
+  }
+  assert.equal(availableSession.action.kind, "available");
+  assert.equal(availableSession.url, availableSession.action.url);
+  assert.equal(availableSession.expiresAt, availableSession.action.expiresAt);
+  assert.equal(new URL(availableSession.action.url).origin, "https://platform.swipelux.com");
+  assert.deepEqual(unavailableSession.action, { kind: "unavailable" });
+  assert.equal(Object.hasOwn(unavailableSession, "url"), false);
+  assert.equal(Object.hasOwn(unavailableSession, "expiresAt"), false);
 
   const uploadIndex = text.indexOf("### Upload documents");
   const submitIndex = text.indexOf("### API answers");
@@ -473,14 +502,19 @@ test("selection and hosted-session guidance names only response fields defined b
     assert.ok(variants.length >= 1);
     for (const rawVariant of variants) {
       const variant = resolveReference(rawVariant);
-      assert.ok(variant.properties.id);
-      assert.ok(variant.properties.status);
+      for (const field of ["id", "key", "type", "status", "action"]) {
+        assert.ok(variant.properties[field], `${collection} must define ${field}`);
+      }
+      const action = resolveReference(variant.properties.action);
+      assert.ok(action.properties.kind, `${collection} action must define kind`);
     }
     assert.ok(
       variants.some((rawVariant) =>
-        Boolean(resolveReference(rawVariant).properties.url),
+        Boolean(
+          resolveReference(resolveReference(rawVariant).properties.action).properties.url,
+        ),
       ),
-      `${collection} must expose a URL on an actionable variant`,
+      `${collection} action must expose a URL on an available variant`,
     );
   }
 });
