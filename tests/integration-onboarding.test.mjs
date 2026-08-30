@@ -257,6 +257,8 @@ test("every onboarding operation link, security scheme, and request remains cont
       type: "apiKey",
       in: "header",
       name: "X-API-Key",
+      description:
+        "Your Swipelux API key. Obtain this from the Swipelux Dashboard.",
     },
   );
 

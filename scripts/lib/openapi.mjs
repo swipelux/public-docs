@@ -1,19 +1,19 @@
 import { createHash } from "node:crypto";
 
 export const SOURCE_SHA256 =
-  "8f72086fe1a8b38ff2dd454efa78a9e9f0cd61833af4c9708375a20622d23e3c";
-export const SOURCE_BASENAME = "openapi-v3-c1814dd.json";
+  "cfa5e95a571292f80315ef20a16476e8943164a4dbd0d688e8ed5cb3d93c5b56";
+export const SOURCE_BASENAME = "openapi-v3-23f456a.json";
 export const SOURCE_REPOSITORY = "swipelux/wallet-infrastructure";
-export const SOURCE_COMMIT = "c1814ddac682803b012c214048731963072a07dd";
+export const SOURCE_COMMIT = "23f456a8ff3d18362601292c3f0ca3aa1649af32";
 export const SOURCE_ROUTE = "/openapi-v3.json";
 export const EXPECTED_OUTPUT_SHA256 =
-  "3f9adac2f1b9cdc204464287beb82a9a1e9f3a6b4273ff2b3ec512d791dad12c";
+  "18c0ebdfa59f0fa0615c7c9c2cd56e8ec87f6c8b9f08a4ea917343e58e0a70d7";
 export const EXPECTED_COVERAGE_SHA256 =
-  "f47c27d8dd085156dc3c208a57672eec4ac2afb0d80c044b6dc12bd688741181";
+  "da4e09d8894fb65eebdc4f7c4461046b24346e6870c0562c0774951504fcc78c";
 export const EXPECTED_TRANSFORMATIONS_SHA256 =
-  "339e00ef2e85e2c2e992bc02c0c6d6ef24a47607cb6773b286cac4246015e415";
+  "d5ec209441fb4b1bdf6da1ea12b9ba5b4368e701d91f5890b85b195567df0161";
 // Public API label preparation timestamp, normalized to UTC whole seconds.
-export const APPROVED_GENERATED_AT = "2026-08-13T23:35:55.000Z";
+export const APPROVED_GENERATED_AT = "2026-08-30T14:40:46.000Z";
 export const HTTP_METHODS = new Set([
   "get",
   "post",
@@ -29,7 +29,7 @@ export const PREPARATION_VERSION = "1.3.0";
 export const EXPECTED_OPENAPI_COUNTS = Object.freeze({
   paths: 50,
   operations: 75,
-  schemas: 90,
+  schemas: 92,
   webhooks: 12,
 });
 const CUSTOMER_WEBHOOKS = ["customer.created", "customer.updated"];
