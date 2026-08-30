@@ -9,10 +9,16 @@ import ignore from "ignore";
 export const SOURCE_COMMIT =
   "b4c9b5b7101ec03e01424259f58a5c8763ea489b";
 
-export const LOCALIZABLE_NAVIGATION_PAGES = Object.freeze([
+export const ENGLISH_ONLY_NAVIGATION_PAGES = Object.freeze([
+  "integration/errors",
+  "knowledge-base/compliance/settlement-slas",
+]);
+
+export const CANONICAL_NAVIGATION_PAGES = Object.freeze([
   "integration/overview",
   "integration/quickstart",
   "integration/authentication",
+  "integration/errors",
   "integration/sandbox",
   "integration/onboarding/customers",
   "integration/onboarding/capabilities-and-requirements",
@@ -35,6 +41,7 @@ export const LOCALIZABLE_NAVIGATION_PAGES = Object.freeze([
   "knowledge-base/compliance/transaction-limits",
   "knowledge-base/compliance/custody-and-wallet-controls",
   "knowledge-base/compliance/payment-methods",
+  "knowledge-base/compliance/settlement-slas",
   "knowledge-base/compliance/travel-rule",
   "knowledge-base/compliance/screening-and-monitoring",
   "knowledge-base/compliance/governance-retention-and-privacy",
@@ -50,15 +57,11 @@ export const LOCALIZABLE_NAVIGATION_PAGES = Object.freeze([
   "knowledge-base/individual-onboarding/api-workflow",
 ]);
 
-export const ENGLISH_ONLY_NAVIGATION_PAGES = Object.freeze([
-  "integration/errors",
-]);
-
-export const CANONICAL_NAVIGATION_PAGES = Object.freeze([
-  ...LOCALIZABLE_NAVIGATION_PAGES.slice(0, 3),
-  ...ENGLISH_ONLY_NAVIGATION_PAGES,
-  ...LOCALIZABLE_NAVIGATION_PAGES.slice(3),
-]);
+export const LOCALIZABLE_NAVIGATION_PAGES = Object.freeze(
+  CANONICAL_NAVIGATION_PAGES.filter(
+    (page) => !ENGLISH_ONLY_NAVIGATION_PAGES.includes(page),
+  ),
+);
 
 export const VERSIONING_PAGE_ROUTES = Object.freeze([
   "api-reference/versioning/migrate-to-v3",
