@@ -50,6 +50,7 @@ Retry idempotent writes with the original `Idempotency-Key` and the unchanged me
 | [`amount_side_ambiguous`](#amount-side-ambiguous) | `400` | No | The quote request does not unambiguously identify which side of the conversion has the fixed amount. |
 | [`bank_not_supported_for_customer`](#bank-not-supported-for-customer) | `422` | Not returned | The selected institution is not available for this customer and capability request. |
 | [`capability_already_exists`](#capability-already-exists) | `409` | No | The customer already has the requested capability. |
+| [`capability_direction_unsupported`](#capability-direction-unsupported) | `422` | No | The selected capability does not support the money-movement direction required by the quote or transfer. |
 | [`capability_ineligible`](#capability-ineligible) | `422` | No | The customer is not eligible for the requested capability in its current profile and configuration. |
 | [`capability_institutions_required`](#capability-institutions-required) | `422` | Not returned | The capability request requires one or more institution selections. |
 | [`capability_institutions_unsupported`](#capability-institutions-unsupported) | `422` | No | One or more selected institutions are not supported for the requested capability. |
@@ -59,6 +60,7 @@ Retry idempotent writes with the original `Idempotency-Key` and the unchanged me
 | [`capability_not_ready`](#capability-not-ready) | `409` | Contextual | A capability required by the requested account or money movement is not ready. |
 | [`capability_not_supported_for_customer_type`](#capability-not-supported-for-customer-type) | `422` | Not returned | The capability is not supported for this customer type. |
 | [`capability_provider_resolution_failed`](#capability-provider-resolution-failed) | `422` | Not returned | Swipelux could not resolve a complete processing configuration for the capability request. |
+| [`capability_snapshot_corrupted`](#capability-snapshot-corrupted) | `500` | No | Swipelux could not evaluate the customer's capability state. |
 | [`capability_terminally_rejected`](#capability-terminally-rejected) | `409` | No | The capability has already been rejected in a terminal state. |
 | [`capability_variant_unavailable`](#capability-variant-unavailable) | `409`, `422` | Contextual | The requested capability variant is unavailable for the selected customer, intent, or institution combination. |
 | [`conflict`](#conflict) | `409` | No | The requested operation conflicts with the resource's current state. |
@@ -72,6 +74,9 @@ Retry idempotent writes with the original `Idempotency-Key` and the unchanged me
 | [`forbidden`](#forbidden) | `403` | No | The API key is valid but is not permitted to perform this operation. |
 | [`idempotency_conflict`](#idempotency-conflict) | `409` | No | The idempotency key was already used for a different request. |
 | [`idempotency_request_in_progress`](#idempotency-request-in-progress) | `409` | Yes | A matching request with the same idempotency key is still being processed. |
+| [`initial_application_identity_conflict`](#initial-application-identity-conflict) | `409` | No | The initial application identity changed before it was persisted. |
+| [`initial_application_owner_unavailable`](#initial-application-owner-unavailable) | `503` | No | No valid owner route is available for the initial application. |
+| [`initial_application_scope_unavailable`](#initial-application-scope-unavailable) | `503` | Contextual | Swipelux could not resolve the scope required for the initial application. |
 | [`insufficient_balance`](#insufficient-balance) | `409` | No | The source account does not have enough available balance for the transfer. |
 | [`internal_error`](#internal-error) | `500` | Yes | Swipelux encountered an unexpected server error while processing the operation. |
 | [`invalid_capability`](#invalid-capability) | `400`, `422` | Not returned | The capability reference or requested capability value is invalid for this operation. |
@@ -85,7 +90,9 @@ Retry idempotent writes with the original `Idempotency-Key` and the unchanged me
 | [`kyc_session_terminal`](#kyc-session-terminal) | `410` | No | The verification session is no longer actionable. |
 | [`merchant_kyb_not_approved`](#merchant-kyb-not-approved) | `422` | Not returned | The integrating business has not been approved for the requested customer creation flow. |
 | [`not_found`](#not-found) | `404` | No | The requested resource could not be found for this API key and request path. |
+| [`ops_rail_handoff_conflict`](#ops-rail-handoff-conflict) | `409` | No | The task submission is blocked by conflicting bank-rail setup. |
 | [`payout_target_relationship_invalid`](#payout-target-relationship-invalid) | `400` | Not returned | The selected payout target does not have a valid relationship to the customer or recipient in the quote. |
+| [`profile_obligation_crossheal_failed`](#profile-obligation-crossheal-failed) | `500` | No | Swipelux could not update the customer's profile requirements. |
 | [`provider_conflict`](#provider-conflict) | `400`, `422` | No | The requested capability or verification action conflicts with the current processing configuration. |
 | [`quote_already_executed`](#quote-already-executed) | `409` | No | The quote was already executed and has an existing transfer. |
 | [`quote_destination_missing`](#quote-destination-missing) | `409`, `500` | Contextual | The quote or transfer does not contain the destination required by the operation. |
@@ -500,9 +507,9 @@ Retry idempotent writes with the original `Idempotency-Key` and the unchanged me
 
 **Meaning:** The request tries to clear a profile field that an open task still requires.
 
-**When it occurs:** A customer or related-party update removes a value that the task in `taskId` has pinned as required. Retrying the same request will keep failing until the task is resolved.
+**When it occurs:** A customer or related-party update removes a value that the task in `taskId` has pinned as required.
 
-**What to do:** Read `taskId` and the JSON pointers in `fields`, then either restore the required values, complete the task through its available submission or verification flow, or cancel the task before sending the update again.
+**What to do:** Read `taskId` and the profile pointers or requirement keys in `fields`, then restore the required values or complete or cancel the task before sending the update again.
 
 **Retry guidance:** Do not retry the unchanged request. Apply the action above before sending another request.
 
@@ -513,8 +520,8 @@ Retry idempotent writes with the original `Idempotency-Key` and the unchanged me
 
 **Additional response fields:**
 
-- `taskId`: Identifier of the open task that still requires the listed fields.
-- `fields`: Profile pointers or requirement keys the task requires and that the request tried to clear.
+- `fields`: Profile pointers or requirement keys blocked by the open task.
+- `taskId`: Current task identifier.
 
 <a id="merchant-kyb-not-approved" className="block scroll-mt-32">
   <span className="sr-only">merchant_kyb_not_approved error</span>
@@ -537,6 +544,29 @@ Retry idempotent writes with the original `Idempotency-Key` and the unchanged me
 **Relevant API operations:**
 
 - [`POST /v3/customers`](/api-reference/customers/post-v3-customers) (`postV3Customers`, status `422`)
+
+<a id="profile-obligation-crossheal-failed" className="block scroll-mt-32">
+  <span className="sr-only">profile_obligation_crossheal_failed error</span>
+</a>
+
+### `profile_obligation_crossheal_failed`
+
+**HTTP status:** `500`<br />
+**Retryable:** No<br />
+**Problem type:** `https://docs.swipelux.com/errors/profile-obligation-crossheal-failed`
+
+**Meaning:** Swipelux could not update the customer's profile requirements.
+
+**When it occurs:** A customer or related-party update cannot reconcile the profile change with its current task requirements.
+
+**What to do:** Retain `correlationId` and contact Swipelux support. Do not repeatedly retry the unchanged update.
+
+**Retry guidance:** Do not retry the unchanged request. Apply the action above before sending another request.
+
+**Relevant API operations:**
+
+- [`PATCH /v3/customers/{customerId}`](/api-reference/customers/patch-v3-customers-by-customer-id) (`patchV3CustomersByCustomerId`, status `500`)
+- [`PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/patch-v3-customers-by-customer-id-related-parties-by-related-party-id) (`patchV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, status `500`)
 
 <a id="related-party-in-review" className="block scroll-mt-32">
   <span className="sr-only">related_party_in_review error</span>
@@ -844,6 +874,40 @@ Retry idempotent writes with the original `Idempotency-Key` and the unchanged me
 
 - [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, status `422`)
 
+<a id="capability-snapshot-corrupted" className="block scroll-mt-32">
+  <span className="sr-only">capability_snapshot_corrupted error</span>
+</a>
+
+### `capability_snapshot_corrupted`
+
+**HTTP status:** `500`<br />
+**Retryable:** No<br />
+**Problem type:** `https://docs.swipelux.com/errors/capability-snapshot-corrupted`
+
+**Meaning:** Swipelux could not evaluate the customer's capability state.
+
+**When it occurs:** A capability-related operation encounters an invalid stored capability snapshot.
+
+**What to do:** Retain `correlationId` and contact Swipelux support. Do not repeatedly retry the unchanged request.
+
+**Retry guidance:** Do not retry the unchanged request. Apply the action above before sending another request.
+
+<Accordion title="Relevant API operations (11)">
+
+- [`PATCH /v3/customers/{customerId}`](/api-reference/customers/patch-v3-customers-by-customer-id) (`patchV3CustomersByCustomerId`, status `500`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, status `500`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}/cancel`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id-cancel) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityIdCancel`, status `500`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}/tasks-preview`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id-tasks-preview) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityIdTasks-preview`, status `500`)
+- [`POST /v3/customers/{customerId}/related-parties`](/api-reference/customers/post-v3-customers-by-customer-id-related-parties) (`postV3CustomersByCustomerIdRelated-parties`, status `500`)
+- [`DELETE /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/delete-v3-customers-by-customer-id-related-parties-by-related-party-id) (`deleteV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, status `500`)
+- [`PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/patch-v3-customers-by-customer-id-related-parties-by-related-party-id) (`patchV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, status `500`)
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, status `500`)
+- [`POST /v3/sandbox/customers/{customerId}/capabilities/{capabilityId}/status`](/api-reference/sandbox/post-v3-sandbox-customers-by-customer-id-capabilities-by-capability-id-status) (`postV3SandboxCustomersByCustomerIdCapabilitiesByCapabilityIdStatus`, status `500`)
+- [`POST /v3/sandbox/tasks`](/api-reference/sandbox/post-v3-sandbox-tasks) (`postV3SandboxTasks`, status `500`)
+- [`POST /v3/sandbox/tasks/{taskId}/review`](/api-reference/sandbox/post-v3-sandbox-tasks-by-task-id-review) (`postV3SandboxTasksByTaskIdReview`, status `500`)
+
+</Accordion>
+
 <a id="capability-terminally-rejected" className="block scroll-mt-32">
   <span className="sr-only">capability_terminally_rejected error</span>
 </a>
@@ -889,6 +953,74 @@ Retry idempotent writes with the original `Idempotency-Key` and the unchanged me
 - [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, status `409`)
 - [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, status `422`)
 - [`GET /v3/customers/{customerId}/capabilities/{capabilityId}/tasks-preview`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id-tasks-preview) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityIdTasks-preview`, status `422`)
+
+<a id="initial-application-identity-conflict" className="block scroll-mt-32">
+  <span className="sr-only">initial_application_identity_conflict error</span>
+</a>
+
+### `initial_application_identity_conflict`
+
+**HTTP status:** `409`<br />
+**Retryable:** No<br />
+**Problem type:** `https://docs.swipelux.com/errors/initial-application-identity-conflict`
+
+**Meaning:** The initial application identity changed before it was persisted.
+
+**When it occurs:** Customer creation or a capability request finds conflicting identity for the initial application it is creating.
+
+**What to do:** Retain `correlationId` and contact Swipelux support before retrying the capability request.
+
+**Retry guidance:** Do not retry the unchanged request. Apply the action above before sending another request.
+
+**Relevant API operations:**
+
+- [`POST /v3/customers`](/api-reference/customers/post-v3-customers) (`postV3Customers`, status `409`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, status `409`)
+
+<a id="initial-application-owner-unavailable" className="block scroll-mt-32">
+  <span className="sr-only">initial_application_owner_unavailable error</span>
+</a>
+
+### `initial_application_owner_unavailable`
+
+**HTTP status:** `503`<br />
+**Retryable:** No<br />
+**Problem type:** `https://docs.swipelux.com/errors/initial-application-owner-unavailable`
+
+**Meaning:** No valid owner route is available for the initial application.
+
+**When it occurs:** A capability request cannot assign the initial application to a supported institution option.
+
+**What to do:** Choose a supported institution returned by the capability catalog, or retain `correlationId` and contact Swipelux support when none is available.
+
+**Retry guidance:** Do not retry the unchanged request. Apply the action above before sending another request.
+
+**Relevant API operations:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, status `503`)
+
+<a id="initial-application-scope-unavailable" className="block scroll-mt-32">
+  <span className="sr-only">initial_application_scope_unavailable error</span>
+</a>
+
+### `initial_application_scope_unavailable`
+
+**HTTP status:** `503`<br />
+**Retryable:** Contextual<br />
+**Problem type:** `https://docs.swipelux.com/errors/initial-application-scope-unavailable`
+
+**Meaning:** Swipelux could not resolve the scope required for the initial application.
+
+**When it occurs:** Customer creation or a capability request cannot resolve the API-key environment and compliance context needed to create the initial application.
+
+**What to do:** Verify the API-key environment and retain `correlationId`. Follow `retryable` when it is present; otherwise contact Swipelux support before retrying.
+
+**Retry guidance:** Read `retryable` on this response. Retry later only when it is `true`. For an idempotent write, reuse the original idempotency key and unchanged request.
+
+**Relevant API operations:**
+
+- [`POST /v3/customers`](/api-reference/customers/post-v3-customers) (`postV3Customers`, status `503`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, status `503`)
 
 <a id="invalid-capability" className="block scroll-mt-32">
   <span className="sr-only">invalid_capability error</span>
@@ -1002,6 +1134,8 @@ Retry idempotent writes with the original `Idempotency-Key` and the unchanged me
 **Relevant API operations:**
 
 - [`GET /kyc/redirect/{customerId}/{taskId}/{verificationSessionId}`](/api-reference/tasks/start-kyc-verification-session) (`startKycVerificationSession`, status `409`)
+- [`PATCH /v3/customers/{customerId}`](/api-reference/customers/patch-v3-customers-by-customer-id) (`patchV3CustomersByCustomerId`, status `409`)
+- [`PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/patch-v3-customers-by-customer-id-related-parties-by-related-party-id) (`patchV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, status `409`)
 - [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, status `409`)
 
 <a id="kyc-provider-unavailable" className="block scroll-mt-32">
@@ -1047,6 +1181,28 @@ Retry idempotent writes with the original `Idempotency-Key` and the unchanged me
 **Relevant API operations:**
 
 - [`GET /kyc/redirect/{customerId}/{taskId}/{verificationSessionId}`](/api-reference/tasks/start-kyc-verification-session) (`startKycVerificationSession`, status `410`)
+
+<a id="ops-rail-handoff-conflict" className="block scroll-mt-32">
+  <span className="sr-only">ops_rail_handoff_conflict error</span>
+</a>
+
+### `ops_rail_handoff_conflict`
+
+**HTTP status:** `409`<br />
+**Retryable:** No<br />
+**Problem type:** `https://docs.swipelux.com/errors/ops-rail-handoff-conflict`
+
+**Meaning:** The task submission is blocked by conflicting bank-rail setup.
+
+**When it occurs:** A document task submission cannot reconcile the customer's current bank-rail state.
+
+**What to do:** Keep the uploaded document identifiers, retain `correlationId`, and contact Swipelux support before retrying the same submission. Do not upload replacement copies solely because of this conflict.
+
+**Retry guidance:** Do not retry the unchanged request. Apply the action above before sending another request.
+
+**Relevant API operations:**
+
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, status `409`)
 
 <a id="provider-conflict" className="block scroll-mt-32">
   <span className="sr-only">provider_conflict error</span>
@@ -1287,7 +1443,9 @@ Retry idempotent writes with the original `Idempotency-Key` and the unchanged me
 
 **Relevant API operations:**
 
+- [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) (`postV3CustomersByCustomerIdAccounts`, status `422`)
 - [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, status `422`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, status `422`)
 
 <a id="account-not-ready" className="block scroll-mt-32">
   <span className="sr-only">account_not_ready error</span>
@@ -1453,6 +1611,7 @@ Retry idempotent writes with the original `Idempotency-Key` and the unchanged me
 
 **Relevant API operations:**
 
+- [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) (`postV3CustomersByCustomerIdAccounts`, status `503`)
 - [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, status `503`)
 
 ## Recipients and destinations
@@ -1662,6 +1821,29 @@ Retry idempotent writes with the original `Idempotency-Key` and the unchanged me
 **Relevant API operations:**
 
 - [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, status `400`)
+
+<a id="capability-direction-unsupported" className="block scroll-mt-32">
+  <span className="sr-only">capability_direction_unsupported error</span>
+</a>
+
+### `capability_direction_unsupported`
+
+**HTTP status:** `422`<br />
+**Retryable:** No<br />
+**Problem type:** `https://docs.swipelux.com/errors/capability-direction-unsupported`
+
+**Meaning:** The selected capability does not support the money-movement direction required by the quote or transfer.
+
+**When it occurs:** Quote creation infers a direction the selected capability does not advertise, or transfer creation finds that the quote's pinned capability no longer supports its stored direction.
+
+**What to do:** Choose a capability that supports the intended direction and request a new quote before creating the transfer.
+
+**Retry guidance:** Do not retry the unchanged request. Apply the action above before sending another request.
+
+**Relevant API operations:**
+
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, status `422`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, status `422`)
 
 <a id="insufficient-balance" className="block scroll-mt-32">
   <span className="sr-only">insufficient_balance error</span>

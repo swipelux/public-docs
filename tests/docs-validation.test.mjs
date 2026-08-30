@@ -1424,7 +1424,7 @@ test("rejects omitting any approved non-Terms source page", () => {
 test("validates the committed redirect inventory", () => {
   const { inventory, marker } = committedRedirectState();
 
-  assert.equal(inventory.length, 152);
+  assert.equal(inventory.length, 160);
   assert.ok(["current", "final"].includes(marker.phase));
   assert.equal(assertRedirectRepositoryState(marker, inventory), marker.phase);
 });
