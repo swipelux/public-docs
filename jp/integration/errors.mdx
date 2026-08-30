@@ -1,0 +1,2631 @@
+---
+title: "エラーと再試行"
+description: "Swipelux API のすべての公開問題コードを処理し、再試行のタイミングを判断して、バリデーション、状態、冪等性、プラットフォームの失敗を解決します。"
+---
+
+Swipelux API のエラーは `application/problem+json` メディアタイプを使用します。安定した `code` 値に基づいてアプリケーションの動作を分岐させ、以下の操作とガイダンスを使用して失敗を解決してください。
+
+| フィールド | 使い方 |
+| --- | --- |
+| `type` | 問題コードの安定したドキュメント URI。 |
+| `title` | 人が読める短い問題タイトル。 |
+| `status` | このレスポンスに関連付けられた HTTP ステータス。 |
+| `code` | アプリケーションロジック用の安定した機械可読値。 |
+| `detail` | この発生に関する文脈的で人が読めるテキスト。解析や比較には使用しないでください。 |
+| `correlationId` | ログに保存し、サポートへの問い合わせ時に含めるリクエスト識別子。 |
+| `retryable` | `true` の場合、同じリクエストが後で成功する可能性があります。`false` の場合、再試行する前にリクエストを変更するか、前提条件を満たしてください。 |
+| `errors[]` | フィールドレベルのバリデーション詳細。利用可能な場合は JSON Pointer を含みます。 |
+
+冪等な書き込みは、元の `Idempotency-Key` と変更していないメソッド、パス、ボディで再試行してください。そのキーを別の意図した操作に再利用しないでください。
+
+```json
+{
+  "type": "https://docs.swipelux.com/errors/validation-error",
+  "title": "Validation Error",
+  "status": 400,
+  "code": "validation_error",
+  "detail": "The request contains invalid fields.",
+  "correlationId": "01JERRORVALIDATION",
+  "retryable": false,
+  "errors": [
+    {
+      "pointer": "/externalId",
+      "code": "invalid_format",
+      "message": "Use a valid external identifier."
+    }
+  ]
+}
+```
+
+## エラーインデックス
+
+| エラーコード | ステータス | 再試行可能 | 意味 |
+| --- | --- | --- | --- |
+| [`absence_conflicts_with_profile`](#absence-conflicts-with-profile) | `409` | いいえ | 値が存在しないと申告するタスク回答が、顧客プロフィールにすでに存在するデータと競合しています。 |
+| [`account_has_active_transfers`](#account-has-active-transfers) | `409` | はい | 1 つ以上の送金がまだアクティブな間は、口座をアーカイブできません。 |
+| [`account_method_not_supported`](#account-method-not-supported) | `422` | いいえ | 選択された口座は、見積もりでリクエストされた支払い方法をサポートしていません。 |
+| [`account_not_ready`](#account-not-ready) | `409` | 状況による | 口座は存在しますが、現在のステータスでは見積もりまたは送金が許可されていません。 |
+| [`account_unavailable`](#account-unavailable) | `409` | いいえ | 選択された口座は、リクエストされた資金移動には利用できません。 |
+| [`amount_not_deliverable`](#amount-not-deliverable) | `422` | いいえ | リクエストされた金額は、選択された通貨、口座、または方法では届けられません。 |
+| [`amount_side_ambiguous`](#amount-side-ambiguous) | `400` | いいえ | 見積もりリクエストで、変換のどちら側の金額が固定されているかを一意に特定できません。 |
+| [`bank_not_supported_for_customer`](#bank-not-supported-for-customer) | `422` | 返されません | 選択された機関は、この顧客とケイパビリティリクエストでは利用できません。 |
+| [`capability_already_exists`](#capability-already-exists) | `409` | いいえ | 顧客はリクエストされたケイパビリティをすでに持っています。 |
+| [`capability_direction_unsupported`](#capability-direction-unsupported) | `422` | いいえ | 選択されたケイパビリティは、見積もりまたは送金に必要な資金移動の方向をサポートしていません。 |
+| [`capability_ineligible`](#capability-ineligible) | `422` | いいえ | 現在のプロフィールと構成では、顧客はリクエストされたケイパビリティの対象ではありません。 |
+| [`capability_institutions_required`](#capability-institutions-required) | `422` | 返されません | このケイパビリティリクエストには、1 つ以上の機関の選択が必要です。 |
+| [`capability_institutions_unsupported`](#capability-institutions-unsupported) | `422` | いいえ | 選択された機関のうち 1 つ以上が、リクエストされたケイパビリティでサポートされていません。 |
+| [`capability_intent_unsupported`](#capability-intent-unsupported) | `422` | 返されません | リクエストされたケイパビリティのインテントは、このケイパビリティバリアントではサポートされていません。 |
+| [`capability_key_unsupported`](#capability-key-unsupported) | `422` | いいえ | このケイパビリティキーは、この操作ではサポートされていません。 |
+| [`capability_not_cancelable`](#capability-not-cancelable) | `409` | いいえ | 現在のステータスからは、このケイパビリティをキャンセルできません。 |
+| [`capability_not_ready`](#capability-not-ready) | `409` | 状況による | リクエストされた口座または資金移動に必要なケイパビリティが ready ではありません。 |
+| [`capability_not_supported_for_customer_type`](#capability-not-supported-for-customer-type) | `422` | 返されません | このケイパビリティは、この顧客タイプではサポートされていません。 |
+| [`capability_provider_resolution_failed`](#capability-provider-resolution-failed) | `422` | 返されません | Swipelux は、このケイパビリティリクエストに対する完全な処理構成を解決できませんでした。 |
+| [`capability_snapshot_corrupted`](#capability-snapshot-corrupted) | `500` | いいえ | Swipelux は顧客のケイパビリティ状態を評価できませんでした。 |
+| [`capability_terminally_rejected`](#capability-terminally-rejected) | `409` | いいえ | このケイパビリティは、終端状態ですでに拒否されています。 |
+| [`capability_variant_unavailable`](#capability-variant-unavailable) | `409`, `422` | 状況による | リクエストされたケイパビリティバリアントは、選択された顧客、インテント、または機関の組み合わせでは利用できません。 |
+| [`conflict`](#conflict) | `409` | いいえ | リクエストされた操作が、リソースの現在の状態と競合しています。 |
+| [`customer_has_active_resources`](#customer-has-active-resources) | `409` | いいえ | アクティブなリソースが依存している間は、顧客をアーカイブできません。 |
+| [`customer_not_found`](#customer-not-found) | `404` | いいえ | 顧客が現在の API キー環境に存在しないか、アクセスできなくなっています。 |
+| [`destination_not_ready`](#destination-not-ready) | `409` | 状況による | 受取人の送金先は存在しますが、リクエストされた見積もりに対して ready ではありません。 |
+| [`developer_fee_invalid`](#developer-fee-invalid) | `422` | いいえ | 選択された口座または資金移動に対して、開発者手数料の構成が無効です。 |
+| [`document_not_found`](#document-not-found) | `404` | 返されません | リクエストされた顧客ドキュメントが見つかりませんでした。 |
+| [`duplicate_external_id`](#duplicate-external-id) | `409` | いいえ | 指定された `externalId` は、同じスコープ内の別のリソースにすでに割り当てられています。 |
+| [`field_required_by_open_task`](#field-required-by-open-task) | `409` | いいえ | リクエストが、オープンタスクでまだ必要とされているプロフィールフィールドをクリアしようとしています。 |
+| [`forbidden`](#forbidden) | `403` | いいえ | API キーは有効ですが、この操作の実行を許可されていません。 |
+| [`idempotency_conflict`](#idempotency-conflict) | `409` | いいえ | 冪等性キーは、すでに別のリクエストで使用されています。 |
+| [`idempotency_request_in_progress`](#idempotency-request-in-progress) | `409` | はい | 同じ冪等性キーを持つ一致するリクエストがまだ処理中です。 |
+| [`initial_application_identity_conflict`](#initial-application-identity-conflict) | `409` | いいえ | 初期申請の識別情報が、保存される前に変更されました。 |
+| [`initial_application_owner_unavailable`](#initial-application-owner-unavailable) | `503` | いいえ | 初期申請に対して有効なオーナールートがありません。 |
+| [`initial_application_scope_unavailable`](#initial-application-scope-unavailable) | `503` | 状況による | Swipelux は初期申請に必要なスコープを解決できませんでした。 |
+| [`insufficient_balance`](#insufficient-balance) | `409` | いいえ | 送金元の口座に、送金に十分な利用可能残高がありません。 |
+| [`internal_error`](#internal-error) | `500` | はい | 操作の処理中に Swipelux で予期しないサーバーエラーが発生しました。 |
+| [`invalid_capability`](#invalid-capability) | `400`, `422` | 返されません | ケイパビリティ参照またはリクエストされたケイパビリティ値が、この操作では無効です。 |
+| [`invalid_document_reference`](#invalid-document-reference) | `400` | いいえ | タスクの送信に、選択された要件を満たせないドキュメント参照が含まれています。 |
+| [`invalid_field_for_type`](#invalid-field-for-type) | `400`, `422` | 返されません | リクエストに、選択したリソースタイプでは有効でないフィールドが含まれています。 |
+| [`invalid_settlement_target`](#invalid-settlement-target) | `400` | 返されません | リクエストされた決済ターゲットは、この口座では無効です。 |
+| [`kyc_configuration_unavailable`](#kyc-configuration-unavailable) | `503` | いいえ | ケイパビリティに必要な検証構成が利用できません。 |
+| [`kyc_level_configuration_invalid`](#kyc-level-configuration-invalid) | `503` | いいえ | アクティブな検証レベル構成が無効です。 |
+| [`kyc_process_conflict`](#kyc-process-conflict) | `409` | はい | 操作が完了する前に検証プロセスが変更されました。 |
+| [`kyc_provider_unavailable`](#kyc-provider-unavailable) | `502` | はい | 検証サービスが一時的に利用できません。 |
+| [`kyc_session_terminal`](#kyc-session-terminal) | `410` | いいえ | 検証セッションはもう操作できません。 |
+| [`merchant_kyb_not_approved`](#merchant-kyb-not-approved) | `422` | 返されません | インテグレーションを行う事業者が、リクエストされた顧客作成フローについて承認されていません。 |
+| [`not_found`](#not-found) | `404` | いいえ | この API キーとリクエストパスに対して、リクエストされたリソースが見つかりませんでした。 |
+| [`ops_rail_handoff_conflict`](#ops-rail-handoff-conflict) | `409` | いいえ | 競合する銀行レールのセットアップにより、タスクの送信がブロックされています。 |
+| [`payout_target_relationship_invalid`](#payout-target-relationship-invalid) | `400` | 返されません | 選択された支払いターゲットに、見積もり内の顧客または受取人との有効な関係がありません。 |
+| [`profile_obligation_crossheal_failed`](#profile-obligation-crossheal-failed) | `500` | いいえ | Swipelux は顧客のプロフィール要件を更新できませんでした。 |
+| [`provider_conflict`](#provider-conflict) | `400`, `422` | いいえ | リクエストされたケイパビリティまたは検証アクションが、現在の処理構成と競合しています。 |
+| [`quote_already_executed`](#quote-already-executed) | `409` | いいえ | 見積もりはすでに実行されており、既存の送金があります。 |
+| [`quote_destination_missing`](#quote-destination-missing) | `409`, `500` | 状況による | 見積もりまたは送金に、この操作に必要な送金先が含まれていません。 |
+| [`quote_direction_invalid`](#quote-direction-invalid) | `422`, `500` | 状況による | 送金元と送金先が、サポートされている見積もり方向を構成していません。 |
+| [`quote_execution_consumed`](#quote-execution-consumed) | `409` | いいえ | 見積もりの 1 回限りの実行機会は、すでに消費されています。 |
+| [`quote_expired`](#quote-expired) | `409` | いいえ | 見積もりが実行される前に有効期限が切れました。 |
+| [`quote_failed`](#quote-failed) | `500`, `502` | 状況による | Swipelux は、このリクエストに対して使用可能な見積もりを作成できませんでした。 |
+| [`quote_mode_invalid`](#quote-mode-invalid) | `500` | はい | 見積もりを、この操作に必要なモードで解釈できません。 |
+| [`quote_not_found`](#quote-not-found) | `404` | 返されません | この API キーに対して見積もりが見つかりませんでした。 |
+| [`rail_not_ready`](#rail-not-ready) | `409` | いいえ | 選択された支払いレールは、この顧客に対して ready ではありません。 |
+| [`rail_temporarily_unavailable`](#rail-temporarily-unavailable) | `503` | はい | 選択された支払いレールが一時的に利用できません。 |
+| [`rate_unavailable`](#rate-unavailable) | `502` | はい | 必要な通貨レートが一時的に利用できません。 |
+| [`recipient_account_unsupported`](#recipient-account-unsupported) | `400` | 返されません | 受取人の口座詳細は、リクエストされた送金先ではサポートされていません。 |
+| [`recipient_address_required`](#recipient-address-required) | `422` | いいえ | このフィアット送金先を作成する前に、受取人に住所が必要です。 |
+| [`recipient_destination_invalid`](#recipient-destination-invalid) | `400`, `422` | いいえ | 受取人の送金先が無効であるか、リクエストされた操作と互換性がありません。 |
+| [`recipient_name_invalid`](#recipient-name-invalid) | `400` | 返されません | 受取人の名前がリクエストスキーマを満たしていません。 |
+| [`related_party_in_review`](#related-party-in-review) | `409` | いいえ | 審査中の関係者はアーカイブできません。 |
+| [`related_party_not_found`](#related-party-not-found) | `404` | 返されません | 指定された顧客の下に関係者が見つかりませんでした。 |
+| [`request_body_too_large`](#request-body-too-large) | `413` | いいえ | リクエストボディが、この操作で受け付けられるサイズを超えています。 |
+| [`request_failed`](#request-failed) | `502`, `503` | 状況による | 操作の完了に必要なサービスが、リクエストを正常に処理しませんでした。 |
+| [`rule_already_exists`](#rule-already-exists) | `409` | いいえ | トリガー口座には、すでに有効なルールがあります。 |
+| [`rule_archived`](#rule-archived) | `409` | いいえ | ルールはアーカイブされており、変更できません。 |
+| [`rule_not_found`](#rule-not-found) | `404` | 返されません | 指定された顧客の下にルールが見つかりませんでした。 |
+| [`rule_target_invalid`](#rule-target-invalid) | `400` | 返されません | ルールアクションのターゲットが、この顧客またはルールタイプでは無効です。 |
+| [`rule_trigger_account_invalid`](#rule-trigger-account-invalid) | `400` | 返されません | ルールのトリガーとして選択された口座が無効です。 |
+| [`submission_channel_not_allowed`](#submission-channel-not-allowed) | `409` | いいえ | このタスクでは、API からの直接送信は許可されていません。 |
+| [`submission_not_found`](#submission-not-found) | `404` | いいえ | リクエストされたタスク送信が見つかりませんでした。 |
+| [`supporting_document_not_found`](#supporting-document-not-found) | `422` | いいえ | 送金リクエストで参照されている補足ドキュメントが見つかりませんでした。 |
+| [`task_changed`](#task-changed) | `409` | いいえ | クライアントが最後に読み取った後にタスクが変更されました。 |
+| [`task_not_found`](#task-not-found) | `404` | いいえ | 指定された顧客または API キーに対してタスクが見つかりませんでした。 |
+| [`task_obligation_conflict`](#task-obligation-conflict) | `409` | いいえ | タスクの義務状態が競合しており、送信を受け付けられません。 |
+| [`task_submission_incomplete`](#task-submission-incomplete) | `422` | いいえ | 送信が、現在対応可能なすべての要件に回答していません。 |
+| [`transfer_execution_failed`](#transfer-execution-failed) | `500` | いいえ | 見積もりの実行中に送金を完了できませんでした。 |
+| [`transfer_has_no_instructions`](#transfer-has-no-instructions) | `404` | 返されません | 送金は存在しますが、支払い指示を提供していません。 |
+| [`transfer_not_cancelable`](#transfer-not-cancelable) | `409` | いいえ | 現在の状態からは送金をキャンセルできません。 |
+| [`transfer_not_found`](#transfer-not-found) | `404` | 返されません | この API キーに対して送金が見つかりませんでした。 |
+| [`transfer_state_invalid`](#transfer-state-invalid) | `400`, `500` | はい | 送金が、リクエストされた操作または遷移をサポートしない状態にあります。 |
+| [`unauthorized`](#unauthorized) | `401` | いいえ | リクエストに有効な API キーがありません。 |
+| [`unknown_parameter`](#unknown-parameter) | `400` | いいえ | リクエストに、サポートされていないパラメータまたは不明なパラメータが含まれています。 |
+| [`validation_error`](#validation-error) | `400`, `422` | いいえ | リクエストが操作の入力スキーマを満たしていません。 |
+| [`verification_collection_mapping_invalid`](#verification-collection-mapping-invalid) | `503` | いいえ | タスクの検証要件を、実行可能な検証フローとして準備できません。 |
+| [`wallet_destination_not_supported`](#wallet-destination-not-supported) | `409` | いいえ | 選択された資金移動方法は、ウォレットの送金先をサポートしていません。 |
+
+## リクエストと認証
+
+<a id="forbidden" className="block scroll-mt-32">
+  <span className="sr-only">forbidden error</span>
+</a>
+
+### `forbidden`
+
+**HTTP ステータス:** `403`<br />
+**再試行可能:** いいえ<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/forbidden`
+
+**意味:** API キーは有効ですが、この操作の実行を許可されていません。
+
+**発生する状況:** 認証情報に必要な権限がないか、本番の認証情報がサンドボックス専用エンドポイントを呼び出しています。
+
+**対処方法:** 必要な権限を持つ、正しい環境用の認証情報を使用してください。クライアントサイドのコードでキーを公開したり差し替えたりしないでください。
+
+**再試行ガイダンス:** 変更していないリクエストを再試行しないでください。次のリクエストを送信する前に、上記の対応を実施してください。
+
+**関連する API 操作:** 認証が必要なすべての API 操作。
+
+<a id="invalid-field-for-type" className="block scroll-mt-32">
+  <span className="sr-only">invalid_field_for_type error</span>
+</a>
+
+### `invalid_field_for_type`
+
+**HTTP ステータス:** `400`, `422`<br />
+**再試行可能:** 返されません<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/invalid-field-for-type`
+
+**意味:** リクエストに、選択したリソースタイプでは有効でないフィールドが含まれています。
+
+**発生する状況:** 個人と法人のプロフィールのように型で判別されるリクエストが、別のバリアントのフィールドを含んでいるか、選択したタイプで必須のフィールドを欠いています。
+
+**対処方法:** 選択したタイプのスキーマを使用し、他のバリアントに属するフィールドを削除し、必須フィールドを指定して、修正したリクエストを送信してください。
+
+**再試行ガイダンス:** この問題は `retryable` を返しません。変更なしの再試行が安全であると想定せず、上記の対応とその操作の冪等性要件に従ってください。
+
+**関連する API 操作:**
+
+- [`POST /v3/customers`](/api-reference/customers/post-v3-customers) (`postV3Customers`, ステータス `400`)
+- [`PATCH /v3/customers/{customerId}`](/api-reference/customers/patch-v3-customers-by-customer-id) (`patchV3CustomersByCustomerId`, ステータス `400`)
+- [`POST /v3/customers/{customerId}/export`](/api-reference/customers/post-v3-customers-by-customer-id-export) (`postV3CustomersByCustomerIdExport`, ステータス `422`)
+- [`POST /v3/customers/{customerId}/related-parties`](/api-reference/customers/post-v3-customers-by-customer-id-related-parties) (`postV3CustomersByCustomerIdRelated-parties`, ステータス `400`)
+- [`PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/patch-v3-customers-by-customer-id-related-parties-by-related-party-id) (`patchV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, ステータス `400`)
+
+<a id="request-body-too-large" className="block scroll-mt-32">
+  <span className="sr-only">request_body_too_large error</span>
+</a>
+
+### `request_body_too_large`
+
+**HTTP ステータス:** `413`<br />
+**再試行可能:** いいえ<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/request-body-too-large`
+
+**意味:** リクエストボディが、この操作で受け付けられるサイズを超えています。
+
+**発生する状況:** タスクの送信が、API が 1 つのボディで処理できる量を超えるリクエストデータを送っています。
+
+**対処方法:** 不要なデータを削除し、ファイル内容を埋め込む代わりにドキュメント参照を使用して、現在の要件に回答できる範囲でより小さな送信を行ってください。
+
+**再試行ガイダンス:** 変更していないリクエストを再試行しないでください。次のリクエストを送信する前に、上記の対応を実施してください。
+
+**関連する API 操作:**
+
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, ステータス `413`)
+
+<a id="unauthorized" className="block scroll-mt-32">
+  <span className="sr-only">unauthorized error</span>
+</a>
+
+### `unauthorized`
+
+**HTTP ステータス:** `401`<br />
+**再試行可能:** いいえ<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/unauthorized`
+
+**意味:** リクエストに有効な API キーがありません。
+
+**発生する状況:** `X-API-Key` ヘッダーが欠落している、無効である、期限切れである、または API に認識されていません。
+
+**対処方法:** 保護されたバックエンドから、環境に対応した正しいキーを送信してください。キーが漏洩した可能性がある場合はローテーションしてください。
+
+**再試行ガイダンス:** 変更していないリクエストを再試行しないでください。次のリクエストを送信する前に、上記の対応を実施してください。
+
+**関連する API 操作:** 認証が必要なすべての API 操作。
+
+<a id="unknown-parameter" className="block scroll-mt-32">
+  <span className="sr-only">unknown_parameter error</span>
+</a>
+
+### `unknown_parameter`
+
+**HTTP ステータス:** `400`<br />
+**再試行可能:** いいえ<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/unknown-parameter`
+
+**意味:** リクエストに、サポートされていないパラメータまたは不明なパラメータが含まれています。
+
+**発生する状況:** クエリ文字列または操作パラメータの綴りが誤っているか、サポートされていないか、そのエンドポイントで受け付けられていません。
+
+**対処方法:** 不明なパラメータを削除するか、その操作でドキュメント化されている正確なパラメータに置き換えてください。
+
+**再試行ガイダンス:** 変更していないリクエストを再試行しないでください。次のリクエストを送信する前に、上記の対応を実施してください。
+
+<Accordion title="関連する API 操作 (26)">
+
+- [`GET /v3/capabilities`](/api-reference/capabilities/get-v3-capabilities) (`getV3Capabilities`, ステータス `400`)
+- [`GET /v3/customers`](/api-reference/customers/get-v3-customers) (`getV3Customers`, ステータス `400`)
+- [`GET /v3/customers/{customerId}/accounts`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts) (`getV3CustomersByCustomerIdAccounts`, ステータス `400`)
+- [`GET /v3/customers/{customerId}/capabilities`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities) (`getV3CustomersByCustomerIdCapabilities`, ステータス `400`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}/applications`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id-applications) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityIdApplications`, ステータス `400`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}/applications/{applicationId}/history`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id-applications-by-application-id-history) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityIdApplicationsByApplicationIdHistory`, ステータス `400`)
+- [`GET /v3/customers/{customerId}/capabilities/supported`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-supported) (`getV3CustomersByCustomerIdCapabilitiesSupported`, ステータス `400`)
+- [`GET /v3/customers/{customerId}/documents`](/api-reference/documents/get-v3-customers-by-customer-id-documents) (`getV3CustomersByCustomerIdDocuments`, ステータス `400`)
+- [`GET /v3/customers/{customerId}/recipients`](/api-reference/recipients/get-v3-customers-by-customer-id-recipients) (`getV3CustomersByCustomerIdRecipients`, ステータス `400`)
+- [`GET /v3/customers/{customerId}/recipients/{recipientId}/destinations`](/api-reference/recipients/get-v3-customers-by-customer-id-recipients-by-recipient-id-destinations) (`getV3CustomersByCustomerIdRecipientsByRecipientIdDestinations`, ステータス `400`)
+- [`GET /v3/customers/{customerId}/related-parties`](/api-reference/customers/get-v3-customers-by-customer-id-related-parties) (`getV3CustomersByCustomerIdRelated-parties`, ステータス `400`)
+- [`GET /v3/customers/{customerId}/rules`](/api-reference/rules/get-v3-customers-by-customer-id-rules) (`getV3CustomersByCustomerIdRules`, ステータス `400`)
+- [`GET /v3/customers/{customerId}/tasks`](/api-reference/tasks/list-customer-tasks) (`listCustomerTasks`, ステータス `400`)
+- [`GET /v3/customers/{customerId}/tasks/{taskId}`](/api-reference/tasks/get-customer-task) (`getCustomerTask`, ステータス `400`)
+- [`GET /v3/customers/{customerId}/tasks/{taskId}/history`](/api-reference/tasks/list-customer-task-history) (`listCustomerTaskHistory`, ステータス `400`)
+- [`GET /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/list-customer-task-submissions) (`listCustomerTaskSubmissions`, ステータス `400`)
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, ステータス `400`)
+- [`GET /v3/customers/{customerId}/tasks/{taskId}/submissions/{submissionId}`](/api-reference/task-submissions/get-customer-task-submission) (`getCustomerTaskSubmission`, ステータス `400`)
+- [`GET /v3/institutions`](/api-reference/institutions/get-v3-institutions) (`getV3Institutions`, ステータス `400`)
+- [`GET /v3/rates`](/api-reference/money-movement/get-v3-rates) (`getV3Rates`, ステータス `400`)
+- [`POST /v3/sandbox/tasks`](/api-reference/sandbox/post-v3-sandbox-tasks) (`postV3SandboxTasks`, ステータス `400`)
+- [`POST /v3/sandbox/tasks/{taskId}/review`](/api-reference/sandbox/post-v3-sandbox-tasks-by-task-id-review) (`postV3SandboxTasksByTaskIdReview`, ステータス `400`)
+- [`GET /v3/tasks`](/api-reference/tasks/list-tasks) (`listTasks`, ステータス `400`)
+- [`GET /v3/tasks/{taskId}`](/api-reference/tasks/get-task) (`getTask`, ステータス `400`)
+- [`GET /v3/transfers`](/api-reference/money-movement/get-v3-transfers) (`getV3Transfers`, ステータス `400`)
+- [`GET /v3/transfers/{transferId}/tasks`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-tasks) (`getV3TransfersByTransferIdTasks`, ステータス `400`)
+
+</Accordion>
+
+<a id="validation-error" className="block scroll-mt-32">
+  <span className="sr-only">validation_error error</span>
+</a>
+
+### `validation_error`
+
+**HTTP ステータス:** `400`, `422`<br />
+**再試行可能:** いいえ<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/validation-error`
+
+**意味:** リクエストが操作の入力スキーマを満たしていません。
+
+**発生する状況:** 必須の値が欠落している、フィールドの型や形式が無効である、またはリクエストパラメータがバリデーションに失敗しています。
+
+**対処方法:** `errors[]` と各 JSON Pointer を使用してリクエストを修正し、操作のスキーマと比較して、新しいリクエストを送信してください。
+
+**再試行ガイダンス:** 変更していないリクエストを再試行しないでください。次のリクエストを送信する前に、上記の対応を実施してください。
+
+<Accordion title="関連する API 操作 (55)">
+
+- [`GET /v3/capabilities`](/api-reference/capabilities/get-v3-capabilities) (`getV3Capabilities`, ステータス `400`)
+- [`GET /v3/customers`](/api-reference/customers/get-v3-customers) (`getV3Customers`, ステータス `400`)
+- [`POST /v3/customers`](/api-reference/customers/post-v3-customers) (`postV3Customers`, ステータス `400`)
+- [`DELETE /v3/customers/{customerId}`](/api-reference/customers/delete-v3-customers-by-customer-id) (`deleteV3CustomersByCustomerId`, ステータス `400`)
+- [`PATCH /v3/customers/{customerId}`](/api-reference/customers/patch-v3-customers-by-customer-id) (`patchV3CustomersByCustomerId`, ステータス `400`)
+- [`GET /v3/customers/{customerId}/accounts`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts) (`getV3CustomersByCustomerIdAccounts`, ステータス `400`)
+- [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) (`postV3CustomersByCustomerIdAccounts`, ステータス `400`)
+- [`DELETE /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/delete-v3-customers-by-customer-id-accounts-by-account-id) (`deleteV3CustomersByCustomerIdAccountsByAccountId`, ステータス `400`)
+- [`PATCH /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/patch-v3-customers-by-customer-id-accounts-by-account-id) (`patchV3CustomersByCustomerIdAccountsByAccountId`, ステータス `400`)
+- [`PUT /v3/customers/{customerId}/accounts/{accountId}/fees`](/api-reference/accounts/put-v3-customers-by-customer-id-accounts-by-account-id-fees) (`putV3CustomersByCustomerIdAccountsByAccountIdFees`, ステータス `400`)
+- [`GET /v3/customers/{customerId}/capabilities`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities) (`getV3CustomersByCustomerIdCapabilities`, ステータス `400`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, ステータス `400`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}/applications`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id-applications) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityIdApplications`, ステータス `400`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}/cancel`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id-cancel) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityIdCancel`, ステータス `400`)
+- [`GET /v3/customers/{customerId}/documents`](/api-reference/documents/get-v3-customers-by-customer-id-documents) (`getV3CustomersByCustomerIdDocuments`, ステータス `400`)
+- [`POST /v3/customers/{customerId}/documents`](/api-reference/documents/post-v3-customers-by-customer-id-documents) (`postV3CustomersByCustomerIdDocuments`, ステータス `400`)
+- [`DELETE /v3/customers/{customerId}/documents/{documentId}`](/api-reference/documents/delete-v3-customers-by-customer-id-documents-by-document-id) (`deleteV3CustomersByCustomerIdDocumentsByDocumentId`, ステータス `400`)
+- [`POST /v3/customers/{customerId}/export`](/api-reference/customers/post-v3-customers-by-customer-id-export) (`postV3CustomersByCustomerIdExport`, ステータス `400`)
+- [`GET /v3/customers/{customerId}/recipients`](/api-reference/recipients/get-v3-customers-by-customer-id-recipients) (`getV3CustomersByCustomerIdRecipients`, ステータス `400`)
+- [`POST /v3/customers/{customerId}/recipients`](/api-reference/recipients/post-v3-customers-by-customer-id-recipients) (`postV3CustomersByCustomerIdRecipients`, ステータス `400`)
+- [`DELETE /v3/customers/{customerId}/recipients/{recipientId}`](/api-reference/recipients/delete-v3-customers-by-customer-id-recipients-by-recipient-id) (`deleteV3CustomersByCustomerIdRecipientsByRecipientId`, ステータス `400`)
+- [`PATCH /v3/customers/{customerId}/recipients/{recipientId}`](/api-reference/recipients/patch-v3-customers-by-customer-id-recipients-by-recipient-id) (`patchV3CustomersByCustomerIdRecipientsByRecipientId`, ステータス `400`)
+- [`GET /v3/customers/{customerId}/recipients/{recipientId}/destinations`](/api-reference/recipients/get-v3-customers-by-customer-id-recipients-by-recipient-id-destinations) (`getV3CustomersByCustomerIdRecipientsByRecipientIdDestinations`, ステータス `400`)
+- [`POST /v3/customers/{customerId}/recipients/{recipientId}/destinations`](/api-reference/recipients/post-v3-customers-by-customer-id-recipients-by-recipient-id-destinations) (`postV3CustomersByCustomerIdRecipientsByRecipientIdDestinations`, ステータス `400`)
+- [`DELETE /v3/customers/{customerId}/recipients/{recipientId}/destinations/{destinationId}`](/api-reference/recipients/delete-v3-customers-by-customer-id-recipients-by-recipient-id-destinations-by-destination-id) (`deleteV3CustomersByCustomerIdRecipientsByRecipientIdDestinationsByDestinationId`, ステータス `400`)
+- [`GET /v3/customers/{customerId}/related-parties`](/api-reference/customers/get-v3-customers-by-customer-id-related-parties) (`getV3CustomersByCustomerIdRelated-parties`, ステータス `400`)
+- [`POST /v3/customers/{customerId}/related-parties`](/api-reference/customers/post-v3-customers-by-customer-id-related-parties) (`postV3CustomersByCustomerIdRelated-parties`, ステータス `400`)
+- [`DELETE /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/delete-v3-customers-by-customer-id-related-parties-by-related-party-id) (`deleteV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, ステータス `400`)
+- [`PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/patch-v3-customers-by-customer-id-related-parties-by-related-party-id) (`patchV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, ステータス `400`)
+- [`GET /v3/customers/{customerId}/rules`](/api-reference/rules/get-v3-customers-by-customer-id-rules) (`getV3CustomersByCustomerIdRules`, ステータス `400`)
+- [`POST /v3/customers/{customerId}/rules`](/api-reference/rules/post-v3-customers-by-customer-id-rules) (`postV3CustomersByCustomerIdRules`, ステータス `400`)
+- [`DELETE /v3/customers/{customerId}/rules/{ruleId}`](/api-reference/rules/delete-v3-customers-by-customer-id-rules-by-rule-id) (`deleteV3CustomersByCustomerIdRulesByRuleId`, ステータス `400`)
+- [`PATCH /v3/customers/{customerId}/rules/{ruleId}`](/api-reference/rules/patch-v3-customers-by-customer-id-rules-by-rule-id) (`patchV3CustomersByCustomerIdRulesByRuleId`, ステータス `400`)
+- [`GET /v3/customers/{customerId}/tasks`](/api-reference/tasks/list-customer-tasks) (`listCustomerTasks`, ステータス `400`)
+- [`GET /v3/customers/{customerId}/tasks/{taskId}/history`](/api-reference/tasks/list-customer-task-history) (`listCustomerTaskHistory`, ステータス `400`)
+- [`GET /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/list-customer-task-submissions) (`listCustomerTaskSubmissions`, ステータス `400`)
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, ステータス `400`)
+- [`GET /v3/institutions`](/api-reference/institutions/get-v3-institutions) (`getV3Institutions`, ステータス `400`)
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, ステータス `400`)
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, ステータス `422`)
+- [`GET /v3/rates`](/api-reference/money-movement/get-v3-rates) (`getV3Rates`, ステータス `400`)
+- [`POST /v3/sandbox/accounts/{accountId}/topup`](/api-reference/sandbox/post-v3-sandbox-accounts-by-account-id-topup) (`postV3SandboxAccountsByAccountIdTopup`, ステータス `400`)
+- [`POST /v3/sandbox/customers/{customerId}/capabilities/{capabilityId}/status`](/api-reference/sandbox/post-v3-sandbox-customers-by-customer-id-capabilities-by-capability-id-status) (`postV3SandboxCustomersByCustomerIdCapabilitiesByCapabilityIdStatus`, ステータス `400`)
+- [`POST /v3/sandbox/customers/{customerId}/verification`](/api-reference/sandbox/post-v3-sandbox-customers-by-customer-id-verification) (`postV3SandboxCustomersByCustomerIdVerification`, ステータス `400`)
+- [`POST /v3/sandbox/tasks`](/api-reference/sandbox/post-v3-sandbox-tasks) (`postV3SandboxTasks`, ステータス `400`)
+- [`POST /v3/sandbox/tasks/{taskId}/review`](/api-reference/sandbox/post-v3-sandbox-tasks-by-task-id-review) (`postV3SandboxTasksByTaskIdReview`, ステータス `400`)
+- [`POST /v3/sandbox/transfers/{transferId}/state`](/api-reference/sandbox/post-v3-sandbox-transfers-by-transfer-id-state) (`postV3SandboxTransfersByTransferIdState`, ステータス `400`)
+- [`GET /v3/tasks`](/api-reference/tasks/list-tasks) (`listTasks`, ステータス `400`)
+- [`GET /v3/transfers`](/api-reference/money-movement/get-v3-transfers) (`getV3Transfers`, ステータス `400`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, ステータス `400`)
+- [`POST /v3/transfers/{transferId}/cancel`](/api-reference/money-movement/post-v3-transfers-by-transfer-id-cancel) (`postV3TransfersByTransferIdCancel`, ステータス `400`)
+- [`GET /v3/transfers/{transferId}/tasks`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-tasks) (`getV3TransfersByTransferIdTasks`, ステータス `400`)
+- [`POST /v3/webhooks`](/api-reference/webhooks/post-v3-webhooks) (`postV3Webhooks`, ステータス `400`)
+- [`DELETE /v3/webhooks/{webhookId}`](/api-reference/webhooks/delete-v3-webhooks-by-webhook-id) (`deleteV3WebhooksByWebhookId`, ステータス `400`)
+- [`PATCH /v3/webhooks/{webhookId}`](/api-reference/webhooks/patch-v3-webhooks-by-webhook-id) (`patchV3WebhooksByWebhookId`, ステータス `400`)
+
+</Accordion>
+
+## 顧客とプロフィール
+
+<a id="customer-has-active-resources" className="block scroll-mt-32">
+  <span className="sr-only">customer_has_active_resources error</span>
+</a>
+
+### `customer_has_active_resources`
+
+**HTTP ステータス:** `409`<br />
+**再試行可能:** いいえ<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/customer-has-active-resources`
+
+**意味:** アクティブなリソースが依存している間は、顧客をアーカイブできません。
+
+**発生する状況:** 解決が必要な口座、送金、その他のリソースがまだ残っている顧客をアーカイブしようとしています。
+
+**対処方法:** 各 `blockingResources[].requiredAction` に従い、リソースが解決された後に顧客を再取得して、アーカイブ操作を再試行してください。
+
+**再試行ガイダンス:** 変更していないリクエストを再試行しないでください。次のリクエストを送信する前に、上記の対応を実施してください。
+
+**関連する API 操作:**
+
+- [`DELETE /v3/customers/{customerId}`](/api-reference/customers/delete-v3-customers-by-customer-id) (`deleteV3CustomersByCustomerId`, ステータス `409`)
+
+**追加のレスポンスフィールド:**
+
+- `blockingResources`: リクエストされた操作を進める前に解決する必要がある顧客リソース。タイプと id でソートされます。
+
+**例:**
+
+```json
+{
+  "type": "https://docs.swipelux.com/errors/customer-has-active-resources",
+  "title": "Customer Has Active Resources",
+  "status": 409,
+  "code": "customer_has_active_resources",
+  "detail": "Archive or resolve every blocking resource before retrying.",
+  "correlationId": "01JERRORCUSTOMERARCHIVE",
+  "retryable": false,
+  "blockingResources": [
+    {
+      "type": "account",
+      "id": "acc_01JACTIVE",
+      "requiredAction": "archive_account"
+    }
+  ]
+}
+```
+
+<a id="customer-not-found" className="block scroll-mt-32">
+  <span className="sr-only">customer_not_found error</span>
+</a>
+
+### `customer_not_found`
+
+**HTTP ステータス:** `404`<br />
+**再試行可能:** いいえ<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/customer-not-found`
+
+**意味:** 顧客が現在の API キー環境に存在しないか、アクセスできなくなっています。
+
+**発生する状況:** 操作が使用している顧客識別子が存在しないか、別の環境に属しているか、アクティブな顧客が必要な操作でアーカイブ済みの顧客を参照しています。
+
+**対処方法:** 顧客識別子と API キー環境を確認し、顧客を取得または一覧表示してから、アクセス可能な顧客で再試行してください。
+
+**再試行ガイダンス:** 変更していないリクエストを再試行しないでください。次のリクエストを送信する前に、上記の対応を実施してください。
+
+<Accordion title="関連する API 操作 (22)">
+
+- [`DELETE /v3/customers/{customerId}`](/api-reference/customers/delete-v3-customers-by-customer-id) (`deleteV3CustomersByCustomerId`, ステータス `404`)
+- [`GET /v3/customers/{customerId}`](/api-reference/customers/get-v3-customers-by-customer-id) (`getV3CustomersByCustomerId`, ステータス `404`)
+- [`PATCH /v3/customers/{customerId}`](/api-reference/customers/patch-v3-customers-by-customer-id) (`patchV3CustomersByCustomerId`, ステータス `404`)
+- [`GET /v3/customers/{customerId}/capabilities`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities) (`getV3CustomersByCustomerIdCapabilities`, ステータス `404`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityId`, ステータス `404`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, ステータス `404`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}/applications`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id-applications) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityIdApplications`, ステータス `404`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}/applications/{applicationId}/history`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id-applications-by-application-id-history) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityIdApplicationsByApplicationIdHistory`, ステータス `404`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}/cancel`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id-cancel) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityIdCancel`, ステータス `404`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}/tasks-preview`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id-tasks-preview) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityIdTasks-preview`, ステータス `404`)
+- [`GET /v3/customers/{customerId}/capabilities/supported`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-supported) (`getV3CustomersByCustomerIdCapabilitiesSupported`, ステータス `404`)
+- [`GET /v3/customers/{customerId}/documents`](/api-reference/documents/get-v3-customers-by-customer-id-documents) (`getV3CustomersByCustomerIdDocuments`, ステータス `404`)
+- [`POST /v3/customers/{customerId}/documents`](/api-reference/documents/post-v3-customers-by-customer-id-documents) (`postV3CustomersByCustomerIdDocuments`, ステータス `404`)
+- [`DELETE /v3/customers/{customerId}/documents/{documentId}`](/api-reference/documents/delete-v3-customers-by-customer-id-documents-by-document-id) (`deleteV3CustomersByCustomerIdDocumentsByDocumentId`, ステータス `404`)
+- [`GET /v3/customers/{customerId}/documents/{documentId}`](/api-reference/documents/get-v3-customers-by-customer-id-documents-by-document-id) (`getV3CustomersByCustomerIdDocumentsByDocumentId`, ステータス `404`)
+- [`POST /v3/customers/{customerId}/export`](/api-reference/customers/post-v3-customers-by-customer-id-export) (`postV3CustomersByCustomerIdExport`, ステータス `404`)
+- [`GET /v3/customers/{customerId}/related-parties`](/api-reference/customers/get-v3-customers-by-customer-id-related-parties) (`getV3CustomersByCustomerIdRelated-parties`, ステータス `404`)
+- [`POST /v3/customers/{customerId}/related-parties`](/api-reference/customers/post-v3-customers-by-customer-id-related-parties) (`postV3CustomersByCustomerIdRelated-parties`, ステータス `404`)
+- [`DELETE /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/delete-v3-customers-by-customer-id-related-parties-by-related-party-id) (`deleteV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, ステータス `404`)
+- [`GET /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/get-v3-customers-by-customer-id-related-parties-by-related-party-id) (`getV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, ステータス `404`)
+- [`PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/patch-v3-customers-by-customer-id-related-parties-by-related-party-id) (`patchV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, ステータス `404`)
+- [`GET /v3/customers/{customerId}/tasks`](/api-reference/tasks/list-customer-tasks) (`listCustomerTasks`, ステータス `404`)
+
+</Accordion>
+
+<a id="document-not-found" className="block scroll-mt-32">
+  <span className="sr-only">document_not_found error</span>
+</a>
+
+### `document_not_found`
+
+**HTTP ステータス:** `404`<br />
+**再試行可能:** 返されません<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/document-not-found`
+
+**意味:** リクエストされた顧客ドキュメントが見つかりませんでした。
+
+**発生する状況:** ドキュメント識別子が存在しないか、アーカイブ済みであるか、リクエストパスの顧客に属していません。
+
+**対処方法:** 顧客とドキュメントの識別子を確認し、顧客のドキュメントを一覧表示して、必要なドキュメントがない場合は代わりのドキュメントをアップロードしてください。
+
+**再試行ガイダンス:** この問題は `retryable` を返しません。変更なしの再試行が安全であると想定せず、上記の対応とその操作の冪等性要件に従ってください。
+
+**関連する API 操作:**
+
+- [`DELETE /v3/customers/{customerId}/documents/{documentId}`](/api-reference/documents/delete-v3-customers-by-customer-id-documents-by-document-id) (`deleteV3CustomersByCustomerIdDocumentsByDocumentId`, ステータス `404`)
+- [`GET /v3/customers/{customerId}/documents/{documentId}`](/api-reference/documents/get-v3-customers-by-customer-id-documents-by-document-id) (`getV3CustomersByCustomerIdDocumentsByDocumentId`, ステータス `404`)
+
+<a id="duplicate-external-id" className="block scroll-mt-32">
+  <span className="sr-only">duplicate_external_id error</span>
+</a>
+
+### `duplicate_external_id`
+
+**HTTP ステータス:** `409`<br />
+**再試行可能:** いいえ<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/duplicate-external-id`
+
+**意味:** 指定された `externalId` は、同じスコープ内の別のリソースにすでに割り当てられています。
+
+**発生する状況:** 作成または更新リクエストが、一意である必要がある開発者管理の識別子を再利用しようとしています。
+
+**対処方法:** その識別子にすでに関連付けられているリソースを取得するか、本当に別のリソースには新しい一意の `externalId` を使用してください。
+
+**再試行ガイダンス:** 変更していないリクエストを再試行しないでください。次のリクエストを送信する前に、上記の対応を実施してください。
+
+**関連する API 操作:**
+
+- [`POST /v3/customers`](/api-reference/customers/post-v3-customers) (`postV3Customers`, ステータス `409`)
+- [`PATCH /v3/customers/{customerId}`](/api-reference/customers/patch-v3-customers-by-customer-id) (`patchV3CustomersByCustomerId`, ステータス `409`)
+- [`POST /v3/customers/{customerId}/related-parties`](/api-reference/customers/post-v3-customers-by-customer-id-related-parties) (`postV3CustomersByCustomerIdRelated-parties`, ステータス `409`)
+- [`PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/patch-v3-customers-by-customer-id-related-parties-by-related-party-id) (`patchV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, ステータス `409`)
+
+<a id="field-required-by-open-task" className="block scroll-mt-32">
+  <span className="sr-only">field_required_by_open_task error</span>
+</a>
+
+### `field_required_by_open_task`
+
+**HTTP ステータス:** `409`<br />
+**再試行可能:** いいえ<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/field-required-by-open-task`
+
+**意味:** リクエストが、オープンタスクでまだ必要とされているプロフィールフィールドをクリアしようとしています。
+
+**発生する状況:** 顧客または関係者の更新が、`taskId` のタスクで必須として固定されている値を削除しようとしています。
+
+**対処方法:** `taskId` と `fields` のプロフィールポインタまたは要件キーを確認し、必須の値を復元するか、タスクを完了またはキャンセルしてから、更新を再送信してください。
+
+**再試行ガイダンス:** 変更していないリクエストを再試行しないでください。次のリクエストを送信する前に、上記の対応を実施してください。
+
+**関連する API 操作:**
+
+- [`PATCH /v3/customers/{customerId}`](/api-reference/customers/patch-v3-customers-by-customer-id) (`patchV3CustomersByCustomerId`, ステータス `409`)
+- [`PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/patch-v3-customers-by-customer-id-related-parties-by-related-party-id) (`patchV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, ステータス `409`)
+
+**追加のレスポンスフィールド:**
+
+- `fields`: オープンタスクによってブロックされているプロフィールポインタまたは要件キー。
+- `taskId`: 現在のタスク識別子。
+
+<a id="merchant-kyb-not-approved" className="block scroll-mt-32">
+  <span className="sr-only">merchant_kyb_not_approved error</span>
+</a>
+
+### `merchant_kyb_not_approved`
+
+**HTTP ステータス:** `422`<br />
+**再試行可能:** 返されません<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/merchant-kyb-not-approved`
+
+**意味:** インテグレーションを行う事業者が、リクエストされた顧客作成フローについて承認されていません。
+
+**発生する状況:** インテグレーションを行う事業者と本番スペースが承認される前に、本番の顧客作成リクエストが行われています。
+
+**対処方法:** 事業者の検証フローを完了し、本番承認を待ってから本番顧客を作成してください。
+
+**再試行ガイダンス:** この問題は `retryable` を返しません。変更なしの再試行が安全であると想定せず、上記の対応とその操作の冪等性要件に従ってください。
+
+**関連する API 操作:**
+
+- [`POST /v3/customers`](/api-reference/customers/post-v3-customers) (`postV3Customers`, ステータス `422`)
+
+<a id="profile-obligation-crossheal-failed" className="block scroll-mt-32">
+  <span className="sr-only">profile_obligation_crossheal_failed error</span>
+</a>
+
+### `profile_obligation_crossheal_failed`
+
+**HTTP ステータス:** `500`<br />
+**再試行可能:** いいえ<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/profile-obligation-crossheal-failed`
+
+**意味:** Swipelux は顧客のプロフィール要件を更新できませんでした。
+
+**発生する状況:** 顧客または関係者の更新で、プロフィールの変更を現在のタスク要件と整合させることができません。
+
+**対処方法:** `correlationId` を保管し、Swipelux サポートに問い合わせてください。変更していない更新を繰り返し再試行しないでください。
+
+**再試行ガイダンス:** 変更していないリクエストを再試行しないでください。次のリクエストを送信する前に、上記の対応を実施してください。
+
+**関連する API 操作:**
+
+- [`PATCH /v3/customers/{customerId}`](/api-reference/customers/patch-v3-customers-by-customer-id) (`patchV3CustomersByCustomerId`, ステータス `500`)
+- [`PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/patch-v3-customers-by-customer-id-related-parties-by-related-party-id) (`patchV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, ステータス `500`)
+
+<a id="related-party-in-review" className="block scroll-mt-32">
+  <span className="sr-only">related_party_in_review error</span>
+</a>
+
+### `related_party_in_review`
+
+**HTTP ステータス:** `409`<br />
+**再試行可能:** いいえ<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/related-party-in-review`
+
+**意味:** 審査中の関係者はアーカイブできません。
+
+**発生する状況:** 検証または審査のワークフローがまだアクティブな関係者をアーカイブしようとしています。
+
+**対処方法:** 審査状態が変わるのを待ち、関係者を再取得して、現在のステータスがこの操作を許可する場合にのみアーカイブしてください。
+
+**再試行ガイダンス:** 変更していないリクエストを再試行しないでください。次のリクエストを送信する前に、上記の対応を実施してください。
+
+**関連する API 操作:**
+
+- [`DELETE /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/delete-v3-customers-by-customer-id-related-parties-by-related-party-id) (`deleteV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, ステータス `409`)
+
+<a id="related-party-not-found" className="block scroll-mt-32">
+  <span className="sr-only">related_party_not_found error</span>
+</a>
+
+### `related_party_not_found`
+
+**HTTP ステータス:** `404`<br />
+**再試行可能:** 返されません<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/related-party-not-found`
+
+**意味:** 指定された顧客の下に関係者が見つかりませんでした。
+
+**発生する状況:** 関係者の識別子が存在しないか、アーカイブ済みであるか、別の顧客に属しているか、現在の環境でアクセスできません。
+
+**対処方法:** 顧客と関係者の識別子を確認し、顧客の関係者を一覧表示して、アクセス可能なリソースで再試行してください。
+
+**再試行ガイダンス:** この問題は `retryable` を返しません。変更なしの再試行が安全であると想定せず、上記の対応とその操作の冪等性要件に従ってください。
+
+**関連する API 操作:**
+
+- [`DELETE /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/delete-v3-customers-by-customer-id-related-parties-by-related-party-id) (`deleteV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, ステータス `404`)
+- [`GET /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/get-v3-customers-by-customer-id-related-parties-by-related-party-id) (`getV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, ステータス `404`)
+- [`PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/patch-v3-customers-by-customer-id-related-parties-by-related-party-id) (`patchV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, ステータス `404`)
+
+## ケイパビリティ、KYC、タスク
+
+<a id="absence-conflicts-with-profile" className="block scroll-mt-32">
+  <span className="sr-only">absence_conflicts_with_profile error</span>
+</a>
+
+### `absence_conflicts_with_profile`
+
+**HTTP ステータス:** `409`<br />
+**再試行可能:** いいえ<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/absence-conflicts-with-profile`
+
+**意味:** 値が存在しないと申告するタスク回答が、顧客プロフィールにすでに存在するデータと競合しています。
+
+**発生する状況:** `profilePointer` で識別される正規のプロフィールフィールドにまだ値があるのに、送信がプロフィールに基づく要件を「存在しない」としてマークしています。
+
+**対処方法:** `profilePointer` を確認し、顧客プロフィールを更新するか、それと整合する回答を送信し、タスクを再取得して現在のリビジョンを送信してください。
+
+**再試行ガイダンス:** 変更していないリクエストを再試行しないでください。次のリクエストを送信する前に、上記の対応を実施してください。
+
+**関連する API 操作:**
+
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, ステータス `409`)
+
+**追加のレスポンスフィールド:**
+
+- `profilePointer`: 競合に関連付けられた正規のプロフィールフィールド。
+
+<a id="capability-already-exists" className="block scroll-mt-32">
+  <span className="sr-only">capability_already_exists error</span>
+</a>
+
+### `capability_already_exists`
+
+**HTTP ステータス:** `409`<br />
+**再試行可能:** いいえ<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/capability-already-exists`
+
+**意味:** 顧客はリクエストされたケイパビリティをすでに持っています。
+
+**発生する状況:** 現在または既存の申請が同じ顧客ケイパビリティをすでに表しているケイパビリティをリクエストしています。
+
+**対処方法:** 重複を作成する代わりに、既存のケイパビリティを取得し、その現在のステータスから続行してください。
+
+**再試行ガイダンス:** 変更していないリクエストを再試行しないでください。次のリクエストを送信する前に、上記の対応を実施してください。
+
+**関連する API 操作:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, ステータス `409`)
+
+<a id="capability-ineligible" className="block scroll-mt-32">
+  <span className="sr-only">capability_ineligible error</span>
+</a>
+
+### `capability_ineligible`
+
+**HTTP ステータス:** `422`<br />
+**再試行可能:** いいえ<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/capability-ineligible`
+
+**意味:** 現在のプロフィールと構成では、顧客はリクエストされたケイパビリティの対象ではありません。
+
+**発生する状況:** ケイパビリティの評価により、リクエストされたオプションがこの顧客には利用できないと判定されています。
+
+**対処方法:** サポートされているケイパビリティのレスポンスと現在のタスクを確認し、対象となるケイパビリティを選択するか、提示された前提条件を完了してから新しいリクエストを行ってください。
+
+**再試行ガイダンス:** 変更していないリクエストを再試行しないでください。次のリクエストを送信する前に、上記の対応を実施してください。
+
+**関連する API 操作:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, ステータス `422`)
+
+<a id="capability-institutions-required" className="block scroll-mt-32">
+  <span className="sr-only">capability_institutions_required error</span>
+</a>
+
+### `capability_institutions_required`
+
+**HTTP ステータス:** `422`<br />
+**再試行可能:** 返されません<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/capability-institutions-required`
+
+**意味:** このケイパビリティリクエストには、1 つ以上の機関の選択が必要です。
+
+**発生する状況:** 機関が必要なケイパビリティバリアントをリクエストしながら、機関の選択を省略しています。
+
+**対処方法:** 顧客がサポートする機関を一覧表示し、必要な機関識別子を含めて、新しいリクエストを送信してください。
+
+**再試行ガイダンス:** この問題は `retryable` を返しません。変更なしの再試行が安全であると想定せず、上記の対応とその操作の冪等性要件に従ってください。
+
+**関連する API 操作:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, ステータス `422`)
+
+<a id="capability-institutions-unsupported" className="block scroll-mt-32">
+  <span className="sr-only">capability_institutions_unsupported error</span>
+</a>
+
+### `capability_institutions_unsupported`
+
+**HTTP ステータス:** `422`<br />
+**再試行可能:** いいえ<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/capability-institutions-unsupported`
+
+**意味:** 選択された機関のうち 1 つ以上が、リクエストされたケイパビリティでサポートされていません。
+
+**発生する状況:** リクエストに、顧客が利用できるケイパビリティオプションの範囲外の機関が含まれています。
+
+**対処方法:** サポートされていない選択を、サポートされているケイパビリティのフローで返された機関に置き換えて、新しいリクエストを送信してください。
+
+**再試行ガイダンス:** 変更していないリクエストを再試行しないでください。次のリクエストを送信する前に、上記の対応を実施してください。
+
+**関連する API 操作:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, ステータス `422`)
+
+<a id="capability-intent-unsupported" className="block scroll-mt-32">
+  <span className="sr-only">capability_intent_unsupported error</span>
+</a>
+
+### `capability_intent_unsupported`
+
+**HTTP ステータス:** `422`<br />
+**再試行可能:** 返されません<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/capability-intent-unsupported`
+
+**意味:** リクエストされたケイパビリティのインテントは、このケイパビリティバリアントではサポートされていません。
+
+**発生する状況:** リクエストが、選択された顧客または機関オプションでは提供されていないインテントとケイパビリティを組み合わせています。
+
+**対処方法:** サポートされているケイパビリティのレスポンスで提示されたインテントを使用するか、サポートされている別のケイパビリティバリアントを選択してください。
+
+**再試行ガイダンス:** この問題は `retryable` を返しません。変更なしの再試行が安全であると想定せず、上記の対応とその操作の冪等性要件に従ってください。
+
+**関連する API 操作:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, ステータス `422`)
+
+<a id="capability-key-unsupported" className="block scroll-mt-32">
+  <span className="sr-only">capability_key_unsupported error</span>
+</a>
+
+### `capability_key_unsupported`
+
+**HTTP ステータス:** `422`<br />
+**再試行可能:** いいえ<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/capability-key-unsupported`
+
+**意味:** このケイパビリティキーは、この操作ではサポートされていません。
+
+**発生する状況:** リクエストまたはタスクプレビューが、この顧客に対してリクエストできないケイパビリティ識別子を使用しています。
+
+**対処方法:** サポートされているケイパビリティを一覧表示し、顧客に対して返された正確なケイパビリティ識別子を使用してください。
+
+**再試行ガイダンス:** 変更していないリクエストを再試行しないでください。次のリクエストを送信する前に、上記の対応を実施してください。
+
+**関連する API 操作:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, ステータス `422`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}/tasks-preview`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id-tasks-preview) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityIdTasks-preview`, ステータス `422`)
+
+<a id="capability-not-cancelable" className="block scroll-mt-32">
+  <span className="sr-only">capability_not_cancelable error</span>
+</a>
+
+### `capability_not_cancelable`
+
+**HTTP ステータス:** `409`<br />
+**再試行可能:** いいえ<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/capability-not-cancelable`
+
+**意味:** 現在のステータスからは、このケイパビリティをキャンセルできません。
+
+**発生する状況:** ケイパビリティがキャンセル不可の状態に入った後、またはリソースがまだキャンセルをブロックしている間に、キャンセルリクエストが届いています。
+
+**対処方法:** `statusReason` と `blockingResources` を確認し、リストされたリソースを解決するか待機し、ケイパビリティを再取得して、現在のステータスで許可されている次のアクションを選択してください。
+
+**再試行ガイダンス:** 変更していないリクエストを再試行しないでください。次のリクエストを送信する前に、上記の対応を実施してください。
+
+**関連する API 操作:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}/cancel`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id-cancel) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityIdCancel`, ステータス `409`)
+
+**追加のレスポンスフィールド:**
+
+- `blockingResources`: リクエストされた操作を進める前に解決する必要がある顧客リソース。タイプと id でソートされます。
+- `statusReason`: 失敗した操作がリソースの現在のステータスに依存する場合の、状態競合の構造化された理由。
+
+<a id="capability-not-ready" className="block scroll-mt-32">
+  <span className="sr-only">capability_not_ready error</span>
+</a>
+
+### `capability_not_ready`
+
+**HTTP ステータス:** `409`<br />
+**再試行可能:** 状況による<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/capability-not-ready`
+
+**意味:** リクエストされた口座または資金移動に必要なケイパビリティが ready ではありません。
+
+**発生する状況:** 操作が、利用可能な状態に達していない 1 つ以上の顧客ケイパビリティに依存しています。
+
+**対処方法:** `capabilities` のケイパビリティ識別子を確認し、オープンタスクを完了するか状態が進むのを待ち、再取得して、ready になった後に新しいリクエストを送信してください。
+
+**再試行ガイダンス:** このレスポンスの `retryable` を確認してください。`true` の場合にのみ、後で再試行してください。冪等な書き込みでは、元の冪等性キーと変更していないリクエストを再利用してください。
+
+**関連する API 操作:**
+
+- [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) (`postV3CustomersByCustomerIdAccounts`, ステータス `409`)
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, ステータス `409`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, ステータス `409`)
+
+**追加のレスポンスフィールド:**
+
+- `capabilities`: 失敗した操作を満たすケイパビリティ id。
+
+<a id="capability-not-supported-for-customer-type" className="block scroll-mt-32">
+  <span className="sr-only">capability_not_supported_for_customer_type error</span>
+</a>
+
+### `capability_not_supported_for_customer_type`
+
+**HTTP ステータス:** `422`<br />
+**再試行可能:** 返されません<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/capability-not-supported-for-customer-type`
+
+**意味:** このケイパビリティは、この顧客タイプではサポートされていません。
+
+**発生する状況:** 個人または法人の顧客が、別の顧客タイプにのみ提供されているケイパビリティをリクエストしています。
+
+**対処方法:** この顧客のサポートされているケイパビリティのレスポンスを使用し、既存のタイプに提供されているケイパビリティをリクエストしてください。
+
+**再試行ガイダンス:** この問題は `retryable` を返しません。変更なしの再試行が安全であると想定せず、上記の対応とその操作の冪等性要件に従ってください。
+
+**関連する API 操作:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, ステータス `422`)
+
+<a id="capability-provider-resolution-failed" className="block scroll-mt-32">
+  <span className="sr-only">capability_provider_resolution_failed error</span>
+</a>
+
+### `capability_provider_resolution_failed`
+
+**HTTP ステータス:** `422`<br />
+**再試行可能:** 返されません<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/capability-provider-resolution-failed`
+
+**意味:** Swipelux は、このケイパビリティリクエストに対する完全な処理構成を解決できませんでした。
+
+**発生する状況:** リクエストされたケイパビリティの組み合わせは形式としては有効ですが、利用可能なケイパビリティのセットアップが不完全です。
+
+**対処方法:** サポートされているケイパビリティのレスポンスと照らし合わせてリクエストを確認してください。それでも提供されている場合は、`correlationId` を保管して Swipelux サポートに問い合わせてください。
+
+**再試行ガイダンス:** この問題は `retryable` を返しません。変更なしの再試行が安全であると想定せず、上記の対応とその操作の冪等性要件に従ってください。
+
+**関連する API 操作:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, ステータス `422`)
+
+<a id="capability-snapshot-corrupted" className="block scroll-mt-32">
+  <span className="sr-only">capability_snapshot_corrupted error</span>
+</a>
+
+### `capability_snapshot_corrupted`
+
+**HTTP ステータス:** `500`<br />
+**再試行可能:** いいえ<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/capability-snapshot-corrupted`
+
+**意味:** Swipelux は顧客のケイパビリティ状態を評価できませんでした。
+
+**発生する状況:** ケイパビリティ関連の操作が、保存された無効なケイパビリティスナップショットに遭遇しています。
+
+**対処方法:** `correlationId` を保管し、Swipelux サポートに問い合わせてください。変更していないリクエストを繰り返し再試行しないでください。
+
+**再試行ガイダンス:** 変更していないリクエストを再試行しないでください。次のリクエストを送信する前に、上記の対応を実施してください。
+
+<Accordion title="関連する API 操作 (11)">
+
+- [`PATCH /v3/customers/{customerId}`](/api-reference/customers/patch-v3-customers-by-customer-id) (`patchV3CustomersByCustomerId`, ステータス `500`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, ステータス `500`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}/cancel`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id-cancel) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityIdCancel`, ステータス `500`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}/tasks-preview`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id-tasks-preview) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityIdTasks-preview`, ステータス `500`)
+- [`POST /v3/customers/{customerId}/related-parties`](/api-reference/customers/post-v3-customers-by-customer-id-related-parties) (`postV3CustomersByCustomerIdRelated-parties`, ステータス `500`)
+- [`DELETE /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/delete-v3-customers-by-customer-id-related-parties-by-related-party-id) (`deleteV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, ステータス `500`)
+- [`PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/patch-v3-customers-by-customer-id-related-parties-by-related-party-id) (`patchV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, ステータス `500`)
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, ステータス `500`)
+- [`POST /v3/sandbox/customers/{customerId}/capabilities/{capabilityId}/status`](/api-reference/sandbox/post-v3-sandbox-customers-by-customer-id-capabilities-by-capability-id-status) (`postV3SandboxCustomersByCustomerIdCapabilitiesByCapabilityIdStatus`, ステータス `500`)
+- [`POST /v3/sandbox/tasks`](/api-reference/sandbox/post-v3-sandbox-tasks) (`postV3SandboxTasks`, ステータス `500`)
+- [`POST /v3/sandbox/tasks/{taskId}/review`](/api-reference/sandbox/post-v3-sandbox-tasks-by-task-id-review) (`postV3SandboxTasksByTaskIdReview`, ステータス `500`)
+
+</Accordion>
+
+<a id="capability-terminally-rejected" className="block scroll-mt-32">
+  <span className="sr-only">capability_terminally_rejected error</span>
+</a>
+
+### `capability_terminally_rejected`
+
+**HTTP ステータス:** `409`<br />
+**再試行可能:** いいえ<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/capability-terminally-rejected`
+
+**意味:** このケイパビリティは、終端状態ですでに拒否されています。
+
+**発生する状況:** 既存のライフサイクルがリクエスト可能な状態に戻れなくなったケイパビリティをリクエストしています。
+
+**対処方法:** 既存のケイパビリティと提示されたタスクまたはステータス情報を確認し、サポートされている別のオプションを選択するか、状態が想定外の場合はサポートに問い合わせてください。
+
+**再試行ガイダンス:** 変更していないリクエストを再試行しないでください。次のリクエストを送信する前に、上記の対応を実施してください。
+
+**関連する API 操作:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, ステータス `409`)
+
+<a id="capability-variant-unavailable" className="block scroll-mt-32">
+  <span className="sr-only">capability_variant_unavailable error</span>
+</a>
+
+### `capability_variant_unavailable`
+
+**HTTP ステータス:** `409`, `422`<br />
+**再試行可能:** 状況による<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/capability-variant-unavailable`
+
+**意味:** リクエストされたケイパビリティバリアントは、選択された顧客、インテント、または機関の組み合わせでは利用できません。
+
+**発生する状況:** ケイパビリティの評価で、一時的な可用性の問題、または構造的にサポートされていない組み合わせが検出されています。
+
+**対処方法:** `retryable` を確認してください。`true` の場合は後で再試行し、それ以外の場合はサポートされているケイパビリティのレスポンスから別のバリアントを選択してください。
+
+**再試行ガイダンス:** このレスポンスの `retryable` を確認してください。`true` の場合にのみ、後で再試行してください。冪等な書き込みでは、元の冪等性キーと変更していないリクエストを再利用してください。 一時的なバリアント停止を再試行する場合はリクエストを変更しないでください。レスポンスが再試行不可の場合は、ケイパビリティの選択を変更してください。
+
+**関連する API 操作:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, ステータス `409`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, ステータス `422`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}/tasks-preview`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id-tasks-preview) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityIdTasks-preview`, ステータス `422`)
+
+<a id="initial-application-identity-conflict" className="block scroll-mt-32">
+  <span className="sr-only">initial_application_identity_conflict error</span>
+</a>
+
+### `initial_application_identity_conflict`
+
+**HTTP ステータス:** `409`<br />
+**再試行可能:** いいえ<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/initial-application-identity-conflict`
+
+**意味:** 初期申請の識別情報が、保存される前に変更されました。
+
+**発生する状況:** 顧客の作成またはケイパビリティリクエストで、作成中の初期申請に関して競合する識別情報が検出されています。
+
+**対処方法:** `correlationId` を保管し、ケイパビリティリクエストを再試行する前に Swipelux サポートに問い合わせてください。
+
+**再試行ガイダンス:** 変更していないリクエストを再試行しないでください。次のリクエストを送信する前に、上記の対応を実施してください。
+
+**関連する API 操作:**
+
+- [`POST /v3/customers`](/api-reference/customers/post-v3-customers) (`postV3Customers`, ステータス `409`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, ステータス `409`)
+
+<a id="initial-application-owner-unavailable" className="block scroll-mt-32">
+  <span className="sr-only">initial_application_owner_unavailable error</span>
+</a>
+
+### `initial_application_owner_unavailable`
+
+**HTTP ステータス:** `503`<br />
+**再試行可能:** いいえ<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/initial-application-owner-unavailable`
+
+**意味:** 初期申請に対して有効なオーナールートがありません。
+
+**発生する状況:** ケイパビリティリクエストが、初期申請をサポートされている機関オプションに割り当てられません。
+
+**対処方法:** ケイパビリティカタログで返されたサポート対象の機関を選択するか、利用できる機関がない場合は `correlationId` を保管して Swipelux サポートに問い合わせてください。
+
+**再試行ガイダンス:** 変更していないリクエストを再試行しないでください。次のリクエストを送信する前に、上記の対応を実施してください。
+
+**関連する API 操作:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, ステータス `503`)
+
+<a id="initial-application-scope-unavailable" className="block scroll-mt-32">
+  <span className="sr-only">initial_application_scope_unavailable error</span>
+</a>
+
+### `initial_application_scope_unavailable`
+
+**HTTP ステータス:** `503`<br />
+**再試行可能:** 状況による<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/initial-application-scope-unavailable`
+
+**意味:** Swipelux は初期申請に必要なスコープを解決できませんでした。
+
+**発生する状況:** 顧客の作成またはケイパビリティリクエストが、初期申請の作成に必要な API キー環境とコンプライアンスコンテキストを解決できません。
+
+**対処方法:** API キー環境を確認し、`correlationId` を保管してください。`retryable` が存在する場合はそれに従い、存在しない場合は再試行の前に Swipelux サポートに問い合わせてください。
+
+**再試行ガイダンス:** このレスポンスの `retryable` を確認してください。`true` の場合にのみ、後で再試行してください。冪等な書き込みでは、元の冪等性キーと変更していないリクエストを再利用してください。
+
+**関連する API 操作:**
+
+- [`POST /v3/customers`](/api-reference/customers/post-v3-customers) (`postV3Customers`, ステータス `503`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, ステータス `503`)
+
+<a id="invalid-capability" className="block scroll-mt-32">
+  <span className="sr-only">invalid_capability error</span>
+</a>
+
+### `invalid_capability`
+
+**HTTP ステータス:** `400`, `422`<br />
+**再試行可能:** 返されません<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/invalid-capability`
+
+**意味:** ケイパビリティ参照またはリクエストされたケイパビリティ値が、この操作では無効です。
+
+**発生する状況:** ケイパビリティリクエストまたはサンドボックスのステータス変更が、不明または互換性のないケイパビリティ識別子や値を使用しています。
+
+**対処方法:** 顧客のケイパビリティを取得し、現在の正確なケイパビリティ識別子を使用して、操作スキーマに一致するようにリクエストを修正してください。
+
+**再試行ガイダンス:** この問題は `retryable` を返しません。変更なしの再試行が安全であると想定せず、上記の対応とその操作の冪等性要件に従ってください。
+
+**関連する API 操作:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, ステータス `400`)
+- [`POST /v3/sandbox/customers/{customerId}/capabilities/{capabilityId}/status`](/api-reference/sandbox/post-v3-sandbox-customers-by-customer-id-capabilities-by-capability-id-status) (`postV3SandboxCustomersByCustomerIdCapabilitiesByCapabilityIdStatus`, ステータス `422`)
+
+<a id="invalid-document-reference" className="block scroll-mt-32">
+  <span className="sr-only">invalid_document_reference error</span>
+</a>
+
+### `invalid_document_reference`
+
+**HTTP ステータス:** `400`<br />
+**再試行可能:** いいえ<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/invalid-document-reference`
+
+**意味:** タスクの送信に、選択された要件を満たせないドキュメント参照が含まれています。
+
+**発生する状況:** 参照されたドキュメントが存在しないか、その顧客からアクセスできないか、回答しようとしているタスク要件と一致していません。
+
+**対処方法:** 顧客のドキュメントを一覧表示またはアップロードし、要件に対して正しいドキュメント識別子を使用し、タスクを再取得して現在のリビジョンを送信してください。
+
+**再試行ガイダンス:** 変更していないリクエストを再試行しないでください。次のリクエストを送信する前に、上記の対応を実施してください。
+
+**関連する API 操作:**
+
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, ステータス `400`)
+
+<a id="kyc-configuration-unavailable" className="block scroll-mt-32">
+  <span className="sr-only">kyc_configuration_unavailable error</span>
+</a>
+
+### `kyc_configuration_unavailable`
+
+**HTTP ステータス:** `503`<br />
+**再試行可能:** いいえ<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/kyc-configuration-unavailable`
+
+**意味:** ケイパビリティに必要な検証構成が利用できません。
+
+**発生する状況:** Swipelux が、現在アクティブな公開構成からリクエストされた検証フローを準備できません。
+
+**対処方法:** `correlationId` を保管し、Swipelux サポートに問い合わせてください。変更していないリクエストを繰り返し再試行しないでください。
+
+**再試行ガイダンス:** 変更していないリクエストを再試行しないでください。次のリクエストを送信する前に、上記の対応を実施してください。
+
+**関連する API 操作:**
+
+- [`GET /kyc/redirect/{customerId}/{taskId}/{verificationSessionId}`](/api-reference/tasks/start-kyc-verification-session) (`startKycVerificationSession`, ステータス `503`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, ステータス `503`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}/tasks-preview`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id-tasks-preview) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityIdTasks-preview`, ステータス `503`)
+
+<a id="kyc-level-configuration-invalid" className="block scroll-mt-32">
+  <span className="sr-only">kyc_level_configuration_invalid error</span>
+</a>
+
+### `kyc_level_configuration_invalid`
+
+**HTTP ステータス:** `503`<br />
+**再試行可能:** いいえ<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/kyc-level-configuration-invalid`
+
+**意味:** アクティブな検証レベル構成が無効です。
+
+**発生する状況:** 構成された検証レベルが使用できないため、ホスト型検証セッションを開始できません。
+
+**対処方法:** `correlationId` を保管し、再試行の前に構成を修正できるよう Swipelux サポートに問い合わせてください。
+
+**再試行ガイダンス:** 変更していないリクエストを再試行しないでください。次のリクエストを送信する前に、上記の対応を実施してください。
+
+**関連する API 操作:**
+
+- [`GET /kyc/redirect/{customerId}/{taskId}/{verificationSessionId}`](/api-reference/tasks/start-kyc-verification-session) (`startKycVerificationSession`, ステータス `503`)
+
+<a id="kyc-process-conflict" className="block scroll-mt-32">
+  <span className="sr-only">kyc_process_conflict error</span>
+</a>
+
+### `kyc_process_conflict`
+
+**HTTP ステータス:** `409`<br />
+**再試行可能:** はい<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/kyc-process-conflict`
+
+**意味:** 操作が完了する前に検証プロセスが変更されました。
+
+**発生する状況:** リクエストの処理中に、別のアクションがタスクまたは検証セッションを進行させたり置き換えたりしています。
+
+**対処方法:** タスクと利用可能な検証方法を再読み込みし、現在のプロセス状態に対して再試行してください。
+
+**再試行ガイダンス:** 時間をおいてから再試行してください。冪等な書き込みでは、元の冪等性キーと変更していないリクエストを再利用してください。
+
+**関連する API 操作:**
+
+- [`GET /kyc/redirect/{customerId}/{taskId}/{verificationSessionId}`](/api-reference/tasks/start-kyc-verification-session) (`startKycVerificationSession`, ステータス `409`)
+- [`PATCH /v3/customers/{customerId}`](/api-reference/customers/patch-v3-customers-by-customer-id) (`patchV3CustomersByCustomerId`, ステータス `409`)
+- [`PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/patch-v3-customers-by-customer-id-related-parties-by-related-party-id) (`patchV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, ステータス `409`)
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, ステータス `409`)
+
+<a id="kyc-provider-unavailable" className="block scroll-mt-32">
+  <span className="sr-only">kyc_provider_unavailable error</span>
+</a>
+
+### `kyc_provider_unavailable`
+
+**HTTP ステータス:** `502`<br />
+**再試行可能:** はい<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/kyc-provider-unavailable`
+
+**意味:** 検証サービスが一時的に利用できません。
+
+**発生する状況:** 検証サービスがリクエストを完了しなかったため、ホスト型検証セッションを作成または継続できません。
+
+**対処方法:** 時間をおいてから再試行してください。タスクとセッションの識別子を保持し、停止が長引いてタスクの状態が変わる可能性がある場合はタスクを再取得してください。
+
+**再試行ガイダンス:** 時間をおいてから再試行してください。冪等な書き込みでは、元の冪等性キーと変更していないリクエストを再利用してください。
+
+**関連する API 操作:**
+
+- [`GET /kyc/redirect/{customerId}/{taskId}/{verificationSessionId}`](/api-reference/tasks/start-kyc-verification-session) (`startKycVerificationSession`, ステータス `502`)
+
+<a id="kyc-session-terminal" className="block scroll-mt-32">
+  <span className="sr-only">kyc_session_terminal error</span>
+</a>
+
+### `kyc_session_terminal`
+
+**HTTP ステータス:** `410`<br />
+**再試行可能:** いいえ<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/kyc-session-terminal`
+
+**意味:** 検証セッションはもう操作できません。
+
+**発生する状況:** リクエストされたホスト型セッションが、すでに完了、失敗、期限切れ、またはその他の終端状態に達しています。
+
+**対処方法:** タスクを再取得し、アクティブなセッションを使用するか、現在のタスクで提示されている新しい検証方法を開始してください。
+
+**再試行ガイダンス:** 変更していないリクエストを再試行しないでください。次のリクエストを送信する前に、上記の対応を実施してください。
+
+**関連する API 操作:**
+
+- [`GET /kyc/redirect/{customerId}/{taskId}/{verificationSessionId}`](/api-reference/tasks/start-kyc-verification-session) (`startKycVerificationSession`, ステータス `410`)
+
+<a id="ops-rail-handoff-conflict" className="block scroll-mt-32">
+  <span className="sr-only">ops_rail_handoff_conflict error</span>
+</a>
+
+### `ops_rail_handoff_conflict`
+
+**HTTP ステータス:** `409`<br />
+**再試行可能:** いいえ<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/ops-rail-handoff-conflict`
+
+**意味:** 競合する銀行レールのセットアップにより、タスクの送信がブロックされています。
+
+**発生する状況:** ドキュメントタスクの送信が、顧客の現在の銀行レール状態と整合させられません。
+
+**対処方法:** アップロードしたドキュメントの識別子を保持し、`correlationId` を保管して、同じ送信を再試行する前に Swipelux サポートに問い合わせてください。この競合だけを理由に代わりのコピーをアップロードしないでください。
+
+**再試行ガイダンス:** 変更していないリクエストを再試行しないでください。次のリクエストを送信する前に、上記の対応を実施してください。
+
+**関連する API 操作:**
+
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, ステータス `409`)
+
+<a id="provider-conflict" className="block scroll-mt-32">
+  <span className="sr-only">provider_conflict error</span>
+</a>
+
+### `provider_conflict`
+
+**HTTP ステータス:** `400`, `422`<br />
+**再試行可能:** いいえ<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/provider-conflict`
+
+**意味:** リクエストされたケイパビリティまたは検証アクションが、現在の処理構成と競合しています。
+
+**発生する状況:** リクエストは形式としては有効ですが、顧客の既存のケイパビリティまたは検証セットアップと整合させることができません。
+
+**対処方法:** 顧客のケイパビリティとタスクを再取得し、サポートされている現在のオプションを選択してください。競合が依然として想定外の場合は、`correlationId` を保管してサポートに問い合わせてください。
+
+**再試行ガイダンス:** 変更していないリクエストを再試行しないでください。次のリクエストを送信する前に、上記の対応を実施してください。
+
+**関連する API 操作:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, ステータス `400`)
+- [`POST /v3/sandbox/customers/{customerId}/verification`](/api-reference/sandbox/post-v3-sandbox-customers-by-customer-id-verification) (`postV3SandboxCustomersByCustomerIdVerification`, ステータス `422`)
+
+<a id="submission-channel-not-allowed" className="block scroll-mt-32">
+  <span className="sr-only">submission_channel_not_allowed error</span>
+</a>
+
+### `submission_channel_not_allowed`
+
+**HTTP ステータス:** `409`<br />
+**再試行可能:** いいえ<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/submission-channel-not-allowed`
+
+**意味:** このタスクでは、API からの直接送信は許可されていません。
+
+**発生する状況:** タスクが別の検証方法を必要としており、直接送信エンドポイント経由で送信された回答を拒否しています。
+
+**対処方法:** タスクを再取得し、現在の要件で提示されている検証方法またはリンクのいずれかを使用してください。
+
+**再試行ガイダンス:** 変更していないリクエストを再試行しないでください。次のリクエストを送信する前に、上記の対応を実施してください。
+
+**関連する API 操作:**
+
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, ステータス `409`)
+
+<a id="submission-not-found" className="block scroll-mt-32">
+  <span className="sr-only">submission_not_found error</span>
+</a>
+
+### `submission_not_found`
+
+**HTTP ステータス:** `404`<br />
+**再試行可能:** いいえ<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/submission-not-found`
+
+**意味:** リクエストされたタスク送信が見つかりませんでした。
+
+**発生する状況:** 送信の識別子が誤っているか、別のタスクまたは顧客に属しているか、現在の環境でアクセスできません。
+
+**対処方法:** 顧客、タスク、送信の識別子を確認し、現在のタスクの送信を一覧表示してから再試行してください。
+
+**再試行ガイダンス:** 変更していないリクエストを再試行しないでください。次のリクエストを送信する前に、上記の対応を実施してください。
+
+**関連する API 操作:**
+
+- [`GET /v3/customers/{customerId}/tasks/{taskId}/submissions/{submissionId}`](/api-reference/task-submissions/get-customer-task-submission) (`getCustomerTaskSubmission`, ステータス `404`)
+
+<a id="task-changed" className="block scroll-mt-32">
+  <span className="sr-only">task_changed error</span>
+</a>
+
+### `task_changed`
+
+**HTTP ステータス:** `409`<br />
+**再試行可能:** いいえ<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/task-changed`
+
+**意味:** クライアントが最後に読み取った後にタスクが変更されました。
+
+**発生する状況:** 別のアクションがタスクを更新した後に、送信が古いタスクリビジョンまたはステータスを使用しています。
+
+**対処方法:** `taskUrl` または `taskId` を使用してタスクを再取得し、`currentRevision` と `currentStatus` に合わせて回答を再構築して、現在の要件を送信してください。
+
+**再試行ガイダンス:** 変更していないリクエストを再試行しないでください。次のリクエストを送信する前に、上記の対応を実施してください。 リクエストボディを新しいリビジョンに合わせて変更する必要があるため、修正した送信には新しい冪等性キーを使用してください。
+
+**関連する API 操作:**
+
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, ステータス `409`)
+
+**追加のレスポンスフィールド:**
+
+- `currentRevision`: 現在のタスクリビジョン。
+- `currentStatus`: 現在のタスクステータス。
+- `taskId`: 現在のタスク識別子。
+- `taskUrl`: 問題に関する追加のコンテキスト。
+
+<a id="task-not-found" className="block scroll-mt-32">
+  <span className="sr-only">task_not_found error</span>
+</a>
+
+### `task_not_found`
+
+**HTTP ステータス:** `404`<br />
+**再試行可能:** いいえ<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/task-not-found`
+
+**意味:** 指定された顧客または API キーに対してタスクが見つかりませんでした。
+
+**発生する状況:** タスク識別子が存在しないか、別の顧客またはスコープに属しているか、現在の環境でアクセスできません。
+
+**対処方法:** 顧客とタスクの識別子を確認し、現在のタスクを一覧表示して、アクセス可能なタスクで続行してください。
+
+**再試行ガイダンス:** 変更していないリクエストを再試行しないでください。次のリクエストを送信する前に、上記の対応を実施してください。
+
+**関連する API 操作:**
+
+- [`GET /v3/customers/{customerId}/tasks/{taskId}`](/api-reference/tasks/get-customer-task) (`getCustomerTask`, ステータス `404`)
+- [`GET /v3/customers/{customerId}/tasks/{taskId}/history`](/api-reference/tasks/list-customer-task-history) (`listCustomerTaskHistory`, ステータス `404`)
+- [`GET /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/list-customer-task-submissions) (`listCustomerTaskSubmissions`, ステータス `404`)
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, ステータス `404`)
+- [`POST /v3/sandbox/tasks/{taskId}/review`](/api-reference/sandbox/post-v3-sandbox-tasks-by-task-id-review) (`postV3SandboxTasksByTaskIdReview`, ステータス `404`)
+- [`GET /v3/tasks/{taskId}`](/api-reference/tasks/get-task) (`getTask`, ステータス `404`)
+
+<a id="task-obligation-conflict" className="block scroll-mt-32">
+  <span className="sr-only">task_obligation_conflict error</span>
+</a>
+
+### `task_obligation_conflict`
+
+**HTTP ステータス:** `409`<br />
+**再試行可能:** いいえ<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/task-obligation-conflict`
+
+**意味:** タスクの義務状態が競合しており、送信を受け付けられません。
+
+**発生する状況:** タスクの現在の要件に、直接送信フローでは安全に解決できない不整合な状態が含まれています。
+
+**対処方法:** `correlationId` を保管し、タスクを一度再取得して、競合が解消しない場合は Swipelux サポートに問い合わせてください。
+
+**再試行ガイダンス:** 変更していないリクエストを再試行しないでください。次のリクエストを送信する前に、上記の対応を実施してください。
+
+**関連する API 操作:**
+
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, ステータス `409`)
+
+<a id="task-submission-incomplete" className="block scroll-mt-32">
+  <span className="sr-only">task_submission_incomplete error</span>
+</a>
+
+### `task_submission_incomplete`
+
+**HTTP ステータス:** `422`<br />
+**再試行可能:** いいえ<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/task-submission-incomplete`
+
+**意味:** 送信が、現在対応可能なすべての要件に回答していません。
+
+**発生する状況:** `missingRequirementIds` にリストされた要件識別子のうち 1 つ以上に、リクエスト内で有効な回答がありません。
+
+**対処方法:** タスクを再取得し、`missingRequirementIds` のすべての識別子に回答を提供して、現在のタスクリビジョンを送信してください。
+
+**再試行ガイダンス:** 変更していないリクエストを再試行しないでください。次のリクエストを送信する前に、上記の対応を実施してください。
+
+**関連する API 操作:**
+
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, ステータス `422`)
+
+**追加のレスポンスフィールド:**
+
+- `missingRequirementIds`: まだ回答されていない、順序付きの対応可能な要件 id。
+
+<a id="verification-collection-mapping-invalid" className="block scroll-mt-32">
+  <span className="sr-only">verification_collection_mapping_invalid error</span>
+</a>
+
+### `verification_collection_mapping_invalid`
+
+**HTTP ステータス:** `503`<br />
+**再試行可能:** いいえ<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/verification-collection-mapping-invalid`
+
+**意味:** タスクの検証要件を、実行可能な検証フローとして準備できません。
+
+**発生する状況:** Swipelux が、現在の公開タスク要件をケイパビリティに必要な検証コレクションにマッピングできません。
+
+**対処方法:** `correlationId` を保管し、Swipelux サポートに問い合わせてください。変更していないリクエストを繰り返し再試行しないでください。
+
+**再試行ガイダンス:** 変更していないリクエストを再試行しないでください。次のリクエストを送信する前に、上記の対応を実施してください。
+
+**関連する API 操作:**
+
+- [`GET /kyc/redirect/{customerId}/{taskId}/{verificationSessionId}`](/api-reference/tasks/start-kyc-verification-session) (`startKycVerificationSession`, ステータス `503`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, ステータス `503`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}/tasks-preview`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id-tasks-preview) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityIdTasks-preview`, ステータス `503`)
+
+## 口座と支払いレール
+
+<a id="account-has-active-transfers" className="block scroll-mt-32">
+  <span className="sr-only">account_has_active_transfers error</span>
+</a>
+
+### `account_has_active_transfers`
+
+**HTTP ステータス:** `409`<br />
+**再試行可能:** はい<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/account-has-active-transfers`
+
+**意味:** 1 つ以上の送金がまだアクティブな間は、口座をアーカイブできません。
+
+**発生する状況:** 処理中の送金から参照されている口座をアーカイブしようとしています。
+
+**対処方法:** アクティブな送金が終端状態に達するのを待つか、まだ変更可能な送金をキャンセルまたは解決してから、口座をアーカイブしてください。
+
+**再試行ガイダンス:** 時間をおいてから再試行してください。冪等な書き込みでは、元の冪等性キーと変更していないリクエストを再利用してください。
+
+**関連する API 操作:**
+
+- [`DELETE /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/delete-v3-customers-by-customer-id-accounts-by-account-id) (`deleteV3CustomersByCustomerIdAccountsByAccountId`, ステータス `409`)
+
+<a id="account-method-not-supported" className="block scroll-mt-32">
+  <span className="sr-only">account_method_not_supported error</span>
+</a>
+
+### `account_method_not_supported`
+
+**HTTP ステータス:** `422`<br />
+**再試行可能:** いいえ<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/account-method-not-supported`
+
+**意味:** 選択された口座は、見積もりでリクエストされた支払い方法をサポートしていません。
+
+**発生する状況:** 見積もりの送金元または送金先の口座が、選択された資金移動方法と互換性がありません。
+
+**対処方法:** 現在のケイパビリティでサポートされている口座と方法の組み合わせを選択し、新しい見積もりをリクエストしてください。
+
+**再試行ガイダンス:** 変更していないリクエストを再試行しないでください。次のリクエストを送信する前に、上記の対応を実施してください。
+
+**関連する API 操作:**
+
+- [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) (`postV3CustomersByCustomerIdAccounts`, ステータス `422`)
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, ステータス `422`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, ステータス `422`)
+
+<a id="account-not-ready" className="block scroll-mt-32">
+  <span className="sr-only">account_not_ready error</span>
+</a>
+
+### `account_not_ready`
+
+**HTTP ステータス:** `409`<br />
+**再試行可能:** 状況による<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/account-not-ready`
+
+**意味:** 口座は存在しますが、現在のステータスでは見積もりまたは送金が許可されていません。
+
+**発生する状況:** 資金移動の操作には ready 状態の口座が必要ですが、選択された口座はその状態に達していません。
+
+**対処方法:** `statusReason` を確認し、必要なセットアップを完了するか口座の状態が進むのを待ち、口座を再取得して、ready になったら新しいリクエストを送信してください。
+
+**再試行ガイダンス:** このレスポンスの `retryable` を確認してください。`true` の場合にのみ、後で再試行してください。冪等な書き込みでは、元の冪等性キーと変更していないリクエストを再利用してください。
+
+**関連する API 操作:**
+
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, ステータス `409`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, ステータス `409`)
+
+**追加のレスポンスフィールド:**
+
+- `statusReason`: 失敗した操作がリソースの現在のステータスに依存する場合の、状態競合の構造化された理由。
+
+<a id="account-unavailable" className="block scroll-mt-32">
+  <span className="sr-only">account_unavailable error</span>
+</a>
+
+### `account_unavailable`
+
+**HTTP ステータス:** `409`<br />
+**再試行可能:** いいえ<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/account-unavailable`
+
+**意味:** 選択された口座は、リクエストされた資金移動には利用できません。
+
+**発生する状況:** 現在の利用可能状態では、この操作でその口座を使用できません。
+
+**対処方法:** 口座を再取得して利用可能な口座を選択するか、新しい見積もりまたは送金リクエストを作成する前に口座の状態を解決してください。
+
+**再試行ガイダンス:** 変更していないリクエストを再試行しないでください。次のリクエストを送信する前に、上記の対応を実施してください。
+
+**関連する API 操作:**
+
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, ステータス `409`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, ステータス `409`)
+
+<a id="bank-not-supported-for-customer" className="block scroll-mt-32">
+  <span className="sr-only">bank_not_supported_for_customer error</span>
+</a>
+
+### `bank_not_supported_for_customer`
+
+**HTTP ステータス:** `422`<br />
+**再試行可能:** 返されません<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/bank-not-supported-for-customer`
+
+**意味:** 選択された機関は、この顧客とケイパビリティリクエストでは利用できません。
+
+**発生する状況:** ケイパビリティリクエストが、顧客のサポート対象オプションに含まれない機関を選択しています。
+
+**対処方法:** 顧客のサポートされているケイパビリティと機関を一覧表示し、利用可能なオプションを選択して、新しいケイパビリティリクエストを送信してください。
+
+**再試行ガイダンス:** この問題は `retryable` を返しません。変更なしの再試行が安全であると想定せず、上記の対応とその操作の冪等性要件に従ってください。
+
+**関連する API 操作:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, ステータス `422`)
+
+<a id="developer-fee-invalid" className="block scroll-mt-32">
+  <span className="sr-only">developer_fee_invalid error</span>
+</a>
+
+### `developer_fee_invalid`
+
+**HTTP ステータス:** `422`<br />
+**再試行可能:** いいえ<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/developer-fee-invalid`
+
+**意味:** 選択された口座または資金移動に対して、開発者手数料の構成が無効です。
+
+**発生する状況:** 手数料の値が無効であるか、選択された口座が手数料に対応する互換性のある決済ターゲットを提供していません。
+
+**対処方法:** 手数料の値を修正し、対象となる口座と決済構成を使用して、必要に応じて新しい口座、見積もり、または送金リクエストを作成してください。
+
+**再試行ガイダンス:** 変更していないリクエストを再試行しないでください。次のリクエストを送信する前に、上記の対応を実施してください。
+
+**関連する API 操作:**
+
+- [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) (`postV3CustomersByCustomerIdAccounts`, ステータス `422`)
+- [`PUT /v3/customers/{customerId}/accounts/{accountId}/fees`](/api-reference/accounts/put-v3-customers-by-customer-id-accounts-by-account-id-fees) (`putV3CustomersByCustomerIdAccountsByAccountIdFees`, ステータス `422`)
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, ステータス `422`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, ステータス `422`)
+
+<a id="invalid-settlement-target" className="block scroll-mt-32">
+  <span className="sr-only">invalid_settlement_target error</span>
+</a>
+
+### `invalid_settlement_target`
+
+**HTTP ステータス:** `400`<br />
+**再試行可能:** 返されません<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/invalid-settlement-target`
+
+**意味:** リクエストされた決済ターゲットは、この口座では無効です。
+
+**発生する状況:** 口座の作成または更新で、存在しない、互換性がない、またはその口座構成でサポートされていない決済ターゲットが選択されています。
+
+**対処方法:** 口座とケイパビリティに互換性のある、ドキュメント化された決済ターゲットを選択して、修正した口座リクエストを送信してください。
+
+**再試行ガイダンス:** この問題は `retryable` を返しません。変更なしの再試行が安全であると想定せず、上記の対応とその操作の冪等性要件に従ってください。
+
+**関連する API 操作:**
+
+- [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) (`postV3CustomersByCustomerIdAccounts`, ステータス `400`)
+- [`PATCH /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/patch-v3-customers-by-customer-id-accounts-by-account-id) (`patchV3CustomersByCustomerIdAccountsByAccountId`, ステータス `400`)
+
+<a id="rail-not-ready" className="block scroll-mt-32">
+  <span className="sr-only">rail_not_ready error</span>
+</a>
+
+### `rail_not_ready`
+
+**HTTP ステータス:** `409`<br />
+**再試行可能:** いいえ<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/rail-not-ready`
+
+**意味:** 選択された支払いレールは、この顧客に対して ready ではありません。
+
+**発生する状況:** 送金先、見積もり、または送金が、必要なセットアップまたは ready への遷移を完了していない顧客レールを必要としています。
+
+**対処方法:** 必要なレールのセットアップを完了し、レールが使用可能になるまで待ってから、新しいリクエストを作成してください。
+
+**再試行ガイダンス:** 変更していないリクエストを再試行しないでください。次のリクエストを送信する前に、上記の対応を実施してください。
+
+**関連する API 操作:**
+
+- [`POST /v3/customers/{customerId}/recipients/{recipientId}/destinations`](/api-reference/recipients/post-v3-customers-by-customer-id-recipients-by-recipient-id-destinations) (`postV3CustomersByCustomerIdRecipientsByRecipientIdDestinations`, ステータス `409`)
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, ステータス `409`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, ステータス `409`)
+
+<a id="rail-temporarily-unavailable" className="block scroll-mt-32">
+  <span className="sr-only">rail_temporarily_unavailable error</span>
+</a>
+
+### `rail_temporarily_unavailable`
+
+**HTTP ステータス:** `503`<br />
+**再試行可能:** はい<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/rail-temporarily-unavailable`
+
+**意味:** 選択された支払いレールが一時的に利用できません。
+
+**発生する状況:** レールに一時的な可用性の問題が発生しているため、見積もりの作成で通常はサポートされているレールを使用できません。
+
+**対処方法:** 時間をおいてから見積もりリクエストを再試行するか、資金移動を待てない場合はサポートされている別のレールを選択してください。
+
+**再試行ガイダンス:** 時間をおいてから再試行してください。冪等な書き込みでは、元の冪等性キーと変更していないリクエストを再利用してください。
+
+**関連する API 操作:**
+
+- [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) (`postV3CustomersByCustomerIdAccounts`, ステータス `503`)
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, ステータス `503`)
+
+## 受取人と送金先
+
+<a id="destination-not-ready" className="block scroll-mt-32">
+  <span className="sr-only">destination_not_ready error</span>
+</a>
+
+### `destination_not_ready`
+
+**HTTP ステータス:** `409`<br />
+**再試行可能:** 状況による<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/destination-not-ready`
+
+**意味:** 受取人の送金先は存在しますが、リクエストされた見積もりに対して ready ではありません。
+
+**発生する状況:** 見積もりが、現在のステータスでは資金移動が許可されていない送金先に依存しています。
+
+**対処方法:** `statusReason` を確認し、提示された送金先のセットアップを完了するかステータスが進むのを待ち、再取得して、ready になったら新しい見積もりをリクエストしてください。
+
+**再試行ガイダンス:** このレスポンスの `retryable` を確認してください。`true` の場合にのみ、後で再試行してください。冪等な書き込みでは、元の冪等性キーと変更していないリクエストを再利用してください。
+
+**関連する API 操作:**
+
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, ステータス `409`)
+
+**追加のレスポンスフィールド:**
+
+- `statusReason`: 失敗した操作がリソースの現在のステータスに依存する場合の、状態競合の構造化された理由。
+
+<a id="payout-target-relationship-invalid" className="block scroll-mt-32">
+  <span className="sr-only">payout_target_relationship_invalid error</span>
+</a>
+
+### `payout_target_relationship_invalid`
+
+**HTTP ステータス:** `400`<br />
+**再試行可能:** 返されません<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/payout-target-relationship-invalid`
+
+**意味:** 選択された支払いターゲットに、見積もり内の顧客または受取人との有効な関係がありません。
+
+**発生する状況:** 見積もりが、意図した支払い関係において所有されていない、または許可された送金先ではないターゲットを指しています。
+
+**対処方法:** 意図した顧客の下で返された口座または受取人の送金先を選択し、新しい見積もりをリクエストしてください。
+
+**再試行ガイダンス:** この問題は `retryable` を返しません。変更なしの再試行が安全であると想定せず、上記の対応とその操作の冪等性要件に従ってください。
+
+**関連する API 操作:**
+
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, ステータス `400`)
+
+<a id="recipient-account-unsupported" className="block scroll-mt-32">
+  <span className="sr-only">recipient_account_unsupported error</span>
+</a>
+
+### `recipient_account_unsupported`
+
+**HTTP ステータス:** `400`<br />
+**再試行可能:** 返されません<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/recipient-account-unsupported`
+
+**意味:** 受取人の口座詳細は、リクエストされた送金先ではサポートされていません。
+
+**発生する状況:** 送金先の作成で、選択されたレールが受け付けない口座タイプまたは口座詳細の組み合わせが指定されています。
+
+**対処方法:** 選択されたレールでサポートされている送金先タイプと口座詳細スキーマを使用して、新しい送金先リクエストを作成してください。
+
+**再試行ガイダンス:** この問題は `retryable` を返しません。変更なしの再試行が安全であると想定せず、上記の対応とその操作の冪等性要件に従ってください。
+
+**関連する API 操作:**
+
+- [`POST /v3/customers/{customerId}/recipients/{recipientId}/destinations`](/api-reference/recipients/post-v3-customers-by-customer-id-recipients-by-recipient-id-destinations) (`postV3CustomersByCustomerIdRecipientsByRecipientIdDestinations`, ステータス `400`)
+
+<a id="recipient-address-required" className="block scroll-mt-32">
+  <span className="sr-only">recipient_address_required error</span>
+</a>
+
+### `recipient_address_required`
+
+**HTTP ステータス:** `422`<br />
+**再試行可能:** いいえ<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/recipient-address-required`
+
+**意味:** このフィアット送金先を作成する前に、受取人に住所が必要です。
+
+**発生する状況:** 送金先の作成で受取人の住所データが必要なフィアット支払い方法が選択されていますが、受取人プロフィールにその情報がありません。
+
+**対処方法:** 必要な住所フィールドで受取人を更新してから、送金先を再度作成してください。
+
+**再試行ガイダンス:** 変更していないリクエストを再試行しないでください。次のリクエストを送信する前に、上記の対応を実施してください。
+
+**関連する API 操作:**
+
+- [`POST /v3/customers/{customerId}/recipients/{recipientId}/destinations`](/api-reference/recipients/post-v3-customers-by-customer-id-recipients-by-recipient-id-destinations) (`postV3CustomersByCustomerIdRecipientsByRecipientIdDestinations`, ステータス `422`)
+
+<a id="recipient-destination-invalid" className="block scroll-mt-32">
+  <span className="sr-only">recipient_destination_invalid error</span>
+</a>
+
+### `recipient_destination_invalid`
+
+**HTTP ステータス:** `400`, `422`<br />
+**再試行可能:** いいえ<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/recipient-destination-invalid`
+
+**意味:** 受取人の送金先が無効であるか、リクエストされた操作と互換性がありません。
+
+**発生する状況:** 送金先の作成、見積もりの作成、または送金の実行で、選択された送金先または経路の要件を満たさない送金先詳細が使用されています。
+
+**対処方法:** 送金先の詳細を修正するか、サポートされている代わりの送金先を作成して、必要に応じて新しい見積もりまたは送金をリクエストしてください。
+
+**再試行ガイダンス:** 変更していないリクエストを再試行しないでください。次のリクエストを送信する前に、上記の対応を実施してください。
+
+**関連する API 操作:**
+
+- [`POST /v3/customers/{customerId}/recipients/{recipientId}/destinations`](/api-reference/recipients/post-v3-customers-by-customer-id-recipients-by-recipient-id-destinations) (`postV3CustomersByCustomerIdRecipientsByRecipientIdDestinations`, ステータス `400`)
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, ステータス `422`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, ステータス `422`)
+
+<a id="recipient-name-invalid" className="block scroll-mt-32">
+  <span className="sr-only">recipient_name_invalid error</span>
+</a>
+
+### `recipient_name_invalid`
+
+**HTTP ステータス:** `400`<br />
+**再試行可能:** 返されません<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/recipient-name-invalid`
+
+**意味:** 受取人の名前がリクエストスキーマを満たしていません。
+
+**発生する状況:** 受取人の作成で、名前が欠落している、空である、または形式が無効です。
+
+**対処方法:** ドキュメント化されたスキーマに一致する受取人の名前を指定して、修正した作成リクエストを送信してください。
+
+**再試行ガイダンス:** この問題は `retryable` を返しません。変更なしの再試行が安全であると想定せず、上記の対応とその操作の冪等性要件に従ってください。
+
+**関連する API 操作:**
+
+- [`POST /v3/customers/{customerId}/recipients`](/api-reference/recipients/post-v3-customers-by-customer-id-recipients) (`postV3CustomersByCustomerIdRecipients`, ステータス `400`)
+
+<a id="wallet-destination-not-supported" className="block scroll-mt-32">
+  <span className="sr-only">wallet_destination_not_supported error</span>
+</a>
+
+### `wallet_destination_not_supported`
+
+**HTTP ステータス:** `409`<br />
+**再試行可能:** いいえ<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/wallet-destination-not-supported`
+
+**意味:** 選択された資金移動方法は、ウォレットの送金先をサポートしていません。
+
+**発生する状況:** 見積もりの作成で、ウォレットの送金先が別の送金先タイプ向けのレールまたはケイパビリティと組み合わされています。
+
+**対処方法:** 互換性のある口座または受取人の送金先を選択するか、サポートされているウォレット送金方法を選択して、新しい見積もりをリクエストしてください。
+
+**再試行ガイダンス:** 変更していないリクエストを再試行しないでください。次のリクエストを送信する前に、上記の対応を実施してください。
+
+**関連する API 操作:**
+
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, ステータス `409`)
+
+## 見積もりと送金
+
+<a id="amount-not-deliverable" className="block scroll-mt-32">
+  <span className="sr-only">amount_not_deliverable error</span>
+</a>
+
+### `amount_not_deliverable`
+
+**HTTP ステータス:** `422`<br />
+**再試行可能:** いいえ<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/amount-not-deliverable`
+
+**意味:** リクエストされた金額は、選択された通貨、口座、または方法では届けられません。
+
+**発生する状況:** 見積もりリクエストは形式としては有効ですが、選択された経路では送金先に届けられる金額を算出できません。
+
+**対処方法:** 金額、通貨、口座、送金先、または方法を調整して、新しい見積もりをリクエストしてください。
+
+**再試行ガイダンス:** 変更していないリクエストを再試行しないでください。次のリクエストを送信する前に、上記の対応を実施してください。
+
+**関連する API 操作:**
+
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, ステータス `422`)
+
+<a id="amount-side-ambiguous" className="block scroll-mt-32">
+  <span className="sr-only">amount_side_ambiguous error</span>
+</a>
+
+### `amount_side_ambiguous`
+
+**HTTP ステータス:** `400`<br />
+**再試行可能:** いいえ<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/amount-side-ambiguous`
+
+**意味:** 見積もりリクエストで、変換のどちら側の金額が固定されているかを一意に特定できません。
+
+**発生する状況:** 金額フィールドが、送金元と送金先のどちらの金額を意図しているかが不明確な組み合わせで指定されています。
+
+**対処方法:** 意図した見積もり方向に対してサポートされている側にのみ金額を設定し、新しい見積もりをリクエストしてください。
+
+**再試行ガイダンス:** 変更していないリクエストを再試行しないでください。次のリクエストを送信する前に、上記の対応を実施してください。
+
+**関連する API 操作:**
+
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, ステータス `400`)
+
+<a id="capability-direction-unsupported" className="block scroll-mt-32">
+  <span className="sr-only">capability_direction_unsupported error</span>
+</a>
+
+### `capability_direction_unsupported`
+
+**HTTP ステータス:** `422`<br />
+**再試行可能:** いいえ<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/capability-direction-unsupported`
+
+**意味:** 選択されたケイパビリティは、見積もりまたは送金に必要な資金移動の方向をサポートしていません。
+
+**発生する状況:** 見積もりの作成で、選択されたケイパビリティが公開していない方向が推定されているか、送金の作成で、見積もりに固定されたケイパビリティが保存された方向をサポートしなくなっています。
+
+**対処方法:** 意図した方向をサポートするケイパビリティを選択し、送金を作成する前に新しい見積もりをリクエストしてください。
+
+**再試行ガイダンス:** 変更していないリクエストを再試行しないでください。次のリクエストを送信する前に、上記の対応を実施してください。
+
+**関連する API 操作:**
+
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, ステータス `422`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, ステータス `422`)
+
+<a id="insufficient-balance" className="block scroll-mt-32">
+  <span className="sr-only">insufficient_balance error</span>
+</a>
+
+### `insufficient_balance`
+
+**HTTP ステータス:** `409`<br />
+**再試行可能:** いいえ<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/insufficient-balance`
+
+**意味:** 送金元の口座に、送金に十分な利用可能残高がありません。
+
+**発生する状況:** 送金の実行で送金元口座を確認した結果、利用可能な金額が必要な引き落とし額を下回っています。
+
+**対処方法:** 送金元口座に入金するか送金額を減らし、新しい見積もりを取得して新しい送金リクエストを作成してください。
+
+**再試行ガイダンス:** 変更していないリクエストを再試行しないでください。次のリクエストを送信する前に、上記の対応を実施してください。
+
+**関連する API 操作:**
+
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, ステータス `409`)
+
+<a id="quote-already-executed" className="block scroll-mt-32">
+  <span className="sr-only">quote_already_executed error</span>
+</a>
+
+### `quote_already_executed`
+
+**HTTP ステータス:** `409`<br />
+**再試行可能:** いいえ<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/quote-already-executed`
+
+**意味:** 見積もりはすでに実行されており、既存の送金があります。
+
+**発生する状況:** 別のリクエストが見積もりを正常に消費した後に、2 回目の実行リクエストが届いています。
+
+**対処方法:** `transferId` を使用して既存の送金を取得し追跡してください。同じ見積もりから別の送金を作成しないでください。
+
+**再試行ガイダンス:** 変更していないリクエストを再試行しないでください。次のリクエストを送信する前に、上記の対応を実施してください。 見積もりの実行を再試行するのではなく、返された送金を元の意図の結果として扱ってください。
+
+**関連する API 操作:**
+
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, ステータス `409`)
+
+**追加のレスポンスフィールド:**
+
+- `transferId`: 見積もりを消費した既存の送金。
+
+**例:**
+
+```json
+{
+  "type": "https://docs.swipelux.com/errors/quote-already-executed",
+  "title": "Quote Already Executed",
+  "status": 409,
+  "code": "quote_already_executed",
+  "detail": "This quote was already executed by another request.",
+  "correlationId": "cor_01JMM23TRANSFERERRORS",
+  "retryable": false,
+  "transferId": "tr_6dV8xN2pQ4rT7mA9sL1kBc"
+}
+```
+
+<a id="quote-destination-missing" className="block scroll-mt-32">
+  <span className="sr-only">quote_destination_missing error</span>
+</a>
+
+### `quote_destination_missing`
+
+**HTTP ステータス:** `409`, `500`<br />
+**再試行可能:** 状況による<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/quote-destination-missing`
+
+**意味:** 見積もりまたは送金に、この操作に必要な送金先が含まれていません。
+
+**発生する状況:** 新しい見積もりで必要な送金先が省略されているか、既存の見積もりに基づくリソースが記録された送金先を解決できません。
+
+**対処方法:** 新しいリクエストの場合は、有効な口座または受取人の送金先を指定して新しい見積もりをリクエストしてください。既存のリソースの場合は、再取得で解決しないときは `correlationId` を保管してサポートに問い合わせてください。
+
+**再試行ガイダンス:** このレスポンスの `retryable` を確認してください。`true` の場合にのみ、後で再試行してください。冪等な書き込みでは、元の冪等性キーと変更していないリクエストを再利用してください。
+
+**関連する API 操作:**
+
+- [`GET /v3/quotes/{quoteId}`](/api-reference/money-movement/get-v3-quotes-by-quote-id) (`getV3QuotesByQuoteId`, ステータス `500`)
+- [`GET /v3/transfers`](/api-reference/money-movement/get-v3-transfers) (`getV3Transfers`, ステータス `500`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, ステータス `409`)
+- [`GET /v3/transfers/{transferId}`](/api-reference/money-movement/get-v3-transfers-by-transfer-id) (`getV3TransfersByTransferId`, ステータス `500`)
+- [`POST /v3/transfers/{transferId}/cancel`](/api-reference/money-movement/post-v3-transfers-by-transfer-id-cancel) (`postV3TransfersByTransferIdCancel`, ステータス `500`)
+- [`GET /v3/transfers/{transferId}/instructions`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-instructions) (`getV3TransfersByTransferIdInstructions`, ステータス `500`)
+- [`GET /v3/transfers/{transferId}/tasks`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-tasks) (`getV3TransfersByTransferIdTasks`, ステータス `500`)
+
+<a id="quote-direction-invalid" className="block scroll-mt-32">
+  <span className="sr-only">quote_direction_invalid error</span>
+</a>
+
+### `quote_direction_invalid`
+
+**HTTP ステータス:** `422`, `500`<br />
+**再試行可能:** 状況による<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/quote-direction-invalid`
+
+**意味:** 送金元と送金先が、サポートされている見積もり方向を構成していません。
+
+**発生する状況:** 選択された口座、送金先、通貨、または方法により、資金移動が無効な送金元から送金先への方向になっています。
+
+**対処方法:** サポートされている資金フローに従って送金元と送金先の役割を修正し、新しい見積もりをリクエストしてください。
+
+**再試行ガイダンス:** このレスポンスの `retryable` を確認してください。`true` の場合にのみ、後で再試行してください。冪等な書き込みでは、元の冪等性キーと変更していないリクエストを再利用してください。
+
+**関連する API 操作:**
+
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, ステータス `422`)
+- [`GET /v3/quotes/{quoteId}`](/api-reference/money-movement/get-v3-quotes-by-quote-id) (`getV3QuotesByQuoteId`, ステータス `500`)
+- [`GET /v3/transfers`](/api-reference/money-movement/get-v3-transfers) (`getV3Transfers`, ステータス `500`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, ステータス `500`)
+- [`GET /v3/transfers/{transferId}`](/api-reference/money-movement/get-v3-transfers-by-transfer-id) (`getV3TransfersByTransferId`, ステータス `500`)
+- [`POST /v3/transfers/{transferId}/cancel`](/api-reference/money-movement/post-v3-transfers-by-transfer-id-cancel) (`postV3TransfersByTransferIdCancel`, ステータス `500`)
+- [`GET /v3/transfers/{transferId}/instructions`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-instructions) (`getV3TransfersByTransferIdInstructions`, ステータス `500`)
+- [`GET /v3/transfers/{transferId}/tasks`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-tasks) (`getV3TransfersByTransferIdTasks`, ステータス `500`)
+
+<a id="quote-execution-consumed" className="block scroll-mt-32">
+  <span className="sr-only">quote_execution_consumed error</span>
+</a>
+
+### `quote_execution_consumed`
+
+**HTTP ステータス:** `409`<br />
+**再試行可能:** いいえ<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/quote-execution-consumed`
+
+**意味:** 見積もりの 1 回限りの実行機会は、すでに消費されています。
+
+**発生する状況:** 先行または競合する実行の試行により、見積もりが再実行できない状態に移行しており、返すべき成功した送金も存在しません。
+
+**対処方法:** 意図した資金移動のために新しい見積もりをリクエストし、その新しい見積もりを 1 回だけ実行してください。
+
+**再試行ガイダンス:** 変更していないリクエストを再試行しないでください。次のリクエストを送信する前に、上記の対応を実施してください。
+
+**関連する API 操作:**
+
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, ステータス `409`)
+
+<a id="quote-expired" className="block scroll-mt-32">
+  <span className="sr-only">quote_expired error</span>
+</a>
+
+### `quote_expired`
+
+**HTTP ステータス:** `409`<br />
+**再試行可能:** いいえ<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/quote-expired`
+
+**意味:** 見積もりが実行される前に有効期限が切れました。
+
+**発生する状況:** 送金の作成で、有効期間が終了した後の見積もりが使用されています。
+
+**対処方法:** 新しい見積もりをリクエストし、新しい有効期限が切れる前に実行してください。
+
+**再試行ガイダンス:** 変更していないリクエストを再試行しないでください。次のリクエストを送信する前に、上記の対応を実施してください。
+
+**関連する API 操作:**
+
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, ステータス `409`)
+
+<a id="quote-failed" className="block scroll-mt-32">
+  <span className="sr-only">quote_failed error</span>
+</a>
+
+### `quote_failed`
+
+**HTTP ステータス:** `500`, `502`<br />
+**再試行可能:** 状況による<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/quote-failed`
+
+**意味:** Swipelux は、このリクエストに対して使用可能な見積もりを作成できませんでした。
+
+**発生する状況:** 見積もりの作成で、一時的なサービス障害、または選択された経路に対する終端的な失敗が発生しています。
+
+**対処方法:** `retryable` を確認してください。`true` の場合は同じ見積もりリクエストを後で再試行し、それ以外の場合は経路の入力を変更するか、`correlationId` を添えてサポートに問い合わせてください。
+
+**再試行ガイダンス:** このレスポンスの `retryable` を確認してください。`true` の場合にのみ、後で再試行してください。冪等な書き込みでは、元の冪等性キーと変更していないリクエストを再利用してください。
+
+**関連する API 操作:**
+
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, ステータス `500`)
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, ステータス `502`)
+
+<a id="quote-mode-invalid" className="block scroll-mt-32">
+  <span className="sr-only">quote_mode_invalid error</span>
+</a>
+
+### `quote_mode_invalid`
+
+**HTTP ステータス:** `500`<br />
+**再試行可能:** はい<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/quote-mode-invalid`
+
+**意味:** 見積もりを、この操作に必要なモードで解釈できません。
+
+**発生する状況:** 既存の見積もりに基づくリソースに、読み取りまたは実行パスで処理できないモードが含まれています。
+
+**対処方法:** 時間をおいてから再試行してください。同じ見積もりが失敗し続ける場合は、保存された見積もりを変更するのではなく、`correlationId` を保管してサポートに問い合わせてください。
+
+**再試行ガイダンス:** 時間をおいてから再試行してください。冪等な書き込みでは、元の冪等性キーと変更していないリクエストを再利用してください。
+
+**関連する API 操作:**
+
+- [`GET /v3/quotes/{quoteId}`](/api-reference/money-movement/get-v3-quotes-by-quote-id) (`getV3QuotesByQuoteId`, ステータス `500`)
+- [`GET /v3/transfers`](/api-reference/money-movement/get-v3-transfers) (`getV3Transfers`, ステータス `500`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, ステータス `500`)
+- [`GET /v3/transfers/{transferId}`](/api-reference/money-movement/get-v3-transfers-by-transfer-id) (`getV3TransfersByTransferId`, ステータス `500`)
+- [`POST /v3/transfers/{transferId}/cancel`](/api-reference/money-movement/post-v3-transfers-by-transfer-id-cancel) (`postV3TransfersByTransferIdCancel`, ステータス `500`)
+- [`GET /v3/transfers/{transferId}/instructions`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-instructions) (`getV3TransfersByTransferIdInstructions`, ステータス `500`)
+- [`GET /v3/transfers/{transferId}/tasks`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-tasks) (`getV3TransfersByTransferIdTasks`, ステータス `500`)
+
+<a id="quote-not-found" className="block scroll-mt-32">
+  <span className="sr-only">quote_not_found error</span>
+</a>
+
+### `quote_not_found`
+
+**HTTP ステータス:** `404`<br />
+**再試行可能:** 返されません<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/quote-not-found`
+
+**意味:** この API キーに対して見積もりが見つかりませんでした。
+
+**発生する状況:** 見積もり識別子が誤っているか、別の環境に属しているか、呼び出し元からアクセスできません。
+
+**対処方法:** 見積もり識別子と API キー環境を確認してください。意図した見積もりが利用できない場合は、新しい見積もりをリクエストしてください。
+
+**再試行ガイダンス:** この問題は `retryable` を返しません。変更なしの再試行が安全であると想定せず、上記の対応とその操作の冪等性要件に従ってください。
+
+**関連する API 操作:**
+
+- [`GET /v3/quotes/{quoteId}`](/api-reference/money-movement/get-v3-quotes-by-quote-id) (`getV3QuotesByQuoteId`, ステータス `404`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, ステータス `404`)
+
+<a id="rate-unavailable" className="block scroll-mt-32">
+  <span className="sr-only">rate_unavailable error</span>
+</a>
+
+### `rate_unavailable`
+
+**HTTP ステータス:** `502`<br />
+**再試行可能:** はい<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/rate-unavailable`
+
+**意味:** 必要な通貨レートが一時的に利用できません。
+
+**発生する状況:** レートまたは見積もりの操作が、リクエストされた通貨ペアに必要なレートを取得できません。
+
+**対処方法:** 時間をおいてから再試行してください。以前のレートの想定を再利用するのではなく、新しい見積もりをリクエストしてください。
+
+**再試行ガイダンス:** 時間をおいてから再試行してください。冪等な書き込みでは、元の冪等性キーと変更していないリクエストを再利用してください。
+
+**関連する API 操作:**
+
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, ステータス `502`)
+- [`GET /v3/rates`](/api-reference/money-movement/get-v3-rates) (`getV3Rates`, ステータス `502`)
+
+<a id="supporting-document-not-found" className="block scroll-mt-32">
+  <span className="sr-only">supporting_document_not_found error</span>
+</a>
+
+### `supporting_document_not_found`
+
+**HTTP ステータス:** `422`<br />
+**再試行可能:** いいえ<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/supporting-document-not-found`
+
+**意味:** 送金リクエストで参照されている補足ドキュメントが見つかりませんでした。
+
+**発生する状況:** 送金の作成が、存在しない、アクセスできない、または誤った顧客ドキュメントを参照しています。
+
+**対処方法:** 必要な顧客ドキュメントを一覧表示またはアップロードし、正しい識別子を使用して、新しい送金リクエストを送信してください。
+
+**再試行ガイダンス:** 変更していないリクエストを再試行しないでください。次のリクエストを送信する前に、上記の対応を実施してください。
+
+**関連する API 操作:**
+
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, ステータス `422`)
+
+<a id="transfer-execution-failed" className="block scroll-mt-32">
+  <span className="sr-only">transfer_execution_failed error</span>
+</a>
+
+### `transfer_execution_failed`
+
+**HTTP ステータス:** `500`<br />
+**再試行可能:** いいえ<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/transfer-execution-failed`
+
+**意味:** 見積もりの実行中に送金を完了できませんでした。
+
+**発生する状況:** 送金の作成が実行を開始したものの、使用可能な送金を作成する代わりに終端的な失敗が発生しています。
+
+**対処方法:** `correlationId` を保管し、見積もりと送金の状態を確認して、新しい見積もりで意図した資金移動を再試行する前にサポートに問い合わせてください。
+
+**再試行ガイダンス:** 変更していないリクエストを再試行しないでください。次のリクエストを送信する前に、上記の対応を実施してください。
+
+**関連する API 操作:**
+
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, ステータス `500`)
+
+<a id="transfer-has-no-instructions" className="block scroll-mt-32">
+  <span className="sr-only">transfer_has_no_instructions error</span>
+</a>
+
+### `transfer_has_no_instructions`
+
+**HTTP ステータス:** `404`<br />
+**再試行可能:** 返されません<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/transfer-has-no-instructions`
+
+**意味:** 送金は存在しますが、支払い指示を提供していません。
+
+**発生する状況:** 指示セットを公開していない送金タイプまたは状態に対して指示をリクエストしています。
+
+**対処方法:** 送金リソースを取得して現在の状態に従ってください。支払い指示を返す送金に対してのみ、指示エンドポイントを使用してください。
+
+**再試行ガイダンス:** この問題は `retryable` を返しません。変更なしの再試行が安全であると想定せず、上記の対応とその操作の冪等性要件に従ってください。
+
+**関連する API 操作:**
+
+- [`GET /v3/transfers/{transferId}/instructions`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-instructions) (`getV3TransfersByTransferIdInstructions`, ステータス `404`)
+
+<a id="transfer-not-cancelable" className="block scroll-mt-32">
+  <span className="sr-only">transfer_not_cancelable error</span>
+</a>
+
+### `transfer_not_cancelable`
+
+**HTTP ステータス:** `409`<br />
+**再試行可能:** いいえ<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/transfer-not-cancelable`
+
+**意味:** 現在の状態からは送金をキャンセルできません。
+
+**発生する状況:** 送金がキャンセル可能な状態を過ぎて進行した後に、キャンセルリクエストが届いています。
+
+**対処方法:** キャンセルリクエストを繰り返すのではなく、送金を再取得して現在の状態の処理を続行してください。
+
+**再試行ガイダンス:** 変更していないリクエストを再試行しないでください。次のリクエストを送信する前に、上記の対応を実施してください。
+
+**関連する API 操作:**
+
+- [`POST /v3/transfers/{transferId}/cancel`](/api-reference/money-movement/post-v3-transfers-by-transfer-id-cancel) (`postV3TransfersByTransferIdCancel`, ステータス `409`)
+
+<a id="transfer-not-found" className="block scroll-mt-32">
+  <span className="sr-only">transfer_not_found error</span>
+</a>
+
+### `transfer_not_found`
+
+**HTTP ステータス:** `404`<br />
+**再試行可能:** 返されません<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/transfer-not-found`
+
+**意味:** この API キーに対して送金が見つかりませんでした。
+
+**発生する状況:** 送金識別子が誤っているか、別の環境に属しているか、呼び出し元からアクセスできません。
+
+**対処方法:** 送金識別子と API キー環境を確認し、送金を一覧表示または取得してから、アクセス可能な送金で再試行してください。
+
+**再試行ガイダンス:** この問題は `retryable` を返しません。変更なしの再試行が安全であると想定せず、上記の対応とその操作の冪等性要件に従ってください。
+
+**関連する API 操作:**
+
+- [`POST /v3/sandbox/transfers/{transferId}/state`](/api-reference/sandbox/post-v3-sandbox-transfers-by-transfer-id-state) (`postV3SandboxTransfersByTransferIdState`, ステータス `404`)
+- [`GET /v3/transfers`](/api-reference/money-movement/get-v3-transfers) (`getV3Transfers`, ステータス `404`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, ステータス `404`)
+- [`GET /v3/transfers/{transferId}`](/api-reference/money-movement/get-v3-transfers-by-transfer-id) (`getV3TransfersByTransferId`, ステータス `404`)
+- [`POST /v3/transfers/{transferId}/cancel`](/api-reference/money-movement/post-v3-transfers-by-transfer-id-cancel) (`postV3TransfersByTransferIdCancel`, ステータス `404`)
+- [`GET /v3/transfers/{transferId}/instructions`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-instructions) (`getV3TransfersByTransferIdInstructions`, ステータス `404`)
+- [`GET /v3/transfers/{transferId}/tasks`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-tasks) (`getV3TransfersByTransferIdTasks`, ステータス `404`)
+
+<a id="transfer-state-invalid" className="block scroll-mt-32">
+  <span className="sr-only">transfer_state_invalid error</span>
+</a>
+
+### `transfer_state_invalid`
+
+**HTTP ステータス:** `400`, `500`<br />
+**再試行可能:** はい<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/transfer-state-invalid`
+
+**意味:** 送金が、リクエストされた操作または遷移をサポートしない状態にあります。
+
+**発生する状況:** 送金の読み取り、実行、キャンセル、またはサンドボックスの状態変更で、現在その操作を満たせない状態に遭遇しています。
+
+**対処方法:** 送金を再取得し、有効な次の状態を待つか選択して、現在の状態がその操作を許可した後にのみ再試行してください。
+
+**再試行ガイダンス:** 時間をおいてから再試行してください。冪等な書き込みでは、元の冪等性キーと変更していないリクエストを再利用してください。
+
+**関連する API 操作:**
+
+- [`POST /v3/sandbox/transfers/{transferId}/state`](/api-reference/sandbox/post-v3-sandbox-transfers-by-transfer-id-state) (`postV3SandboxTransfersByTransferIdState`, ステータス `400`)
+- [`GET /v3/transfers`](/api-reference/money-movement/get-v3-transfers) (`getV3Transfers`, ステータス `500`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, ステータス `500`)
+- [`GET /v3/transfers/{transferId}`](/api-reference/money-movement/get-v3-transfers-by-transfer-id) (`getV3TransfersByTransferId`, ステータス `500`)
+- [`POST /v3/transfers/{transferId}/cancel`](/api-reference/money-movement/post-v3-transfers-by-transfer-id-cancel) (`postV3TransfersByTransferIdCancel`, ステータス `500`)
+- [`GET /v3/transfers/{transferId}/instructions`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-instructions) (`getV3TransfersByTransferIdInstructions`, ステータス `500`)
+- [`GET /v3/transfers/{transferId}/tasks`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-tasks) (`getV3TransfersByTransferIdTasks`, ステータス `500`)
+
+## ルール
+
+<a id="rule-already-exists" className="block scroll-mt-32">
+  <span className="sr-only">rule_already_exists error</span>
+</a>
+
+### `rule_already_exists`
+
+**HTTP ステータス:** `409`<br />
+**再試行可能:** いいえ<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/rule-already-exists`
+
+**意味:** トリガー口座には、すでに有効なルールがあります。
+
+**発生する状況:** ルールの作成が、アーカイブされていないルールによってすでに監視されている口座を対象にしています。
+
+**対処方法:** `conflictingRuleId` を使用して既存のルールを取得し、重複を作成する代わりに、そのルールを更新、アーカイブ、または再利用してください。
+
+**再試行ガイダンス:** 変更していないリクエストを再試行しないでください。次のリクエストを送信する前に、上記の対応を実施してください。
+
+**関連する API 操作:**
+
+- [`POST /v3/customers/{customerId}/rules`](/api-reference/rules/post-v3-customers-by-customer-id-rules) (`postV3CustomersByCustomerIdRules`, ステータス `409`)
+
+**追加のレスポンスフィールド:**
+
+- `conflictingRuleId`: このリクエストと競合する既存の有効なルール。
+
+<a id="rule-archived" className="block scroll-mt-32">
+  <span className="sr-only">rule_archived error</span>
+</a>
+
+### `rule_archived`
+
+**HTTP ステータス:** `409`<br />
+**再試行可能:** いいえ<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/rule-archived`
+
+**意味:** ルールはアーカイブされており、変更できません。
+
+**発生する状況:** すでに終端のアーカイブ済み状態に達しているルールを更新またはアーカイブしようとしています。
+
+**対処方法:** 履歴としてアーカイブ済みルールを参照し、アクティブな代替が必要な場合は新しいルールを作成してください。
+
+**再試行ガイダンス:** 変更していないリクエストを再試行しないでください。次のリクエストを送信する前に、上記の対応を実施してください。
+
+**関連する API 操作:**
+
+- [`DELETE /v3/customers/{customerId}/rules/{ruleId}`](/api-reference/rules/delete-v3-customers-by-customer-id-rules-by-rule-id) (`deleteV3CustomersByCustomerIdRulesByRuleId`, ステータス `409`)
+- [`PATCH /v3/customers/{customerId}/rules/{ruleId}`](/api-reference/rules/patch-v3-customers-by-customer-id-rules-by-rule-id) (`patchV3CustomersByCustomerIdRulesByRuleId`, ステータス `409`)
+
+<a id="rule-not-found" className="block scroll-mt-32">
+  <span className="sr-only">rule_not_found error</span>
+</a>
+
+### `rule_not_found`
+
+**HTTP ステータス:** `404`<br />
+**再試行可能:** 返されません<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/rule-not-found`
+
+**意味:** 指定された顧客の下にルールが見つかりませんでした。
+
+**発生する状況:** ルール識別子が存在しないか、別の顧客に属しているか、現在の環境でアクセスできません。
+
+**対処方法:** 顧客とルールの識別子を確認し、顧客のルールを一覧表示して、アクセス可能なルールで再試行してください。
+
+**再試行ガイダンス:** この問題は `retryable` を返しません。変更なしの再試行が安全であると想定せず、上記の対応とその操作の冪等性要件に従ってください。
+
+**関連する API 操作:**
+
+- [`DELETE /v3/customers/{customerId}/rules/{ruleId}`](/api-reference/rules/delete-v3-customers-by-customer-id-rules-by-rule-id) (`deleteV3CustomersByCustomerIdRulesByRuleId`, ステータス `404`)
+- [`GET /v3/customers/{customerId}/rules/{ruleId}`](/api-reference/rules/get-v3-customers-by-customer-id-rules-by-rule-id) (`getV3CustomersByCustomerIdRulesByRuleId`, ステータス `404`)
+- [`PATCH /v3/customers/{customerId}/rules/{ruleId}`](/api-reference/rules/patch-v3-customers-by-customer-id-rules-by-rule-id) (`patchV3CustomersByCustomerIdRulesByRuleId`, ステータス `404`)
+
+<a id="rule-target-invalid" className="block scroll-mt-32">
+  <span className="sr-only">rule_target_invalid error</span>
+</a>
+
+### `rule_target_invalid`
+
+**HTTP ステータス:** `400`<br />
+**再試行可能:** 返されません<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/rule-target-invalid`
+
+**意味:** ルールアクションのターゲットが、この顧客またはルールタイプでは無効です。
+
+**発生する状況:** ルールの作成で、存在しない、アクセスできない、アーカイブ済み、または互換性のない口座や送金先がアクションターゲットとして選択されています。
+
+**対処方法:** 顧客に対して返され、ルールアクションスキーマでサポートされているアクティブなターゲットを選択して、新しいルールリクエストを作成してください。
+
+**再試行ガイダンス:** この問題は `retryable` を返しません。変更なしの再試行が安全であると想定せず、上記の対応とその操作の冪等性要件に従ってください。
+
+**関連する API 操作:**
+
+- [`POST /v3/customers/{customerId}/rules`](/api-reference/rules/post-v3-customers-by-customer-id-rules) (`postV3CustomersByCustomerIdRules`, ステータス `400`)
+
+<a id="rule-trigger-account-invalid" className="block scroll-mt-32">
+  <span className="sr-only">rule_trigger_account_invalid error</span>
+</a>
+
+### `rule_trigger_account_invalid`
+
+**HTTP ステータス:** `400`<br />
+**再試行可能:** 返されません<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/rule-trigger-account-invalid`
+
+**意味:** ルールのトリガーとして選択された口座が無効です。
+
+**発生する状況:** ルールの作成で、存在しない、アーカイブ済み、アクセスできない、またはトリガーとして機能する資格のない口座が使用されています。
+
+**対処方法:** 顧客に対して返された、アクティブで資格のある口座を選択して、新しいルールリクエストを作成してください。
+
+**再試行ガイダンス:** この問題は `retryable` を返しません。変更なしの再試行が安全であると想定せず、上記の対応とその操作の冪等性要件に従ってください。
+
+**関連する API 操作:**
+
+- [`POST /v3/customers/{customerId}/rules`](/api-reference/rules/post-v3-customers-by-customer-id-rules) (`postV3CustomersByCustomerIdRules`, ステータス `400`)
+
+## 冪等性とプラットフォームエラー
+
+<a id="conflict" className="block scroll-mt-32">
+  <span className="sr-only">conflict error</span>
+</a>
+
+### `conflict`
+
+**HTTP ステータス:** `409`<br />
+**再試行可能:** いいえ<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/conflict`
+
+**意味:** リクエストされた操作が、リソースの現在の状態と競合しています。
+
+**発生する状況:** リソースが変更された、アーカイブされている、必要な完了済みステップがない、またはより具体的な公開コードのない状態競合があるため、操作を続行できません。
+
+**対処方法:** 影響を受けたリソースを再取得し、`detail` を使用して現在の前提条件を特定し、リクエストまたはリソースの状態を変更してから、新しいリクエストを送信してください。
+
+**再試行ガイダンス:** 変更していないリクエストを再試行しないでください。次のリクエストを送信する前に、上記の対応を実施してください。
+
+**関連する API 操作:**
+
+- [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) (`postV3CustomersByCustomerIdAccounts`, ステータス `409`)
+- [`DELETE /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/delete-v3-customers-by-customer-id-accounts-by-account-id) (`deleteV3CustomersByCustomerIdAccountsByAccountId`, ステータス `409`)
+- [`PATCH /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/patch-v3-customers-by-customer-id-accounts-by-account-id) (`patchV3CustomersByCustomerIdAccountsByAccountId`, ステータス `409`)
+- [`POST /v3/customers/{customerId}/export`](/api-reference/customers/post-v3-customers-by-customer-id-export) (`postV3CustomersByCustomerIdExport`, ステータス `409`)
+- [`POST /v3/sandbox/accounts/{accountId}/topup`](/api-reference/sandbox/post-v3-sandbox-accounts-by-account-id-topup) (`postV3SandboxAccountsByAccountIdTopup`, ステータス `409`)
+- [`POST /v3/sandbox/tasks/{taskId}/review`](/api-reference/sandbox/post-v3-sandbox-tasks-by-task-id-review) (`postV3SandboxTasksByTaskIdReview`, ステータス `409`)
+
+<a id="idempotency-conflict" className="block scroll-mt-32">
+  <span className="sr-only">idempotency_conflict error</span>
+</a>
+
+### `idempotency_conflict`
+
+**HTTP ステータス:** `409`<br />
+**再試行可能:** いいえ<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/idempotency-conflict`
+
+**意味:** 冪等性キーは、すでに別のリクエストで使用されています。
+
+**発生する状況:** 書き込みが、メソッド、パス、ボディ、または意図した操作を変更したうえで既存の `Idempotency-Key` を再利用しています。
+
+**対処方法:** そのキーで変更後のリクエストを再試行しないでください。必要に応じて元の操作の結果を取得するか、本当に新しい操作には新しいキーを使用してください。
+
+**再試行ガイダンス:** 変更していないリクエストを再試行しないでください。次のリクエストを送信する前に、上記の対応を実施してください。 冪等性キーは元のリクエストを恒久的に識別します。ペイロードを変更する場合は新しいキーが必要です。
+
+<Accordion title="関連する API 操作 (30)">
+
+- [`POST /v3/customers`](/api-reference/customers/post-v3-customers) (`postV3Customers`, ステータス `409`)
+- [`DELETE /v3/customers/{customerId}`](/api-reference/customers/delete-v3-customers-by-customer-id) (`deleteV3CustomersByCustomerId`, ステータス `409`)
+- [`PATCH /v3/customers/{customerId}`](/api-reference/customers/patch-v3-customers-by-customer-id) (`patchV3CustomersByCustomerId`, ステータス `409`)
+- [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) (`postV3CustomersByCustomerIdAccounts`, ステータス `409`)
+- [`DELETE /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/delete-v3-customers-by-customer-id-accounts-by-account-id) (`deleteV3CustomersByCustomerIdAccountsByAccountId`, ステータス `409`)
+- [`PATCH /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/patch-v3-customers-by-customer-id-accounts-by-account-id) (`patchV3CustomersByCustomerIdAccountsByAccountId`, ステータス `409`)
+- [`PUT /v3/customers/{customerId}/accounts/{accountId}/fees`](/api-reference/accounts/put-v3-customers-by-customer-id-accounts-by-account-id-fees) (`putV3CustomersByCustomerIdAccountsByAccountIdFees`, ステータス `409`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, ステータス `409`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}/cancel`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id-cancel) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityIdCancel`, ステータス `409`)
+- [`POST /v3/customers/{customerId}/documents`](/api-reference/documents/post-v3-customers-by-customer-id-documents) (`postV3CustomersByCustomerIdDocuments`, ステータス `409`)
+- [`DELETE /v3/customers/{customerId}/documents/{documentId}`](/api-reference/documents/delete-v3-customers-by-customer-id-documents-by-document-id) (`deleteV3CustomersByCustomerIdDocumentsByDocumentId`, ステータス `409`)
+- [`POST /v3/customers/{customerId}/export`](/api-reference/customers/post-v3-customers-by-customer-id-export) (`postV3CustomersByCustomerIdExport`, ステータス `409`)
+- [`POST /v3/customers/{customerId}/recipients`](/api-reference/recipients/post-v3-customers-by-customer-id-recipients) (`postV3CustomersByCustomerIdRecipients`, ステータス `409`)
+- [`DELETE /v3/customers/{customerId}/recipients/{recipientId}`](/api-reference/recipients/delete-v3-customers-by-customer-id-recipients-by-recipient-id) (`deleteV3CustomersByCustomerIdRecipientsByRecipientId`, ステータス `409`)
+- [`PATCH /v3/customers/{customerId}/recipients/{recipientId}`](/api-reference/recipients/patch-v3-customers-by-customer-id-recipients-by-recipient-id) (`patchV3CustomersByCustomerIdRecipientsByRecipientId`, ステータス `409`)
+- [`POST /v3/customers/{customerId}/recipients/{recipientId}/destinations`](/api-reference/recipients/post-v3-customers-by-customer-id-recipients-by-recipient-id-destinations) (`postV3CustomersByCustomerIdRecipientsByRecipientIdDestinations`, ステータス `409`)
+- [`DELETE /v3/customers/{customerId}/recipients/{recipientId}/destinations/{destinationId}`](/api-reference/recipients/delete-v3-customers-by-customer-id-recipients-by-recipient-id-destinations-by-destination-id) (`deleteV3CustomersByCustomerIdRecipientsByRecipientIdDestinationsByDestinationId`, ステータス `409`)
+- [`POST /v3/customers/{customerId}/related-parties`](/api-reference/customers/post-v3-customers-by-customer-id-related-parties) (`postV3CustomersByCustomerIdRelated-parties`, ステータス `409`)
+- [`DELETE /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/delete-v3-customers-by-customer-id-related-parties-by-related-party-id) (`deleteV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, ステータス `409`)
+- [`PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/patch-v3-customers-by-customer-id-related-parties-by-related-party-id) (`patchV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, ステータス `409`)
+- [`POST /v3/customers/{customerId}/rules`](/api-reference/rules/post-v3-customers-by-customer-id-rules) (`postV3CustomersByCustomerIdRules`, ステータス `409`)
+- [`DELETE /v3/customers/{customerId}/rules/{ruleId}`](/api-reference/rules/delete-v3-customers-by-customer-id-rules-by-rule-id) (`deleteV3CustomersByCustomerIdRulesByRuleId`, ステータス `409`)
+- [`PATCH /v3/customers/{customerId}/rules/{ruleId}`](/api-reference/rules/patch-v3-customers-by-customer-id-rules-by-rule-id) (`patchV3CustomersByCustomerIdRulesByRuleId`, ステータス `409`)
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, ステータス `409`)
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, ステータス `409`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, ステータス `409`)
+- [`POST /v3/transfers/{transferId}/cancel`](/api-reference/money-movement/post-v3-transfers-by-transfer-id-cancel) (`postV3TransfersByTransferIdCancel`, ステータス `409`)
+- [`POST /v3/webhooks`](/api-reference/webhooks/post-v3-webhooks) (`postV3Webhooks`, ステータス `409`)
+- [`DELETE /v3/webhooks/{webhookId}`](/api-reference/webhooks/delete-v3-webhooks-by-webhook-id) (`deleteV3WebhooksByWebhookId`, ステータス `409`)
+- [`PATCH /v3/webhooks/{webhookId}`](/api-reference/webhooks/patch-v3-webhooks-by-webhook-id) (`patchV3WebhooksByWebhookId`, ステータス `409`)
+
+</Accordion>
+
+**例:**
+
+```json
+{
+  "type": "https://docs.swipelux.com/errors/idempotency-conflict",
+  "title": "Idempotency Conflict",
+  "status": 409,
+  "code": "idempotency_conflict",
+  "detail": "Idempotency-Key was already used with a different request.",
+  "correlationId": "cor_01JMM23TRANSFERERRORS",
+  "retryable": false
+}
+```
+
+<a id="idempotency-request-in-progress" className="block scroll-mt-32">
+  <span className="sr-only">idempotency_request_in_progress error</span>
+</a>
+
+### `idempotency_request_in_progress`
+
+**HTTP ステータス:** `409`<br />
+**再試行可能:** はい<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/idempotency-request-in-progress`
+
+**意味:** 同じ冪等性キーを持つ一致するリクエストがまだ処理中です。
+
+**発生する状況:** 最初の試行が完了する前に、同じ冪等な書き込みが再度送信されています。
+
+**対処方法:** 少し待ってから、元の結果が利用可能になるまで、同じ `Idempotency-Key` で同一のリクエストを再試行してください。
+
+**再試行ガイダンス:** 時間をおいてから再試行してください。冪等な書き込みでは、元の冪等性キーと変更していないリクエストを再利用してください。 メソッド、パス、ボディを元の意図とバイト単位で同一に保ってください。
+
+<Accordion title="関連する API 操作 (13)">
+
+- [`POST /v3/customers`](/api-reference/customers/post-v3-customers) (`postV3Customers`, ステータス `409`)
+- [`DELETE /v3/customers/{customerId}`](/api-reference/customers/delete-v3-customers-by-customer-id) (`deleteV3CustomersByCustomerId`, ステータス `409`)
+- [`PATCH /v3/customers/{customerId}`](/api-reference/customers/patch-v3-customers-by-customer-id) (`patchV3CustomersByCustomerId`, ステータス `409`)
+- [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) (`postV3CustomersByCustomerIdAccounts`, ステータス `409`)
+- [`DELETE /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/delete-v3-customers-by-customer-id-accounts-by-account-id) (`deleteV3CustomersByCustomerIdAccountsByAccountId`, ステータス `409`)
+- [`PATCH /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/patch-v3-customers-by-customer-id-accounts-by-account-id) (`patchV3CustomersByCustomerIdAccountsByAccountId`, ステータス `409`)
+- [`PUT /v3/customers/{customerId}/accounts/{accountId}/fees`](/api-reference/accounts/put-v3-customers-by-customer-id-accounts-by-account-id-fees) (`putV3CustomersByCustomerIdAccountsByAccountIdFees`, ステータス `409`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}/cancel`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id-cancel) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityIdCancel`, ステータス `409`)
+- [`POST /v3/customers/{customerId}/export`](/api-reference/customers/post-v3-customers-by-customer-id-export) (`postV3CustomersByCustomerIdExport`, ステータス `409`)
+- [`POST /v3/customers/{customerId}/related-parties`](/api-reference/customers/post-v3-customers-by-customer-id-related-parties) (`postV3CustomersByCustomerIdRelated-parties`, ステータス `409`)
+- [`DELETE /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/delete-v3-customers-by-customer-id-related-parties-by-related-party-id) (`deleteV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, ステータス `409`)
+- [`PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/patch-v3-customers-by-customer-id-related-parties-by-related-party-id) (`patchV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, ステータス `409`)
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, ステータス `409`)
+
+</Accordion>
+
+**例:**
+
+```json
+{
+  "type": "https://docs.swipelux.com/errors/idempotency-request-in-progress",
+  "title": "Idempotency Request In Progress",
+  "status": 409,
+  "code": "idempotency_request_in_progress",
+  "detail": "A request with this Idempotency-Key is still in progress.",
+  "correlationId": "01JERRORIDEMPOTENCY",
+  "retryable": true
+}
+```
+
+<a id="internal-error" className="block scroll-mt-32">
+  <span className="sr-only">internal_error error</span>
+</a>
+
+### `internal_error`
+
+**HTTP ステータス:** `500`<br />
+**再試行可能:** はい<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/internal-error`
+
+**意味:** 操作の処理中に Swipelux で予期しないサーバーエラーが発生しました。
+
+**発生する状況:** リクエストが、より具体的な公開の問題ではなく、未処理のプラットフォーム障害に達しています。
+
+**対処方法:** `correlationId` を保管し、時間をおいてから再試行して、エラーが続く場合は Swipelux サポートに問い合わせてください。
+
+**再試行ガイダンス:** 時間をおいてから再試行してください。冪等な書き込みでは、元の冪等性キーと変更していないリクエストを再利用してください。
+
+**関連する API 操作:** すべての公開 API 操作。
+
+<a id="not-found" className="block scroll-mt-32">
+  <span className="sr-only">not_found error</span>
+</a>
+
+### `not_found`
+
+**HTTP ステータス:** `404`<br />
+**再試行可能:** いいえ<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/not-found`
+
+**意味:** この API キーとリクエストパスに対して、リクエストされたリソースが見つかりませんでした。
+
+**発生する状況:** リソース識別子が存在しないか、別の環境または親リソースに属しているか、呼び出し元からアクセスできなくなっています。
+
+**対処方法:** 識別子、親リソース、API キー環境を確認し、リソースを取得または一覧表示してから、操作を再試行してください。
+
+**再試行ガイダンス:** 変更していないリクエストを再試行しないでください。次のリクエストを送信する前に、上記の対応を実施してください。
+
+<Accordion title="関連する API 操作 (36)">
+
+- [`GET /kyc/redirect/{customerId}/{taskId}/{verificationSessionId}`](/api-reference/tasks/start-kyc-verification-session) (`startKycVerificationSession`, ステータス `404`)
+- [`GET /v3/customers/{customerId}/accounts`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts) (`getV3CustomersByCustomerIdAccounts`, ステータス `404`)
+- [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) (`postV3CustomersByCustomerIdAccounts`, ステータス `404`)
+- [`DELETE /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/delete-v3-customers-by-customer-id-accounts-by-account-id) (`deleteV3CustomersByCustomerIdAccountsByAccountId`, ステータス `404`)
+- [`GET /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts-by-account-id) (`getV3CustomersByCustomerIdAccountsByAccountId`, ステータス `404`)
+- [`PATCH /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/patch-v3-customers-by-customer-id-accounts-by-account-id) (`patchV3CustomersByCustomerIdAccountsByAccountId`, ステータス `404`)
+- [`GET /v3/customers/{customerId}/accounts/{accountId}/fees`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts-by-account-id-fees) (`getV3CustomersByCustomerIdAccountsByAccountIdFees`, ステータス `404`)
+- [`PUT /v3/customers/{customerId}/accounts/{accountId}/fees`](/api-reference/accounts/put-v3-customers-by-customer-id-accounts-by-account-id-fees) (`putV3CustomersByCustomerIdAccountsByAccountIdFees`, ステータス `404`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityId`, ステータス `404`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}/applications`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id-applications) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityIdApplications`, ステータス `404`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}/applications/{applicationId}/history`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id-applications-by-application-id-history) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityIdApplicationsByApplicationIdHistory`, ステータス `404`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}/cancel`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id-cancel) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityIdCancel`, ステータス `404`)
+- [`GET /v3/customers/{customerId}/recipients`](/api-reference/recipients/get-v3-customers-by-customer-id-recipients) (`getV3CustomersByCustomerIdRecipients`, ステータス `404`)
+- [`POST /v3/customers/{customerId}/recipients`](/api-reference/recipients/post-v3-customers-by-customer-id-recipients) (`postV3CustomersByCustomerIdRecipients`, ステータス `404`)
+- [`DELETE /v3/customers/{customerId}/recipients/{recipientId}`](/api-reference/recipients/delete-v3-customers-by-customer-id-recipients-by-recipient-id) (`deleteV3CustomersByCustomerIdRecipientsByRecipientId`, ステータス `404`)
+- [`GET /v3/customers/{customerId}/recipients/{recipientId}`](/api-reference/recipients/get-v3-customers-by-customer-id-recipients-by-recipient-id) (`getV3CustomersByCustomerIdRecipientsByRecipientId`, ステータス `404`)
+- [`PATCH /v3/customers/{customerId}/recipients/{recipientId}`](/api-reference/recipients/patch-v3-customers-by-customer-id-recipients-by-recipient-id) (`patchV3CustomersByCustomerIdRecipientsByRecipientId`, ステータス `404`)
+- [`GET /v3/customers/{customerId}/recipients/{recipientId}/destinations`](/api-reference/recipients/get-v3-customers-by-customer-id-recipients-by-recipient-id-destinations) (`getV3CustomersByCustomerIdRecipientsByRecipientIdDestinations`, ステータス `404`)
+- [`POST /v3/customers/{customerId}/recipients/{recipientId}/destinations`](/api-reference/recipients/post-v3-customers-by-customer-id-recipients-by-recipient-id-destinations) (`postV3CustomersByCustomerIdRecipientsByRecipientIdDestinations`, ステータス `404`)
+- [`DELETE /v3/customers/{customerId}/recipients/{recipientId}/destinations/{destinationId}`](/api-reference/recipients/delete-v3-customers-by-customer-id-recipients-by-recipient-id-destinations-by-destination-id) (`deleteV3CustomersByCustomerIdRecipientsByRecipientIdDestinationsByDestinationId`, ステータス `404`)
+- [`GET /v3/customers/{customerId}/recipients/{recipientId}/destinations/{destinationId}`](/api-reference/recipients/get-v3-customers-by-customer-id-recipients-by-recipient-id-destinations-by-destination-id) (`getV3CustomersByCustomerIdRecipientsByRecipientIdDestinationsByDestinationId`, ステータス `404`)
+- [`GET /v3/customers/{customerId}/rules`](/api-reference/rules/get-v3-customers-by-customer-id-rules) (`getV3CustomersByCustomerIdRules`, ステータス `404`)
+- [`POST /v3/customers/{customerId}/rules`](/api-reference/rules/post-v3-customers-by-customer-id-rules) (`postV3CustomersByCustomerIdRules`, ステータス `404`)
+- [`DELETE /v3/customers/{customerId}/rules/{ruleId}`](/api-reference/rules/delete-v3-customers-by-customer-id-rules-by-rule-id) (`deleteV3CustomersByCustomerIdRulesByRuleId`, ステータス `404`)
+- [`GET /v3/customers/{customerId}/rules/{ruleId}`](/api-reference/rules/get-v3-customers-by-customer-id-rules-by-rule-id) (`getV3CustomersByCustomerIdRulesByRuleId`, ステータス `404`)
+- [`PATCH /v3/customers/{customerId}/rules/{ruleId}`](/api-reference/rules/patch-v3-customers-by-customer-id-rules-by-rule-id) (`patchV3CustomersByCustomerIdRulesByRuleId`, ステータス `404`)
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, ステータス `404`)
+- [`GET /v3/quotes/{quoteId}`](/api-reference/money-movement/get-v3-quotes-by-quote-id) (`getV3QuotesByQuoteId`, ステータス `404`)
+- [`POST /v3/sandbox/accounts/{accountId}/topup`](/api-reference/sandbox/post-v3-sandbox-accounts-by-account-id-topup) (`postV3SandboxAccountsByAccountIdTopup`, ステータス `404`)
+- [`POST /v3/sandbox/customers/{customerId}/capabilities/{capabilityId}/status`](/api-reference/sandbox/post-v3-sandbox-customers-by-customer-id-capabilities-by-capability-id-status) (`postV3SandboxCustomersByCustomerIdCapabilitiesByCapabilityIdStatus`, ステータス `404`)
+- [`POST /v3/sandbox/customers/{customerId}/verification`](/api-reference/sandbox/post-v3-sandbox-customers-by-customer-id-verification) (`postV3SandboxCustomersByCustomerIdVerification`, ステータス `404`)
+- [`POST /v3/sandbox/tasks`](/api-reference/sandbox/post-v3-sandbox-tasks) (`postV3SandboxTasks`, ステータス `404`)
+- [`POST /v3/sandbox/transfers/{transferId}/state`](/api-reference/sandbox/post-v3-sandbox-transfers-by-transfer-id-state) (`postV3SandboxTransfersByTransferIdState`, ステータス `404`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, ステータス `404`)
+- [`DELETE /v3/webhooks/{webhookId}`](/api-reference/webhooks/delete-v3-webhooks-by-webhook-id) (`deleteV3WebhooksByWebhookId`, ステータス `404`)
+- [`PATCH /v3/webhooks/{webhookId}`](/api-reference/webhooks/patch-v3-webhooks-by-webhook-id) (`patchV3WebhooksByWebhookId`, ステータス `404`)
+
+</Accordion>
+
+<a id="request-failed" className="block scroll-mt-32">
+  <span className="sr-only">request_failed error</span>
+</a>
+
+### `request_failed`
+
+**HTTP ステータス:** `502`, `503`<br />
+**再試行可能:** 状況による<br />
+**問題タイプ:** `https://docs.swipelux.com/errors/request-failed`
+
+**意味:** 操作の完了に必要なサービスが、リクエストを正常に処理しませんでした。
+
+**発生する状況:** 顧客のエクスポート、Webhook の管理、またはサンドボックスの検証で、外部サービスの障害や利用できない構成に達しています。
+
+**対処方法:** `retryable` を確認してください。`true` の場合は後で再試行し、それ以外の場合は `correlationId` を保管してリクエストの前提条件を確認し、失敗が続く場合はサポートに問い合わせてください。
+
+**再試行ガイダンス:** このレスポンスの `retryable` を確認してください。`true` の場合にのみ、後で再試行してください。冪等な書き込みでは、元の冪等性キーと変更していないリクエストを再利用してください。
+
+<Accordion title="関連する API 操作 (9)">
+
+- [`POST /v3/customers/{customerId}/export`](/api-reference/customers/post-v3-customers-by-customer-id-export) (`postV3CustomersByCustomerIdExport`, ステータス `502`)
+- [`POST /v3/customers/{customerId}/export`](/api-reference/customers/post-v3-customers-by-customer-id-export) (`postV3CustomersByCustomerIdExport`, ステータス `503`)
+- [`POST /v3/sandbox/customers/{customerId}/verification`](/api-reference/sandbox/post-v3-sandbox-customers-by-customer-id-verification) (`postV3SandboxCustomersByCustomerIdVerification`, ステータス `502`)
+- [`POST /v3/sandbox/customers/{customerId}/verification`](/api-reference/sandbox/post-v3-sandbox-customers-by-customer-id-verification) (`postV3SandboxCustomersByCustomerIdVerification`, ステータス `503`)
+- [`GET /v3/webhooks`](/api-reference/webhooks/get-v3-webhooks) (`getV3Webhooks`, ステータス `502`)
+- [`POST /v3/webhooks`](/api-reference/webhooks/post-v3-webhooks) (`postV3Webhooks`, ステータス `502`)
+- [`DELETE /v3/webhooks/{webhookId}`](/api-reference/webhooks/delete-v3-webhooks-by-webhook-id) (`deleteV3WebhooksByWebhookId`, ステータス `502`)
+- [`PATCH /v3/webhooks/{webhookId}`](/api-reference/webhooks/patch-v3-webhooks-by-webhook-id) (`patchV3WebhooksByWebhookId`, ステータス `502`)
+- [`GET /v3/webhooks/portal`](/api-reference/webhooks/get-v3-webhooks-portal) (`getV3WebhooksPortal`, ステータス `502`)
+
+</Accordion>
+
+## 次のステップ
+
+上記の操作リンクを使用して、処理しているリクエストとレスポンスの正確なスキーマを確認し、[サンドボックステスト](/jp/integration/sandbox)で失敗パスを試してください。
