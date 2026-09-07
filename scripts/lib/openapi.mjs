@@ -1,19 +1,19 @@
 import { createHash } from "node:crypto";
 
 export const SOURCE_SHA256 =
-  "1fec95c3487e2a7049fb63c1e56d150bc4b8d0ef14736da4a00a331b825ac8eb";
-export const SOURCE_BASENAME = "openapi-v3-758214e.json";
+  "b693793e7644aa3be583126993a6ad55d1d6d33a8abc13539c684e8aa6e467d1";
+export const SOURCE_BASENAME = "openapi-v3-1845096.json";
 export const SOURCE_REPOSITORY = "swipelux/wallet-infrastructure";
-export const SOURCE_COMMIT = "758214efd6429f73c6060612bd82ee2c5539e105";
+export const SOURCE_COMMIT = "18450967b02580b99a6e7b1bbe335dc2aa71fe3f";
 export const SOURCE_ROUTE = "/openapi-v3.json";
 export const EXPECTED_OUTPUT_SHA256 =
-  "da04e4f6ceee8e0e45a70c3e1dd9aea320aabee02b92af64a87776dfa2bdb9b5";
+  "1c39dd2876403c353566da8bcff91ce40b653187d481163c098d15e3135b17de";
 export const EXPECTED_COVERAGE_SHA256 =
-  "cc12e111de6cf28ca742fe9d2fc26dd7b980ff0e395892d98fb1f574d67b4f78";
+  "1418ae4c6d22c827883651a1acca45cf11dd4590558f9e27acb3120628f2c6e3";
 export const EXPECTED_TRANSFORMATIONS_SHA256 =
   "403912b1f4237db3f424fc81f0a889ec646faf862033cb516827b93bc7857d4a";
 // Public API label preparation timestamp, normalized to UTC whole seconds.
-export const APPROVED_GENERATED_AT = "2026-09-07T20:45:33.000Z";
+export const APPROVED_GENERATED_AT = "2026-09-07T22:25:48.000Z";
 export const HTTP_METHODS = new Set([
   "get",
   "post",
