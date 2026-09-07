@@ -200,7 +200,9 @@ function assertCurlMatchesOpenApi(example, label) {
 
   const json = body.content?.["application/json"];
   const multipart = body.content?.["multipart/form-data"];
-  if (json) {
+  const sendsMultipart =
+    multipart !== undefined && example.body === undefined && example.forms.length > 0;
+  if (json && !sendsMultipart) {
     assert.notEqual(example.body, undefined, `${label} must send JSON`);
     assert.deepEqual(headerValues(example, "Content-Type"), ["application/json"]);
     const validation = openApiValidator.validateRequestBody(method, path, example.body);
