@@ -943,7 +943,7 @@ test("derives current document upload instructions from the authoritative contra
     () =>
       assertDocumentUploadGuidance(
         "wrong media type fixture",
-        documentRequirements + "\nUse `application/json` for the upload.",
+        documentRequirements + "\nUse `text/plain` for the upload.",
         upload,
       ),
     /request media types must match OpenAPI/,

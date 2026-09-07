@@ -1,19 +1,19 @@
 import { createHash } from "node:crypto";
 
 export const SOURCE_SHA256 =
-  "cfa5e95a571292f80315ef20a16476e8943164a4dbd0d688e8ed5cb3d93c5b56";
-export const SOURCE_BASENAME = "openapi-v3-23f456a.json";
+  "1fec95c3487e2a7049fb63c1e56d150bc4b8d0ef14736da4a00a331b825ac8eb";
+export const SOURCE_BASENAME = "openapi-v3-758214e.json";
 export const SOURCE_REPOSITORY = "swipelux/wallet-infrastructure";
-export const SOURCE_COMMIT = "23f456a8ff3d18362601292c3f0ca3aa1649af32";
+export const SOURCE_COMMIT = "758214efd6429f73c6060612bd82ee2c5539e105";
 export const SOURCE_ROUTE = "/openapi-v3.json";
 export const EXPECTED_OUTPUT_SHA256 =
-  "18c0ebdfa59f0fa0615c7c9c2cd56e8ec87f6c8b9f08a4ea917343e58e0a70d7";
+  "da04e4f6ceee8e0e45a70c3e1dd9aea320aabee02b92af64a87776dfa2bdb9b5";
 export const EXPECTED_COVERAGE_SHA256 =
-  "da4e09d8894fb65eebdc4f7c4461046b24346e6870c0562c0774951504fcc78c";
+  "cc12e111de6cf28ca742fe9d2fc26dd7b980ff0e395892d98fb1f574d67b4f78";
 export const EXPECTED_TRANSFORMATIONS_SHA256 =
-  "d5ec209441fb4b1bdf6da1ea12b9ba5b4368e701d91f5890b85b195567df0161";
+  "403912b1f4237db3f424fc81f0a889ec646faf862033cb516827b93bc7857d4a";
 // Public API label preparation timestamp, normalized to UTC whole seconds.
-export const APPROVED_GENERATED_AT = "2026-08-30T14:40:46.000Z";
+export const APPROVED_GENERATED_AT = "2026-09-07T20:45:33.000Z";
 export const HTTP_METHODS = new Set([
   "get",
   "post",
@@ -27,12 +27,27 @@ export const HTTP_METHODS = new Set([
 export const PREPARATION_VERSION = "1.3.0";
 
 export const EXPECTED_OPENAPI_COUNTS = Object.freeze({
-  paths: 50,
-  operations: 75,
+  paths: 51,
+  operations: 76,
   schemas: 92,
   webhooks: 12,
 });
 const CUSTOMER_WEBHOOKS = ["customer.created", "customer.updated"];
+const LEGACY_VERSION_PATTERN = /(^|[^A-Za-z0-9])v[12](?=$|[^A-Za-z0-9])/i;
+const LEGACY_REFERENCE_REASON =
+  "Remove legacy API version references from the public contract.";
+const LEGACY_REFERENCE_REWRITES = Object.freeze([
+  {
+    pointer: "/paths/~1v3~1customers~1{customerId}~1documents/post/description",
+    value:
+      "Uploads one PDF, JPEG, PNG, WebP, or HEIF/HEIC document up to 25 MB. Send multipart file bytes, or consume a fresh customer-scoped opaque storageKey returned by the direct-upload flow. Returns metadata for task submissions.",
+  },
+  {
+    pointer:
+      "/paths/~1v3~1customers~1{customerId}~1documents/post/requestBody/content/application~1json/schema/properties/storageKey/description",
+    value: "Opaque storageKey returned by the direct-upload flow.",
+  },
+]);
 const PUBLIC_V3_COMPATIBILITY_PATHS = new Set([
   "/kyc/redirect/{customerId}/{taskId}/{verificationSessionId}",
 ]);
@@ -463,24 +478,35 @@ function expectedTransformationReasons(spec) {
   return expected;
 }
 
+function optionalTransformationReasons() {
+  return new Map(
+    LEGACY_REFERENCE_REWRITES.map(({ pointer }) => [
+      pointer,
+      LEGACY_REFERENCE_REASON,
+    ]),
+  );
+}
+
 function validateTransformationSet(spec, transformations) {
   if (!Array.isArray(transformations)) {
     throw new Error("Transformations must be an array");
   }
   const expected = expectedTransformationReasons(spec);
+  const optional = optionalTransformationReasons();
   const actual = new Map();
 
   for (const item of transformations) {
     if (!isPlainObject(item) || typeof item.pointer !== "string") {
       throw new Error("Invalid transformation record");
     }
-    if (!expected.has(item.pointer)) {
+    const reason = expected.get(item.pointer) ?? optional.get(item.pointer);
+    if (reason === undefined) {
       throw new Error(`Unexpected transformation pointer: ${item.pointer}`);
     }
     if (actual.has(item.pointer)) {
       throw new Error(`Duplicate transformation pointer: ${item.pointer}`);
     }
-    if (item.reason !== expected.get(item.pointer)) {
+    if (item.reason !== reason) {
       throw new Error(`Unexpected transformation reason at ${item.pointer}`);
     }
     if (!/^[a-f0-9]{64}$/.test(item.beforeHash)) {
@@ -890,6 +916,18 @@ export function prepareOpenApi(
     "/components/securitySchemes/uploadToken",
     "Remove non-public upload-token authentication from the public contract.",
   );
+
+  for (const { pointer, value } of LEGACY_REFERENCE_REWRITES) {
+    const current = pointerState(spec, pointer);
+    if (
+      !current.exists ||
+      typeof current.value !== "string" ||
+      !LEGACY_VERSION_PATTERN.test(current.value)
+    ) {
+      continue;
+    }
+    addReplacement(spec, transformations, pointer, value, LEGACY_REFERENCE_REASON);
+  }
 
   for (const name of CUSTOMER_WEBHOOKS) {
     const base = `/webhooks/${escapePointerSegment(name)}/post/requestBody/content/application~1json`;
