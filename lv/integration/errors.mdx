@@ -1,0 +1,2631 @@
+---
+title: "Kļūdas un atkārtoti mēģinājumi"
+description: "Apstrādājiet katru publisko Swipelux API problēmas kodu, izlemiet, kad atkārtot, un atrisiniet validācijas, stāvokļa, idempotences un platformas kļūmes."
+---
+
+Swipelux API kļūdas izmanto `application/problem+json` mediju tipu. Sazarojiet savas lietojumprogrammas uzvedību pēc stabilās `code` vērtības un pēc tam izmantojiet tālāk norādīto operāciju un norādes, lai atrisinātu kļūmi.
+
+| Lauks | Kā to izmantot |
+| --- | --- |
+| `type` | Stabils dokumentācijas URI problēmas kodam. |
+| `title` | Īss cilvēkiem lasāms problēmas nosaukums. |
+| `status` | Ar šo atbildi saistītais HTTP statuss. |
+| `code` | Stabila mašīnlasāma vērtība lietojumprogrammas loģikai. |
+| `detail` | Kontekstuāls cilvēkiem lasāms teksts šim gadījumam. Neparsējiet un nesalīdziniet to. |
+| `correlationId` | Pieprasījuma identifikators, ko saglabāt žurnālos un iekļaut, sazinoties ar atbalstu. |
+| `retryable` | Kad `true`, tas pats pieprasījums vēlāk var izdoties. Kad `false`, mainiet pieprasījumu vai izpildiet priekšnosacījumu, pirms mēģināt vēlreiz. |
+| `errors[]` | Lauka līmeņa validācijas detaļas, ieskaitot JSON Pointer, kad tas ir pieejams. |
+
+Atkārtojiet idempotentus ierakstus ar sākotnējo `Idempotency-Key` un nemainītu metodi, ceļu un pamattekstu. Nekad neizmantojiet šo atslēgu atkārtoti citai paredzētai operācijai.
+
+```json
+{
+  "type": "https://docs.swipelux.com/errors/validation-error",
+  "title": "Validation Error",
+  "status": 400,
+  "code": "validation_error",
+  "detail": "The request contains invalid fields.",
+  "correlationId": "01JERRORVALIDATION",
+  "retryable": false,
+  "errors": [
+    {
+      "pointer": "/externalId",
+      "code": "invalid_format",
+      "message": "Use a valid external identifier."
+    }
+  ]
+}
+```
+
+## Kļūdu rādītājs
+
+| Kļūdas kods | Statuss | Atkārtojams | Nozīme |
+| --- | --- | --- | --- |
+| [`absence_conflicts_with_profile`](#absence-conflicts-with-profile) | `409` | Nē | Uzdevuma atbilde, kas deklarē vērtības neesamību, konfliktē ar datiem, kas jau ir klienta profilā. |
+| [`account_has_active_transfers`](#account-has-active-transfers) | `409` | Jā | Kontu nevar arhivēt, kamēr viens vai vairāki pārvedumi joprojām ir aktīvi. |
+| [`account_method_not_supported`](#account-method-not-supported) | `422` | Nē | Izvēlētais konts neatbalsta kotācijas pieprasīto maksājuma metodi. |
+| [`account_not_ready`](#account-not-ready) | `409` | Atkarīgs no konteksta | Konts eksistē, bet tā pašreizējais statuss neatļauj kotāciju vai pārvedumu. |
+| [`account_unavailable`](#account-unavailable) | `409` | Nē | Izvēlētais konts nav pieejams pieprasītajai naudas kustībai. |
+| [`amount_not_deliverable`](#amount-not-deliverable) | `422` | Nē | Pieprasīto summu nevar piegādāt ar izvēlētajām valūtām, kontiem vai metodi. |
+| [`amount_side_ambiguous`](#amount-side-ambiguous) | `400` | Nē | Kotācijas pieprasījums viennozīmīgi nenorāda, kurai konvertācijas pusei ir fiksētā summa. |
+| [`bank_not_supported_for_customer`](#bank-not-supported-for-customer) | `422` | Netiek atgriezts | Izvēlētā iestāde nav pieejama šim klientam un iespējas pieprasījumam. |
+| [`capability_already_exists`](#capability-already-exists) | `409` | Nē | Klientam jau ir pieprasītā iespēja. |
+| [`capability_direction_unsupported`](#capability-direction-unsupported) | `422` | Nē | Izvēlētā iespēja neatbalsta naudas kustības virzienu, ko prasa kotācija vai pārvedums. |
+| [`capability_ineligible`](#capability-ineligible) | `422` | Nē | Klients nav tiesīgs saņemt pieprasīto iespēju tā pašreizējā profilā un konfigurācijā. |
+| [`capability_institutions_required`](#capability-institutions-required) | `422` | Netiek atgriezts | Iespējas pieprasījumam ir nepieciešama vienas vai vairāku iestāžu izvēle. |
+| [`capability_institutions_unsupported`](#capability-institutions-unsupported) | `422` | Nē | Viena vai vairākas izvēlētās iestādes netiek atbalstītas pieprasītajai iespējai. |
+| [`capability_intent_unsupported`](#capability-intent-unsupported) | `422` | Netiek atgriezts | Pieprasītais iespējas nolūks netiek atbalstīts šim iespējas variantam. |
+| [`capability_key_unsupported`](#capability-key-unsupported) | `422` | Nē | Iespējas atslēgu šī operācija neatbalsta. |
+| [`capability_not_cancelable`](#capability-not-cancelable) | `409` | Nē | Iespēju nevar atcelt no tās pašreizējā statusa. |
+| [`capability_not_ready`](#capability-not-ready) | `409` | Atkarīgs no konteksta | Iespēja, ko prasa pieprasītais konts vai naudas kustība, nav gatava. |
+| [`capability_not_supported_for_customer_type`](#capability-not-supported-for-customer-type) | `422` | Netiek atgriezts | Iespēja netiek atbalstīta šim klienta tipam. |
+| [`capability_provider_resolution_failed`](#capability-provider-resolution-failed) | `422` | Netiek atgriezts | Swipelux nevarēja atrisināt pilnīgu apstrādes konfigurāciju iespējas pieprasījumam. |
+| [`capability_snapshot_corrupted`](#capability-snapshot-corrupted) | `500` | Nē | Swipelux nevarēja izvērtēt klienta iespēju stāvokli. |
+| [`capability_terminally_rejected`](#capability-terminally-rejected) | `409` | Nē | Iespēja jau ir noraidīta terminālā stāvoklī. |
+| [`capability_variant_unavailable`](#capability-variant-unavailable) | `409`, `422` | Atkarīgs no konteksta | Pieprasītais iespējas variants nav pieejams izvēlētajai klienta, nolūka vai iestādes kombinācijai. |
+| [`conflict`](#conflict) | `409` | Nē | Pieprasītā operācija konfliktē ar resursa pašreizējo stāvokli. |
+| [`customer_has_active_resources`](#customer-has-active-resources) | `409` | Nē | Klientu nevar arhivēt, kamēr no tā joprojām ir atkarīgi aktīvi resursi. |
+| [`customer_not_found`](#customer-not-found) | `404` | Nē | Klients neeksistē pašreizējā API atslēgas vidē vai vairs nav pieejams. |
+| [`destination_not_ready`](#destination-not-ready) | `409` | Atkarīgs no konteksta | Saņēmēja galamērķis eksistē, bet tas nav gatavs pieprasītajai kotācijai. |
+| [`developer_fee_invalid`](#developer-fee-invalid) | `422` | Nē | Izstrādātāja maksas konfigurācija nav derīga izvēlētajam kontam vai naudas kustībai. |
+| [`document_not_found`](#document-not-found) | `404` | Netiek atgriezts | Pieprasīto klienta dokumentu nevarēja atrast. |
+| [`duplicate_external_id`](#duplicate-external-id) | `409` | Nē | Norādītais `externalId` jau ir piešķirts citam resursam tajā pašā tvērumā. |
+| [`field_required_by_open_task`](#field-required-by-open-task) | `409` | Nē | Pieprasījums mēģina notīrīt profila lauku, ko atvērts uzdevums joprojām pieprasa. |
+| [`forbidden`](#forbidden) | `403` | Nē | API atslēga ir derīga, bet tai nav atļauts veikt šo operāciju. |
+| [`idempotency_conflict`](#idempotency-conflict) | `409` | Nē | Idempotences atslēga jau tika izmantota citam pieprasījumam. |
+| [`idempotency_request_in_progress`](#idempotency-request-in-progress) | `409` | Jā | Atbilstošs pieprasījums ar to pašu idempotences atslēgu joprojām tiek apstrādāts. |
+| [`initial_application_identity_conflict`](#initial-application-identity-conflict) | `409` | Nē | Sākotnējā pieteikuma identitāte mainījās, pirms tā tika saglabāta. |
+| [`initial_application_owner_unavailable`](#initial-application-owner-unavailable) | `503` | Nē | Sākotnējam pieteikumam nav pieejams derīgs īpašnieka maršruts. |
+| [`initial_application_scope_unavailable`](#initial-application-scope-unavailable) | `503` | Atkarīgs no konteksta | Swipelux nevarēja atrisināt sākotnējam pieteikumam nepieciešamo tvērumu. |
+| [`insufficient_balance`](#insufficient-balance) | `409` | Nē | Avota kontā nav pietiekamas pieejamās bilances pārvedumam. |
+| [`internal_error`](#internal-error) | `500` | Jā | Swipelux, apstrādājot operāciju, radās negaidīta servera kļūda. |
+| [`invalid_capability`](#invalid-capability) | `400`, `422` | Netiek atgriezts | Iespējas atsauce vai pieprasītā iespējas vērtība nav derīga šai operācijai. |
+| [`invalid_document_reference`](#invalid-document-reference) | `400` | Nē | Uzdevuma iesniegums satur dokumenta atsauci, kas nevar izpildīt izvēlēto prasību. |
+| [`invalid_field_for_type`](#invalid-field-for-type) | `400`, `422` | Netiek atgriezts | Pieprasījums ietver laukus, kas nav derīgi izvēlētajam resursa tipam. |
+| [`invalid_settlement_target`](#invalid-settlement-target) | `400` | Netiek atgriezts | Pieprasītais norēķinu mērķis nav derīgs kontam. |
+| [`kyc_configuration_unavailable`](#kyc-configuration-unavailable) | `503` | Nē | Iespējai nepieciešamā verifikācijas konfigurācija nav pieejama. |
+| [`kyc_level_configuration_invalid`](#kyc-level-configuration-invalid) | `503` | Nē | Aktīvā verifikācijas līmeņa konfigurācija nav derīga. |
+| [`kyc_process_conflict`](#kyc-process-conflict) | `409` | Jā | Verifikācijas process mainījās, pirms operācija tika pabeigta. |
+| [`kyc_provider_unavailable`](#kyc-provider-unavailable) | `502` | Jā | Verifikācijas pakalpojums īslaicīgi nav pieejams. |
+| [`kyc_session_terminal`](#kyc-session-terminal) | `410` | Nē | Verifikācijas sesija vairs nav izmantojama. |
+| [`merchant_kyb_not_approved`](#merchant-kyb-not-approved) | `422` | Netiek atgriezts | Integrējošais uzņēmums nav apstiprināts pieprasītajai klienta izveides plūsmai. |
+| [`not_found`](#not-found) | `404` | Nē | Pieprasīto resursu nevarēja atrast šai API atslēgai un pieprasījuma ceļam. |
+| [`ops_rail_handoff_conflict`](#ops-rail-handoff-conflict) | `409` | Nē | Uzdevuma iesniegumu bloķē konfliktējoša bankas ceļa konfigurācija. |
+| [`payout_target_relationship_invalid`](#payout-target-relationship-invalid) | `400` | Netiek atgriezts | Izvēlētajam izmaksas mērķim nav derīgas saiknes ar klientu vai saņēmēju kotācijā. |
+| [`profile_obligation_crossheal_failed`](#profile-obligation-crossheal-failed) | `500` | Nē | Swipelux nevarēja atjaunināt klienta profila prasības. |
+| [`provider_conflict`](#provider-conflict) | `400`, `422` | Nē | Pieprasītā iespēja vai verifikācijas darbība konfliktē ar pašreizējo apstrādes konfigurāciju. |
+| [`quote_already_executed`](#quote-already-executed) | `409` | Nē | Kotācija jau tika izpildīta, un tai ir esošs pārvedums. |
+| [`quote_destination_missing`](#quote-destination-missing) | `409`, `500` | Atkarīgs no konteksta | Kotācija vai pārvedums nesatur operācijai nepieciešamo galamērķi. |
+| [`quote_direction_invalid`](#quote-direction-invalid) | `422`, `500` | Atkarīgs no konteksta | Avots un galamērķis neveido atbalstītu kotācijas virzienu. |
+| [`quote_execution_consumed`](#quote-execution-consumed) | `409` | Nē | Kotācijas vienīgā izpildes iespēja jau ir patērēta. |
+| [`quote_expired`](#quote-expired) | `409` | Nē | Kotācijas derīgums beidzās, pirms tā tika izpildīta. |
+| [`quote_failed`](#quote-failed) | `500`, `502` | Atkarīgs no konteksta | Swipelux nevarēja izveidot izmantojamu kotāciju šim pieprasījumam. |
+| [`quote_mode_invalid`](#quote-mode-invalid) | `500` | Jā | Kotāciju nevar interpretēt operācijai nepieciešamajā režīmā. |
+| [`quote_not_found`](#quote-not-found) | `404` | Netiek atgriezts | Kotāciju nevarēja atrast šai API atslēgai. |
+| [`rail_not_ready`](#rail-not-ready) | `409` | Nē | Izvēlētais maksājumu ceļš nav gatavs šim klientam. |
+| [`rail_temporarily_unavailable`](#rail-temporarily-unavailable) | `503` | Jā | Izvēlētais maksājumu ceļš īslaicīgi nav pieejams. |
+| [`rate_unavailable`](#rate-unavailable) | `502` | Jā | Nepieciešamā valūtas likme īslaicīgi nav pieejama. |
+| [`recipient_account_unsupported`](#recipient-account-unsupported) | `400` | Netiek atgriezts | Saņēmēja konta detaļas netiek atbalstītas pieprasītajam galamērķim. |
+| [`recipient_address_required`](#recipient-address-required) | `422` | Nē | Saņēmējam ir nepieciešama adrese, pirms var izveidot šo fiat galamērķi. |
+| [`recipient_destination_invalid`](#recipient-destination-invalid) | `400`, `422` | Nē | Saņēmēja galamērķis nav derīgs vai nav saderīgs ar pieprasīto operāciju. |
+| [`recipient_name_invalid`](#recipient-name-invalid) | `400` | Netiek atgriezts | Saņēmēja vārds neatbilst pieprasījuma shēmai. |
+| [`related_party_in_review`](#related-party-in-review) | `409` | Nē | Saistīto pusi nevar arhivēt, kamēr tā tiek pārskatīta. |
+| [`related_party_not_found`](#related-party-not-found) | `404` | Netiek atgriezts | Saistīto pusi nevarēja atrast norādītajam klientam. |
+| [`request_body_too_large`](#request-body-too-large) | `413` | Nē | Pieprasījuma pamatteksts pārsniedz operācijas pieņemto lielumu. |
+| [`request_failed`](#request-failed) | `502`, `503` | Atkarīgs no konteksta | Pakalpojums, kas nepieciešams operācijas pabeigšanai, sekmīgi neapstrādāja pieprasījumu. |
+| [`rule_already_exists`](#rule-already-exists) | `409` | Nē | Trigera kontam jau ir aktīvs noteikums. |
+| [`rule_archived`](#rule-archived) | `409` | Nē | Noteikums ir arhivēts, un to vairs nevar mainīt. |
+| [`rule_not_found`](#rule-not-found) | `404` | Netiek atgriezts | Noteikumu nevarēja atrast norādītajam klientam. |
+| [`rule_target_invalid`](#rule-target-invalid) | `400` | Netiek atgriezts | Noteikuma darbības mērķis nav derīgs šim klientam vai noteikuma tipam. |
+| [`rule_trigger_account_invalid`](#rule-trigger-account-invalid) | `400` | Netiek atgriezts | Konts, kas izvēlēts kā noteikuma trigeris, nav derīgs. |
+| [`submission_channel_not_allowed`](#submission-channel-not-allowed) | `409` | Nē | Tiešā API iesniegšana šim uzdevumam nav atļauta. |
+| [`submission_not_found`](#submission-not-found) | `404` | Nē | Pieprasīto uzdevuma iesniegumu nevarēja atrast. |
+| [`supporting_document_not_found`](#supporting-document-not-found) | `422` | Nē | Pārveduma pieprasījumā norādīto apliecinošo dokumentu nevarēja atrast. |
+| [`task_changed`](#task-changed) | `409` | Nē | Uzdevums mainījās pēc tam, kad jūsu klients to pēdējo reizi nolasīja. |
+| [`task_not_found`](#task-not-found) | `404` | Nē | Uzdevumu nevarēja atrast norādītajam klientam vai API atslēgai. |
+| [`task_obligation_conflict`](#task-obligation-conflict) | `409` | Nē | Uzdevumam ir konfliktējošs saistību stāvoklis, un tas nevar pieņemt iesniegumu. |
+| [`task_submission_incomplete`](#task-submission-incomplete) | `422` | Nē | Iesniegums neatbild uz katru pašreizējo izpildāmo prasību. |
+| [`transfer_execution_failed`](#transfer-execution-failed) | `500` | Nē | Pārvedumu nevarēja pabeigt kotācijas izpildes laikā. |
+| [`transfer_has_no_instructions`](#transfer-has-no-instructions) | `404` | Netiek atgriezts | Pārvedums eksistē, bet nesniedz maksājuma instrukcijas. |
+| [`transfer_not_cancelable`](#transfer-not-cancelable) | `409` | Nē | Pārvedumu nevar atcelt no tā pašreizējā stāvokļa. |
+| [`transfer_not_found`](#transfer-not-found) | `404` | Netiek atgriezts | Pārvedumu nevarēja atrast šai API atslēgai. |
+| [`transfer_state_invalid`](#transfer-state-invalid) | `400`, `500` | Jā | Pārvedums ir stāvoklī, kas neatbalsta pieprasīto operāciju vai pāreju. |
+| [`unauthorized`](#unauthorized) | `401` | Nē | Pieprasījumam trūkst derīgas API atslēgas. |
+| [`unknown_parameter`](#unknown-parameter) | `400` | Nē | Pieprasījums ietver neatbalstītu vai nezināmu parametru. |
+| [`validation_error`](#validation-error) | `400`, `422` | Nē | Pieprasījums neatbilst operācijas ievades shēmai. |
+| [`verification_collection_mapping_invalid`](#verification-collection-mapping-invalid) | `503` | Nē | Uzdevuma verifikācijas prasības nevar sagatavot izmantojamā verifikācijas plūsmā. |
+| [`wallet_destination_not_supported`](#wallet-destination-not-supported) | `409` | Nē | Izvēlētā naudas kustības metode neatbalsta maka galamērķi. |
+
+## Pieprasījums un autentifikācija
+
+<a id="forbidden" className="block scroll-mt-32">
+  <span className="sr-only">forbidden error</span>
+</a>
+
+### `forbidden`
+
+**HTTP statuss:** `403`<br />
+**Atkārtojams:** Nē<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/forbidden`
+
+**Nozīme:** API atslēga ir derīga, bet tai nav atļauts veikt šo operāciju.
+
+**Kad tas notiek:** Akreditācijas datiem trūkst nepieciešamās atļaujas, vai produkcijas akreditācijas dati izsauc tikai smilšu kastei paredzētu galapunktu.
+
+**Kā rīkoties:** Izmantojiet pareizajai videi paredzētus akreditācijas datus ar nepieciešamajām atļaujām. Neatklājiet un nemainiet atslēgas klienta puses kodā.
+
+**Atkārtošanas norādes:** Neatkārtojiet nemainītu pieprasījumu. Pirms jauna pieprasījuma nosūtīšanas veiciet iepriekš norādīto darbību.
+
+**Saistītās API operācijas:** Visas autentificētās API operācijas.
+
+<a id="invalid-field-for-type" className="block scroll-mt-32">
+  <span className="sr-only">invalid_field_for_type error</span>
+</a>
+
+### `invalid_field_for_type`
+
+**HTTP statuss:** `400`, `422`<br />
+**Atkārtojams:** Netiek atgriezts<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/invalid-field-for-type`
+
+**Nozīme:** Pieprasījums ietver laukus, kas nav derīgi izvēlētajam resursa tipam.
+
+**Kad tas notiek:** Diskriminēts pieprasījums, piemēram, privātpersonas pretstatā uzņēmuma profilam, satur laukus no cita varianta vai izlaiž tā izvēlētā tipa obligātos laukus.
+
+**Kā rīkoties:** Izmantojiet izvēlētā tipa shēmu, noņemiet citiem variantiem piederošos laukus, norādiet tā obligātos laukus un nosūtiet izlabotu pieprasījumu.
+
+**Atkārtošanas norādes:** Šī problēma neatgriež `retryable`. Nepieņemiet, ka nemainīta pieprasījuma atkārtošana ir droša; sekojiet iepriekš norādītajai darbībai un operācijas idempotences prasībām.
+
+**Saistītās API operācijas:**
+
+- [`POST /v3/customers`](/api-reference/customers/post-v3-customers) (`postV3Customers`, statuss `400`)
+- [`PATCH /v3/customers/{customerId}`](/api-reference/customers/patch-v3-customers-by-customer-id) (`patchV3CustomersByCustomerId`, statuss `400`)
+- [`POST /v3/customers/{customerId}/export`](/api-reference/customers/post-v3-customers-by-customer-id-export) (`postV3CustomersByCustomerIdExport`, statuss `422`)
+- [`POST /v3/customers/{customerId}/related-parties`](/api-reference/customers/post-v3-customers-by-customer-id-related-parties) (`postV3CustomersByCustomerIdRelated-parties`, statuss `400`)
+- [`PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/patch-v3-customers-by-customer-id-related-parties-by-related-party-id) (`patchV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, statuss `400`)
+
+<a id="request-body-too-large" className="block scroll-mt-32">
+  <span className="sr-only">request_body_too_large error</span>
+</a>
+
+### `request_body_too_large`
+
+**HTTP statuss:** `413`<br />
+**Atkārtojams:** Nē<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/request-body-too-large`
+
+**Nozīme:** Pieprasījuma pamatteksts pārsniedz operācijas pieņemto lielumu.
+
+**Kad tas notiek:** Uzdevuma iesniegums nosūta vairāk pieprasījuma datu, nekā API var apstrādāt vienā pamattekstā.
+
+**Kā rīkoties:** Noņemiet nevajadzīgos datus, izmantojiet dokumentu atsauces, nevis iegultu faila saturu, un nosūtiet mazāku iesniegumu, kas joprojām atbild uz pašreizējām prasībām.
+
+**Atkārtošanas norādes:** Neatkārtojiet nemainītu pieprasījumu. Pirms jauna pieprasījuma nosūtīšanas veiciet iepriekš norādīto darbību.
+
+**Saistītās API operācijas:**
+
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, statuss `413`)
+
+<a id="unauthorized" className="block scroll-mt-32">
+  <span className="sr-only">unauthorized error</span>
+</a>
+
+### `unauthorized`
+
+**HTTP statuss:** `401`<br />
+**Atkārtojams:** Nē<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/unauthorized`
+
+**Nozīme:** Pieprasījumam trūkst derīgas API atslēgas.
+
+**Kad tas notiek:** `X-API-Key` galvene nav norādīta, ir nederīga, tās derīgums ir beidzies, vai API to neatpazīst.
+
+**Kā rīkoties:** Nosūtiet pareizo videi specifisko atslēgu no aizsargātas aizmugursistēmas. Rotējiet atslēgu, ja tā varētu būt atklāta.
+
+**Atkārtošanas norādes:** Neatkārtojiet nemainītu pieprasījumu. Pirms jauna pieprasījuma nosūtīšanas veiciet iepriekš norādīto darbību.
+
+**Saistītās API operācijas:** Visas autentificētās API operācijas.
+
+<a id="unknown-parameter" className="block scroll-mt-32">
+  <span className="sr-only">unknown_parameter error</span>
+</a>
+
+### `unknown_parameter`
+
+**HTTP statuss:** `400`<br />
+**Atkārtojams:** Nē<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/unknown-parameter`
+
+**Nozīme:** Pieprasījums ietver neatbalstītu vai nezināmu parametru.
+
+**Kad tas notiek:** Vaicājuma virknes vai operācijas parametrs ir kļūdaini uzrakstīts, netiek atbalstīts vai netiek pieņemts šajā galapunktā.
+
+**Kā rīkoties:** Noņemiet nezināmo parametru vai aizstājiet to ar precīzu operācijai dokumentētu parametru.
+
+**Atkārtošanas norādes:** Neatkārtojiet nemainītu pieprasījumu. Pirms jauna pieprasījuma nosūtīšanas veiciet iepriekš norādīto darbību.
+
+<Accordion title="Saistītās API operācijas (26)">
+
+- [`GET /v3/capabilities`](/api-reference/capabilities/get-v3-capabilities) (`getV3Capabilities`, statuss `400`)
+- [`GET /v3/customers`](/api-reference/customers/get-v3-customers) (`getV3Customers`, statuss `400`)
+- [`GET /v3/customers/{customerId}/accounts`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts) (`getV3CustomersByCustomerIdAccounts`, statuss `400`)
+- [`GET /v3/customers/{customerId}/capabilities`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities) (`getV3CustomersByCustomerIdCapabilities`, statuss `400`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}/applications`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id-applications) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityIdApplications`, statuss `400`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}/applications/{applicationId}/history`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id-applications-by-application-id-history) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityIdApplicationsByApplicationIdHistory`, statuss `400`)
+- [`GET /v3/customers/{customerId}/capabilities/supported`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-supported) (`getV3CustomersByCustomerIdCapabilitiesSupported`, statuss `400`)
+- [`GET /v3/customers/{customerId}/documents`](/api-reference/documents/get-v3-customers-by-customer-id-documents) (`getV3CustomersByCustomerIdDocuments`, statuss `400`)
+- [`GET /v3/customers/{customerId}/recipients`](/api-reference/recipients/get-v3-customers-by-customer-id-recipients) (`getV3CustomersByCustomerIdRecipients`, statuss `400`)
+- [`GET /v3/customers/{customerId}/recipients/{recipientId}/destinations`](/api-reference/recipients/get-v3-customers-by-customer-id-recipients-by-recipient-id-destinations) (`getV3CustomersByCustomerIdRecipientsByRecipientIdDestinations`, statuss `400`)
+- [`GET /v3/customers/{customerId}/related-parties`](/api-reference/customers/get-v3-customers-by-customer-id-related-parties) (`getV3CustomersByCustomerIdRelated-parties`, statuss `400`)
+- [`GET /v3/customers/{customerId}/rules`](/api-reference/rules/get-v3-customers-by-customer-id-rules) (`getV3CustomersByCustomerIdRules`, statuss `400`)
+- [`GET /v3/customers/{customerId}/tasks`](/api-reference/tasks/list-customer-tasks) (`listCustomerTasks`, statuss `400`)
+- [`GET /v3/customers/{customerId}/tasks/{taskId}`](/api-reference/tasks/get-customer-task) (`getCustomerTask`, statuss `400`)
+- [`GET /v3/customers/{customerId}/tasks/{taskId}/history`](/api-reference/tasks/list-customer-task-history) (`listCustomerTaskHistory`, statuss `400`)
+- [`GET /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/list-customer-task-submissions) (`listCustomerTaskSubmissions`, statuss `400`)
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, statuss `400`)
+- [`GET /v3/customers/{customerId}/tasks/{taskId}/submissions/{submissionId}`](/api-reference/task-submissions/get-customer-task-submission) (`getCustomerTaskSubmission`, statuss `400`)
+- [`GET /v3/institutions`](/api-reference/institutions/get-v3-institutions) (`getV3Institutions`, statuss `400`)
+- [`GET /v3/rates`](/api-reference/money-movement/get-v3-rates) (`getV3Rates`, statuss `400`)
+- [`POST /v3/sandbox/tasks`](/api-reference/sandbox/post-v3-sandbox-tasks) (`postV3SandboxTasks`, statuss `400`)
+- [`POST /v3/sandbox/tasks/{taskId}/review`](/api-reference/sandbox/post-v3-sandbox-tasks-by-task-id-review) (`postV3SandboxTasksByTaskIdReview`, statuss `400`)
+- [`GET /v3/tasks`](/api-reference/tasks/list-tasks) (`listTasks`, statuss `400`)
+- [`GET /v3/tasks/{taskId}`](/api-reference/tasks/get-task) (`getTask`, statuss `400`)
+- [`GET /v3/transfers`](/api-reference/money-movement/get-v3-transfers) (`getV3Transfers`, statuss `400`)
+- [`GET /v3/transfers/{transferId}/tasks`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-tasks) (`getV3TransfersByTransferIdTasks`, statuss `400`)
+
+</Accordion>
+
+<a id="validation-error" className="block scroll-mt-32">
+  <span className="sr-only">validation_error error</span>
+</a>
+
+### `validation_error`
+
+**HTTP statuss:** `400`, `422`<br />
+**Atkārtojams:** Nē<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/validation-error`
+
+**Nozīme:** Pieprasījums neatbilst operācijas ievades shēmai.
+
+**Kad tas notiek:** Trūkst obligāto vērtību, laukiem ir nederīgi tipi vai formāti, vai pieprasījuma parametri neiztur validāciju.
+
+**Kā rīkoties:** Izmantojiet `errors[]` un katru JSON Pointer, lai izlabotu pieprasījumu, salīdziniet to ar operācijas shēmu un nosūtiet jaunu pieprasījumu.
+
+**Atkārtošanas norādes:** Neatkārtojiet nemainītu pieprasījumu. Pirms jauna pieprasījuma nosūtīšanas veiciet iepriekš norādīto darbību.
+
+<Accordion title="Saistītās API operācijas (55)">
+
+- [`GET /v3/capabilities`](/api-reference/capabilities/get-v3-capabilities) (`getV3Capabilities`, statuss `400`)
+- [`GET /v3/customers`](/api-reference/customers/get-v3-customers) (`getV3Customers`, statuss `400`)
+- [`POST /v3/customers`](/api-reference/customers/post-v3-customers) (`postV3Customers`, statuss `400`)
+- [`DELETE /v3/customers/{customerId}`](/api-reference/customers/delete-v3-customers-by-customer-id) (`deleteV3CustomersByCustomerId`, statuss `400`)
+- [`PATCH /v3/customers/{customerId}`](/api-reference/customers/patch-v3-customers-by-customer-id) (`patchV3CustomersByCustomerId`, statuss `400`)
+- [`GET /v3/customers/{customerId}/accounts`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts) (`getV3CustomersByCustomerIdAccounts`, statuss `400`)
+- [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) (`postV3CustomersByCustomerIdAccounts`, statuss `400`)
+- [`DELETE /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/delete-v3-customers-by-customer-id-accounts-by-account-id) (`deleteV3CustomersByCustomerIdAccountsByAccountId`, statuss `400`)
+- [`PATCH /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/patch-v3-customers-by-customer-id-accounts-by-account-id) (`patchV3CustomersByCustomerIdAccountsByAccountId`, statuss `400`)
+- [`PUT /v3/customers/{customerId}/accounts/{accountId}/fees`](/api-reference/accounts/put-v3-customers-by-customer-id-accounts-by-account-id-fees) (`putV3CustomersByCustomerIdAccountsByAccountIdFees`, statuss `400`)
+- [`GET /v3/customers/{customerId}/capabilities`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities) (`getV3CustomersByCustomerIdCapabilities`, statuss `400`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, statuss `400`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}/applications`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id-applications) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityIdApplications`, statuss `400`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}/cancel`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id-cancel) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityIdCancel`, statuss `400`)
+- [`GET /v3/customers/{customerId}/documents`](/api-reference/documents/get-v3-customers-by-customer-id-documents) (`getV3CustomersByCustomerIdDocuments`, statuss `400`)
+- [`POST /v3/customers/{customerId}/documents`](/api-reference/documents/post-v3-customers-by-customer-id-documents) (`postV3CustomersByCustomerIdDocuments`, statuss `400`)
+- [`DELETE /v3/customers/{customerId}/documents/{documentId}`](/api-reference/documents/delete-v3-customers-by-customer-id-documents-by-document-id) (`deleteV3CustomersByCustomerIdDocumentsByDocumentId`, statuss `400`)
+- [`POST /v3/customers/{customerId}/export`](/api-reference/customers/post-v3-customers-by-customer-id-export) (`postV3CustomersByCustomerIdExport`, statuss `400`)
+- [`GET /v3/customers/{customerId}/recipients`](/api-reference/recipients/get-v3-customers-by-customer-id-recipients) (`getV3CustomersByCustomerIdRecipients`, statuss `400`)
+- [`POST /v3/customers/{customerId}/recipients`](/api-reference/recipients/post-v3-customers-by-customer-id-recipients) (`postV3CustomersByCustomerIdRecipients`, statuss `400`)
+- [`DELETE /v3/customers/{customerId}/recipients/{recipientId}`](/api-reference/recipients/delete-v3-customers-by-customer-id-recipients-by-recipient-id) (`deleteV3CustomersByCustomerIdRecipientsByRecipientId`, statuss `400`)
+- [`PATCH /v3/customers/{customerId}/recipients/{recipientId}`](/api-reference/recipients/patch-v3-customers-by-customer-id-recipients-by-recipient-id) (`patchV3CustomersByCustomerIdRecipientsByRecipientId`, statuss `400`)
+- [`GET /v3/customers/{customerId}/recipients/{recipientId}/destinations`](/api-reference/recipients/get-v3-customers-by-customer-id-recipients-by-recipient-id-destinations) (`getV3CustomersByCustomerIdRecipientsByRecipientIdDestinations`, statuss `400`)
+- [`POST /v3/customers/{customerId}/recipients/{recipientId}/destinations`](/api-reference/recipients/post-v3-customers-by-customer-id-recipients-by-recipient-id-destinations) (`postV3CustomersByCustomerIdRecipientsByRecipientIdDestinations`, statuss `400`)
+- [`DELETE /v3/customers/{customerId}/recipients/{recipientId}/destinations/{destinationId}`](/api-reference/recipients/delete-v3-customers-by-customer-id-recipients-by-recipient-id-destinations-by-destination-id) (`deleteV3CustomersByCustomerIdRecipientsByRecipientIdDestinationsByDestinationId`, statuss `400`)
+- [`GET /v3/customers/{customerId}/related-parties`](/api-reference/customers/get-v3-customers-by-customer-id-related-parties) (`getV3CustomersByCustomerIdRelated-parties`, statuss `400`)
+- [`POST /v3/customers/{customerId}/related-parties`](/api-reference/customers/post-v3-customers-by-customer-id-related-parties) (`postV3CustomersByCustomerIdRelated-parties`, statuss `400`)
+- [`DELETE /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/delete-v3-customers-by-customer-id-related-parties-by-related-party-id) (`deleteV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, statuss `400`)
+- [`PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/patch-v3-customers-by-customer-id-related-parties-by-related-party-id) (`patchV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, statuss `400`)
+- [`GET /v3/customers/{customerId}/rules`](/api-reference/rules/get-v3-customers-by-customer-id-rules) (`getV3CustomersByCustomerIdRules`, statuss `400`)
+- [`POST /v3/customers/{customerId}/rules`](/api-reference/rules/post-v3-customers-by-customer-id-rules) (`postV3CustomersByCustomerIdRules`, statuss `400`)
+- [`DELETE /v3/customers/{customerId}/rules/{ruleId}`](/api-reference/rules/delete-v3-customers-by-customer-id-rules-by-rule-id) (`deleteV3CustomersByCustomerIdRulesByRuleId`, statuss `400`)
+- [`PATCH /v3/customers/{customerId}/rules/{ruleId}`](/api-reference/rules/patch-v3-customers-by-customer-id-rules-by-rule-id) (`patchV3CustomersByCustomerIdRulesByRuleId`, statuss `400`)
+- [`GET /v3/customers/{customerId}/tasks`](/api-reference/tasks/list-customer-tasks) (`listCustomerTasks`, statuss `400`)
+- [`GET /v3/customers/{customerId}/tasks/{taskId}/history`](/api-reference/tasks/list-customer-task-history) (`listCustomerTaskHistory`, statuss `400`)
+- [`GET /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/list-customer-task-submissions) (`listCustomerTaskSubmissions`, statuss `400`)
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, statuss `400`)
+- [`GET /v3/institutions`](/api-reference/institutions/get-v3-institutions) (`getV3Institutions`, statuss `400`)
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, statuss `400`)
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, statuss `422`)
+- [`GET /v3/rates`](/api-reference/money-movement/get-v3-rates) (`getV3Rates`, statuss `400`)
+- [`POST /v3/sandbox/accounts/{accountId}/topup`](/api-reference/sandbox/post-v3-sandbox-accounts-by-account-id-topup) (`postV3SandboxAccountsByAccountIdTopup`, statuss `400`)
+- [`POST /v3/sandbox/customers/{customerId}/capabilities/{capabilityId}/status`](/api-reference/sandbox/post-v3-sandbox-customers-by-customer-id-capabilities-by-capability-id-status) (`postV3SandboxCustomersByCustomerIdCapabilitiesByCapabilityIdStatus`, statuss `400`)
+- [`POST /v3/sandbox/customers/{customerId}/verification`](/api-reference/sandbox/post-v3-sandbox-customers-by-customer-id-verification) (`postV3SandboxCustomersByCustomerIdVerification`, statuss `400`)
+- [`POST /v3/sandbox/tasks`](/api-reference/sandbox/post-v3-sandbox-tasks) (`postV3SandboxTasks`, statuss `400`)
+- [`POST /v3/sandbox/tasks/{taskId}/review`](/api-reference/sandbox/post-v3-sandbox-tasks-by-task-id-review) (`postV3SandboxTasksByTaskIdReview`, statuss `400`)
+- [`POST /v3/sandbox/transfers/{transferId}/state`](/api-reference/sandbox/post-v3-sandbox-transfers-by-transfer-id-state) (`postV3SandboxTransfersByTransferIdState`, statuss `400`)
+- [`GET /v3/tasks`](/api-reference/tasks/list-tasks) (`listTasks`, statuss `400`)
+- [`GET /v3/transfers`](/api-reference/money-movement/get-v3-transfers) (`getV3Transfers`, statuss `400`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, statuss `400`)
+- [`POST /v3/transfers/{transferId}/cancel`](/api-reference/money-movement/post-v3-transfers-by-transfer-id-cancel) (`postV3TransfersByTransferIdCancel`, statuss `400`)
+- [`GET /v3/transfers/{transferId}/tasks`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-tasks) (`getV3TransfersByTransferIdTasks`, statuss `400`)
+- [`POST /v3/webhooks`](/api-reference/webhooks/post-v3-webhooks) (`postV3Webhooks`, statuss `400`)
+- [`DELETE /v3/webhooks/{webhookId}`](/api-reference/webhooks/delete-v3-webhooks-by-webhook-id) (`deleteV3WebhooksByWebhookId`, statuss `400`)
+- [`PATCH /v3/webhooks/{webhookId}`](/api-reference/webhooks/patch-v3-webhooks-by-webhook-id) (`patchV3WebhooksByWebhookId`, statuss `400`)
+
+</Accordion>
+
+## Klienti un profili
+
+<a id="customer-has-active-resources" className="block scroll-mt-32">
+  <span className="sr-only">customer_has_active_resources error</span>
+</a>
+
+### `customer_has_active_resources`
+
+**HTTP statuss:** `409`<br />
+**Atkārtojams:** Nē<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/customer-has-active-resources`
+
+**Nozīme:** Klientu nevar arhivēt, kamēr no tā joprojām ir atkarīgi aktīvi resursi.
+
+**Kad tas notiek:** Jūs arhivējat klientu, kuram joprojām ir konti, pārvedumi vai citi resursi, kuriem nepieciešams atrisinājums.
+
+**Kā rīkoties:** Sekojiet katram `blockingResources[].requiredAction`, pēc resursu atrisināšanas atkārtoti ielādējiet klientu un atkārtojiet arhivēšanas operāciju.
+
+**Atkārtošanas norādes:** Neatkārtojiet nemainītu pieprasījumu. Pirms jauna pieprasījuma nosūtīšanas veiciet iepriekš norādīto darbību.
+
+**Saistītās API operācijas:**
+
+- [`DELETE /v3/customers/{customerId}`](/api-reference/customers/delete-v3-customers-by-customer-id) (`deleteV3CustomersByCustomerId`, statuss `409`)
+
+**Papildu atbildes lauki:**
+
+- `blockingResources`: Klienta resursi, kas jāatrisina, pirms pieprasītā operācija var turpināties, sakārtoti pēc tipa un id.
+
+**Piemērs:**
+
+```json
+{
+  "type": "https://docs.swipelux.com/errors/customer-has-active-resources",
+  "title": "Customer Has Active Resources",
+  "status": 409,
+  "code": "customer_has_active_resources",
+  "detail": "Archive or resolve every blocking resource before retrying.",
+  "correlationId": "01JERRORCUSTOMERARCHIVE",
+  "retryable": false,
+  "blockingResources": [
+    {
+      "type": "account",
+      "id": "acc_01JACTIVE",
+      "requiredAction": "archive_account"
+    }
+  ]
+}
+```
+
+<a id="customer-not-found" className="block scroll-mt-32">
+  <span className="sr-only">customer_not_found error</span>
+</a>
+
+### `customer_not_found`
+
+**HTTP statuss:** `404`<br />
+**Atkārtojams:** Nē<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/customer-not-found`
+
+**Nozīme:** Klients neeksistē pašreizējā API atslēgas vidē vai vairs nav pieejams.
+
+**Kad tas notiek:** Operācija izmanto klienta identifikatoru, kas neeksistē, pieder citai videi vai norāda uz arhivētu klientu tur, kur operācijai nepieciešams aktīvs klients.
+
+**Kā rīkoties:** Pārbaudiet klienta identifikatoru un API atslēgas vidi, pēc tam nolasiet vai uzskaitiet klientus, pirms atkārtojat ar pieejamu klientu.
+
+**Atkārtošanas norādes:** Neatkārtojiet nemainītu pieprasījumu. Pirms jauna pieprasījuma nosūtīšanas veiciet iepriekš norādīto darbību.
+
+<Accordion title="Saistītās API operācijas (22)">
+
+- [`DELETE /v3/customers/{customerId}`](/api-reference/customers/delete-v3-customers-by-customer-id) (`deleteV3CustomersByCustomerId`, statuss `404`)
+- [`GET /v3/customers/{customerId}`](/api-reference/customers/get-v3-customers-by-customer-id) (`getV3CustomersByCustomerId`, statuss `404`)
+- [`PATCH /v3/customers/{customerId}`](/api-reference/customers/patch-v3-customers-by-customer-id) (`patchV3CustomersByCustomerId`, statuss `404`)
+- [`GET /v3/customers/{customerId}/capabilities`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities) (`getV3CustomersByCustomerIdCapabilities`, statuss `404`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityId`, statuss `404`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, statuss `404`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}/applications`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id-applications) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityIdApplications`, statuss `404`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}/applications/{applicationId}/history`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id-applications-by-application-id-history) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityIdApplicationsByApplicationIdHistory`, statuss `404`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}/cancel`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id-cancel) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityIdCancel`, statuss `404`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}/tasks-preview`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id-tasks-preview) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityIdTasks-preview`, statuss `404`)
+- [`GET /v3/customers/{customerId}/capabilities/supported`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-supported) (`getV3CustomersByCustomerIdCapabilitiesSupported`, statuss `404`)
+- [`GET /v3/customers/{customerId}/documents`](/api-reference/documents/get-v3-customers-by-customer-id-documents) (`getV3CustomersByCustomerIdDocuments`, statuss `404`)
+- [`POST /v3/customers/{customerId}/documents`](/api-reference/documents/post-v3-customers-by-customer-id-documents) (`postV3CustomersByCustomerIdDocuments`, statuss `404`)
+- [`DELETE /v3/customers/{customerId}/documents/{documentId}`](/api-reference/documents/delete-v3-customers-by-customer-id-documents-by-document-id) (`deleteV3CustomersByCustomerIdDocumentsByDocumentId`, statuss `404`)
+- [`GET /v3/customers/{customerId}/documents/{documentId}`](/api-reference/documents/get-v3-customers-by-customer-id-documents-by-document-id) (`getV3CustomersByCustomerIdDocumentsByDocumentId`, statuss `404`)
+- [`POST /v3/customers/{customerId}/export`](/api-reference/customers/post-v3-customers-by-customer-id-export) (`postV3CustomersByCustomerIdExport`, statuss `404`)
+- [`GET /v3/customers/{customerId}/related-parties`](/api-reference/customers/get-v3-customers-by-customer-id-related-parties) (`getV3CustomersByCustomerIdRelated-parties`, statuss `404`)
+- [`POST /v3/customers/{customerId}/related-parties`](/api-reference/customers/post-v3-customers-by-customer-id-related-parties) (`postV3CustomersByCustomerIdRelated-parties`, statuss `404`)
+- [`DELETE /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/delete-v3-customers-by-customer-id-related-parties-by-related-party-id) (`deleteV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, statuss `404`)
+- [`GET /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/get-v3-customers-by-customer-id-related-parties-by-related-party-id) (`getV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, statuss `404`)
+- [`PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/patch-v3-customers-by-customer-id-related-parties-by-related-party-id) (`patchV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, statuss `404`)
+- [`GET /v3/customers/{customerId}/tasks`](/api-reference/tasks/list-customer-tasks) (`listCustomerTasks`, statuss `404`)
+
+</Accordion>
+
+<a id="document-not-found" className="block scroll-mt-32">
+  <span className="sr-only">document_not_found error</span>
+</a>
+
+### `document_not_found`
+
+**HTTP statuss:** `404`<br />
+**Atkārtojams:** Netiek atgriezts<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/document-not-found`
+
+**Nozīme:** Pieprasīto klienta dokumentu nevarēja atrast.
+
+**Kad tas notiek:** Dokumenta identifikators neeksistē, ir arhivēts vai nepieder klientam pieprasījuma ceļā.
+
+**Kā rīkoties:** Pārbaudiet klienta un dokumenta identifikatorus, uzskaitiet klienta dokumentus un augšupielādējiet aizstājēju, ja nepieciešamā dokumenta nav.
+
+**Atkārtošanas norādes:** Šī problēma neatgriež `retryable`. Nepieņemiet, ka nemainīta pieprasījuma atkārtošana ir droša; sekojiet iepriekš norādītajai darbībai un operācijas idempotences prasībām.
+
+**Saistītās API operācijas:**
+
+- [`DELETE /v3/customers/{customerId}/documents/{documentId}`](/api-reference/documents/delete-v3-customers-by-customer-id-documents-by-document-id) (`deleteV3CustomersByCustomerIdDocumentsByDocumentId`, statuss `404`)
+- [`GET /v3/customers/{customerId}/documents/{documentId}`](/api-reference/documents/get-v3-customers-by-customer-id-documents-by-document-id) (`getV3CustomersByCustomerIdDocumentsByDocumentId`, statuss `404`)
+
+<a id="duplicate-external-id" className="block scroll-mt-32">
+  <span className="sr-only">duplicate_external_id error</span>
+</a>
+
+### `duplicate_external_id`
+
+**HTTP statuss:** `409`<br />
+**Atkārtojams:** Nē<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/duplicate-external-id`
+
+**Nozīme:** Norādītais `externalId` jau ir piešķirts citam resursam tajā pašā tvērumā.
+
+**Kad tas notiek:** Izveides vai atjaunināšanas pieprasījums mēģina atkārtoti izmantot izstrādātāja kontrolētu identifikatoru, kam jābūt unikālam.
+
+**Kā rīkoties:** Nolasiet resursu, kas jau ir saistīts ar šo identifikatoru, vai izmantojiet jaunu unikālu `externalId` patiešām citam resursam.
+
+**Atkārtošanas norādes:** Neatkārtojiet nemainītu pieprasījumu. Pirms jauna pieprasījuma nosūtīšanas veiciet iepriekš norādīto darbību.
+
+**Saistītās API operācijas:**
+
+- [`POST /v3/customers`](/api-reference/customers/post-v3-customers) (`postV3Customers`, statuss `409`)
+- [`PATCH /v3/customers/{customerId}`](/api-reference/customers/patch-v3-customers-by-customer-id) (`patchV3CustomersByCustomerId`, statuss `409`)
+- [`POST /v3/customers/{customerId}/related-parties`](/api-reference/customers/post-v3-customers-by-customer-id-related-parties) (`postV3CustomersByCustomerIdRelated-parties`, statuss `409`)
+- [`PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/patch-v3-customers-by-customer-id-related-parties-by-related-party-id) (`patchV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, statuss `409`)
+
+<a id="field-required-by-open-task" className="block scroll-mt-32">
+  <span className="sr-only">field_required_by_open_task error</span>
+</a>
+
+### `field_required_by_open_task`
+
+**HTTP statuss:** `409`<br />
+**Atkārtojams:** Nē<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/field-required-by-open-task`
+
+**Nozīme:** Pieprasījums mēģina notīrīt profila lauku, ko atvērts uzdevums joprojām pieprasa.
+
+**Kad tas notiek:** Klienta vai saistītās puses atjauninājums noņem vērtību, ko uzdevums, kas norādīts `taskId`, ir fiksējis kā obligātu.
+
+**Kā rīkoties:** Nolasiet `taskId` un profila rādītājus vai prasību atslēgas laukā `fields`, pēc tam atjaunojiet nepieciešamās vērtības vai pabeidziet vai atceliet uzdevumu, pirms atkārtoti nosūtāt atjauninājumu.
+
+**Atkārtošanas norādes:** Neatkārtojiet nemainītu pieprasījumu. Pirms jauna pieprasījuma nosūtīšanas veiciet iepriekš norādīto darbību.
+
+**Saistītās API operācijas:**
+
+- [`PATCH /v3/customers/{customerId}`](/api-reference/customers/patch-v3-customers-by-customer-id) (`patchV3CustomersByCustomerId`, statuss `409`)
+- [`PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/patch-v3-customers-by-customer-id-related-parties-by-related-party-id) (`patchV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, statuss `409`)
+
+**Papildu atbildes lauki:**
+
+- `fields`: Profila rādītāji vai prasību atslēgas, ko bloķē atvērtais uzdevums.
+- `taskId`: Pašreizējā uzdevuma identifikators.
+
+<a id="merchant-kyb-not-approved" className="block scroll-mt-32">
+  <span className="sr-only">merchant_kyb_not_approved error</span>
+</a>
+
+### `merchant_kyb_not_approved`
+
+**HTTP statuss:** `422`<br />
+**Atkārtojams:** Netiek atgriezts<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/merchant-kyb-not-approved`
+
+**Nozīme:** Integrējošais uzņēmums nav apstiprināts pieprasītajai klienta izveides plūsmai.
+
+**Kad tas notiek:** Produkcijas klienta izveides pieprasījums tiek veikts, pirms integrējošais uzņēmums un produkcijas telpa ir apstiprināti.
+
+**Kā rīkoties:** Pabeidziet integrējošā uzņēmuma verifikācijas plūsmu un gaidiet produkcijas apstiprinājumu, pirms veidojat produkcijas klientus.
+
+**Atkārtošanas norādes:** Šī problēma neatgriež `retryable`. Nepieņemiet, ka nemainīta pieprasījuma atkārtošana ir droša; sekojiet iepriekš norādītajai darbībai un operācijas idempotences prasībām.
+
+**Saistītās API operācijas:**
+
+- [`POST /v3/customers`](/api-reference/customers/post-v3-customers) (`postV3Customers`, statuss `422`)
+
+<a id="profile-obligation-crossheal-failed" className="block scroll-mt-32">
+  <span className="sr-only">profile_obligation_crossheal_failed error</span>
+</a>
+
+### `profile_obligation_crossheal_failed`
+
+**HTTP statuss:** `500`<br />
+**Atkārtojams:** Nē<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/profile-obligation-crossheal-failed`
+
+**Nozīme:** Swipelux nevarēja atjaunināt klienta profila prasības.
+
+**Kad tas notiek:** Klienta vai saistītās puses atjauninājums nevar saskaņot profila izmaiņu ar tā pašreizējām uzdevumu prasībām.
+
+**Kā rīkoties:** Saglabājiet `correlationId` un sazinieties ar Swipelux atbalstu. Neatkārtojiet nemainītu atjauninājumu vairākkārt.
+
+**Atkārtošanas norādes:** Neatkārtojiet nemainītu pieprasījumu. Pirms jauna pieprasījuma nosūtīšanas veiciet iepriekš norādīto darbību.
+
+**Saistītās API operācijas:**
+
+- [`PATCH /v3/customers/{customerId}`](/api-reference/customers/patch-v3-customers-by-customer-id) (`patchV3CustomersByCustomerId`, statuss `500`)
+- [`PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/patch-v3-customers-by-customer-id-related-parties-by-related-party-id) (`patchV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, statuss `500`)
+
+<a id="related-party-in-review" className="block scroll-mt-32">
+  <span className="sr-only">related_party_in_review error</span>
+</a>
+
+### `related_party_in_review`
+
+**HTTP statuss:** `409`<br />
+**Atkārtojams:** Nē<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/related-party-in-review`
+
+**Nozīme:** Saistīto pusi nevar arhivēt, kamēr tā tiek pārskatīta.
+
+**Kad tas notiek:** Jūs mēģināt arhivēt saistīto pusi, kuras verifikācijas vai pārskatīšanas darbplūsma joprojām ir aktīva.
+
+**Kā rīkoties:** Gaidiet, līdz pārskatīšanas stāvoklis mainās, atkārtoti ielādējiet saistīto pusi un arhivējiet to tikai tad, kad tās pašreizējais statuss atļauj šo operāciju.
+
+**Atkārtošanas norādes:** Neatkārtojiet nemainītu pieprasījumu. Pirms jauna pieprasījuma nosūtīšanas veiciet iepriekš norādīto darbību.
+
+**Saistītās API operācijas:**
+
+- [`DELETE /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/delete-v3-customers-by-customer-id-related-parties-by-related-party-id) (`deleteV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, statuss `409`)
+
+<a id="related-party-not-found" className="block scroll-mt-32">
+  <span className="sr-only">related_party_not_found error</span>
+</a>
+
+### `related_party_not_found`
+
+**HTTP statuss:** `404`<br />
+**Atkārtojams:** Netiek atgriezts<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/related-party-not-found`
+
+**Nozīme:** Saistīto pusi nevarēja atrast norādītajam klientam.
+
+**Kad tas notiek:** Saistītās puses identifikators neeksistē, ir arhivēts, pieder citam klientam vai nav pieejams pašreizējā vidē.
+
+**Kā rīkoties:** Pārbaudiet klienta un saistītās puses identifikatorus, uzskaitiet klienta saistītās puses un atkārtojiet ar pieejamu resursu.
+
+**Atkārtošanas norādes:** Šī problēma neatgriež `retryable`. Nepieņemiet, ka nemainīta pieprasījuma atkārtošana ir droša; sekojiet iepriekš norādītajai darbībai un operācijas idempotences prasībām.
+
+**Saistītās API operācijas:**
+
+- [`DELETE /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/delete-v3-customers-by-customer-id-related-parties-by-related-party-id) (`deleteV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, statuss `404`)
+- [`GET /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/get-v3-customers-by-customer-id-related-parties-by-related-party-id) (`getV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, statuss `404`)
+- [`PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/patch-v3-customers-by-customer-id-related-parties-by-related-party-id) (`patchV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, statuss `404`)
+
+## Iespējas, KYC un uzdevumi
+
+<a id="absence-conflicts-with-profile" className="block scroll-mt-32">
+  <span className="sr-only">absence_conflicts_with_profile error</span>
+</a>
+
+### `absence_conflicts_with_profile`
+
+**HTTP statuss:** `409`<br />
+**Atkārtojams:** Nē<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/absence-conflicts-with-profile`
+
+**Nozīme:** Uzdevuma atbilde, kas deklarē vērtības neesamību, konfliktē ar datiem, kas jau ir klienta profilā.
+
+**Kad tas notiek:** Iesniegums atzīmē profila datos balstītu prasību kā neesošu, kamēr kanoniskajam profila laukam, ko identificē `profilePointer`, joprojām ir vērtība.
+
+**Kā rīkoties:** Pārskatiet `profilePointer`, atjauniniet klienta profilu vai iesniedziet ar to saskanīgu atbildi, atkārtoti ielādējiet uzdevumu un iesniedziet pašreizējo versiju.
+
+**Atkārtošanas norādes:** Neatkārtojiet nemainītu pieprasījumu. Pirms jauna pieprasījuma nosūtīšanas veiciet iepriekš norādīto darbību.
+
+**Saistītās API operācijas:**
+
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, statuss `409`)
+
+**Papildu atbildes lauki:**
+
+- `profilePointer`: Ar konfliktu saistītais kanoniskais profila lauks.
+
+<a id="capability-already-exists" className="block scroll-mt-32">
+  <span className="sr-only">capability_already_exists error</span>
+</a>
+
+### `capability_already_exists`
+
+**HTTP statuss:** `409`<br />
+**Atkārtojams:** Nē<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/capability-already-exists`
+
+**Nozīme:** Klientam jau ir pieprasītā iespēja.
+
+**Kad tas notiek:** Jūs pieprasāt iespēju, kuras pašreizējais vai esošais pieteikums jau pārstāv to pašu klienta iespēju.
+
+**Kā rīkoties:** Nolasiet esošo iespēju un turpiniet no tās pašreizējā statusa, nevis veidojiet dublikātu.
+
+**Atkārtošanas norādes:** Neatkārtojiet nemainītu pieprasījumu. Pirms jauna pieprasījuma nosūtīšanas veiciet iepriekš norādīto darbību.
+
+**Saistītās API operācijas:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, statuss `409`)
+
+<a id="capability-ineligible" className="block scroll-mt-32">
+  <span className="sr-only">capability_ineligible error</span>
+</a>
+
+### `capability_ineligible`
+
+**HTTP statuss:** `422`<br />
+**Atkārtojams:** Nē<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/capability-ineligible`
+
+**Nozīme:** Klients nav tiesīgs saņemt pieprasīto iespēju tā pašreizējā profilā un konfigurācijā.
+
+**Kad tas notiek:** Iespēju izvērtēšana konstatē, ka pieprasītā opcija šim klientam nav pieejama.
+
+**Kā rīkoties:** Pārskatiet atbalstīto iespēju atbildi un pašreizējos uzdevumus, pēc tam izvēlieties piemērotu iespēju vai izpildiet atklāto priekšnosacījumu, pirms veicat jaunu pieprasījumu.
+
+**Atkārtošanas norādes:** Neatkārtojiet nemainītu pieprasījumu. Pirms jauna pieprasījuma nosūtīšanas veiciet iepriekš norādīto darbību.
+
+**Saistītās API operācijas:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, statuss `422`)
+
+<a id="capability-institutions-required" className="block scroll-mt-32">
+  <span className="sr-only">capability_institutions_required error</span>
+</a>
+
+### `capability_institutions_required`
+
+**HTTP statuss:** `422`<br />
+**Atkārtojams:** Netiek atgriezts<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/capability-institutions-required`
+
+**Nozīme:** Iespējas pieprasījumam ir nepieciešama vienas vai vairāku iestāžu izvēle.
+
+**Kad tas notiek:** Jūs pieprasāt iespējas variantu, kam nepieciešamas iestādes, bet izlaižat iestāžu izvēli.
+
+**Kā rīkoties:** Uzskaitiet klientam atbalstītās iestādes, iekļaujiet nepieciešamos iestāžu identifikatorus un iesniedziet jaunu pieprasījumu.
+
+**Atkārtošanas norādes:** Šī problēma neatgriež `retryable`. Nepieņemiet, ka nemainīta pieprasījuma atkārtošana ir droša; sekojiet iepriekš norādītajai darbībai un operācijas idempotences prasībām.
+
+**Saistītās API operācijas:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, statuss `422`)
+
+<a id="capability-institutions-unsupported" className="block scroll-mt-32">
+  <span className="sr-only">capability_institutions_unsupported error</span>
+</a>
+
+### `capability_institutions_unsupported`
+
+**HTTP statuss:** `422`<br />
+**Atkārtojams:** Nē<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/capability-institutions-unsupported`
+
+**Nozīme:** Viena vai vairākas izvēlētās iestādes netiek atbalstītas pieprasītajai iespējai.
+
+**Kad tas notiek:** Pieprasījums ietver iestādi, kas nav klientam pieejamo iespēju opciju vidū.
+
+**Kā rīkoties:** Aizstājiet neatbalstīto izvēli ar iestādēm, ko atgriež atbalstīto iespēju plūsma, pēc tam iesniedziet jaunu pieprasījumu.
+
+**Atkārtošanas norādes:** Neatkārtojiet nemainītu pieprasījumu. Pirms jauna pieprasījuma nosūtīšanas veiciet iepriekš norādīto darbību.
+
+**Saistītās API operācijas:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, statuss `422`)
+
+<a id="capability-intent-unsupported" className="block scroll-mt-32">
+  <span className="sr-only">capability_intent_unsupported error</span>
+</a>
+
+### `capability_intent_unsupported`
+
+**HTTP statuss:** `422`<br />
+**Atkārtojams:** Netiek atgriezts<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/capability-intent-unsupported`
+
+**Nozīme:** Pieprasītais iespējas nolūks netiek atbalstīts šim iespējas variantam.
+
+**Kad tas notiek:** Pieprasījums kombinē iespēju ar nolūku, kas netiek piedāvāts izvēlētajām klienta vai iestādes opcijām.
+
+**Kā rīkoties:** Izmantojiet nolūku, ko atklāj atbalstīto iespēju atbilde, vai izvēlieties citu atbalstītu iespējas variantu.
+
+**Atkārtošanas norādes:** Šī problēma neatgriež `retryable`. Nepieņemiet, ka nemainīta pieprasījuma atkārtošana ir droša; sekojiet iepriekš norādītajai darbībai un operācijas idempotences prasībām.
+
+**Saistītās API operācijas:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, statuss `422`)
+
+<a id="capability-key-unsupported" className="block scroll-mt-32">
+  <span className="sr-only">capability_key_unsupported error</span>
+</a>
+
+### `capability_key_unsupported`
+
+**HTTP statuss:** `422`<br />
+**Atkārtojams:** Nē<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/capability-key-unsupported`
+
+**Nozīme:** Iespējas atslēgu šī operācija neatbalsta.
+
+**Kad tas notiek:** Pieprasījums vai uzdevumu priekšskatījums izmanto iespējas identifikatoru, ko klientam nevar pieprasīt.
+
+**Kā rīkoties:** Uzskaitiet atbalstītās iespējas un izmantojiet precīzu klientam atgriezto pašreizējo iespējas identifikatoru.
+
+**Atkārtošanas norādes:** Neatkārtojiet nemainītu pieprasījumu. Pirms jauna pieprasījuma nosūtīšanas veiciet iepriekš norādīto darbību.
+
+**Saistītās API operācijas:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, statuss `422`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}/tasks-preview`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id-tasks-preview) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityIdTasks-preview`, statuss `422`)
+
+<a id="capability-not-cancelable" className="block scroll-mt-32">
+  <span className="sr-only">capability_not_cancelable error</span>
+</a>
+
+### `capability_not_cancelable`
+
+**HTTP statuss:** `409`<br />
+**Atkārtojams:** Nē<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/capability-not-cancelable`
+
+**Nozīme:** Iespēju nevar atcelt no tās pašreizējā statusa.
+
+**Kad tas notiek:** Atcelšanas pieprasījums pienāk pēc tam, kad iespēja ir nonākusi neatceļamā stāvoklī, vai kamēr resursi joprojām bloķē atcelšanu.
+
+**Kā rīkoties:** Izpētiet `statusReason` un `blockingResources`, atrisiniet uzskaitītos resursus vai gaidiet tos, atkārtoti ielādējiet iespēju un izvēlieties nākamo darbību, ko atļauj tās pašreizējais statuss.
+
+**Atkārtošanas norādes:** Neatkārtojiet nemainītu pieprasījumu. Pirms jauna pieprasījuma nosūtīšanas veiciet iepriekš norādīto darbību.
+
+**Saistītās API operācijas:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}/cancel`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id-cancel) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityIdCancel`, statuss `409`)
+
+**Papildu atbildes lauki:**
+
+- `blockingResources`: Klienta resursi, kas jāatrisina, pirms pieprasītā operācija var turpināties, sakārtoti pēc tipa un id.
+- `statusReason`: Strukturēts stāvokļa konflikta iemesls, kad neizdevusies operācija ir atkarīga no resursa pašreizējā statusa.
+
+<a id="capability-not-ready" className="block scroll-mt-32">
+  <span className="sr-only">capability_not_ready error</span>
+</a>
+
+### `capability_not_ready`
+
+**HTTP statuss:** `409`<br />
+**Atkārtojams:** Atkarīgs no konteksta<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/capability-not-ready`
+
+**Nozīme:** Iespēja, ko prasa pieprasītais konts vai naudas kustība, nav gatava.
+
+**Kad tas notiek:** Operācija ir atkarīga no vienas vai vairākām klienta iespējām, kas nav sasniegušas izmantojamu stāvokli.
+
+**Kā rīkoties:** Nolasiet iespēju identifikatorus laukā `capabilities`, pabeidziet atvērtos uzdevumus vai gaidiet, līdz to stāvoklis pavirzās, atkārtoti ielādējiet tos un nosūtiet jaunu pieprasījumu, kad tie ir gatavi.
+
+**Atkārtošanas norādes:** Nolasiet `retryable` šajā atbildē. Atkārtojiet vēlāk tikai tad, kad tā vērtība ir `true`. Idempotentam ierakstam atkārtoti izmantojiet sākotnējo idempotences atslēgu un nemainītu pieprasījumu.
+
+**Saistītās API operācijas:**
+
+- [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) (`postV3CustomersByCustomerIdAccounts`, statuss `409`)
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, statuss `409`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, statuss `409`)
+
+**Papildu atbildes lauki:**
+
+- `capabilities`: Iespēju id, kas apmierina neizdevušos operāciju.
+
+<a id="capability-not-supported-for-customer-type" className="block scroll-mt-32">
+  <span className="sr-only">capability_not_supported_for_customer_type error</span>
+</a>
+
+### `capability_not_supported_for_customer_type`
+
+**HTTP statuss:** `422`<br />
+**Atkārtojams:** Netiek atgriezts<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/capability-not-supported-for-customer-type`
+
+**Nozīme:** Iespēja netiek atbalstīta šim klienta tipam.
+
+**Kad tas notiek:** Privātpersonas vai uzņēmuma klients pieprasa iespēju, kas tiek piedāvāta tikai citam klienta tipam.
+
+**Kā rīkoties:** Izmantojiet šī klienta atbalstīto iespēju atbildi un pieprasiet iespēju, kas tiek piedāvāta tā esošajam tipam.
+
+**Atkārtošanas norādes:** Šī problēma neatgriež `retryable`. Nepieņemiet, ka nemainīta pieprasījuma atkārtošana ir droša; sekojiet iepriekš norādītajai darbībai un operācijas idempotences prasībām.
+
+**Saistītās API operācijas:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, statuss `422`)
+
+<a id="capability-provider-resolution-failed" className="block scroll-mt-32">
+  <span className="sr-only">capability_provider_resolution_failed error</span>
+</a>
+
+### `capability_provider_resolution_failed`
+
+**HTTP statuss:** `422`<br />
+**Atkārtojams:** Netiek atgriezts<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/capability-provider-resolution-failed`
+
+**Nozīme:** Swipelux nevarēja atrisināt pilnīgu apstrādes konfigurāciju iespējas pieprasījumam.
+
+**Kad tas notiek:** Pieprasītā iespēju kombinācija pēc formas ir derīga, bet pieejamā iespējas konfigurācija ir nepilnīga.
+
+**Kā rīkoties:** Apstipriniet pieprasījumu pret atbalstīto iespēju atbildi. Ja tā joprojām tiek piedāvāta, saglabājiet `correlationId` un sazinieties ar Swipelux atbalstu.
+
+**Atkārtošanas norādes:** Šī problēma neatgriež `retryable`. Nepieņemiet, ka nemainīta pieprasījuma atkārtošana ir droša; sekojiet iepriekš norādītajai darbībai un operācijas idempotences prasībām.
+
+**Saistītās API operācijas:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, statuss `422`)
+
+<a id="capability-snapshot-corrupted" className="block scroll-mt-32">
+  <span className="sr-only">capability_snapshot_corrupted error</span>
+</a>
+
+### `capability_snapshot_corrupted`
+
+**HTTP statuss:** `500`<br />
+**Atkārtojams:** Nē<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/capability-snapshot-corrupted`
+
+**Nozīme:** Swipelux nevarēja izvērtēt klienta iespēju stāvokli.
+
+**Kad tas notiek:** Ar iespējām saistīta operācija sastopas ar nederīgu saglabāto iespēju momentuzņēmumu.
+
+**Kā rīkoties:** Saglabājiet `correlationId` un sazinieties ar Swipelux atbalstu. Neatkārtojiet nemainītu pieprasījumu vairākkārt.
+
+**Atkārtošanas norādes:** Neatkārtojiet nemainītu pieprasījumu. Pirms jauna pieprasījuma nosūtīšanas veiciet iepriekš norādīto darbību.
+
+<Accordion title="Saistītās API operācijas (11)">
+
+- [`PATCH /v3/customers/{customerId}`](/api-reference/customers/patch-v3-customers-by-customer-id) (`patchV3CustomersByCustomerId`, statuss `500`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, statuss `500`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}/cancel`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id-cancel) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityIdCancel`, statuss `500`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}/tasks-preview`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id-tasks-preview) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityIdTasks-preview`, statuss `500`)
+- [`POST /v3/customers/{customerId}/related-parties`](/api-reference/customers/post-v3-customers-by-customer-id-related-parties) (`postV3CustomersByCustomerIdRelated-parties`, statuss `500`)
+- [`DELETE /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/delete-v3-customers-by-customer-id-related-parties-by-related-party-id) (`deleteV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, statuss `500`)
+- [`PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/patch-v3-customers-by-customer-id-related-parties-by-related-party-id) (`patchV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, statuss `500`)
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, statuss `500`)
+- [`POST /v3/sandbox/customers/{customerId}/capabilities/{capabilityId}/status`](/api-reference/sandbox/post-v3-sandbox-customers-by-customer-id-capabilities-by-capability-id-status) (`postV3SandboxCustomersByCustomerIdCapabilitiesByCapabilityIdStatus`, statuss `500`)
+- [`POST /v3/sandbox/tasks`](/api-reference/sandbox/post-v3-sandbox-tasks) (`postV3SandboxTasks`, statuss `500`)
+- [`POST /v3/sandbox/tasks/{taskId}/review`](/api-reference/sandbox/post-v3-sandbox-tasks-by-task-id-review) (`postV3SandboxTasksByTaskIdReview`, statuss `500`)
+
+</Accordion>
+
+<a id="capability-terminally-rejected" className="block scroll-mt-32">
+  <span className="sr-only">capability_terminally_rejected error</span>
+</a>
+
+### `capability_terminally_rejected`
+
+**HTTP statuss:** `409`<br />
+**Atkārtojams:** Nē<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/capability-terminally-rejected`
+
+**Nozīme:** Iespēja jau ir noraidīta terminālā stāvoklī.
+
+**Kad tas notiek:** Jūs pieprasāt iespēju, kuras esošais dzīves cikls vairs nevar atgriezties pieprasāmā stāvoklī.
+
+**Kā rīkoties:** Nolasiet esošo iespēju un atklātos uzdevumus vai statusa informāciju, pēc tam izvēlieties citu atbalstītu opciju vai sazinieties ar atbalstu, ja stāvoklis ir negaidīts.
+
+**Atkārtošanas norādes:** Neatkārtojiet nemainītu pieprasījumu. Pirms jauna pieprasījuma nosūtīšanas veiciet iepriekš norādīto darbību.
+
+**Saistītās API operācijas:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, statuss `409`)
+
+<a id="capability-variant-unavailable" className="block scroll-mt-32">
+  <span className="sr-only">capability_variant_unavailable error</span>
+</a>
+
+### `capability_variant_unavailable`
+
+**HTTP statuss:** `409`, `422`<br />
+**Atkārtojams:** Atkarīgs no konteksta<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/capability-variant-unavailable`
+
+**Nozīme:** Pieprasītais iespējas variants nav pieejams izvēlētajai klienta, nolūka vai iestādes kombinācijai.
+
+**Kad tas notiek:** Iespēju izvērtēšana atrod vai nu īslaicīgu pieejamības problēmu, vai strukturāli neatbalstītu kombināciju.
+
+**Kā rīkoties:** Izpētiet `retryable`. Atkārtojiet vēlāk, kad tā vērtība ir `true`; pretējā gadījumā izvēlieties citu variantu no atbalstīto iespēju atbildes.
+
+**Atkārtošanas norādes:** Nolasiet `retryable` šajā atbildē. Atkārtojiet vēlāk tikai tad, kad tā vērtība ir `true`. Idempotentam ierakstam atkārtoti izmantojiet sākotnējo idempotences atslēgu un nemainītu pieprasījumu. Nemainiet pieprasījumu, atkārtojot īslaicīgu varianta pārtraukumu; mainiet iespējas izvēli, kad atbilde nav atkārtojama.
+
+**Saistītās API operācijas:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, statuss `409`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, statuss `422`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}/tasks-preview`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id-tasks-preview) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityIdTasks-preview`, statuss `422`)
+
+<a id="initial-application-identity-conflict" className="block scroll-mt-32">
+  <span className="sr-only">initial_application_identity_conflict error</span>
+</a>
+
+### `initial_application_identity_conflict`
+
+**HTTP statuss:** `409`<br />
+**Atkārtojams:** Nē<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/initial-application-identity-conflict`
+
+**Nozīme:** Sākotnējā pieteikuma identitāte mainījās, pirms tā tika saglabāta.
+
+**Kad tas notiek:** Klienta izveide vai iespējas pieprasījums atrod konfliktējošu identitāti sākotnējam pieteikumam, ko tas veido.
+
+**Kā rīkoties:** Saglabājiet `correlationId` un sazinieties ar Swipelux atbalstu, pirms atkārtojat iespējas pieprasījumu.
+
+**Atkārtošanas norādes:** Neatkārtojiet nemainītu pieprasījumu. Pirms jauna pieprasījuma nosūtīšanas veiciet iepriekš norādīto darbību.
+
+**Saistītās API operācijas:**
+
+- [`POST /v3/customers`](/api-reference/customers/post-v3-customers) (`postV3Customers`, statuss `409`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, statuss `409`)
+
+<a id="initial-application-owner-unavailable" className="block scroll-mt-32">
+  <span className="sr-only">initial_application_owner_unavailable error</span>
+</a>
+
+### `initial_application_owner_unavailable`
+
+**HTTP statuss:** `503`<br />
+**Atkārtojams:** Nē<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/initial-application-owner-unavailable`
+
+**Nozīme:** Sākotnējam pieteikumam nav pieejams derīgs īpašnieka maršruts.
+
+**Kad tas notiek:** Iespējas pieprasījums nevar piešķirt sākotnējo pieteikumu atbalstītai iestādes opcijai.
+
+**Kā rīkoties:** Izvēlieties atbalstītu iestādi, ko atgriež iespēju katalogs, vai saglabājiet `correlationId` un sazinieties ar Swipelux atbalstu, ja neviena nav pieejama.
+
+**Atkārtošanas norādes:** Neatkārtojiet nemainītu pieprasījumu. Pirms jauna pieprasījuma nosūtīšanas veiciet iepriekš norādīto darbību.
+
+**Saistītās API operācijas:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, statuss `503`)
+
+<a id="initial-application-scope-unavailable" className="block scroll-mt-32">
+  <span className="sr-only">initial_application_scope_unavailable error</span>
+</a>
+
+### `initial_application_scope_unavailable`
+
+**HTTP statuss:** `503`<br />
+**Atkārtojams:** Atkarīgs no konteksta<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/initial-application-scope-unavailable`
+
+**Nozīme:** Swipelux nevarēja atrisināt sākotnējam pieteikumam nepieciešamo tvērumu.
+
+**Kad tas notiek:** Klienta izveide vai iespējas pieprasījums nevar atrisināt API atslēgas vidi un atbilstības kontekstu, kas nepieciešams sākotnējā pieteikuma izveidei.
+
+**Kā rīkoties:** Pārbaudiet API atslēgas vidi un saglabājiet `correlationId`. Sekojiet `retryable`, kad tas ir klāt; pretējā gadījumā pirms atkārtošanas sazinieties ar Swipelux atbalstu.
+
+**Atkārtošanas norādes:** Nolasiet `retryable` šajā atbildē. Atkārtojiet vēlāk tikai tad, kad tā vērtība ir `true`. Idempotentam ierakstam atkārtoti izmantojiet sākotnējo idempotences atslēgu un nemainītu pieprasījumu.
+
+**Saistītās API operācijas:**
+
+- [`POST /v3/customers`](/api-reference/customers/post-v3-customers) (`postV3Customers`, statuss `503`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, statuss `503`)
+
+<a id="invalid-capability" className="block scroll-mt-32">
+  <span className="sr-only">invalid_capability error</span>
+</a>
+
+### `invalid_capability`
+
+**HTTP statuss:** `400`, `422`<br />
+**Atkārtojams:** Netiek atgriezts<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/invalid-capability`
+
+**Nozīme:** Iespējas atsauce vai pieprasītā iespējas vērtība nav derīga šai operācijai.
+
+**Kad tas notiek:** Iespējas pieprasījums vai smilšu kastes statusa maiņa izmanto nezināmu vai nesaderīgu iespējas identifikatoru vai vērtību.
+
+**Kā rīkoties:** Nolasiet klienta iespējas, izmantojiet precīzu pašreizējo iespējas identifikatoru un izlabojiet pieprasījumu atbilstoši operācijas shēmai.
+
+**Atkārtošanas norādes:** Šī problēma neatgriež `retryable`. Nepieņemiet, ka nemainīta pieprasījuma atkārtošana ir droša; sekojiet iepriekš norādītajai darbībai un operācijas idempotences prasībām.
+
+**Saistītās API operācijas:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, statuss `400`)
+- [`POST /v3/sandbox/customers/{customerId}/capabilities/{capabilityId}/status`](/api-reference/sandbox/post-v3-sandbox-customers-by-customer-id-capabilities-by-capability-id-status) (`postV3SandboxCustomersByCustomerIdCapabilitiesByCapabilityIdStatus`, statuss `422`)
+
+<a id="invalid-document-reference" className="block scroll-mt-32">
+  <span className="sr-only">invalid_document_reference error</span>
+</a>
+
+### `invalid_document_reference`
+
+**HTTP statuss:** `400`<br />
+**Atkārtojams:** Nē<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/invalid-document-reference`
+
+**Nozīme:** Uzdevuma iesniegums satur dokumenta atsauci, kas nevar izpildīt izvēlēto prasību.
+
+**Kad tas notiek:** Norādītais dokuments neeksistē, nav pieejams klientam vai neatbilst uzdevuma prasībai, uz kuru tiek atbildēts.
+
+**Kā rīkoties:** Uzskaitiet vai augšupielādējiet klienta dokumentus, izmantojiet pareizo dokumenta identifikatoru prasībai, atkārtoti ielādējiet uzdevumu un iesniedziet tā pašreizējo versiju.
+
+**Atkārtošanas norādes:** Neatkārtojiet nemainītu pieprasījumu. Pirms jauna pieprasījuma nosūtīšanas veiciet iepriekš norādīto darbību.
+
+**Saistītās API operācijas:**
+
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, statuss `400`)
+
+<a id="kyc-configuration-unavailable" className="block scroll-mt-32">
+  <span className="sr-only">kyc_configuration_unavailable error</span>
+</a>
+
+### `kyc_configuration_unavailable`
+
+**HTTP statuss:** `503`<br />
+**Atkārtojams:** Nē<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/kyc-configuration-unavailable`
+
+**Nozīme:** Iespējai nepieciešamā verifikācijas konfigurācija nav pieejama.
+
+**Kad tas notiek:** Swipelux nevar sagatavot pieprasīto verifikācijas plūsmu no pašlaik aktīvās publiskās konfigurācijas.
+
+**Kā rīkoties:** Saglabājiet `correlationId` un sazinieties ar Swipelux atbalstu. Neatkārtojiet nemainītu pieprasījumu vairākkārt.
+
+**Atkārtošanas norādes:** Neatkārtojiet nemainītu pieprasījumu. Pirms jauna pieprasījuma nosūtīšanas veiciet iepriekš norādīto darbību.
+
+**Saistītās API operācijas:**
+
+- [`GET /kyc/redirect/{customerId}/{taskId}/{verificationSessionId}`](/api-reference/tasks/start-kyc-verification-session) (`startKycVerificationSession`, statuss `503`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, statuss `503`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}/tasks-preview`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id-tasks-preview) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityIdTasks-preview`, statuss `503`)
+
+<a id="kyc-level-configuration-invalid" className="block scroll-mt-32">
+  <span className="sr-only">kyc_level_configuration_invalid error</span>
+</a>
+
+### `kyc_level_configuration_invalid`
+
+**HTTP statuss:** `503`<br />
+**Atkārtojams:** Nē<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/kyc-level-configuration-invalid`
+
+**Nozīme:** Aktīvā verifikācijas līmeņa konfigurācija nav derīga.
+
+**Kad tas notiek:** Mitinātā verifikācijas sesija nevar sākties, jo tās konfigurētais verifikācijas līmenis nav izmantojams.
+
+**Kā rīkoties:** Saglabājiet `correlationId` un sazinieties ar Swipelux atbalstu, lai konfigurāciju varētu izlabot, pirms mēģināt vēlreiz.
+
+**Atkārtošanas norādes:** Neatkārtojiet nemainītu pieprasījumu. Pirms jauna pieprasījuma nosūtīšanas veiciet iepriekš norādīto darbību.
+
+**Saistītās API operācijas:**
+
+- [`GET /kyc/redirect/{customerId}/{taskId}/{verificationSessionId}`](/api-reference/tasks/start-kyc-verification-session) (`startKycVerificationSession`, statuss `503`)
+
+<a id="kyc-process-conflict" className="block scroll-mt-32">
+  <span className="sr-only">kyc_process_conflict error</span>
+</a>
+
+### `kyc_process_conflict`
+
+**HTTP statuss:** `409`<br />
+**Atkārtojams:** Jā<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/kyc-process-conflict`
+
+**Nozīme:** Verifikācijas process mainījās, pirms operācija tika pabeigta.
+
+**Kad tas notiek:** Cita darbība pavirza vai aizstāj uzdevumu vai verifikācijas sesiju, kamēr jūsu pieprasījums tiek apstrādāts.
+
+**Kā rīkoties:** Atkārtoti ielādējiet uzdevumu un tā pieejamās verifikācijas metodes, pēc tam atkārtojiet pret pašreizējo procesa stāvokli.
+
+**Atkārtošanas norādes:** Atkārtojiet pēc aizkaves. Idempotentam ierakstam atkārtoti izmantojiet sākotnējo idempotences atslēgu un nemainītu pieprasījumu.
+
+**Saistītās API operācijas:**
+
+- [`GET /kyc/redirect/{customerId}/{taskId}/{verificationSessionId}`](/api-reference/tasks/start-kyc-verification-session) (`startKycVerificationSession`, statuss `409`)
+- [`PATCH /v3/customers/{customerId}`](/api-reference/customers/patch-v3-customers-by-customer-id) (`patchV3CustomersByCustomerId`, statuss `409`)
+- [`PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/patch-v3-customers-by-customer-id-related-parties-by-related-party-id) (`patchV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, statuss `409`)
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, statuss `409`)
+
+<a id="kyc-provider-unavailable" className="block scroll-mt-32">
+  <span className="sr-only">kyc_provider_unavailable error</span>
+</a>
+
+### `kyc_provider_unavailable`
+
+**HTTP statuss:** `502`<br />
+**Atkārtojams:** Jā<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/kyc-provider-unavailable`
+
+**Nozīme:** Verifikācijas pakalpojums īslaicīgi nav pieejams.
+
+**Kad tas notiek:** Mitināto verifikācijas sesiju nevar izveidot vai turpināt, jo verifikācijas pakalpojums nepabeidza pieprasījumu.
+
+**Kā rīkoties:** Atkārtojiet pēc aizkaves. Saglabājiet uzdevuma un sesijas identifikatorus un atkārtoti ielādējiet uzdevumu, ja pārtraukums ilgst pietiekami ilgi, lai tā stāvoklis mainītos.
+
+**Atkārtošanas norādes:** Atkārtojiet pēc aizkaves. Idempotentam ierakstam atkārtoti izmantojiet sākotnējo idempotences atslēgu un nemainītu pieprasījumu.
+
+**Saistītās API operācijas:**
+
+- [`GET /kyc/redirect/{customerId}/{taskId}/{verificationSessionId}`](/api-reference/tasks/start-kyc-verification-session) (`startKycVerificationSession`, statuss `502`)
+
+<a id="kyc-session-terminal" className="block scroll-mt-32">
+  <span className="sr-only">kyc_session_terminal error</span>
+</a>
+
+### `kyc_session_terminal`
+
+**HTTP statuss:** `410`<br />
+**Atkārtojams:** Nē<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/kyc-session-terminal`
+
+**Nozīme:** Verifikācijas sesija vairs nav izmantojama.
+
+**Kad tas notiek:** Pieprasītā mitinātā sesija jau ir pabeigta, neizdevusies, tās derīgums ir beidzies, vai tā citādi ir sasniegusi terminālu stāvokli.
+
+**Kā rīkoties:** Atkārtoti ielādējiet uzdevumu un izmantojiet aktīvu sesiju vai sāciet jaunu verifikācijas metodi, ko atklāj pašreizējais uzdevums.
+
+**Atkārtošanas norādes:** Neatkārtojiet nemainītu pieprasījumu. Pirms jauna pieprasījuma nosūtīšanas veiciet iepriekš norādīto darbību.
+
+**Saistītās API operācijas:**
+
+- [`GET /kyc/redirect/{customerId}/{taskId}/{verificationSessionId}`](/api-reference/tasks/start-kyc-verification-session) (`startKycVerificationSession`, statuss `410`)
+
+<a id="ops-rail-handoff-conflict" className="block scroll-mt-32">
+  <span className="sr-only">ops_rail_handoff_conflict error</span>
+</a>
+
+### `ops_rail_handoff_conflict`
+
+**HTTP statuss:** `409`<br />
+**Atkārtojams:** Nē<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/ops-rail-handoff-conflict`
+
+**Nozīme:** Uzdevuma iesniegumu bloķē konfliktējoša bankas ceļa konfigurācija.
+
+**Kad tas notiek:** Dokumenta uzdevuma iesniegums nevar saskaņot klienta pašreizējo bankas ceļa stāvokli.
+
+**Kā rīkoties:** Saglabājiet augšupielādēto dokumentu identifikatorus, saglabājiet `correlationId` un sazinieties ar Swipelux atbalstu, pirms atkārtojat to pašu iesniegumu. Neaugšupielādējiet aizstājējkopijas tikai šī konflikta dēļ.
+
+**Atkārtošanas norādes:** Neatkārtojiet nemainītu pieprasījumu. Pirms jauna pieprasījuma nosūtīšanas veiciet iepriekš norādīto darbību.
+
+**Saistītās API operācijas:**
+
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, statuss `409`)
+
+<a id="provider-conflict" className="block scroll-mt-32">
+  <span className="sr-only">provider_conflict error</span>
+</a>
+
+### `provider_conflict`
+
+**HTTP statuss:** `400`, `422`<br />
+**Atkārtojams:** Nē<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/provider-conflict`
+
+**Nozīme:** Pieprasītā iespēja vai verifikācijas darbība konfliktē ar pašreizējo apstrādes konfigurāciju.
+
+**Kad tas notiek:** Pieprasījums pēc formas ir derīgs, bet to nevar saskaņot ar klienta esošo iespēju vai verifikācijas konfigurāciju.
+
+**Kā rīkoties:** Atkārtoti ielādējiet klienta iespējas un uzdevumus un izvēlieties atbalstītu pašreizējo opciju. Ja konflikts joprojām ir negaidīts, saglabājiet `correlationId` un sazinieties ar atbalstu.
+
+**Atkārtošanas norādes:** Neatkārtojiet nemainītu pieprasījumu. Pirms jauna pieprasījuma nosūtīšanas veiciet iepriekš norādīto darbību.
+
+**Saistītās API operācijas:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, statuss `400`)
+- [`POST /v3/sandbox/customers/{customerId}/verification`](/api-reference/sandbox/post-v3-sandbox-customers-by-customer-id-verification) (`postV3SandboxCustomersByCustomerIdVerification`, statuss `422`)
+
+<a id="submission-channel-not-allowed" className="block scroll-mt-32">
+  <span className="sr-only">submission_channel_not_allowed error</span>
+</a>
+
+### `submission_channel_not_allowed`
+
+**HTTP statuss:** `409`<br />
+**Atkārtojams:** Nē<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/submission-channel-not-allowed`
+
+**Nozīme:** Tiešā API iesniegšana šim uzdevumam nav atļauta.
+
+**Kad tas notiek:** Uzdevumam nepieciešama cita verifikācijas metode, un tas noraida atbildes, kas iesniegtas caur tiešās iesniegšanas galapunktu.
+
+**Kā rīkoties:** Atkārtoti ielādējiet uzdevumu un izmantojiet vienu no verifikācijas metodēm vai saitēm, ko atklāj tā pašreizējās prasības.
+
+**Atkārtošanas norādes:** Neatkārtojiet nemainītu pieprasījumu. Pirms jauna pieprasījuma nosūtīšanas veiciet iepriekš norādīto darbību.
+
+**Saistītās API operācijas:**
+
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, statuss `409`)
+
+<a id="submission-not-found" className="block scroll-mt-32">
+  <span className="sr-only">submission_not_found error</span>
+</a>
+
+### `submission_not_found`
+
+**HTTP statuss:** `404`<br />
+**Atkārtojams:** Nē<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/submission-not-found`
+
+**Nozīme:** Pieprasīto uzdevuma iesniegumu nevarēja atrast.
+
+**Kad tas notiek:** Iesnieguma identifikators ir nepareizs, pieder citam uzdevumam vai klientam vai nav pieejams pašreizējā vidē.
+
+**Kā rīkoties:** Pārbaudiet klienta, uzdevuma un iesnieguma identifikatorus, pēc tam uzskaitiet pašreizējā uzdevuma iesniegumus, pirms atkārtojat.
+
+**Atkārtošanas norādes:** Neatkārtojiet nemainītu pieprasījumu. Pirms jauna pieprasījuma nosūtīšanas veiciet iepriekš norādīto darbību.
+
+**Saistītās API operācijas:**
+
+- [`GET /v3/customers/{customerId}/tasks/{taskId}/submissions/{submissionId}`](/api-reference/task-submissions/get-customer-task-submission) (`getCustomerTaskSubmission`, statuss `404`)
+
+<a id="task-changed" className="block scroll-mt-32">
+  <span className="sr-only">task_changed error</span>
+</a>
+
+### `task_changed`
+
+**HTTP statuss:** `409`<br />
+**Atkārtojams:** Nē<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/task-changed`
+
+**Nozīme:** Uzdevums mainījās pēc tam, kad jūsu klients to pēdējo reizi nolasīja.
+
+**Kad tas notiek:** Iesniegums izmanto novecojušu uzdevuma versiju vai statusu pēc tam, kad cita darbība atjaunināja uzdevumu.
+
+**Kā rīkoties:** Izmantojiet `taskUrl` vai `taskId`, lai atkārtoti ielādētu uzdevumu, pārbūvējiet atbildes atbilstoši `currentRevision` un `currentStatus` un iesniedziet pašreizējās prasības.
+
+**Atkārtošanas norādes:** Neatkārtojiet nemainītu pieprasījumu. Pirms jauna pieprasījuma nosūtīšanas veiciet iepriekš norādīto darbību. Tā kā pieprasījuma pamattekstam jāmainās uz jauno versiju, pārskatītajam iesniegumam izmantojiet jaunu idempotences atslēgu.
+
+**Saistītās API operācijas:**
+
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, statuss `409`)
+
+**Papildu atbildes lauki:**
+
+- `currentRevision`: Pašreizējā uzdevuma versija.
+- `currentStatus`: Pašreizējais uzdevuma statuss.
+- `taskId`: Pašreizējā uzdevuma identifikators.
+- `taskUrl`: Papildu problēmas konteksts.
+
+<a id="task-not-found" className="block scroll-mt-32">
+  <span className="sr-only">task_not_found error</span>
+</a>
+
+### `task_not_found`
+
+**HTTP statuss:** `404`<br />
+**Atkārtojams:** Nē<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/task-not-found`
+
+**Nozīme:** Uzdevumu nevarēja atrast norādītajam klientam vai API atslēgai.
+
+**Kad tas notiek:** Uzdevuma identifikators neeksistē, pieder citam klientam vai tvērumam vai nav pieejams pašreizējā vidē.
+
+**Kā rīkoties:** Pārbaudiet klienta un uzdevuma identifikatorus, uzskaitiet pašreizējos uzdevumus un turpiniet ar pieejamu uzdevumu.
+
+**Atkārtošanas norādes:** Neatkārtojiet nemainītu pieprasījumu. Pirms jauna pieprasījuma nosūtīšanas veiciet iepriekš norādīto darbību.
+
+**Saistītās API operācijas:**
+
+- [`GET /v3/customers/{customerId}/tasks/{taskId}`](/api-reference/tasks/get-customer-task) (`getCustomerTask`, statuss `404`)
+- [`GET /v3/customers/{customerId}/tasks/{taskId}/history`](/api-reference/tasks/list-customer-task-history) (`listCustomerTaskHistory`, statuss `404`)
+- [`GET /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/list-customer-task-submissions) (`listCustomerTaskSubmissions`, statuss `404`)
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, statuss `404`)
+- [`POST /v3/sandbox/tasks/{taskId}/review`](/api-reference/sandbox/post-v3-sandbox-tasks-by-task-id-review) (`postV3SandboxTasksByTaskIdReview`, statuss `404`)
+- [`GET /v3/tasks/{taskId}`](/api-reference/tasks/get-task) (`getTask`, statuss `404`)
+
+<a id="task-obligation-conflict" className="block scroll-mt-32">
+  <span className="sr-only">task_obligation_conflict error</span>
+</a>
+
+### `task_obligation_conflict`
+
+**HTTP statuss:** `409`<br />
+**Atkārtojams:** Nē<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/task-obligation-conflict`
+
+**Nozīme:** Uzdevumam ir konfliktējošs saistību stāvoklis, un tas nevar pieņemt iesniegumu.
+
+**Kad tas notiek:** Uzdevuma pašreizējās prasības satur nekonsekventu stāvokli, ko tiešās iesniegšanas plūsma nevar droši atrisināt.
+
+**Kā rīkoties:** Saglabājiet `correlationId`, vienreiz atkārtoti ielādējiet uzdevumu un sazinieties ar Swipelux atbalstu, ja konflikts saglabājas.
+
+**Atkārtošanas norādes:** Neatkārtojiet nemainītu pieprasījumu. Pirms jauna pieprasījuma nosūtīšanas veiciet iepriekš norādīto darbību.
+
+**Saistītās API operācijas:**
+
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, statuss `409`)
+
+<a id="task-submission-incomplete" className="block scroll-mt-32">
+  <span className="sr-only">task_submission_incomplete error</span>
+</a>
+
+### `task_submission_incomplete`
+
+**HTTP statuss:** `422`<br />
+**Atkārtojams:** Nē<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/task-submission-incomplete`
+
+**Nozīme:** Iesniegums neatbild uz katru pašreizējo izpildāmo prasību.
+
+**Kad tas notiek:** Vienam vai vairākiem prasību identifikatoriem, kas uzskaitīti `missingRequirementIds`, pieprasījumā nav derīgas atbildes.
+
+**Kā rīkoties:** Atkārtoti ielādējiet uzdevumu, sniedziet atbildi katram identifikatoram sarakstā `missingRequirementIds` un iesniedziet pašreizējo uzdevuma versiju.
+
+**Atkārtošanas norādes:** Neatkārtojiet nemainītu pieprasījumu. Pirms jauna pieprasījuma nosūtīšanas veiciet iepriekš norādīto darbību.
+
+**Saistītās API operācijas:**
+
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, statuss `422`)
+
+**Papildu atbildes lauki:**
+
+- `missingRequirementIds`: Sakārtoti izpildāmo prasību id, kas joprojām trūkst.
+
+<a id="verification-collection-mapping-invalid" className="block scroll-mt-32">
+  <span className="sr-only">verification_collection_mapping_invalid error</span>
+</a>
+
+### `verification_collection_mapping_invalid`
+
+**HTTP statuss:** `503`<br />
+**Atkārtojams:** Nē<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/verification-collection-mapping-invalid`
+
+**Nozīme:** Uzdevuma verifikācijas prasības nevar sagatavot izmantojamā verifikācijas plūsmā.
+
+**Kad tas notiek:** Swipelux nevar kartēt pašreizējās publiskās uzdevuma prasības uz verifikācijas kolekciju, kas nepieciešama iespējai.
+
+**Kā rīkoties:** Saglabājiet `correlationId` un sazinieties ar Swipelux atbalstu. Neatkārtojiet nemainītu pieprasījumu vairākkārt.
+
+**Atkārtošanas norādes:** Neatkārtojiet nemainītu pieprasījumu. Pirms jauna pieprasījuma nosūtīšanas veiciet iepriekš norādīto darbību.
+
+**Saistītās API operācijas:**
+
+- [`GET /kyc/redirect/{customerId}/{taskId}/{verificationSessionId}`](/api-reference/tasks/start-kyc-verification-session) (`startKycVerificationSession`, statuss `503`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, statuss `503`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}/tasks-preview`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id-tasks-preview) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityIdTasks-preview`, statuss `503`)
+
+## Konti un maksājumu ceļi
+
+<a id="account-has-active-transfers" className="block scroll-mt-32">
+  <span className="sr-only">account_has_active_transfers error</span>
+</a>
+
+### `account_has_active_transfers`
+
+**HTTP statuss:** `409`<br />
+**Atkārtojams:** Jā<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/account-has-active-transfers`
+
+**Nozīme:** Kontu nevar arhivēt, kamēr viens vai vairāki pārvedumi joprojām ir aktīvi.
+
+**Kad tas notiek:** Jūs mēģināt arhivēt kontu, uz kuru atsaucas izpildē esošs pārvedums.
+
+**Kā rīkoties:** Gaidiet, līdz aktīvie pārvedumi sasniedz terminālu stāvokli, vai atceliet vai atrisiniet pārvedumus, kas vēl var mainīties, un pēc tam arhivējiet kontu.
+
+**Atkārtošanas norādes:** Atkārtojiet pēc aizkaves. Idempotentam ierakstam atkārtoti izmantojiet sākotnējo idempotences atslēgu un nemainītu pieprasījumu.
+
+**Saistītās API operācijas:**
+
+- [`DELETE /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/delete-v3-customers-by-customer-id-accounts-by-account-id) (`deleteV3CustomersByCustomerIdAccountsByAccountId`, statuss `409`)
+
+<a id="account-method-not-supported" className="block scroll-mt-32">
+  <span className="sr-only">account_method_not_supported error</span>
+</a>
+
+### `account_method_not_supported`
+
+**HTTP statuss:** `422`<br />
+**Atkārtojams:** Nē<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/account-method-not-supported`
+
+**Nozīme:** Izvēlētais konts neatbalsta kotācijas pieprasīto maksājuma metodi.
+
+**Kad tas notiek:** Kotācijas avota vai galamērķa konts nav saderīgs ar izvēlēto naudas kustības metodi.
+
+**Kā rīkoties:** Izvēlieties konta un metodes kombināciju, ko atbalsta pašreizējā iespēja, pēc tam pieprasiet jaunu kotāciju.
+
+**Atkārtošanas norādes:** Neatkārtojiet nemainītu pieprasījumu. Pirms jauna pieprasījuma nosūtīšanas veiciet iepriekš norādīto darbību.
+
+**Saistītās API operācijas:**
+
+- [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) (`postV3CustomersByCustomerIdAccounts`, statuss `422`)
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, statuss `422`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, statuss `422`)
+
+<a id="account-not-ready" className="block scroll-mt-32">
+  <span className="sr-only">account_not_ready error</span>
+</a>
+
+### `account_not_ready`
+
+**HTTP statuss:** `409`<br />
+**Atkārtojams:** Atkarīgs no konteksta<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/account-not-ready`
+
+**Nozīme:** Konts eksistē, bet tā pašreizējais statuss neatļauj kotāciju vai pārvedumu.
+
+**Kad tas notiek:** Naudas kustības operācijai nepieciešams gatavs konts, bet izvēlētais konts nav sasniedzis šo stāvokli.
+
+**Kā rīkoties:** Izpētiet `statusReason`, pabeidziet nepieciešamo iestatīšanu vai gaidiet, līdz konta stāvoklis pavirzās, atkārtoti ielādējiet kontu un nosūtiet jaunu pieprasījumu, kad tas ir gatavs.
+
+**Atkārtošanas norādes:** Nolasiet `retryable` šajā atbildē. Atkārtojiet vēlāk tikai tad, kad tā vērtība ir `true`. Idempotentam ierakstam atkārtoti izmantojiet sākotnējo idempotences atslēgu un nemainītu pieprasījumu.
+
+**Saistītās API operācijas:**
+
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, statuss `409`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, statuss `409`)
+
+**Papildu atbildes lauki:**
+
+- `statusReason`: Strukturēts stāvokļa konflikta iemesls, kad neizdevusies operācija ir atkarīga no resursa pašreizējā statusa.
+
+<a id="account-unavailable" className="block scroll-mt-32">
+  <span className="sr-only">account_unavailable error</span>
+</a>
+
+### `account_unavailable`
+
+**HTTP statuss:** `409`<br />
+**Atkārtojams:** Nē<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/account-unavailable`
+
+**Nozīme:** Izvēlētais konts nav pieejams pieprasītajai naudas kustībai.
+
+**Kad tas notiek:** Operācija nevar izmantot kontu tā pašreizējā pieejamības stāvoklī.
+
+**Kā rīkoties:** Atkārtoti ielādējiet kontu un izvēlieties pieejamu kontu vai atrisiniet konta stāvokli, pirms veidojat jaunu kotācijas vai pārveduma pieprasījumu.
+
+**Atkārtošanas norādes:** Neatkārtojiet nemainītu pieprasījumu. Pirms jauna pieprasījuma nosūtīšanas veiciet iepriekš norādīto darbību.
+
+**Saistītās API operācijas:**
+
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, statuss `409`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, statuss `409`)
+
+<a id="bank-not-supported-for-customer" className="block scroll-mt-32">
+  <span className="sr-only">bank_not_supported_for_customer error</span>
+</a>
+
+### `bank_not_supported_for_customer`
+
+**HTTP statuss:** `422`<br />
+**Atkārtojams:** Netiek atgriezts<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/bank-not-supported-for-customer`
+
+**Nozīme:** Izvēlētā iestāde nav pieejama šim klientam un iespējas pieprasījumam.
+
+**Kad tas notiek:** Iespējas pieprasījums izvēlas iestādi, kas nav starp klientam atbalstītajām opcijām.
+
+**Kā rīkoties:** Uzskaitiet klienta atbalstītās iespējas un iestādes, izvēlieties pieejamu opciju un iesniedziet jaunu iespējas pieprasījumu.
+
+**Atkārtošanas norādes:** Šī problēma neatgriež `retryable`. Nepieņemiet, ka nemainīta pieprasījuma atkārtošana ir droša; sekojiet iepriekš norādītajai darbībai un operācijas idempotences prasībām.
+
+**Saistītās API operācijas:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, statuss `422`)
+
+<a id="developer-fee-invalid" className="block scroll-mt-32">
+  <span className="sr-only">developer_fee_invalid error</span>
+</a>
+
+### `developer_fee_invalid`
+
+**HTTP statuss:** `422`<br />
+**Atkārtojams:** Nē<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/developer-fee-invalid`
+
+**Nozīme:** Izstrādātāja maksas konfigurācija nav derīga izvēlētajam kontam vai naudas kustībai.
+
+**Kad tas notiek:** Maksas vērtība ir nederīga, vai izvēlētais konts nesniedz maksai saderīgu norēķinu mērķi.
+
+**Kā rīkoties:** Izlabojiet maksas vērtību un izmantojiet piemērotu konta un norēķinu konfigurāciju, pēc tam attiecīgi izveidojiet jaunu konta, kotācijas vai pārveduma pieprasījumu.
+
+**Atkārtošanas norādes:** Neatkārtojiet nemainītu pieprasījumu. Pirms jauna pieprasījuma nosūtīšanas veiciet iepriekš norādīto darbību.
+
+**Saistītās API operācijas:**
+
+- [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) (`postV3CustomersByCustomerIdAccounts`, statuss `422`)
+- [`PUT /v3/customers/{customerId}/accounts/{accountId}/fees`](/api-reference/accounts/put-v3-customers-by-customer-id-accounts-by-account-id-fees) (`putV3CustomersByCustomerIdAccountsByAccountIdFees`, statuss `422`)
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, statuss `422`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, statuss `422`)
+
+<a id="invalid-settlement-target" className="block scroll-mt-32">
+  <span className="sr-only">invalid_settlement_target error</span>
+</a>
+
+### `invalid_settlement_target`
+
+**HTTP statuss:** `400`<br />
+**Atkārtojams:** Netiek atgriezts<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/invalid-settlement-target`
+
+**Nozīme:** Pieprasītais norēķinu mērķis nav derīgs kontam.
+
+**Kad tas notiek:** Konta izveide vai atjaunināšana izvēlas norēķinu mērķi, kas neeksistē, nav saderīgs vai netiek atbalstīts šai konta konfigurācijai.
+
+**Kā rīkoties:** Izvēlieties dokumentētu norēķinu mērķi, kas ir saderīgs ar kontu un iespēju, pēc tam nosūtiet izlabotu konta pieprasījumu.
+
+**Atkārtošanas norādes:** Šī problēma neatgriež `retryable`. Nepieņemiet, ka nemainīta pieprasījuma atkārtošana ir droša; sekojiet iepriekš norādītajai darbībai un operācijas idempotences prasībām.
+
+**Saistītās API operācijas:**
+
+- [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) (`postV3CustomersByCustomerIdAccounts`, statuss `400`)
+- [`PATCH /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/patch-v3-customers-by-customer-id-accounts-by-account-id) (`patchV3CustomersByCustomerIdAccountsByAccountId`, statuss `400`)
+
+<a id="rail-not-ready" className="block scroll-mt-32">
+  <span className="sr-only">rail_not_ready error</span>
+</a>
+
+### `rail_not_ready`
+
+**HTTP statuss:** `409`<br />
+**Atkārtojams:** Nē<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/rail-not-ready`
+
+**Nozīme:** Izvēlētais maksājumu ceļš nav gatavs šim klientam.
+
+**Kad tas notiek:** Galamērķim, kotācijai vai pārvedumam nepieciešams klienta ceļš, kas nav pabeidzis nepieciešamo iestatīšanu vai gatavības pāreju.
+
+**Kā rīkoties:** Pabeidziet nepieciešamo ceļa iestatīšanu, gaidiet, līdz ceļš ir gatavs lietošanai, un pēc tam izveidojiet jaunu pieprasījumu.
+
+**Atkārtošanas norādes:** Neatkārtojiet nemainītu pieprasījumu. Pirms jauna pieprasījuma nosūtīšanas veiciet iepriekš norādīto darbību.
+
+**Saistītās API operācijas:**
+
+- [`POST /v3/customers/{customerId}/recipients/{recipientId}/destinations`](/api-reference/recipients/post-v3-customers-by-customer-id-recipients-by-recipient-id-destinations) (`postV3CustomersByCustomerIdRecipientsByRecipientIdDestinations`, statuss `409`)
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, statuss `409`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, statuss `409`)
+
+<a id="rail-temporarily-unavailable" className="block scroll-mt-32">
+  <span className="sr-only">rail_temporarily_unavailable error</span>
+</a>
+
+### `rail_temporarily_unavailable`
+
+**HTTP statuss:** `503`<br />
+**Atkārtojams:** Jā<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/rail-temporarily-unavailable`
+
+**Nozīme:** Izvēlētais maksājumu ceļš īslaicīgi nav pieejams.
+
+**Kad tas notiek:** Kotācijas izveide nevar izmantot parasti atbalstītu ceļu, jo ceļam ir īslaicīga pieejamības problēma.
+
+**Kā rīkoties:** Atkārtojiet kotācijas pieprasījumu pēc aizkaves vai izvēlieties citu atbalstītu ceļu, ja kustība nevar gaidīt.
+
+**Atkārtošanas norādes:** Atkārtojiet pēc aizkaves. Idempotentam ierakstam atkārtoti izmantojiet sākotnējo idempotences atslēgu un nemainītu pieprasījumu.
+
+**Saistītās API operācijas:**
+
+- [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) (`postV3CustomersByCustomerIdAccounts`, statuss `503`)
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, statuss `503`)
+
+## Saņēmēji un galamērķi
+
+<a id="destination-not-ready" className="block scroll-mt-32">
+  <span className="sr-only">destination_not_ready error</span>
+</a>
+
+### `destination_not_ready`
+
+**HTTP statuss:** `409`<br />
+**Atkārtojams:** Atkarīgs no konteksta<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/destination-not-ready`
+
+**Nozīme:** Saņēmēja galamērķis eksistē, bet tas nav gatavs pieprasītajai kotācijai.
+
+**Kad tas notiek:** Kotācija ir atkarīga no galamērķa, kura pašreizējais statuss neatļauj naudas kustību.
+
+**Kā rīkoties:** Izpētiet `statusReason`, pabeidziet atklāto galamērķa iestatīšanu vai gaidiet, līdz tā statuss pavirzās, atkārtoti ielādējiet to un pieprasiet jaunu kotāciju, kad tas ir gatavs.
+
+**Atkārtošanas norādes:** Nolasiet `retryable` šajā atbildē. Atkārtojiet vēlāk tikai tad, kad tā vērtība ir `true`. Idempotentam ierakstam atkārtoti izmantojiet sākotnējo idempotences atslēgu un nemainītu pieprasījumu.
+
+**Saistītās API operācijas:**
+
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, statuss `409`)
+
+**Papildu atbildes lauki:**
+
+- `statusReason`: Strukturēts stāvokļa konflikta iemesls, kad neizdevusies operācija ir atkarīga no resursa pašreizējā statusa.
+
+<a id="payout-target-relationship-invalid" className="block scroll-mt-32">
+  <span className="sr-only">payout_target_relationship_invalid error</span>
+</a>
+
+### `payout_target_relationship_invalid`
+
+**HTTP statuss:** `400`<br />
+**Atkārtojams:** Netiek atgriezts<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/payout-target-relationship-invalid`
+
+**Nozīme:** Izvēlētajam izmaksas mērķim nav derīgas saiknes ar klientu vai saņēmēju kotācijā.
+
+**Kad tas notiek:** Kotācija norāda uz mērķi, kas nepieder paredzētajai izmaksas saiknei vai nav tai atļauts galamērķis.
+
+**Kā rīkoties:** Izvēlieties kontu vai saņēmēja galamērķi, kas atgriezts zem paredzētā klienta, pēc tam pieprasiet jaunu kotāciju.
+
+**Atkārtošanas norādes:** Šī problēma neatgriež `retryable`. Nepieņemiet, ka nemainīta pieprasījuma atkārtošana ir droša; sekojiet iepriekš norādītajai darbībai un operācijas idempotences prasībām.
+
+**Saistītās API operācijas:**
+
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, statuss `400`)
+
+<a id="recipient-account-unsupported" className="block scroll-mt-32">
+  <span className="sr-only">recipient_account_unsupported error</span>
+</a>
+
+### `recipient_account_unsupported`
+
+**HTTP statuss:** `400`<br />
+**Atkārtojams:** Netiek atgriezts<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/recipient-account-unsupported`
+
+**Nozīme:** Saņēmēja konta detaļas netiek atbalstītas pieprasītajam galamērķim.
+
+**Kad tas notiek:** Galamērķa izveide saņem konta tipu vai konta detaļu kombināciju, ko izvēlētais ceļš nepieņem.
+
+**Kā rīkoties:** Izmantojiet galamērķa tipu un konta detaļu shēmu, ko atbalsta izvēlētais ceļš, pēc tam izveidojiet jaunu galamērķa pieprasījumu.
+
+**Atkārtošanas norādes:** Šī problēma neatgriež `retryable`. Nepieņemiet, ka nemainīta pieprasījuma atkārtošana ir droša; sekojiet iepriekš norādītajai darbībai un operācijas idempotences prasībām.
+
+**Saistītās API operācijas:**
+
+- [`POST /v3/customers/{customerId}/recipients/{recipientId}/destinations`](/api-reference/recipients/post-v3-customers-by-customer-id-recipients-by-recipient-id-destinations) (`postV3CustomersByCustomerIdRecipientsByRecipientIdDestinations`, statuss `400`)
+
+<a id="recipient-address-required" className="block scroll-mt-32">
+  <span className="sr-only">recipient_address_required error</span>
+</a>
+
+### `recipient_address_required`
+
+**HTTP statuss:** `422`<br />
+**Atkārtojams:** Nē<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/recipient-address-required`
+
+**Nozīme:** Saņēmējam ir nepieciešama adrese, pirms var izveidot šo fiat galamērķi.
+
+**Kad tas notiek:** Galamērķa izveide izvēlas fiat izmaksas metodi, kam nepieciešami saņēmēja adreses dati, bet saņēmēja profils tos nesniedz.
+
+**Kā rīkoties:** Atjauniniet saņēmēju ar nepieciešamajiem adreses laukiem, pēc tam izveidojiet galamērķi vēlreiz.
+
+**Atkārtošanas norādes:** Neatkārtojiet nemainītu pieprasījumu. Pirms jauna pieprasījuma nosūtīšanas veiciet iepriekš norādīto darbību.
+
+**Saistītās API operācijas:**
+
+- [`POST /v3/customers/{customerId}/recipients/{recipientId}/destinations`](/api-reference/recipients/post-v3-customers-by-customer-id-recipients-by-recipient-id-destinations) (`postV3CustomersByCustomerIdRecipientsByRecipientIdDestinations`, statuss `422`)
+
+<a id="recipient-destination-invalid" className="block scroll-mt-32">
+  <span className="sr-only">recipient_destination_invalid error</span>
+</a>
+
+### `recipient_destination_invalid`
+
+**HTTP statuss:** `400`, `422`<br />
+**Atkārtojams:** Nē<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/recipient-destination-invalid`
+
+**Nozīme:** Saņēmēja galamērķis nav derīgs vai nav saderīgs ar pieprasīto operāciju.
+
+**Kad tas notiek:** Galamērķa izveide, kotācijas izveide vai pārveduma izpilde izmanto galamērķa detaļas, kas neatbilst izvēlētā galamērķa vai maršruta prasībām.
+
+**Kā rīkoties:** Izlabojiet galamērķa detaļas vai izveidojiet atbalstītu aizstājēja galamērķi, pēc tam attiecīgi pieprasiet jaunu kotāciju vai pārvedumu.
+
+**Atkārtošanas norādes:** Neatkārtojiet nemainītu pieprasījumu. Pirms jauna pieprasījuma nosūtīšanas veiciet iepriekš norādīto darbību.
+
+**Saistītās API operācijas:**
+
+- [`POST /v3/customers/{customerId}/recipients/{recipientId}/destinations`](/api-reference/recipients/post-v3-customers-by-customer-id-recipients-by-recipient-id-destinations) (`postV3CustomersByCustomerIdRecipientsByRecipientIdDestinations`, statuss `400`)
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, statuss `422`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, statuss `422`)
+
+<a id="recipient-name-invalid" className="block scroll-mt-32">
+  <span className="sr-only">recipient_name_invalid error</span>
+</a>
+
+### `recipient_name_invalid`
+
+**HTTP statuss:** `400`<br />
+**Atkārtojams:** Netiek atgriezts<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/recipient-name-invalid`
+
+**Nozīme:** Saņēmēja vārds neatbilst pieprasījuma shēmai.
+
+**Kad tas notiek:** Saņēmēja izveide saņem trūkstošu, tukšu vai nederīgi formatētu vārdu.
+
+**Kā rīkoties:** Norādiet saņēmēja vārdu, kas atbilst dokumentētajai shēmai, un nosūtiet izlabotu izveides pieprasījumu.
+
+**Atkārtošanas norādes:** Šī problēma neatgriež `retryable`. Nepieņemiet, ka nemainīta pieprasījuma atkārtošana ir droša; sekojiet iepriekš norādītajai darbībai un operācijas idempotences prasībām.
+
+**Saistītās API operācijas:**
+
+- [`POST /v3/customers/{customerId}/recipients`](/api-reference/recipients/post-v3-customers-by-customer-id-recipients) (`postV3CustomersByCustomerIdRecipients`, statuss `400`)
+
+<a id="wallet-destination-not-supported" className="block scroll-mt-32">
+  <span className="sr-only">wallet_destination_not_supported error</span>
+</a>
+
+### `wallet_destination_not_supported`
+
+**HTTP statuss:** `409`<br />
+**Atkārtojams:** Nē<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/wallet-destination-not-supported`
+
+**Nozīme:** Izvēlētā naudas kustības metode neatbalsta maka galamērķi.
+
+**Kad tas notiek:** Kotācijas izveide kombinē maka galamērķi ar ceļu vai iespēju, kas paredzēta citam galamērķa tipam.
+
+**Kā rīkoties:** Izvēlieties saderīgu kontu vai saņēmēja galamērķi, vai izvēlieties atbalstītu maka pārveduma metodi, pēc tam pieprasiet jaunu kotāciju.
+
+**Atkārtošanas norādes:** Neatkārtojiet nemainītu pieprasījumu. Pirms jauna pieprasījuma nosūtīšanas veiciet iepriekš norādīto darbību.
+
+**Saistītās API operācijas:**
+
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, statuss `409`)
+
+## Kotācijas un pārvedumi
+
+<a id="amount-not-deliverable" className="block scroll-mt-32">
+  <span className="sr-only">amount_not_deliverable error</span>
+</a>
+
+### `amount_not_deliverable`
+
+**HTTP statuss:** `422`<br />
+**Atkārtojams:** Nē<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/amount-not-deliverable`
+
+**Nozīme:** Pieprasīto summu nevar piegādāt ar izvēlētajām valūtām, kontiem vai metodi.
+
+**Kad tas notiek:** Kotācijas pieprasījums pēc formas ir derīgs, bet izvēlētajam maršrutam nevar radīt piegādājamu galamērķa summu.
+
+**Kā rīkoties:** Pielāgojiet summu, valūtu, kontu, galamērķi vai metodi, pēc tam pieprasiet jaunu kotāciju.
+
+**Atkārtošanas norādes:** Neatkārtojiet nemainītu pieprasījumu. Pirms jauna pieprasījuma nosūtīšanas veiciet iepriekš norādīto darbību.
+
+**Saistītās API operācijas:**
+
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, statuss `422`)
+
+<a id="amount-side-ambiguous" className="block scroll-mt-32">
+  <span className="sr-only">amount_side_ambiguous error</span>
+</a>
+
+### `amount_side_ambiguous`
+
+**HTTP statuss:** `400`<br />
+**Atkārtojams:** Nē<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/amount-side-ambiguous`
+
+**Nozīme:** Kotācijas pieprasījums viennozīmīgi nenorāda, kurai konvertācijas pusei ir fiksētā summa.
+
+**Kad tas notiek:** Summas lauki ir norādīti kombinācijā, kas atstāj neskaidru avota pretstatā galamērķa summas nodomu.
+
+**Kā rīkoties:** Iestatiet summu tieši atbalstītajā pusē paredzētajam kotācijas virzienam, pēc tam pieprasiet jaunu kotāciju.
+
+**Atkārtošanas norādes:** Neatkārtojiet nemainītu pieprasījumu. Pirms jauna pieprasījuma nosūtīšanas veiciet iepriekš norādīto darbību.
+
+**Saistītās API operācijas:**
+
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, statuss `400`)
+
+<a id="capability-direction-unsupported" className="block scroll-mt-32">
+  <span className="sr-only">capability_direction_unsupported error</span>
+</a>
+
+### `capability_direction_unsupported`
+
+**HTTP statuss:** `422`<br />
+**Atkārtojams:** Nē<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/capability-direction-unsupported`
+
+**Nozīme:** Izvēlētā iespēja neatbalsta naudas kustības virzienu, ko prasa kotācija vai pārvedums.
+
+**Kad tas notiek:** Kotācijas izveide izsecina virzienu, ko izvēlētā iespēja nepiedāvā, vai pārveduma izveide konstatē, ka kotācijas piesaistītā iespēja vairs neatbalsta tās saglabāto virzienu.
+
+**Kā rīkoties:** Izvēlieties iespēju, kas atbalsta paredzēto virzienu, un pieprasiet jaunu kotāciju pirms pārveduma izveides.
+
+**Atkārtošanas norādes:** Neatkārtojiet nemainītu pieprasījumu. Pirms jauna pieprasījuma nosūtīšanas veiciet iepriekš norādīto darbību.
+
+**Saistītās API operācijas:**
+
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, statuss `422`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, statuss `422`)
+
+<a id="insufficient-balance" className="block scroll-mt-32">
+  <span className="sr-only">insufficient_balance error</span>
+</a>
+
+### `insufficient_balance`
+
+**HTTP statuss:** `409`<br />
+**Atkārtojams:** Nē<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/insufficient-balance`
+
+**Nozīme:** Avota kontā nav pietiekamas pieejamās bilances pārvedumam.
+
+**Kad tas notiek:** Pārveduma izpilde pārbauda avota kontu, un pieejamā summa ir mazāka par nepieciešamo debetu.
+
+**Kā rīkoties:** Papildiniet avota kontu vai samaziniet pārveduma summu, pēc tam iegūstiet jaunu kotāciju un izveidojiet jaunu pārveduma pieprasījumu.
+
+**Atkārtošanas norādes:** Neatkārtojiet nemainītu pieprasījumu. Pirms jauna pieprasījuma nosūtīšanas veiciet iepriekš norādīto darbību.
+
+**Saistītās API operācijas:**
+
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, statuss `409`)
+
+<a id="quote-already-executed" className="block scroll-mt-32">
+  <span className="sr-only">quote_already_executed error</span>
+</a>
+
+### `quote_already_executed`
+
+**HTTP statuss:** `409`<br />
+**Atkārtojams:** Nē<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/quote-already-executed`
+
+**Nozīme:** Kotācija jau tika izpildīta, un tai ir esošs pārvedums.
+
+**Kad tas notiek:** Otrs izpildes pieprasījums pienāk pēc tam, kad cits pieprasījums sekmīgi patērēja kotāciju.
+
+**Kā rīkoties:** Izmantojiet `transferId`, lai nolasītu un sekotu esošajam pārvedumam. Neveidojiet citu pārvedumu no tās pašas kotācijas.
+
+**Atkārtošanas norādes:** Neatkārtojiet nemainītu pieprasījumu. Pirms jauna pieprasījuma nosūtīšanas veiciet iepriekš norādīto darbību. Uztveriet atgriezto pārvedumu kā sākotnējā nodoma rezultātu, nevis atkārtojiet kotācijas izpildi.
+
+**Saistītās API operācijas:**
+
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, statuss `409`)
+
+**Papildu atbildes lauki:**
+
+- `transferId`: Esošais pārvedums, kas patērēja kotāciju.
+
+**Piemērs:**
+
+```json
+{
+  "type": "https://docs.swipelux.com/errors/quote-already-executed",
+  "title": "Quote Already Executed",
+  "status": 409,
+  "code": "quote_already_executed",
+  "detail": "This quote was already executed by another request.",
+  "correlationId": "cor_01JMM23TRANSFERERRORS",
+  "retryable": false,
+  "transferId": "tr_6dV8xN2pQ4rT7mA9sL1kBc"
+}
+```
+
+<a id="quote-destination-missing" className="block scroll-mt-32">
+  <span className="sr-only">quote_destination_missing error</span>
+</a>
+
+### `quote_destination_missing`
+
+**HTTP statuss:** `409`, `500`<br />
+**Atkārtojams:** Atkarīgs no konteksta<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/quote-destination-missing`
+
+**Nozīme:** Kotācija vai pārvedums nesatur operācijai nepieciešamo galamērķi.
+
+**Kad tas notiek:** Jauna kotācija izlaiž nepieciešamo galamērķi, vai esošs kotācijā balstīts resurss nevar atrisināt savu reģistrēto galamērķi.
+
+**Kā rīkoties:** Jaunam pieprasījumam norādiet derīgu kontu vai saņēmēja galamērķi un pieprasiet jaunu kotāciju. Esošam resursam saglabājiet `correlationId` un sazinieties ar atbalstu, ja atkārtota ielāde to neatrisina.
+
+**Atkārtošanas norādes:** Nolasiet `retryable` šajā atbildē. Atkārtojiet vēlāk tikai tad, kad tā vērtība ir `true`. Idempotentam ierakstam atkārtoti izmantojiet sākotnējo idempotences atslēgu un nemainītu pieprasījumu.
+
+**Saistītās API operācijas:**
+
+- [`GET /v3/quotes/{quoteId}`](/api-reference/money-movement/get-v3-quotes-by-quote-id) (`getV3QuotesByQuoteId`, statuss `500`)
+- [`GET /v3/transfers`](/api-reference/money-movement/get-v3-transfers) (`getV3Transfers`, statuss `500`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, statuss `409`)
+- [`GET /v3/transfers/{transferId}`](/api-reference/money-movement/get-v3-transfers-by-transfer-id) (`getV3TransfersByTransferId`, statuss `500`)
+- [`POST /v3/transfers/{transferId}/cancel`](/api-reference/money-movement/post-v3-transfers-by-transfer-id-cancel) (`postV3TransfersByTransferIdCancel`, statuss `500`)
+- [`GET /v3/transfers/{transferId}/instructions`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-instructions) (`getV3TransfersByTransferIdInstructions`, statuss `500`)
+- [`GET /v3/transfers/{transferId}/tasks`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-tasks) (`getV3TransfersByTransferIdTasks`, statuss `500`)
+
+<a id="quote-direction-invalid" className="block scroll-mt-32">
+  <span className="sr-only">quote_direction_invalid error</span>
+</a>
+
+### `quote_direction_invalid`
+
+**HTTP statuss:** `422`, `500`<br />
+**Atkārtojams:** Atkarīgs no konteksta<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/quote-direction-invalid`
+
+**Nozīme:** Avots un galamērķis neveido atbalstītu kotācijas virzienu.
+
+**Kad tas notiek:** Izvēlētais konts, galamērķis, valūtas vai metode novieto kustību nederīgā avota-uz-galamērķi virzienā.
+
+**Kā rīkoties:** Izlabojiet avota un galamērķa lomas, izmantojot atbalstītu naudas plūsmu, pēc tam pieprasiet jaunu kotāciju.
+
+**Atkārtošanas norādes:** Nolasiet `retryable` šajā atbildē. Atkārtojiet vēlāk tikai tad, kad tā vērtība ir `true`. Idempotentam ierakstam atkārtoti izmantojiet sākotnējo idempotences atslēgu un nemainītu pieprasījumu.
+
+**Saistītās API operācijas:**
+
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, statuss `422`)
+- [`GET /v3/quotes/{quoteId}`](/api-reference/money-movement/get-v3-quotes-by-quote-id) (`getV3QuotesByQuoteId`, statuss `500`)
+- [`GET /v3/transfers`](/api-reference/money-movement/get-v3-transfers) (`getV3Transfers`, statuss `500`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, statuss `500`)
+- [`GET /v3/transfers/{transferId}`](/api-reference/money-movement/get-v3-transfers-by-transfer-id) (`getV3TransfersByTransferId`, statuss `500`)
+- [`POST /v3/transfers/{transferId}/cancel`](/api-reference/money-movement/post-v3-transfers-by-transfer-id-cancel) (`postV3TransfersByTransferIdCancel`, statuss `500`)
+- [`GET /v3/transfers/{transferId}/instructions`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-instructions) (`getV3TransfersByTransferIdInstructions`, statuss `500`)
+- [`GET /v3/transfers/{transferId}/tasks`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-tasks) (`getV3TransfersByTransferIdTasks`, statuss `500`)
+
+<a id="quote-execution-consumed" className="block scroll-mt-32">
+  <span className="sr-only">quote_execution_consumed error</span>
+</a>
+
+### `quote_execution_consumed`
+
+**HTTP statuss:** `409`<br />
+**Atkārtojams:** Nē<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/quote-execution-consumed`
+
+**Nozīme:** Kotācijas vienīgā izpildes iespēja jau ir patērēta.
+
+**Kad tas notiek:** Iepriekšējs vai konkurējošs izpildes mēģinājums pārvietoja kotāciju stāvoklī, ko nevar izpildīt vēlreiz, bez esoša sekmīga pārveduma, ko atgriezt.
+
+**Kā rīkoties:** Pieprasiet jaunu kotāciju paredzētajai kustībai un izpildiet šo jauno kotāciju vienreiz.
+
+**Atkārtošanas norādes:** Neatkārtojiet nemainītu pieprasījumu. Pirms jauna pieprasījuma nosūtīšanas veiciet iepriekš norādīto darbību.
+
+**Saistītās API operācijas:**
+
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, statuss `409`)
+
+<a id="quote-expired" className="block scroll-mt-32">
+  <span className="sr-only">quote_expired error</span>
+</a>
+
+### `quote_expired`
+
+**HTTP statuss:** `409`<br />
+**Atkārtojams:** Nē<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/quote-expired`
+
+**Nozīme:** Kotācijas derīgums beidzās, pirms tā tika izpildīta.
+
+**Kad tas notiek:** Pārveduma izveide izmanto kotāciju pēc tās derīguma loga beigām.
+
+**Kā rīkoties:** Pieprasiet svaigu kotāciju un izpildiet to pirms jaunā derīguma termiņa beigām.
+
+**Atkārtošanas norādes:** Neatkārtojiet nemainītu pieprasījumu. Pirms jauna pieprasījuma nosūtīšanas veiciet iepriekš norādīto darbību.
+
+**Saistītās API operācijas:**
+
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, statuss `409`)
+
+<a id="quote-failed" className="block scroll-mt-32">
+  <span className="sr-only">quote_failed error</span>
+</a>
+
+### `quote_failed`
+
+**HTTP statuss:** `500`, `502`<br />
+**Atkārtojams:** Atkarīgs no konteksta<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/quote-failed`
+
+**Nozīme:** Swipelux nevarēja izveidot izmantojamu kotāciju šim pieprasījumam.
+
+**Kad tas notiek:** Kotācijas izveide sastopas vai nu ar īslaicīgu pakalpojuma kļūmi, vai ar terminālu kļūmi izvēlētajam maršrutam.
+
+**Kā rīkoties:** Izpētiet `retryable`. Atkārtojiet to pašu kotācijas pieprasījumu vēlāk, kad tā vērtība ir `true`; pretējā gadījumā mainiet maršruta ievades vai sazinieties ar atbalstu, norādot `correlationId`.
+
+**Atkārtošanas norādes:** Nolasiet `retryable` šajā atbildē. Atkārtojiet vēlāk tikai tad, kad tā vērtība ir `true`. Idempotentam ierakstam atkārtoti izmantojiet sākotnējo idempotences atslēgu un nemainītu pieprasījumu.
+
+**Saistītās API operācijas:**
+
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, statuss `500`)
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, statuss `502`)
+
+<a id="quote-mode-invalid" className="block scroll-mt-32">
+  <span className="sr-only">quote_mode_invalid error</span>
+</a>
+
+### `quote_mode_invalid`
+
+**HTTP statuss:** `500`<br />
+**Atkārtojams:** Jā<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/quote-mode-invalid`
+
+**Nozīme:** Kotāciju nevar interpretēt operācijai nepieciešamajā režīmā.
+
+**Kad tas notiek:** Esošs kotācijā balstīts resurss satur režīmu, ko lasīšanas vai izpildes ceļš nevar apstrādāt.
+
+**Kā rīkoties:** Atkārtojiet pēc aizkaves. Ja tā pati kotācija turpina neizdoties, saglabājiet `correlationId` un sazinieties ar atbalstu, nevis mainiet saglabāto kotāciju.
+
+**Atkārtošanas norādes:** Atkārtojiet pēc aizkaves. Idempotentam ierakstam atkārtoti izmantojiet sākotnējo idempotences atslēgu un nemainītu pieprasījumu.
+
+**Saistītās API operācijas:**
+
+- [`GET /v3/quotes/{quoteId}`](/api-reference/money-movement/get-v3-quotes-by-quote-id) (`getV3QuotesByQuoteId`, statuss `500`)
+- [`GET /v3/transfers`](/api-reference/money-movement/get-v3-transfers) (`getV3Transfers`, statuss `500`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, statuss `500`)
+- [`GET /v3/transfers/{transferId}`](/api-reference/money-movement/get-v3-transfers-by-transfer-id) (`getV3TransfersByTransferId`, statuss `500`)
+- [`POST /v3/transfers/{transferId}/cancel`](/api-reference/money-movement/post-v3-transfers-by-transfer-id-cancel) (`postV3TransfersByTransferIdCancel`, statuss `500`)
+- [`GET /v3/transfers/{transferId}/instructions`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-instructions) (`getV3TransfersByTransferIdInstructions`, statuss `500`)
+- [`GET /v3/transfers/{transferId}/tasks`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-tasks) (`getV3TransfersByTransferIdTasks`, statuss `500`)
+
+<a id="quote-not-found" className="block scroll-mt-32">
+  <span className="sr-only">quote_not_found error</span>
+</a>
+
+### `quote_not_found`
+
+**HTTP statuss:** `404`<br />
+**Atkārtojams:** Netiek atgriezts<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/quote-not-found`
+
+**Nozīme:** Kotāciju nevarēja atrast šai API atslēgai.
+
+**Kad tas notiek:** Kotācijas identifikators ir nepareizs, pieder citai videi vai nav pieejams izsaucējam.
+
+**Kā rīkoties:** Pārbaudiet kotācijas identifikatoru un API atslēgas vidi. Pieprasiet jaunu kotāciju, ja paredzētā kotācija nav pieejama.
+
+**Atkārtošanas norādes:** Šī problēma neatgriež `retryable`. Nepieņemiet, ka nemainīta pieprasījuma atkārtošana ir droša; sekojiet iepriekš norādītajai darbībai un operācijas idempotences prasībām.
+
+**Saistītās API operācijas:**
+
+- [`GET /v3/quotes/{quoteId}`](/api-reference/money-movement/get-v3-quotes-by-quote-id) (`getV3QuotesByQuoteId`, statuss `404`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, statuss `404`)
+
+<a id="rate-unavailable" className="block scroll-mt-32">
+  <span className="sr-only">rate_unavailable error</span>
+</a>
+
+### `rate_unavailable`
+
+**HTTP statuss:** `502`<br />
+**Atkārtojams:** Jā<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/rate-unavailable`
+
+**Nozīme:** Nepieciešamā valūtas likme īslaicīgi nav pieejama.
+
+**Kad tas notiek:** Likmju vai kotācijas operācija nevar iegūt likmi, kas nepieciešama pieprasītajam valūtu pārim.
+
+**Kā rīkoties:** Atkārtojiet pēc aizkaves. Pieprasiet jaunu kotāciju, nevis izmantojiet agrāku likmes pieņēmumu.
+
+**Atkārtošanas norādes:** Atkārtojiet pēc aizkaves. Idempotentam ierakstam atkārtoti izmantojiet sākotnējo idempotences atslēgu un nemainītu pieprasījumu.
+
+**Saistītās API operācijas:**
+
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, statuss `502`)
+- [`GET /v3/rates`](/api-reference/money-movement/get-v3-rates) (`getV3Rates`, statuss `502`)
+
+<a id="supporting-document-not-found" className="block scroll-mt-32">
+  <span className="sr-only">supporting_document_not_found error</span>
+</a>
+
+### `supporting_document_not_found`
+
+**HTTP statuss:** `422`<br />
+**Atkārtojams:** Nē<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/supporting-document-not-found`
+
+**Nozīme:** Pārveduma pieprasījumā norādīto apliecinošo dokumentu nevarēja atrast.
+
+**Kad tas notiek:** Pārveduma izveide atsaucas uz trūkstošu, nepieejamu vai nepareizu klienta dokumentu.
+
+**Kā rīkoties:** Uzskaitiet vai augšupielādējiet nepieciešamo klienta dokumentu, izmantojiet tā pareizo identifikatoru un iesniedziet jaunu pārveduma pieprasījumu.
+
+**Atkārtošanas norādes:** Neatkārtojiet nemainītu pieprasījumu. Pirms jauna pieprasījuma nosūtīšanas veiciet iepriekš norādīto darbību.
+
+**Saistītās API operācijas:**
+
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, statuss `422`)
+
+<a id="transfer-execution-failed" className="block scroll-mt-32">
+  <span className="sr-only">transfer_execution_failed error</span>
+</a>
+
+### `transfer_execution_failed`
+
+**HTTP statuss:** `500`<br />
+**Atkārtojams:** Nē<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/transfer-execution-failed`
+
+**Nozīme:** Pārvedumu nevarēja pabeigt kotācijas izpildes laikā.
+
+**Kad tas notiek:** Pārveduma izveide sāk izpildi, bet sastopas ar terminālu kļūmi, nevis izveido izmantojamu pārvedumu.
+
+**Kā rīkoties:** Saglabājiet `correlationId`, nolasiet kotācijas un pārveduma stāvokli un sazinieties ar atbalstu, pirms mēģināt paredzēto kustību vēlreiz ar jaunu kotāciju.
+
+**Atkārtošanas norādes:** Neatkārtojiet nemainītu pieprasījumu. Pirms jauna pieprasījuma nosūtīšanas veiciet iepriekš norādīto darbību.
+
+**Saistītās API operācijas:**
+
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, statuss `500`)
+
+<a id="transfer-has-no-instructions" className="block scroll-mt-32">
+  <span className="sr-only">transfer_has_no_instructions error</span>
+</a>
+
+### `transfer_has_no_instructions`
+
+**HTTP statuss:** `404`<br />
+**Atkārtojams:** Netiek atgriezts<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/transfer-has-no-instructions`
+
+**Nozīme:** Pārvedums eksistē, bet nesniedz maksājuma instrukcijas.
+
+**Kad tas notiek:** Jūs pieprasāt instrukcijas pārveduma tipam vai stāvoklim, kas neatklāj instrukciju kopu.
+
+**Kā rīkoties:** Nolasiet pārveduma resursu un sekojiet tā pašreizējam stāvoklim. Izmantojiet instrukciju galapunktu tikai pārvedumiem, kas atgriež maksājuma instrukcijas.
+
+**Atkārtošanas norādes:** Šī problēma neatgriež `retryable`. Nepieņemiet, ka nemainīta pieprasījuma atkārtošana ir droša; sekojiet iepriekš norādītajai darbībai un operācijas idempotences prasībām.
+
+**Saistītās API operācijas:**
+
+- [`GET /v3/transfers/{transferId}/instructions`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-instructions) (`getV3TransfersByTransferIdInstructions`, statuss `404`)
+
+<a id="transfer-not-cancelable" className="block scroll-mt-32">
+  <span className="sr-only">transfer_not_cancelable error</span>
+</a>
+
+### `transfer_not_cancelable`
+
+**HTTP statuss:** `409`<br />
+**Atkārtojams:** Nē<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/transfer-not-cancelable`
+
+**Nozīme:** Pārvedumu nevar atcelt no tā pašreizējā stāvokļa.
+
+**Kad tas notiek:** Atcelšanas pieprasījums pienāk pēc tam, kad pārvedums ir pavirzījies aiz atceļama stāvokļa.
+
+**Kā rīkoties:** Atkārtoti ielādējiet pārvedumu un turpiniet apstrādāt tā pašreizējo stāvokli, nevis atkārtojiet atcelšanas pieprasījumu.
+
+**Atkārtošanas norādes:** Neatkārtojiet nemainītu pieprasījumu. Pirms jauna pieprasījuma nosūtīšanas veiciet iepriekš norādīto darbību.
+
+**Saistītās API operācijas:**
+
+- [`POST /v3/transfers/{transferId}/cancel`](/api-reference/money-movement/post-v3-transfers-by-transfer-id-cancel) (`postV3TransfersByTransferIdCancel`, statuss `409`)
+
+<a id="transfer-not-found" className="block scroll-mt-32">
+  <span className="sr-only">transfer_not_found error</span>
+</a>
+
+### `transfer_not_found`
+
+**HTTP statuss:** `404`<br />
+**Atkārtojams:** Netiek atgriezts<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/transfer-not-found`
+
+**Nozīme:** Pārvedumu nevarēja atrast šai API atslēgai.
+
+**Kad tas notiek:** Pārveduma identifikators ir nepareizs, pieder citai videi vai nav pieejams izsaucējam.
+
+**Kā rīkoties:** Pārbaudiet pārveduma identifikatoru un API atslēgas vidi, pēc tam uzskaitiet vai nolasiet pārvedumus, pirms atkārtojat ar pieejamu pārvedumu.
+
+**Atkārtošanas norādes:** Šī problēma neatgriež `retryable`. Nepieņemiet, ka nemainīta pieprasījuma atkārtošana ir droša; sekojiet iepriekš norādītajai darbībai un operācijas idempotences prasībām.
+
+**Saistītās API operācijas:**
+
+- [`POST /v3/sandbox/transfers/{transferId}/state`](/api-reference/sandbox/post-v3-sandbox-transfers-by-transfer-id-state) (`postV3SandboxTransfersByTransferIdState`, statuss `404`)
+- [`GET /v3/transfers`](/api-reference/money-movement/get-v3-transfers) (`getV3Transfers`, statuss `404`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, statuss `404`)
+- [`GET /v3/transfers/{transferId}`](/api-reference/money-movement/get-v3-transfers-by-transfer-id) (`getV3TransfersByTransferId`, statuss `404`)
+- [`POST /v3/transfers/{transferId}/cancel`](/api-reference/money-movement/post-v3-transfers-by-transfer-id-cancel) (`postV3TransfersByTransferIdCancel`, statuss `404`)
+- [`GET /v3/transfers/{transferId}/instructions`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-instructions) (`getV3TransfersByTransferIdInstructions`, statuss `404`)
+- [`GET /v3/transfers/{transferId}/tasks`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-tasks) (`getV3TransfersByTransferIdTasks`, statuss `404`)
+
+<a id="transfer-state-invalid" className="block scroll-mt-32">
+  <span className="sr-only">transfer_state_invalid error</span>
+</a>
+
+### `transfer_state_invalid`
+
+**HTTP statuss:** `400`, `500`<br />
+**Atkārtojams:** Jā<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/transfer-state-invalid`
+
+**Nozīme:** Pārvedums ir stāvoklī, kas neatbalsta pieprasīto operāciju vai pāreju.
+
+**Kad tas notiek:** Pārveduma lasīšana, izpilde, atcelšana vai smilšu kastes stāvokļa maiņa sastopas ar stāvokli, kas pašlaik nevar apmierināt operāciju.
+
+**Kā rīkoties:** Atkārtoti ielādējiet pārvedumu, gaidiet vai izvēlieties derīgu nākamo stāvokli un atkārtojiet tikai pēc tam, kad pašreizējais stāvoklis atļauj operāciju.
+
+**Atkārtošanas norādes:** Atkārtojiet pēc aizkaves. Idempotentam ierakstam atkārtoti izmantojiet sākotnējo idempotences atslēgu un nemainītu pieprasījumu.
+
+**Saistītās API operācijas:**
+
+- [`POST /v3/sandbox/transfers/{transferId}/state`](/api-reference/sandbox/post-v3-sandbox-transfers-by-transfer-id-state) (`postV3SandboxTransfersByTransferIdState`, statuss `400`)
+- [`GET /v3/transfers`](/api-reference/money-movement/get-v3-transfers) (`getV3Transfers`, statuss `500`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, statuss `500`)
+- [`GET /v3/transfers/{transferId}`](/api-reference/money-movement/get-v3-transfers-by-transfer-id) (`getV3TransfersByTransferId`, statuss `500`)
+- [`POST /v3/transfers/{transferId}/cancel`](/api-reference/money-movement/post-v3-transfers-by-transfer-id-cancel) (`postV3TransfersByTransferIdCancel`, statuss `500`)
+- [`GET /v3/transfers/{transferId}/instructions`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-instructions) (`getV3TransfersByTransferIdInstructions`, statuss `500`)
+- [`GET /v3/transfers/{transferId}/tasks`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-tasks) (`getV3TransfersByTransferIdTasks`, statuss `500`)
+
+## Noteikumi
+
+<a id="rule-already-exists" className="block scroll-mt-32">
+  <span className="sr-only">rule_already_exists error</span>
+</a>
+
+### `rule_already_exists`
+
+**HTTP statuss:** `409`<br />
+**Atkārtojams:** Nē<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/rule-already-exists`
+
+**Nozīme:** Trigera kontam jau ir aktīvs noteikums.
+
+**Kad tas notiek:** Noteikuma izveide ir vērsta uz kontu, kuru jau uzrauga nearhivēts noteikums.
+
+**Kā rīkoties:** Izmantojiet `conflictingRuleId`, lai nolasītu esošo noteikumu, un pēc tam atjauniniet, arhivējiet vai atkārtoti izmantojiet to, nevis izveidojiet dublikātu.
+
+**Atkārtošanas norādes:** Neatkārtojiet nemainītu pieprasījumu. Pirms jauna pieprasījuma nosūtīšanas veiciet iepriekš norādīto darbību.
+
+**Saistītās API operācijas:**
+
+- [`POST /v3/customers/{customerId}/rules`](/api-reference/rules/post-v3-customers-by-customer-id-rules) (`postV3CustomersByCustomerIdRules`, statuss `409`)
+
+**Papildu atbildes lauki:**
+
+- `conflictingRuleId`: Esošs aktīvs noteikums, kas konfliktē ar šo pieprasījumu.
+
+<a id="rule-archived" className="block scroll-mt-32">
+  <span className="sr-only">rule_archived error</span>
+</a>
+
+### `rule_archived`
+
+**HTTP statuss:** `409`<br />
+**Atkārtojams:** Nē<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/rule-archived`
+
+**Nozīme:** Noteikums ir arhivēts, un to vairs nevar mainīt.
+
+**Kad tas notiek:** Jūs atjauninat vai arhivējat noteikumu, kas jau ir sasniedzis savu galīgo arhivēto stāvokli.
+
+**Kā rīkoties:** Nolasiet arhivēto noteikumu vēsturei un izveidojiet jaunu noteikumu, kad ir nepieciešams aktīvs aizstājējs.
+
+**Atkārtošanas norādes:** Neatkārtojiet nemainītu pieprasījumu. Pirms jauna pieprasījuma nosūtīšanas veiciet iepriekš norādīto darbību.
+
+**Saistītās API operācijas:**
+
+- [`DELETE /v3/customers/{customerId}/rules/{ruleId}`](/api-reference/rules/delete-v3-customers-by-customer-id-rules-by-rule-id) (`deleteV3CustomersByCustomerIdRulesByRuleId`, statuss `409`)
+- [`PATCH /v3/customers/{customerId}/rules/{ruleId}`](/api-reference/rules/patch-v3-customers-by-customer-id-rules-by-rule-id) (`patchV3CustomersByCustomerIdRulesByRuleId`, statuss `409`)
+
+<a id="rule-not-found" className="block scroll-mt-32">
+  <span className="sr-only">rule_not_found error</span>
+</a>
+
+### `rule_not_found`
+
+**HTTP statuss:** `404`<br />
+**Atkārtojams:** Netiek atgriezts<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/rule-not-found`
+
+**Nozīme:** Noteikumu nevarēja atrast norādītajam klientam.
+
+**Kad tas notiek:** Noteikuma identifikators trūkst, pieder citam klientam vai nav pieejams pašreizējā vidē.
+
+**Kā rīkoties:** Pārbaudiet klienta un noteikuma identifikatorus, iegūstiet klienta noteikumu sarakstu un atkārtojiet ar pieejamu noteikumu.
+
+**Atkārtošanas norādes:** Šī problēma neatgriež `retryable`. Nepieņemiet, ka nemainīta pieprasījuma atkārtošana ir droša; sekojiet iepriekš norādītajai darbībai un operācijas idempotences prasībām.
+
+**Saistītās API operācijas:**
+
+- [`DELETE /v3/customers/{customerId}/rules/{ruleId}`](/api-reference/rules/delete-v3-customers-by-customer-id-rules-by-rule-id) (`deleteV3CustomersByCustomerIdRulesByRuleId`, statuss `404`)
+- [`GET /v3/customers/{customerId}/rules/{ruleId}`](/api-reference/rules/get-v3-customers-by-customer-id-rules-by-rule-id) (`getV3CustomersByCustomerIdRulesByRuleId`, statuss `404`)
+- [`PATCH /v3/customers/{customerId}/rules/{ruleId}`](/api-reference/rules/patch-v3-customers-by-customer-id-rules-by-rule-id) (`patchV3CustomersByCustomerIdRulesByRuleId`, statuss `404`)
+
+<a id="rule-target-invalid" className="block scroll-mt-32">
+  <span className="sr-only">rule_target_invalid error</span>
+</a>
+
+### `rule_target_invalid`
+
+**HTTP statuss:** `400`<br />
+**Atkārtojams:** Netiek atgriezts<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/rule-target-invalid`
+
+**Nozīme:** Noteikuma darbības mērķis nav derīgs šim klientam vai noteikuma tipam.
+
+**Kad tas notiek:** Noteikuma izveide kā darbības mērķi izvēlas trūkstošu, nepieejamu, arhivētu vai nesaderīgu kontu vai galamērķi.
+
+**Kā rīkoties:** Izvēlieties aktīvu mērķi, kas atgriezts klientam un ko atbalsta noteikuma darbības shēma, un pēc tam izveidojiet jaunu noteikuma pieprasījumu.
+
+**Atkārtošanas norādes:** Šī problēma neatgriež `retryable`. Nepieņemiet, ka nemainīta pieprasījuma atkārtošana ir droša; sekojiet iepriekš norādītajai darbībai un operācijas idempotences prasībām.
+
+**Saistītās API operācijas:**
+
+- [`POST /v3/customers/{customerId}/rules`](/api-reference/rules/post-v3-customers-by-customer-id-rules) (`postV3CustomersByCustomerIdRules`, statuss `400`)
+
+<a id="rule-trigger-account-invalid" className="block scroll-mt-32">
+  <span className="sr-only">rule_trigger_account_invalid error</span>
+</a>
+
+### `rule_trigger_account_invalid`
+
+**HTTP statuss:** `400`<br />
+**Atkārtojams:** Netiek atgriezts<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/rule-trigger-account-invalid`
+
+**Nozīme:** Konts, kas izvēlēts kā noteikuma trigeris, nav derīgs.
+
+**Kad tas notiek:** Noteikuma izveide izmanto kontu, kas trūkst, ir arhivēts, nepieejams vai nav piemērots darboties kā trigeris.
+
+**Kā rīkoties:** Izvēlieties aktīvu piemērotu kontu, kas atgriezts klientam, un pēc tam izveidojiet jaunu noteikuma pieprasījumu.
+
+**Atkārtošanas norādes:** Šī problēma neatgriež `retryable`. Nepieņemiet, ka nemainīta pieprasījuma atkārtošana ir droša; sekojiet iepriekš norādītajai darbībai un operācijas idempotences prasībām.
+
+**Saistītās API operācijas:**
+
+- [`POST /v3/customers/{customerId}/rules`](/api-reference/rules/post-v3-customers-by-customer-id-rules) (`postV3CustomersByCustomerIdRules`, statuss `400`)
+
+## Idempotence un platformas kļūdas
+
+<a id="conflict" className="block scroll-mt-32">
+  <span className="sr-only">conflict error</span>
+</a>
+
+### `conflict`
+
+**HTTP statuss:** `409`<br />
+**Atkārtojams:** Nē<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/conflict`
+
+**Nozīme:** Pieprasītā operācija konfliktē ar resursa pašreizējo stāvokli.
+
+**Kad tas notiek:** Operācija nevar turpināties, jo resurss ir mainījies, ir arhivēts, tam trūkst nepieciešama pabeigta soļa vai tam citādi ir stāvokļa konflikts bez konkrētāka publiskā koda.
+
+**Kā rīkoties:** Atkārtoti ielādējiet skarto resursu, izmantojiet `detail`, lai identificētu pašreizējo priekšnosacījumu, mainiet pieprasījumu vai resursa stāvokli un pēc tam nosūtiet jaunu pieprasījumu.
+
+**Atkārtošanas norādes:** Neatkārtojiet nemainītu pieprasījumu. Pirms jauna pieprasījuma nosūtīšanas veiciet iepriekš norādīto darbību.
+
+**Saistītās API operācijas:**
+
+- [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) (`postV3CustomersByCustomerIdAccounts`, statuss `409`)
+- [`DELETE /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/delete-v3-customers-by-customer-id-accounts-by-account-id) (`deleteV3CustomersByCustomerIdAccountsByAccountId`, statuss `409`)
+- [`PATCH /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/patch-v3-customers-by-customer-id-accounts-by-account-id) (`patchV3CustomersByCustomerIdAccountsByAccountId`, statuss `409`)
+- [`POST /v3/customers/{customerId}/export`](/api-reference/customers/post-v3-customers-by-customer-id-export) (`postV3CustomersByCustomerIdExport`, statuss `409`)
+- [`POST /v3/sandbox/accounts/{accountId}/topup`](/api-reference/sandbox/post-v3-sandbox-accounts-by-account-id-topup) (`postV3SandboxAccountsByAccountIdTopup`, statuss `409`)
+- [`POST /v3/sandbox/tasks/{taskId}/review`](/api-reference/sandbox/post-v3-sandbox-tasks-by-task-id-review) (`postV3SandboxTasksByTaskIdReview`, statuss `409`)
+
+<a id="idempotency-conflict" className="block scroll-mt-32">
+  <span className="sr-only">idempotency_conflict error</span>
+</a>
+
+### `idempotency_conflict`
+
+**HTTP statuss:** `409`<br />
+**Atkārtojams:** Nē<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/idempotency-conflict`
+
+**Nozīme:** Idempotences atslēga jau tika izmantota citam pieprasījumam.
+
+**Kad tas notiek:** Ieraksts atkārtoti izmanto esošu `Idempotency-Key` ar mainītu metodi, ceļu, pamattekstu vai paredzēto operāciju.
+
+**Kā rīkoties:** Neatkārtojiet mainīto pieprasījumu ar šo atslēgu. Nepieciešamības gadījumā iegūstiet sākotnējās operācijas rezultātu vai izmantojiet jaunu atslēgu patiesi jaunai operācijai.
+
+**Atkārtošanas norādes:** Neatkārtojiet nemainītu pieprasījumu. Pirms jauna pieprasījuma nosūtīšanas veiciet iepriekš norādīto darbību. Idempotences atslēga pastāvīgi identificē tās sākotnējo pieprasījumu; pamatteksta maiņai ir nepieciešama jauna atslēga.
+
+<Accordion title="Saistītās API operācijas (30)">
+
+- [`POST /v3/customers`](/api-reference/customers/post-v3-customers) (`postV3Customers`, statuss `409`)
+- [`DELETE /v3/customers/{customerId}`](/api-reference/customers/delete-v3-customers-by-customer-id) (`deleteV3CustomersByCustomerId`, statuss `409`)
+- [`PATCH /v3/customers/{customerId}`](/api-reference/customers/patch-v3-customers-by-customer-id) (`patchV3CustomersByCustomerId`, statuss `409`)
+- [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) (`postV3CustomersByCustomerIdAccounts`, statuss `409`)
+- [`DELETE /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/delete-v3-customers-by-customer-id-accounts-by-account-id) (`deleteV3CustomersByCustomerIdAccountsByAccountId`, statuss `409`)
+- [`PATCH /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/patch-v3-customers-by-customer-id-accounts-by-account-id) (`patchV3CustomersByCustomerIdAccountsByAccountId`, statuss `409`)
+- [`PUT /v3/customers/{customerId}/accounts/{accountId}/fees`](/api-reference/accounts/put-v3-customers-by-customer-id-accounts-by-account-id-fees) (`putV3CustomersByCustomerIdAccountsByAccountIdFees`, statuss `409`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, statuss `409`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}/cancel`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id-cancel) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityIdCancel`, statuss `409`)
+- [`POST /v3/customers/{customerId}/documents`](/api-reference/documents/post-v3-customers-by-customer-id-documents) (`postV3CustomersByCustomerIdDocuments`, statuss `409`)
+- [`DELETE /v3/customers/{customerId}/documents/{documentId}`](/api-reference/documents/delete-v3-customers-by-customer-id-documents-by-document-id) (`deleteV3CustomersByCustomerIdDocumentsByDocumentId`, statuss `409`)
+- [`POST /v3/customers/{customerId}/export`](/api-reference/customers/post-v3-customers-by-customer-id-export) (`postV3CustomersByCustomerIdExport`, statuss `409`)
+- [`POST /v3/customers/{customerId}/recipients`](/api-reference/recipients/post-v3-customers-by-customer-id-recipients) (`postV3CustomersByCustomerIdRecipients`, statuss `409`)
+- [`DELETE /v3/customers/{customerId}/recipients/{recipientId}`](/api-reference/recipients/delete-v3-customers-by-customer-id-recipients-by-recipient-id) (`deleteV3CustomersByCustomerIdRecipientsByRecipientId`, statuss `409`)
+- [`PATCH /v3/customers/{customerId}/recipients/{recipientId}`](/api-reference/recipients/patch-v3-customers-by-customer-id-recipients-by-recipient-id) (`patchV3CustomersByCustomerIdRecipientsByRecipientId`, statuss `409`)
+- [`POST /v3/customers/{customerId}/recipients/{recipientId}/destinations`](/api-reference/recipients/post-v3-customers-by-customer-id-recipients-by-recipient-id-destinations) (`postV3CustomersByCustomerIdRecipientsByRecipientIdDestinations`, statuss `409`)
+- [`DELETE /v3/customers/{customerId}/recipients/{recipientId}/destinations/{destinationId}`](/api-reference/recipients/delete-v3-customers-by-customer-id-recipients-by-recipient-id-destinations-by-destination-id) (`deleteV3CustomersByCustomerIdRecipientsByRecipientIdDestinationsByDestinationId`, statuss `409`)
+- [`POST /v3/customers/{customerId}/related-parties`](/api-reference/customers/post-v3-customers-by-customer-id-related-parties) (`postV3CustomersByCustomerIdRelated-parties`, statuss `409`)
+- [`DELETE /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/delete-v3-customers-by-customer-id-related-parties-by-related-party-id) (`deleteV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, statuss `409`)
+- [`PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/patch-v3-customers-by-customer-id-related-parties-by-related-party-id) (`patchV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, statuss `409`)
+- [`POST /v3/customers/{customerId}/rules`](/api-reference/rules/post-v3-customers-by-customer-id-rules) (`postV3CustomersByCustomerIdRules`, statuss `409`)
+- [`DELETE /v3/customers/{customerId}/rules/{ruleId}`](/api-reference/rules/delete-v3-customers-by-customer-id-rules-by-rule-id) (`deleteV3CustomersByCustomerIdRulesByRuleId`, statuss `409`)
+- [`PATCH /v3/customers/{customerId}/rules/{ruleId}`](/api-reference/rules/patch-v3-customers-by-customer-id-rules-by-rule-id) (`patchV3CustomersByCustomerIdRulesByRuleId`, statuss `409`)
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, statuss `409`)
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, statuss `409`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, statuss `409`)
+- [`POST /v3/transfers/{transferId}/cancel`](/api-reference/money-movement/post-v3-transfers-by-transfer-id-cancel) (`postV3TransfersByTransferIdCancel`, statuss `409`)
+- [`POST /v3/webhooks`](/api-reference/webhooks/post-v3-webhooks) (`postV3Webhooks`, statuss `409`)
+- [`DELETE /v3/webhooks/{webhookId}`](/api-reference/webhooks/delete-v3-webhooks-by-webhook-id) (`deleteV3WebhooksByWebhookId`, statuss `409`)
+- [`PATCH /v3/webhooks/{webhookId}`](/api-reference/webhooks/patch-v3-webhooks-by-webhook-id) (`patchV3WebhooksByWebhookId`, statuss `409`)
+
+</Accordion>
+
+**Piemērs:**
+
+```json
+{
+  "type": "https://docs.swipelux.com/errors/idempotency-conflict",
+  "title": "Idempotency Conflict",
+  "status": 409,
+  "code": "idempotency_conflict",
+  "detail": "Idempotency-Key was already used with a different request.",
+  "correlationId": "cor_01JMM23TRANSFERERRORS",
+  "retryable": false
+}
+```
+
+<a id="idempotency-request-in-progress" className="block scroll-mt-32">
+  <span className="sr-only">idempotency_request_in_progress error</span>
+</a>
+
+### `idempotency_request_in_progress`
+
+**HTTP statuss:** `409`<br />
+**Atkārtojams:** Jā<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/idempotency-request-in-progress`
+
+**Nozīme:** Atbilstošs pieprasījums ar to pašu idempotences atslēgu joprojām tiek apstrādāts.
+
+**Kad tas notiek:** Tas pats idempotentais ieraksts tiek iesniegts atkārtoti, pirms pirmais mēģinājums ir pabeigts.
+
+**Kā rīkoties:** Nedaudz uzgaidiet un pēc tam atkārtojiet identisku pieprasījumu ar to pašu `Idempotency-Key`, līdz ir pieejams sākotnējais rezultāts.
+
+**Atkārtošanas norādes:** Atkārtojiet pēc aizkaves. Idempotentam ierakstam atkārtoti izmantojiet sākotnējo idempotences atslēgu un nemainītu pieprasījumu. Saglabājiet metodi, ceļu un pamattekstu baits baitā ekvivalentu sākotnējam nolūkam.
+
+<Accordion title="Saistītās API operācijas (13)">
+
+- [`POST /v3/customers`](/api-reference/customers/post-v3-customers) (`postV3Customers`, statuss `409`)
+- [`DELETE /v3/customers/{customerId}`](/api-reference/customers/delete-v3-customers-by-customer-id) (`deleteV3CustomersByCustomerId`, statuss `409`)
+- [`PATCH /v3/customers/{customerId}`](/api-reference/customers/patch-v3-customers-by-customer-id) (`patchV3CustomersByCustomerId`, statuss `409`)
+- [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) (`postV3CustomersByCustomerIdAccounts`, statuss `409`)
+- [`DELETE /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/delete-v3-customers-by-customer-id-accounts-by-account-id) (`deleteV3CustomersByCustomerIdAccountsByAccountId`, statuss `409`)
+- [`PATCH /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/patch-v3-customers-by-customer-id-accounts-by-account-id) (`patchV3CustomersByCustomerIdAccountsByAccountId`, statuss `409`)
+- [`PUT /v3/customers/{customerId}/accounts/{accountId}/fees`](/api-reference/accounts/put-v3-customers-by-customer-id-accounts-by-account-id-fees) (`putV3CustomersByCustomerIdAccountsByAccountIdFees`, statuss `409`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}/cancel`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id-cancel) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityIdCancel`, statuss `409`)
+- [`POST /v3/customers/{customerId}/export`](/api-reference/customers/post-v3-customers-by-customer-id-export) (`postV3CustomersByCustomerIdExport`, statuss `409`)
+- [`POST /v3/customers/{customerId}/related-parties`](/api-reference/customers/post-v3-customers-by-customer-id-related-parties) (`postV3CustomersByCustomerIdRelated-parties`, statuss `409`)
+- [`DELETE /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/delete-v3-customers-by-customer-id-related-parties-by-related-party-id) (`deleteV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, statuss `409`)
+- [`PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/patch-v3-customers-by-customer-id-related-parties-by-related-party-id) (`patchV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, statuss `409`)
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, statuss `409`)
+
+</Accordion>
+
+**Piemērs:**
+
+```json
+{
+  "type": "https://docs.swipelux.com/errors/idempotency-request-in-progress",
+  "title": "Idempotency Request In Progress",
+  "status": 409,
+  "code": "idempotency_request_in_progress",
+  "detail": "A request with this Idempotency-Key is still in progress.",
+  "correlationId": "01JERRORIDEMPOTENCY",
+  "retryable": true
+}
+```
+
+<a id="internal-error" className="block scroll-mt-32">
+  <span className="sr-only">internal_error error</span>
+</a>
+
+### `internal_error`
+
+**HTTP statuss:** `500`<br />
+**Atkārtojams:** Jā<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/internal-error`
+
+**Nozīme:** Swipelux, apstrādājot operāciju, radās negaidīta servera kļūda.
+
+**Kad tas notiek:** Pieprasījums sasniedz neapstrādātu platformas kļūmi, nevis konkrētāku publisko problēmu.
+
+**Kā rīkoties:** Saglabājiet `correlationId`, atkārtojiet pēc aizkaves un sazinieties ar Swipelux atbalstu, ja kļūda saglabājas.
+
+**Atkārtošanas norādes:** Atkārtojiet pēc aizkaves. Idempotentam ierakstam atkārtoti izmantojiet sākotnējo idempotences atslēgu un nemainītu pieprasījumu.
+
+**Saistītās API operācijas:** Visas publiskās API operācijas.
+
+<a id="not-found" className="block scroll-mt-32">
+  <span className="sr-only">not_found error</span>
+</a>
+
+### `not_found`
+
+**HTTP statuss:** `404`<br />
+**Atkārtojams:** Nē<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/not-found`
+
+**Nozīme:** Pieprasīto resursu nevarēja atrast šai API atslēgai un pieprasījuma ceļam.
+
+**Kad tas notiek:** Resursa identifikators nav norādīts, pieder citai videi vai vecākresursam vai izsaucējam vairs nav pieejams.
+
+**Kā rīkoties:** Pārbaudiet identifikatoru, vecākresursu un API atslēgas vidi, pēc tam nolasiet resursu vai iegūstiet tā sarakstu, pirms mēģināt operāciju vēlreiz.
+
+**Atkārtošanas norādes:** Neatkārtojiet nemainītu pieprasījumu. Pirms jauna pieprasījuma nosūtīšanas veiciet iepriekš norādīto darbību.
+
+<Accordion title="Saistītās API operācijas (36)">
+
+- [`GET /kyc/redirect/{customerId}/{taskId}/{verificationSessionId}`](/api-reference/tasks/start-kyc-verification-session) (`startKycVerificationSession`, statuss `404`)
+- [`GET /v3/customers/{customerId}/accounts`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts) (`getV3CustomersByCustomerIdAccounts`, statuss `404`)
+- [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) (`postV3CustomersByCustomerIdAccounts`, statuss `404`)
+- [`DELETE /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/delete-v3-customers-by-customer-id-accounts-by-account-id) (`deleteV3CustomersByCustomerIdAccountsByAccountId`, statuss `404`)
+- [`GET /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts-by-account-id) (`getV3CustomersByCustomerIdAccountsByAccountId`, statuss `404`)
+- [`PATCH /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/patch-v3-customers-by-customer-id-accounts-by-account-id) (`patchV3CustomersByCustomerIdAccountsByAccountId`, statuss `404`)
+- [`GET /v3/customers/{customerId}/accounts/{accountId}/fees`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts-by-account-id-fees) (`getV3CustomersByCustomerIdAccountsByAccountIdFees`, statuss `404`)
+- [`PUT /v3/customers/{customerId}/accounts/{accountId}/fees`](/api-reference/accounts/put-v3-customers-by-customer-id-accounts-by-account-id-fees) (`putV3CustomersByCustomerIdAccountsByAccountIdFees`, statuss `404`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityId`, statuss `404`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}/applications`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id-applications) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityIdApplications`, statuss `404`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}/applications/{applicationId}/history`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id-applications-by-application-id-history) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityIdApplicationsByApplicationIdHistory`, statuss `404`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}/cancel`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id-cancel) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityIdCancel`, statuss `404`)
+- [`GET /v3/customers/{customerId}/recipients`](/api-reference/recipients/get-v3-customers-by-customer-id-recipients) (`getV3CustomersByCustomerIdRecipients`, statuss `404`)
+- [`POST /v3/customers/{customerId}/recipients`](/api-reference/recipients/post-v3-customers-by-customer-id-recipients) (`postV3CustomersByCustomerIdRecipients`, statuss `404`)
+- [`DELETE /v3/customers/{customerId}/recipients/{recipientId}`](/api-reference/recipients/delete-v3-customers-by-customer-id-recipients-by-recipient-id) (`deleteV3CustomersByCustomerIdRecipientsByRecipientId`, statuss `404`)
+- [`GET /v3/customers/{customerId}/recipients/{recipientId}`](/api-reference/recipients/get-v3-customers-by-customer-id-recipients-by-recipient-id) (`getV3CustomersByCustomerIdRecipientsByRecipientId`, statuss `404`)
+- [`PATCH /v3/customers/{customerId}/recipients/{recipientId}`](/api-reference/recipients/patch-v3-customers-by-customer-id-recipients-by-recipient-id) (`patchV3CustomersByCustomerIdRecipientsByRecipientId`, statuss `404`)
+- [`GET /v3/customers/{customerId}/recipients/{recipientId}/destinations`](/api-reference/recipients/get-v3-customers-by-customer-id-recipients-by-recipient-id-destinations) (`getV3CustomersByCustomerIdRecipientsByRecipientIdDestinations`, statuss `404`)
+- [`POST /v3/customers/{customerId}/recipients/{recipientId}/destinations`](/api-reference/recipients/post-v3-customers-by-customer-id-recipients-by-recipient-id-destinations) (`postV3CustomersByCustomerIdRecipientsByRecipientIdDestinations`, statuss `404`)
+- [`DELETE /v3/customers/{customerId}/recipients/{recipientId}/destinations/{destinationId}`](/api-reference/recipients/delete-v3-customers-by-customer-id-recipients-by-recipient-id-destinations-by-destination-id) (`deleteV3CustomersByCustomerIdRecipientsByRecipientIdDestinationsByDestinationId`, statuss `404`)
+- [`GET /v3/customers/{customerId}/recipients/{recipientId}/destinations/{destinationId}`](/api-reference/recipients/get-v3-customers-by-customer-id-recipients-by-recipient-id-destinations-by-destination-id) (`getV3CustomersByCustomerIdRecipientsByRecipientIdDestinationsByDestinationId`, statuss `404`)
+- [`GET /v3/customers/{customerId}/rules`](/api-reference/rules/get-v3-customers-by-customer-id-rules) (`getV3CustomersByCustomerIdRules`, statuss `404`)
+- [`POST /v3/customers/{customerId}/rules`](/api-reference/rules/post-v3-customers-by-customer-id-rules) (`postV3CustomersByCustomerIdRules`, statuss `404`)
+- [`DELETE /v3/customers/{customerId}/rules/{ruleId}`](/api-reference/rules/delete-v3-customers-by-customer-id-rules-by-rule-id) (`deleteV3CustomersByCustomerIdRulesByRuleId`, statuss `404`)
+- [`GET /v3/customers/{customerId}/rules/{ruleId}`](/api-reference/rules/get-v3-customers-by-customer-id-rules-by-rule-id) (`getV3CustomersByCustomerIdRulesByRuleId`, statuss `404`)
+- [`PATCH /v3/customers/{customerId}/rules/{ruleId}`](/api-reference/rules/patch-v3-customers-by-customer-id-rules-by-rule-id) (`patchV3CustomersByCustomerIdRulesByRuleId`, statuss `404`)
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, statuss `404`)
+- [`GET /v3/quotes/{quoteId}`](/api-reference/money-movement/get-v3-quotes-by-quote-id) (`getV3QuotesByQuoteId`, statuss `404`)
+- [`POST /v3/sandbox/accounts/{accountId}/topup`](/api-reference/sandbox/post-v3-sandbox-accounts-by-account-id-topup) (`postV3SandboxAccountsByAccountIdTopup`, statuss `404`)
+- [`POST /v3/sandbox/customers/{customerId}/capabilities/{capabilityId}/status`](/api-reference/sandbox/post-v3-sandbox-customers-by-customer-id-capabilities-by-capability-id-status) (`postV3SandboxCustomersByCustomerIdCapabilitiesByCapabilityIdStatus`, statuss `404`)
+- [`POST /v3/sandbox/customers/{customerId}/verification`](/api-reference/sandbox/post-v3-sandbox-customers-by-customer-id-verification) (`postV3SandboxCustomersByCustomerIdVerification`, statuss `404`)
+- [`POST /v3/sandbox/tasks`](/api-reference/sandbox/post-v3-sandbox-tasks) (`postV3SandboxTasks`, statuss `404`)
+- [`POST /v3/sandbox/transfers/{transferId}/state`](/api-reference/sandbox/post-v3-sandbox-transfers-by-transfer-id-state) (`postV3SandboxTransfersByTransferIdState`, statuss `404`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, statuss `404`)
+- [`DELETE /v3/webhooks/{webhookId}`](/api-reference/webhooks/delete-v3-webhooks-by-webhook-id) (`deleteV3WebhooksByWebhookId`, statuss `404`)
+- [`PATCH /v3/webhooks/{webhookId}`](/api-reference/webhooks/patch-v3-webhooks-by-webhook-id) (`patchV3WebhooksByWebhookId`, statuss `404`)
+
+</Accordion>
+
+<a id="request-failed" className="block scroll-mt-32">
+  <span className="sr-only">request_failed error</span>
+</a>
+
+### `request_failed`
+
+**HTTP statuss:** `502`, `503`<br />
+**Atkārtojams:** Atkarīgs no konteksta<br />
+**Problēmas tips:** `https://docs.swipelux.com/errors/request-failed`
+
+**Nozīme:** Pakalpojums, kas nepieciešams operācijas pabeigšanai, sekmīgi neapstrādāja pieprasījumu.
+
+**Kad tas notiek:** Klienta eksports, webhook pārvaldība vai smilšu kastes verifikācija sasniedz ārēja pakalpojuma kļūmi vai nepieejamu konfigurāciju.
+
+**Kā rīkoties:** Pārbaudiet `retryable`. Atkārtojiet vēlāk, kad tā vērtība ir `true`; pretējā gadījumā saglabājiet `correlationId`, pārbaudiet pieprasījuma priekšnosacījumus un sazinieties ar atbalstu, ja kļūme saglabājas.
+
+**Atkārtošanas norādes:** Nolasiet `retryable` šajā atbildē. Atkārtojiet vēlāk tikai tad, kad tā vērtība ir `true`. Idempotentam ierakstam atkārtoti izmantojiet sākotnējo idempotences atslēgu un nemainītu pieprasījumu.
+
+<Accordion title="Saistītās API operācijas (9)">
+
+- [`POST /v3/customers/{customerId}/export`](/api-reference/customers/post-v3-customers-by-customer-id-export) (`postV3CustomersByCustomerIdExport`, statuss `502`)
+- [`POST /v3/customers/{customerId}/export`](/api-reference/customers/post-v3-customers-by-customer-id-export) (`postV3CustomersByCustomerIdExport`, statuss `503`)
+- [`POST /v3/sandbox/customers/{customerId}/verification`](/api-reference/sandbox/post-v3-sandbox-customers-by-customer-id-verification) (`postV3SandboxCustomersByCustomerIdVerification`, statuss `502`)
+- [`POST /v3/sandbox/customers/{customerId}/verification`](/api-reference/sandbox/post-v3-sandbox-customers-by-customer-id-verification) (`postV3SandboxCustomersByCustomerIdVerification`, statuss `503`)
+- [`GET /v3/webhooks`](/api-reference/webhooks/get-v3-webhooks) (`getV3Webhooks`, statuss `502`)
+- [`POST /v3/webhooks`](/api-reference/webhooks/post-v3-webhooks) (`postV3Webhooks`, statuss `502`)
+- [`DELETE /v3/webhooks/{webhookId}`](/api-reference/webhooks/delete-v3-webhooks-by-webhook-id) (`deleteV3WebhooksByWebhookId`, statuss `502`)
+- [`PATCH /v3/webhooks/{webhookId}`](/api-reference/webhooks/patch-v3-webhooks-by-webhook-id) (`patchV3WebhooksByWebhookId`, statuss `502`)
+- [`GET /v3/webhooks/portal`](/api-reference/webhooks/get-v3-webhooks-portal) (`getV3WebhooksPortal`, statuss `502`)
+
+</Accordion>
+
+## Nākamais solis
+
+Izmantojiet iepriekš norādītās operāciju saites, lai apstiprinātu precīzu pieprasījuma un atbildes shēmu, ar kuru strādājat, un pēc tam izmēģiniet kļūmes ceļu sadaļā [Smilšu kastes testēšana](/lv/integration/sandbox).

@@ -1,0 +1,2631 @@
+---
+title: "Hibák és újrapróbálkozások"
+description: "Kezelje az összes nyilvános Swipelux API problémakódot, döntse el, mikor próbálkozzon újra, és oldja meg a validációs, állapot-, idempotencia- és platformhibákat."
+---
+
+A Swipelux API hibái az `application/problem+json` médiatípust használják. Ágaztassa el az alkalmazás viselkedését a stabil `code` érték alapján, majd használja az alábbi műveletet és útmutatót a hiba megoldásához.
+
+| Mező | Hogyan használja |
+| --- | --- |
+| `type` | A problémakód stabil dokumentációs URI-ja. |
+| `title` | Rövid, ember által olvasható problémacím. |
+| `status` | A válaszhoz tartozó HTTP-státusz. |
+| `code` | Stabil, géppel olvasható érték az alkalmazáslogikához. |
+| `detail` | Kontextusfüggő, ember által olvasható szöveg ehhez az előforduláshoz. Ne elemezze és ne hasonlítsa össze. |
+| `correlationId` | Kérésazonosító, amelyet tároljon a naplókban, és adjon meg a támogatással való kapcsolatfelvételkor. |
+| `retryable` | Ha `true`, ugyanaz a kérés később sikerülhet. Ha `false`, változtassa meg a kérést, vagy teljesítsen egy előfeltételt, mielőtt újra próbálkozik. |
+| `errors[]` | Mezőszintű validációs részletek, elérhetőség esetén JSON Pointerrel. |
+
+Az idempotens írásokat az eredeti `Idempotency-Key` értékkel, valamint változatlan metódussal, útvonallal és törzzsel próbálja újra. Soha ne használja újra ezt a kulcsot egy másik szándékolt művelethez.
+
+```json
+{
+  "type": "https://docs.swipelux.com/errors/validation-error",
+  "title": "Validation Error",
+  "status": 400,
+  "code": "validation_error",
+  "detail": "The request contains invalid fields.",
+  "correlationId": "01JERRORVALIDATION",
+  "retryable": false,
+  "errors": [
+    {
+      "pointer": "/externalId",
+      "code": "invalid_format",
+      "message": "Use a valid external identifier."
+    }
+  ]
+}
+```
+
+## Hibaindex
+
+| Hibakód | Státusz | Újrapróbálható | Jelentés |
+| --- | --- | --- | --- |
+| [`absence_conflicts_with_profile`](#absence-conflicts-with-profile) | `409` | Nem | Egy feladatválasz, amely egy érték hiányát jelzi, ütközik az ügyfélprofilban már meglévő adatokkal. |
+| [`account_has_active_transfers`](#account-has-active-transfers) | `409` | Igen | A számla nem archiválható, amíg egy vagy több átutalás még aktív. |
+| [`account_method_not_supported`](#account-method-not-supported) | `422` | Nem | A kiválasztott számla nem támogatja az árajánlat által kért fizetési módot. |
+| [`account_not_ready`](#account-not-ready) | `409` | Kontextusfüggő | A számla létezik, de az aktuális státusza nem teszi lehetővé az árajánlatot vagy az átutalást. |
+| [`account_unavailable`](#account-unavailable) | `409` | Nem | A kiválasztott számla nem érhető el a kért pénzmozgáshoz. |
+| [`amount_not_deliverable`](#amount-not-deliverable) | `422` | Nem | A kért összeg nem kézbesíthető a kiválasztott devizákkal, számlákkal vagy módszerrel. |
+| [`amount_side_ambiguous`](#amount-side-ambiguous) | `400` | Nem | Az árajánlatkérés nem azonosítja egyértelműen, hogy az átváltás melyik oldalán rögzített az összeg. |
+| [`bank_not_supported_for_customer`](#bank-not-supported-for-customer) | `422` | Nem kerül visszaadásra | A kiválasztott intézmény nem érhető el ehhez az ügyfélhez és képességkéréshez. |
+| [`capability_already_exists`](#capability-already-exists) | `409` | Nem | Az ügyfél már rendelkezik a kért képességgel. |
+| [`capability_direction_unsupported`](#capability-direction-unsupported) | `422` | Nem | A kiválasztott képesség nem támogatja az árajánlat vagy az átutalás által igényelt pénzmozgatási irányt. |
+| [`capability_ineligible`](#capability-ineligible) | `422` | Nem | Az ügyfél a jelenlegi profilja és konfigurációja alapján nem jogosult a kért képességre. |
+| [`capability_institutions_required`](#capability-institutions-required) | `422` | Nem kerül visszaadásra | A képességkéréshez egy vagy több intézmény kiválasztása szükséges. |
+| [`capability_institutions_unsupported`](#capability-institutions-unsupported) | `422` | Nem | Egy vagy több kiválasztott intézmény nem támogatott a kért képességhez. |
+| [`capability_intent_unsupported`](#capability-intent-unsupported) | `422` | Nem kerül visszaadásra | A kért képességszándék nem támogatott ennél a képességvariánsnál. |
+| [`capability_key_unsupported`](#capability-key-unsupported) | `422` | Nem | A képességkulcsot ez a művelet nem támogatja. |
+| [`capability_not_cancelable`](#capability-not-cancelable) | `409` | Nem | A képesség nem mondható le az aktuális státuszából. |
+| [`capability_not_ready`](#capability-not-ready) | `409` | Kontextusfüggő | A kért számlához vagy pénzmozgáshoz szükséges képesség nem áll készen. |
+| [`capability_not_supported_for_customer_type`](#capability-not-supported-for-customer-type) | `422` | Nem kerül visszaadásra | A képesség nem támogatott ennél az ügyféltípusnál. |
+| [`capability_provider_resolution_failed`](#capability-provider-resolution-failed) | `422` | Nem kerül visszaadásra | A Swipelux nem tudott teljes feldolgozási konfigurációt feloldani a képességkéréshez. |
+| [`capability_snapshot_corrupted`](#capability-snapshot-corrupted) | `500` | Nem | A Swipelux nem tudta kiértékelni az ügyfél képességállapotát. |
+| [`capability_terminally_rejected`](#capability-terminally-rejected) | `409` | Nem | A képességet már végleges állapotban elutasították. |
+| [`capability_variant_unavailable`](#capability-variant-unavailable) | `409`, `422` | Kontextusfüggő | A kért képességvariáns nem érhető el a kiválasztott ügyfél-, szándék- vagy intézménykombinációhoz. |
+| [`conflict`](#conflict) | `409` | Nem | A kért művelet ütközik az erőforrás aktuális állapotával. |
+| [`customer_has_active_resources`](#customer-has-active-resources) | `409` | Nem | Az ügyfél nem archiválható, amíg aktív erőforrások függenek tőle. |
+| [`customer_not_found`](#customer-not-found) | `404` | Nem | Az ügyfél nem létezik az aktuális API-kulcs környezetében, vagy már nem érhető el. |
+| [`destination_not_ready`](#destination-not-ready) | `409` | Kontextusfüggő | A címzett célpontja létezik, de nem áll készen a kért árajánlathoz. |
+| [`developer_fee_invalid`](#developer-fee-invalid) | `422` | Nem | A fejlesztői díj konfigurációja érvénytelen a kiválasztott számlához vagy pénzmozgáshoz. |
+| [`document_not_found`](#document-not-found) | `404` | Nem kerül visszaadásra | A kért ügyféldokumentum nem található. |
+| [`duplicate_external_id`](#duplicate-external-id) | `409` | Nem | A megadott `externalId` már másik erőforráshoz van rendelve ugyanabban a hatókörben. |
+| [`field_required_by_open_task`](#field-required-by-open-task) | `409` | Nem | A kérés olyan profilmezőt próbál törölni, amelyet egy nyitott feladat még igényel. |
+| [`forbidden`](#forbidden) | `403` | Nem | Az API-kulcs érvényes, de nem jogosult a művelet végrehajtására. |
+| [`idempotency_conflict`](#idempotency-conflict) | `409` | Nem | Az idempotencia-kulcsot már felhasználták egy másik kéréshez. |
+| [`idempotency_request_in_progress`](#idempotency-request-in-progress) | `409` | Igen | Egy azonos idempotencia-kulcsú, egyező kérés feldolgozása még folyamatban van. |
+| [`initial_application_identity_conflict`](#initial-application-identity-conflict) | `409` | Nem | A kezdeti jelentkezés identitása megváltozott, mielőtt mentésre került volna. |
+| [`initial_application_owner_unavailable`](#initial-application-owner-unavailable) | `503` | Nem | Nincs elérhető érvényes tulajdonosi útvonal a kezdeti jelentkezéshez. |
+| [`initial_application_scope_unavailable`](#initial-application-scope-unavailable) | `503` | Kontextusfüggő | A Swipelux nem tudta feloldani a kezdeti jelentkezéshez szükséges hatókört. |
+| [`insufficient_balance`](#insufficient-balance) | `409` | Nem | A forrásszámlán nincs elegendő rendelkezésre álló egyenleg az átutaláshoz. |
+| [`internal_error`](#internal-error) | `500` | Igen | A Swipelux váratlan szerverhibába ütközött a művelet feldolgozása közben. |
+| [`invalid_capability`](#invalid-capability) | `400`, `422` | Nem kerül visszaadásra | A képességhivatkozás vagy a kért képességérték érvénytelen ehhez a művelethez. |
+| [`invalid_document_reference`](#invalid-document-reference) | `400` | Nem | Egy feladatbeküldés olyan dokumentumhivatkozást tartalmaz, amely nem tudja kielégíteni a kiválasztott követelményt. |
+| [`invalid_field_for_type`](#invalid-field-for-type) | `400`, `422` | Nem kerül visszaadásra | A kérés olyan mezőket tartalmaz, amelyek nem érvényesek a kiválasztott erőforrástípushoz. |
+| [`invalid_settlement_target`](#invalid-settlement-target) | `400` | Nem kerül visszaadásra | A kért elszámolási célpont érvénytelen a számlához. |
+| [`kyc_configuration_unavailable`](#kyc-configuration-unavailable) | `503` | Nem | A képesség által igényelt ellenőrzési konfiguráció nem érhető el. |
+| [`kyc_level_configuration_invalid`](#kyc-level-configuration-invalid) | `503` | Nem | Az aktív ellenőrzésiszint-konfiguráció érvénytelen. |
+| [`kyc_process_conflict`](#kyc-process-conflict) | `409` | Igen | Az ellenőrzési folyamat megváltozott, mielőtt a művelet befejeződött volna. |
+| [`kyc_provider_unavailable`](#kyc-provider-unavailable) | `502` | Igen | Az ellenőrzési szolgáltatás átmenetileg nem érhető el. |
+| [`kyc_session_terminal`](#kyc-session-terminal) | `410` | Nem | Az ellenőrzési munkamenet már nem kezelhető. |
+| [`merchant_kyb_not_approved`](#merchant-kyb-not-approved) | `422` | Nem kerül visszaadásra | Az integráló vállalkozás nincs jóváhagyva a kért ügyfél-létrehozási folyamathoz. |
+| [`not_found`](#not-found) | `404` | Nem | A kért erőforrás nem található ehhez az API-kulcshoz és kérési útvonalhoz. |
+| [`ops_rail_handoff_conflict`](#ops-rail-handoff-conflict) | `409` | Nem | A feladatbeküldést ütköző banksín-beállítás blokkolja. |
+| [`payout_target_relationship_invalid`](#payout-target-relationship-invalid) | `400` | Nem kerül visszaadásra | A kiválasztott kifizetési célpont nem áll érvényes kapcsolatban az árajánlatban szereplő ügyféllel vagy címzettel. |
+| [`profile_obligation_crossheal_failed`](#profile-obligation-crossheal-failed) | `500` | Nem | A Swipelux nem tudta frissíteni az ügyfél profilkövetelményeit. |
+| [`provider_conflict`](#provider-conflict) | `400`, `422` | Nem | A kért képesség- vagy ellenőrzési művelet ütközik az aktuális feldolgozási konfigurációval. |
+| [`quote_already_executed`](#quote-already-executed) | `409` | Nem | Az árajánlatot már végrehajtották, és meglévő átutalása van. |
+| [`quote_destination_missing`](#quote-destination-missing) | `409`, `500` | Kontextusfüggő | Az árajánlat vagy az átutalás nem tartalmazza a művelet által igényelt célpontot. |
+| [`quote_direction_invalid`](#quote-direction-invalid) | `422`, `500` | Kontextusfüggő | A forrás és a célpont nem alkot támogatott árajánlatirányt. |
+| [`quote_execution_consumed`](#quote-execution-consumed) | `409` | Nem | Az árajánlat egyszeri végrehajtási lehetőségét már felhasználták. |
+| [`quote_expired`](#quote-expired) | `409` | Nem | Az árajánlat lejárt, mielőtt végrehajtották volna. |
+| [`quote_failed`](#quote-failed) | `500`, `502` | Kontextusfüggő | A Swipelux nem tudott használható árajánlatot létrehozni a kéréshez. |
+| [`quote_mode_invalid`](#quote-mode-invalid) | `500` | Igen | Az árajánlat nem értelmezhető a művelet által igényelt módban. |
+| [`quote_not_found`](#quote-not-found) | `404` | Nem kerül visszaadásra | Az árajánlat nem található ehhez az API-kulcshoz. |
+| [`rail_not_ready`](#rail-not-ready) | `409` | Nem | A kiválasztott fizetési sín nem áll készen ennél az ügyfélnél. |
+| [`rail_temporarily_unavailable`](#rail-temporarily-unavailable) | `503` | Igen | A kiválasztott fizetési sín átmenetileg nem érhető el. |
+| [`rate_unavailable`](#rate-unavailable) | `502` | Igen | Egy szükséges devizaárfolyam átmenetileg nem érhető el. |
+| [`recipient_account_unsupported`](#recipient-account-unsupported) | `400` | Nem kerül visszaadásra | A címzett számlaadatai nem támogatottak a kért célponthoz. |
+| [`recipient_address_required`](#recipient-address-required) | `422` | Nem | A címzettnek címre van szüksége, mielőtt ez a fiat célpont létrehozható. |
+| [`recipient_destination_invalid`](#recipient-destination-invalid) | `400`, `422` | Nem | A címzett célpontja érvénytelen vagy inkompatibilis a kért művelettel. |
+| [`recipient_name_invalid`](#recipient-name-invalid) | `400` | Nem kerül visszaadásra | A címzett neve nem felel meg a kérési sémának. |
+| [`related_party_in_review`](#related-party-in-review) | `409` | Nem | A kapcsolódó fél nem archiválható, amíg felülvizsgálat alatt áll. |
+| [`related_party_not_found`](#related-party-not-found) | `404` | Nem kerül visszaadásra | A kapcsolódó fél nem található a megadott ügyfél alatt. |
+| [`request_body_too_large`](#request-body-too-large) | `413` | Nem | A kérés törzse meghaladja a művelet által elfogadott méretet. |
+| [`request_failed`](#request-failed) | `502`, `503` | Kontextusfüggő | A művelet befejezéséhez szükséges egyik szolgáltatás nem dolgozta fel sikeresen a kérést. |
+| [`rule_already_exists`](#rule-already-exists) | `409` | Nem | A kiváltó számlához már tartozik élő szabály. |
+| [`rule_archived`](#rule-archived) | `409` | Nem | A szabály archivált, és már nem módosítható. |
+| [`rule_not_found`](#rule-not-found) | `404` | Nem kerül visszaadásra | A szabály nem található a megadott ügyfél alatt. |
+| [`rule_target_invalid`](#rule-target-invalid) | `400` | Nem kerül visszaadásra | A szabályművelet célpontja érvénytelen ennél az ügyfélnél vagy szabálytípusnál. |
+| [`rule_trigger_account_invalid`](#rule-trigger-account-invalid) | `400` | Nem kerül visszaadásra | A szabály kiváltójaként kiválasztott számla érvénytelen. |
+| [`submission_channel_not_allowed`](#submission-channel-not-allowed) | `409` | Nem | Ehhez a feladathoz nem engedélyezett a közvetlen API-beküldés. |
+| [`submission_not_found`](#submission-not-found) | `404` | Nem | A kért feladatbeküldés nem található. |
+| [`supporting_document_not_found`](#supporting-document-not-found) | `422` | Nem | Az átutalási kérés által hivatkozott igazoló dokumentum nem található. |
+| [`task_changed`](#task-changed) | `409` | Nem | A feladat megváltozott, miután a kliense utoljára beolvasta. |
+| [`task_not_found`](#task-not-found) | `404` | Nem | A feladat nem található a megadott ügyfélhez vagy API-kulcshoz. |
+| [`task_obligation_conflict`](#task-obligation-conflict) | `409` | Nem | A feladat kötelezettségállapota ütközik, és nem tudja elfogadni a beküldést. |
+| [`task_submission_incomplete`](#task-submission-incomplete) | `422` | Nem | A beküldés nem válaszol meg minden aktuális, kezelhető követelményt. |
+| [`transfer_execution_failed`](#transfer-execution-failed) | `500` | Nem | Az átutalás nem fejeződhetett be az árajánlat végrehajtása során. |
+| [`transfer_has_no_instructions`](#transfer-has-no-instructions) | `404` | Nem kerül visszaadásra | Az átutalás létezik, de nem biztosít fizetési utasításokat. |
+| [`transfer_not_cancelable`](#transfer-not-cancelable) | `409` | Nem | Az átutalás nem mondható le az aktuális állapotából. |
+| [`transfer_not_found`](#transfer-not-found) | `404` | Nem kerül visszaadásra | Az átutalás nem található ehhez az API-kulcshoz. |
+| [`transfer_state_invalid`](#transfer-state-invalid) | `400`, `500` | Igen | Az átutalás olyan állapotban van, amely nem támogatja a kért műveletet vagy átmenetet. |
+| [`unauthorized`](#unauthorized) | `401` | Nem | A kérésből hiányzik az érvényes API-kulcs. |
+| [`unknown_parameter`](#unknown-parameter) | `400` | Nem | A kérés nem támogatott vagy ismeretlen paramétert tartalmaz. |
+| [`validation_error`](#validation-error) | `400`, `422` | Nem | A kérés nem felel meg a művelet bemeneti sémájának. |
+| [`verification_collection_mapping_invalid`](#verification-collection-mapping-invalid) | `503` | Nem | A feladat ellenőrzési követelményei nem készíthetők elő kezelhető ellenőrzési folyamattá. |
+| [`wallet_destination_not_supported`](#wallet-destination-not-supported) | `409` | Nem | A kiválasztott pénzmozgatási módszer nem támogat tárcacélpontot. |
+
+## Kérés és hitelesítés
+
+<a id="forbidden" className="block scroll-mt-32">
+  <span className="sr-only">forbidden error</span>
+</a>
+
+### `forbidden`
+
+**HTTP-státusz:** `403`<br />
+**Újrapróbálható:** Nem<br />
+**Problématípus:** `https://docs.swipelux.com/errors/forbidden`
+
+**Jelentés:** Az API-kulcs érvényes, de nem jogosult a művelet végrehajtására.
+
+**Mikor fordul elő:** A hitelesítő adat nem rendelkezik a szükséges jogosultsággal, vagy éles hitelesítő adat hív csak sandboxban elérhető végpontot.
+
+**Teendő:** Használjon a megfelelő környezethez tartozó, szükséges jogosultságokkal rendelkező hitelesítő adatot. Ne tegye közzé és ne cserélje a kulcsokat kliensoldali kódban.
+
+**Újrapróbálási útmutató:** Ne próbálja újra a változatlan kérést. Alkalmazza a fenti teendőt, mielőtt újabb kérést küld.
+
+**Érintett API-műveletek:** Az összes hitelesített API-művelet.
+
+<a id="invalid-field-for-type" className="block scroll-mt-32">
+  <span className="sr-only">invalid_field_for_type error</span>
+</a>
+
+### `invalid_field_for_type`
+
+**HTTP-státusz:** `400`, `422`<br />
+**Újrapróbálható:** Nem kerül visszaadásra<br />
+**Problématípus:** `https://docs.swipelux.com/errors/invalid-field-for-type`
+
+**Jelentés:** A kérés olyan mezőket tartalmaz, amelyek nem érvényesek a kiválasztott erőforrástípushoz.
+
+**Mikor fordul elő:** Egy diszkriminált kérés, például magánszemély–üzleti profil, másik variáns mezőit tartalmazza, vagy kihagyja a kiválasztott típusa által megkövetelt mezőket.
+
+**Teendő:** Használja a kiválasztott típus sémáját, távolítsa el a más variánsokhoz tartozó mezőket, adja meg a kötelező mezőit, és küldjön javított kérést.
+
+**Újrapróbálási útmutató:** Ez a probléma nem ad vissza `retryable` értéket. Ne feltételezze, hogy a változatlan újrapróbálkozás biztonságos; kövesse a fenti teendőt és a művelet idempotencia-követelményeit.
+
+**Érintett API-műveletek:**
+
+- [`POST /v3/customers`](/api-reference/customers/post-v3-customers) (`postV3Customers`, status `400`)
+- [`PATCH /v3/customers/{customerId}`](/api-reference/customers/patch-v3-customers-by-customer-id) (`patchV3CustomersByCustomerId`, status `400`)
+- [`POST /v3/customers/{customerId}/export`](/api-reference/customers/post-v3-customers-by-customer-id-export) (`postV3CustomersByCustomerIdExport`, status `422`)
+- [`POST /v3/customers/{customerId}/related-parties`](/api-reference/customers/post-v3-customers-by-customer-id-related-parties) (`postV3CustomersByCustomerIdRelated-parties`, status `400`)
+- [`PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/patch-v3-customers-by-customer-id-related-parties-by-related-party-id) (`patchV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, status `400`)
+
+<a id="request-body-too-large" className="block scroll-mt-32">
+  <span className="sr-only">request_body_too_large error</span>
+</a>
+
+### `request_body_too_large`
+
+**HTTP-státusz:** `413`<br />
+**Újrapróbálható:** Nem<br />
+**Problématípus:** `https://docs.swipelux.com/errors/request-body-too-large`
+
+**Jelentés:** A kérés törzse meghaladja a művelet által elfogadott méretet.
+
+**Mikor fordul elő:** Egy feladatbeküldés több kérésadatot küld, mint amennyit az API egy törzsben fel tud dolgozni.
+
+**Teendő:** Távolítsa el a felesleges adatokat, használjon dokumentumhivatkozásokat fájltartalom beágyazása helyett, és küldjön kisebb beküldést, amely továbbra is megválaszolja az aktuális követelményeket.
+
+**Újrapróbálási útmutató:** Ne próbálja újra a változatlan kérést. Alkalmazza a fenti teendőt, mielőtt újabb kérést küld.
+
+**Érintett API-műveletek:**
+
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, status `413`)
+
+<a id="unauthorized" className="block scroll-mt-32">
+  <span className="sr-only">unauthorized error</span>
+</a>
+
+### `unauthorized`
+
+**HTTP-státusz:** `401`<br />
+**Újrapróbálható:** Nem<br />
+**Problématípus:** `https://docs.swipelux.com/errors/unauthorized`
+
+**Jelentés:** A kérésből hiányzik az érvényes API-kulcs.
+
+**Mikor fordul elő:** Az `X-API-Key` fejléc hiányzik, érvénytelen, lejárt, vagy az API nem ismeri fel.
+
+**Teendő:** Küldje a megfelelő, környezetspecifikus kulcsot védett backendről. Rotálja a kulcsot, ha esetleg nyilvánosságra került.
+
+**Újrapróbálási útmutató:** Ne próbálja újra a változatlan kérést. Alkalmazza a fenti teendőt, mielőtt újabb kérést küld.
+
+**Érintett API-műveletek:** Az összes hitelesített API-művelet.
+
+<a id="unknown-parameter" className="block scroll-mt-32">
+  <span className="sr-only">unknown_parameter error</span>
+</a>
+
+### `unknown_parameter`
+
+**HTTP-státusz:** `400`<br />
+**Újrapróbálható:** Nem<br />
+**Problématípus:** `https://docs.swipelux.com/errors/unknown-parameter`
+
+**Jelentés:** A kérés nem támogatott vagy ismeretlen paramétert tartalmaz.
+
+**Mikor fordul elő:** Egy lekérdezési karakterlánc vagy műveleti paraméter el van írva, nem támogatott, vagy az adott végpont nem fogadja el.
+
+**Teendő:** Távolítsa el az ismeretlen paramétert, vagy cserélje ki a művelethez dokumentált pontos paraméterre.
+
+**Újrapróbálási útmutató:** Ne próbálja újra a változatlan kérést. Alkalmazza a fenti teendőt, mielőtt újabb kérést küld.
+
+<Accordion title="Érintett API-műveletek (26)">
+
+- [`GET /v3/capabilities`](/api-reference/capabilities/get-v3-capabilities) (`getV3Capabilities`, status `400`)
+- [`GET /v3/customers`](/api-reference/customers/get-v3-customers) (`getV3Customers`, status `400`)
+- [`GET /v3/customers/{customerId}/accounts`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts) (`getV3CustomersByCustomerIdAccounts`, status `400`)
+- [`GET /v3/customers/{customerId}/capabilities`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities) (`getV3CustomersByCustomerIdCapabilities`, status `400`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}/applications`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id-applications) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityIdApplications`, status `400`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}/applications/{applicationId}/history`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id-applications-by-application-id-history) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityIdApplicationsByApplicationIdHistory`, status `400`)
+- [`GET /v3/customers/{customerId}/capabilities/supported`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-supported) (`getV3CustomersByCustomerIdCapabilitiesSupported`, status `400`)
+- [`GET /v3/customers/{customerId}/documents`](/api-reference/documents/get-v3-customers-by-customer-id-documents) (`getV3CustomersByCustomerIdDocuments`, status `400`)
+- [`GET /v3/customers/{customerId}/recipients`](/api-reference/recipients/get-v3-customers-by-customer-id-recipients) (`getV3CustomersByCustomerIdRecipients`, status `400`)
+- [`GET /v3/customers/{customerId}/recipients/{recipientId}/destinations`](/api-reference/recipients/get-v3-customers-by-customer-id-recipients-by-recipient-id-destinations) (`getV3CustomersByCustomerIdRecipientsByRecipientIdDestinations`, status `400`)
+- [`GET /v3/customers/{customerId}/related-parties`](/api-reference/customers/get-v3-customers-by-customer-id-related-parties) (`getV3CustomersByCustomerIdRelated-parties`, status `400`)
+- [`GET /v3/customers/{customerId}/rules`](/api-reference/rules/get-v3-customers-by-customer-id-rules) (`getV3CustomersByCustomerIdRules`, status `400`)
+- [`GET /v3/customers/{customerId}/tasks`](/api-reference/tasks/list-customer-tasks) (`listCustomerTasks`, status `400`)
+- [`GET /v3/customers/{customerId}/tasks/{taskId}`](/api-reference/tasks/get-customer-task) (`getCustomerTask`, status `400`)
+- [`GET /v3/customers/{customerId}/tasks/{taskId}/history`](/api-reference/tasks/list-customer-task-history) (`listCustomerTaskHistory`, status `400`)
+- [`GET /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/list-customer-task-submissions) (`listCustomerTaskSubmissions`, status `400`)
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, status `400`)
+- [`GET /v3/customers/{customerId}/tasks/{taskId}/submissions/{submissionId}`](/api-reference/task-submissions/get-customer-task-submission) (`getCustomerTaskSubmission`, status `400`)
+- [`GET /v3/institutions`](/api-reference/institutions/get-v3-institutions) (`getV3Institutions`, status `400`)
+- [`GET /v3/rates`](/api-reference/money-movement/get-v3-rates) (`getV3Rates`, status `400`)
+- [`POST /v3/sandbox/tasks`](/api-reference/sandbox/post-v3-sandbox-tasks) (`postV3SandboxTasks`, status `400`)
+- [`POST /v3/sandbox/tasks/{taskId}/review`](/api-reference/sandbox/post-v3-sandbox-tasks-by-task-id-review) (`postV3SandboxTasksByTaskIdReview`, status `400`)
+- [`GET /v3/tasks`](/api-reference/tasks/list-tasks) (`listTasks`, status `400`)
+- [`GET /v3/tasks/{taskId}`](/api-reference/tasks/get-task) (`getTask`, status `400`)
+- [`GET /v3/transfers`](/api-reference/money-movement/get-v3-transfers) (`getV3Transfers`, status `400`)
+- [`GET /v3/transfers/{transferId}/tasks`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-tasks) (`getV3TransfersByTransferIdTasks`, status `400`)
+
+</Accordion>
+
+<a id="validation-error" className="block scroll-mt-32">
+  <span className="sr-only">validation_error error</span>
+</a>
+
+### `validation_error`
+
+**HTTP-státusz:** `400`, `422`<br />
+**Újrapróbálható:** Nem<br />
+**Problématípus:** `https://docs.swipelux.com/errors/validation-error`
+
+**Jelentés:** A kérés nem felel meg a művelet bemeneti sémájának.
+
+**Mikor fordul elő:** Kötelező értékek hiányoznak, mezők típusa vagy formátuma érvénytelen, vagy a kérésparaméterek nem mennek át a validáción.
+
+**Teendő:** Használja az `errors[]` mezőt és az egyes JSON Pointereket a kérés javításához, hasonlítsa össze a műveleti sémával, és küldjön új kérést.
+
+**Újrapróbálási útmutató:** Ne próbálja újra a változatlan kérést. Alkalmazza a fenti teendőt, mielőtt újabb kérést küld.
+
+<Accordion title="Érintett API-műveletek (55)">
+
+- [`GET /v3/capabilities`](/api-reference/capabilities/get-v3-capabilities) (`getV3Capabilities`, status `400`)
+- [`GET /v3/customers`](/api-reference/customers/get-v3-customers) (`getV3Customers`, status `400`)
+- [`POST /v3/customers`](/api-reference/customers/post-v3-customers) (`postV3Customers`, status `400`)
+- [`DELETE /v3/customers/{customerId}`](/api-reference/customers/delete-v3-customers-by-customer-id) (`deleteV3CustomersByCustomerId`, status `400`)
+- [`PATCH /v3/customers/{customerId}`](/api-reference/customers/patch-v3-customers-by-customer-id) (`patchV3CustomersByCustomerId`, status `400`)
+- [`GET /v3/customers/{customerId}/accounts`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts) (`getV3CustomersByCustomerIdAccounts`, status `400`)
+- [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) (`postV3CustomersByCustomerIdAccounts`, status `400`)
+- [`DELETE /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/delete-v3-customers-by-customer-id-accounts-by-account-id) (`deleteV3CustomersByCustomerIdAccountsByAccountId`, status `400`)
+- [`PATCH /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/patch-v3-customers-by-customer-id-accounts-by-account-id) (`patchV3CustomersByCustomerIdAccountsByAccountId`, status `400`)
+- [`PUT /v3/customers/{customerId}/accounts/{accountId}/fees`](/api-reference/accounts/put-v3-customers-by-customer-id-accounts-by-account-id-fees) (`putV3CustomersByCustomerIdAccountsByAccountIdFees`, status `400`)
+- [`GET /v3/customers/{customerId}/capabilities`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities) (`getV3CustomersByCustomerIdCapabilities`, status `400`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, status `400`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}/applications`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id-applications) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityIdApplications`, status `400`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}/cancel`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id-cancel) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityIdCancel`, status `400`)
+- [`GET /v3/customers/{customerId}/documents`](/api-reference/documents/get-v3-customers-by-customer-id-documents) (`getV3CustomersByCustomerIdDocuments`, status `400`)
+- [`POST /v3/customers/{customerId}/documents`](/api-reference/documents/post-v3-customers-by-customer-id-documents) (`postV3CustomersByCustomerIdDocuments`, status `400`)
+- [`DELETE /v3/customers/{customerId}/documents/{documentId}`](/api-reference/documents/delete-v3-customers-by-customer-id-documents-by-document-id) (`deleteV3CustomersByCustomerIdDocumentsByDocumentId`, status `400`)
+- [`POST /v3/customers/{customerId}/export`](/api-reference/customers/post-v3-customers-by-customer-id-export) (`postV3CustomersByCustomerIdExport`, status `400`)
+- [`GET /v3/customers/{customerId}/recipients`](/api-reference/recipients/get-v3-customers-by-customer-id-recipients) (`getV3CustomersByCustomerIdRecipients`, status `400`)
+- [`POST /v3/customers/{customerId}/recipients`](/api-reference/recipients/post-v3-customers-by-customer-id-recipients) (`postV3CustomersByCustomerIdRecipients`, status `400`)
+- [`DELETE /v3/customers/{customerId}/recipients/{recipientId}`](/api-reference/recipients/delete-v3-customers-by-customer-id-recipients-by-recipient-id) (`deleteV3CustomersByCustomerIdRecipientsByRecipientId`, status `400`)
+- [`PATCH /v3/customers/{customerId}/recipients/{recipientId}`](/api-reference/recipients/patch-v3-customers-by-customer-id-recipients-by-recipient-id) (`patchV3CustomersByCustomerIdRecipientsByRecipientId`, status `400`)
+- [`GET /v3/customers/{customerId}/recipients/{recipientId}/destinations`](/api-reference/recipients/get-v3-customers-by-customer-id-recipients-by-recipient-id-destinations) (`getV3CustomersByCustomerIdRecipientsByRecipientIdDestinations`, status `400`)
+- [`POST /v3/customers/{customerId}/recipients/{recipientId}/destinations`](/api-reference/recipients/post-v3-customers-by-customer-id-recipients-by-recipient-id-destinations) (`postV3CustomersByCustomerIdRecipientsByRecipientIdDestinations`, status `400`)
+- [`DELETE /v3/customers/{customerId}/recipients/{recipientId}/destinations/{destinationId}`](/api-reference/recipients/delete-v3-customers-by-customer-id-recipients-by-recipient-id-destinations-by-destination-id) (`deleteV3CustomersByCustomerIdRecipientsByRecipientIdDestinationsByDestinationId`, status `400`)
+- [`GET /v3/customers/{customerId}/related-parties`](/api-reference/customers/get-v3-customers-by-customer-id-related-parties) (`getV3CustomersByCustomerIdRelated-parties`, status `400`)
+- [`POST /v3/customers/{customerId}/related-parties`](/api-reference/customers/post-v3-customers-by-customer-id-related-parties) (`postV3CustomersByCustomerIdRelated-parties`, status `400`)
+- [`DELETE /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/delete-v3-customers-by-customer-id-related-parties-by-related-party-id) (`deleteV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, status `400`)
+- [`PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/patch-v3-customers-by-customer-id-related-parties-by-related-party-id) (`patchV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, status `400`)
+- [`GET /v3/customers/{customerId}/rules`](/api-reference/rules/get-v3-customers-by-customer-id-rules) (`getV3CustomersByCustomerIdRules`, status `400`)
+- [`POST /v3/customers/{customerId}/rules`](/api-reference/rules/post-v3-customers-by-customer-id-rules) (`postV3CustomersByCustomerIdRules`, status `400`)
+- [`DELETE /v3/customers/{customerId}/rules/{ruleId}`](/api-reference/rules/delete-v3-customers-by-customer-id-rules-by-rule-id) (`deleteV3CustomersByCustomerIdRulesByRuleId`, status `400`)
+- [`PATCH /v3/customers/{customerId}/rules/{ruleId}`](/api-reference/rules/patch-v3-customers-by-customer-id-rules-by-rule-id) (`patchV3CustomersByCustomerIdRulesByRuleId`, status `400`)
+- [`GET /v3/customers/{customerId}/tasks`](/api-reference/tasks/list-customer-tasks) (`listCustomerTasks`, status `400`)
+- [`GET /v3/customers/{customerId}/tasks/{taskId}/history`](/api-reference/tasks/list-customer-task-history) (`listCustomerTaskHistory`, status `400`)
+- [`GET /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/list-customer-task-submissions) (`listCustomerTaskSubmissions`, status `400`)
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, status `400`)
+- [`GET /v3/institutions`](/api-reference/institutions/get-v3-institutions) (`getV3Institutions`, status `400`)
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, status `400`)
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, status `422`)
+- [`GET /v3/rates`](/api-reference/money-movement/get-v3-rates) (`getV3Rates`, status `400`)
+- [`POST /v3/sandbox/accounts/{accountId}/topup`](/api-reference/sandbox/post-v3-sandbox-accounts-by-account-id-topup) (`postV3SandboxAccountsByAccountIdTopup`, status `400`)
+- [`POST /v3/sandbox/customers/{customerId}/capabilities/{capabilityId}/status`](/api-reference/sandbox/post-v3-sandbox-customers-by-customer-id-capabilities-by-capability-id-status) (`postV3SandboxCustomersByCustomerIdCapabilitiesByCapabilityIdStatus`, status `400`)
+- [`POST /v3/sandbox/customers/{customerId}/verification`](/api-reference/sandbox/post-v3-sandbox-customers-by-customer-id-verification) (`postV3SandboxCustomersByCustomerIdVerification`, status `400`)
+- [`POST /v3/sandbox/tasks`](/api-reference/sandbox/post-v3-sandbox-tasks) (`postV3SandboxTasks`, status `400`)
+- [`POST /v3/sandbox/tasks/{taskId}/review`](/api-reference/sandbox/post-v3-sandbox-tasks-by-task-id-review) (`postV3SandboxTasksByTaskIdReview`, status `400`)
+- [`POST /v3/sandbox/transfers/{transferId}/state`](/api-reference/sandbox/post-v3-sandbox-transfers-by-transfer-id-state) (`postV3SandboxTransfersByTransferIdState`, status `400`)
+- [`GET /v3/tasks`](/api-reference/tasks/list-tasks) (`listTasks`, status `400`)
+- [`GET /v3/transfers`](/api-reference/money-movement/get-v3-transfers) (`getV3Transfers`, status `400`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, status `400`)
+- [`POST /v3/transfers/{transferId}/cancel`](/api-reference/money-movement/post-v3-transfers-by-transfer-id-cancel) (`postV3TransfersByTransferIdCancel`, status `400`)
+- [`GET /v3/transfers/{transferId}/tasks`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-tasks) (`getV3TransfersByTransferIdTasks`, status `400`)
+- [`POST /v3/webhooks`](/api-reference/webhooks/post-v3-webhooks) (`postV3Webhooks`, status `400`)
+- [`DELETE /v3/webhooks/{webhookId}`](/api-reference/webhooks/delete-v3-webhooks-by-webhook-id) (`deleteV3WebhooksByWebhookId`, status `400`)
+- [`PATCH /v3/webhooks/{webhookId}`](/api-reference/webhooks/patch-v3-webhooks-by-webhook-id) (`patchV3WebhooksByWebhookId`, status `400`)
+
+</Accordion>
+
+## Ügyfelek és profilok
+
+<a id="customer-has-active-resources" className="block scroll-mt-32">
+  <span className="sr-only">customer_has_active_resources error</span>
+</a>
+
+### `customer_has_active_resources`
+
+**HTTP-státusz:** `409`<br />
+**Újrapróbálható:** Nem<br />
+**Problématípus:** `https://docs.swipelux.com/errors/customer-has-active-resources`
+
+**Jelentés:** Az ügyfél nem archiválható, amíg aktív erőforrások függenek tőle.
+
+**Mikor fordul elő:** Olyan ügyfelet archivál, amelyhez még rendezésre váró számlák, átutalások vagy más erőforrások tartoznak.
+
+**Teendő:** Kövesse az összes `blockingResources[].requiredAction` értéket, kérje le újra az ügyfelet az erőforrások rendezése után, és próbálja újra az archiválási műveletet.
+
+**Újrapróbálási útmutató:** Ne próbálja újra a változatlan kérést. Alkalmazza a fenti teendőt, mielőtt újabb kérést küld.
+
+**Érintett API-műveletek:**
+
+- [`DELETE /v3/customers/{customerId}`](/api-reference/customers/delete-v3-customers-by-customer-id) (`deleteV3CustomersByCustomerId`, status `409`)
+
+**További válaszmezők:**
+
+- `blockingResources`: Ügyfél-erőforrások, amelyeket meg kell oldani, mielőtt a kért művelet folytatódhat, típus és azonosító szerint rendezve.
+
+**Példa:**
+
+```json
+{
+  "type": "https://docs.swipelux.com/errors/customer-has-active-resources",
+  "title": "Customer Has Active Resources",
+  "status": 409,
+  "code": "customer_has_active_resources",
+  "detail": "Archive or resolve every blocking resource before retrying.",
+  "correlationId": "01JERRORCUSTOMERARCHIVE",
+  "retryable": false,
+  "blockingResources": [
+    {
+      "type": "account",
+      "id": "acc_01JACTIVE",
+      "requiredAction": "archive_account"
+    }
+  ]
+}
+```
+
+<a id="customer-not-found" className="block scroll-mt-32">
+  <span className="sr-only">customer_not_found error</span>
+</a>
+
+### `customer_not_found`
+
+**HTTP-státusz:** `404`<br />
+**Újrapróbálható:** Nem<br />
+**Problématípus:** `https://docs.swipelux.com/errors/customer-not-found`
+
+**Jelentés:** Az ügyfél nem létezik az aktuális API-kulcs környezetében, vagy már nem érhető el.
+
+**Mikor fordul elő:** Egy művelet olyan ügyfél-azonosítót használ, amely hiányzik, másik környezethez tartozik, vagy archivált ügyfélre hivatkozik ott, ahol a művelet aktívat igényel.
+
+**Teendő:** Ellenőrizze az ügyfél-azonosítót és az API-kulcs környezetét, majd olvassa be vagy listázza az ügyfeleket, mielőtt elérhető ügyféllel próbálkozik újra.
+
+**Újrapróbálási útmutató:** Ne próbálja újra a változatlan kérést. Alkalmazza a fenti teendőt, mielőtt újabb kérést küld.
+
+<Accordion title="Érintett API-műveletek (22)">
+
+- [`DELETE /v3/customers/{customerId}`](/api-reference/customers/delete-v3-customers-by-customer-id) (`deleteV3CustomersByCustomerId`, status `404`)
+- [`GET /v3/customers/{customerId}`](/api-reference/customers/get-v3-customers-by-customer-id) (`getV3CustomersByCustomerId`, status `404`)
+- [`PATCH /v3/customers/{customerId}`](/api-reference/customers/patch-v3-customers-by-customer-id) (`patchV3CustomersByCustomerId`, status `404`)
+- [`GET /v3/customers/{customerId}/capabilities`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities) (`getV3CustomersByCustomerIdCapabilities`, status `404`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityId`, status `404`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, status `404`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}/applications`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id-applications) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityIdApplications`, status `404`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}/applications/{applicationId}/history`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id-applications-by-application-id-history) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityIdApplicationsByApplicationIdHistory`, status `404`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}/cancel`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id-cancel) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityIdCancel`, status `404`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}/tasks-preview`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id-tasks-preview) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityIdTasks-preview`, status `404`)
+- [`GET /v3/customers/{customerId}/capabilities/supported`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-supported) (`getV3CustomersByCustomerIdCapabilitiesSupported`, status `404`)
+- [`GET /v3/customers/{customerId}/documents`](/api-reference/documents/get-v3-customers-by-customer-id-documents) (`getV3CustomersByCustomerIdDocuments`, status `404`)
+- [`POST /v3/customers/{customerId}/documents`](/api-reference/documents/post-v3-customers-by-customer-id-documents) (`postV3CustomersByCustomerIdDocuments`, status `404`)
+- [`DELETE /v3/customers/{customerId}/documents/{documentId}`](/api-reference/documents/delete-v3-customers-by-customer-id-documents-by-document-id) (`deleteV3CustomersByCustomerIdDocumentsByDocumentId`, status `404`)
+- [`GET /v3/customers/{customerId}/documents/{documentId}`](/api-reference/documents/get-v3-customers-by-customer-id-documents-by-document-id) (`getV3CustomersByCustomerIdDocumentsByDocumentId`, status `404`)
+- [`POST /v3/customers/{customerId}/export`](/api-reference/customers/post-v3-customers-by-customer-id-export) (`postV3CustomersByCustomerIdExport`, status `404`)
+- [`GET /v3/customers/{customerId}/related-parties`](/api-reference/customers/get-v3-customers-by-customer-id-related-parties) (`getV3CustomersByCustomerIdRelated-parties`, status `404`)
+- [`POST /v3/customers/{customerId}/related-parties`](/api-reference/customers/post-v3-customers-by-customer-id-related-parties) (`postV3CustomersByCustomerIdRelated-parties`, status `404`)
+- [`DELETE /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/delete-v3-customers-by-customer-id-related-parties-by-related-party-id) (`deleteV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, status `404`)
+- [`GET /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/get-v3-customers-by-customer-id-related-parties-by-related-party-id) (`getV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, status `404`)
+- [`PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/patch-v3-customers-by-customer-id-related-parties-by-related-party-id) (`patchV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, status `404`)
+- [`GET /v3/customers/{customerId}/tasks`](/api-reference/tasks/list-customer-tasks) (`listCustomerTasks`, status `404`)
+
+</Accordion>
+
+<a id="document-not-found" className="block scroll-mt-32">
+  <span className="sr-only">document_not_found error</span>
+</a>
+
+### `document_not_found`
+
+**HTTP-státusz:** `404`<br />
+**Újrapróbálható:** Nem kerül visszaadásra<br />
+**Problématípus:** `https://docs.swipelux.com/errors/document-not-found`
+
+**Jelentés:** A kért ügyféldokumentum nem található.
+
+**Mikor fordul elő:** A dokumentumazonosító hiányzik, archivált, vagy nem tartozik a kérés útvonalában szereplő ügyfélhez.
+
+**Teendő:** Ellenőrizze az ügyfél- és dokumentumazonosítókat, listázza az ügyfél dokumentumait, és töltsön fel helyettesítőt, ha a szükséges dokumentum hiányzik.
+
+**Újrapróbálási útmutató:** Ez a probléma nem ad vissza `retryable` értéket. Ne feltételezze, hogy a változatlan újrapróbálkozás biztonságos; kövesse a fenti teendőt és a művelet idempotencia-követelményeit.
+
+**Érintett API-műveletek:**
+
+- [`DELETE /v3/customers/{customerId}/documents/{documentId}`](/api-reference/documents/delete-v3-customers-by-customer-id-documents-by-document-id) (`deleteV3CustomersByCustomerIdDocumentsByDocumentId`, status `404`)
+- [`GET /v3/customers/{customerId}/documents/{documentId}`](/api-reference/documents/get-v3-customers-by-customer-id-documents-by-document-id) (`getV3CustomersByCustomerIdDocumentsByDocumentId`, status `404`)
+
+<a id="duplicate-external-id" className="block scroll-mt-32">
+  <span className="sr-only">duplicate_external_id error</span>
+</a>
+
+### `duplicate_external_id`
+
+**HTTP-státusz:** `409`<br />
+**Újrapróbálható:** Nem<br />
+**Problématípus:** `https://docs.swipelux.com/errors/duplicate-external-id`
+
+**Jelentés:** A megadott `externalId` már másik erőforráshoz van rendelve ugyanabban a hatókörben.
+
+**Mikor fordul elő:** Egy létrehozási vagy frissítési kérés olyan fejlesztő által kezelt azonosítót próbál újra felhasználni, amelynek egyedinek kell lennie.
+
+**Teendő:** Olvassa be az azonosítóhoz már társított erőforrást, vagy használjon új, egyedi `externalId` értéket egy valóban másik erőforráshoz.
+
+**Újrapróbálási útmutató:** Ne próbálja újra a változatlan kérést. Alkalmazza a fenti teendőt, mielőtt újabb kérést küld.
+
+**Érintett API-műveletek:**
+
+- [`POST /v3/customers`](/api-reference/customers/post-v3-customers) (`postV3Customers`, status `409`)
+- [`PATCH /v3/customers/{customerId}`](/api-reference/customers/patch-v3-customers-by-customer-id) (`patchV3CustomersByCustomerId`, status `409`)
+- [`POST /v3/customers/{customerId}/related-parties`](/api-reference/customers/post-v3-customers-by-customer-id-related-parties) (`postV3CustomersByCustomerIdRelated-parties`, status `409`)
+- [`PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/patch-v3-customers-by-customer-id-related-parties-by-related-party-id) (`patchV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, status `409`)
+
+<a id="field-required-by-open-task" className="block scroll-mt-32">
+  <span className="sr-only">field_required_by_open_task error</span>
+</a>
+
+### `field_required_by_open_task`
+
+**HTTP-státusz:** `409`<br />
+**Újrapróbálható:** Nem<br />
+**Problématípus:** `https://docs.swipelux.com/errors/field-required-by-open-task`
+
+**Jelentés:** A kérés olyan profilmezőt próbál törölni, amelyet egy nyitott feladat még igényel.
+
+**Mikor fordul elő:** Egy ügyfél- vagy kapcsolódófél-frissítés olyan értéket távolít el, amelyet a `taskId` mezőben szereplő feladat kötelezőként rögzített.
+
+**Teendő:** Olvassa ki a `taskId` értéket és a `fields` mezőben lévő profilmutatókat vagy követelménykulcsokat, majd állítsa vissza a szükséges értékeket, vagy végezze el, illetve mondja le a feladatot, mielőtt újra elküldi a frissítést.
+
+**Újrapróbálási útmutató:** Ne próbálja újra a változatlan kérést. Alkalmazza a fenti teendőt, mielőtt újabb kérést küld.
+
+**Érintett API-műveletek:**
+
+- [`PATCH /v3/customers/{customerId}`](/api-reference/customers/patch-v3-customers-by-customer-id) (`patchV3CustomersByCustomerId`, status `409`)
+- [`PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/patch-v3-customers-by-customer-id-related-parties-by-related-party-id) (`patchV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, status `409`)
+
+**További válaszmezők:**
+
+- `fields`: A nyitott feladat által blokkolt profilmutatók vagy követelménykulcsok.
+- `taskId`: Az aktuális feladat azonosítója.
+
+<a id="merchant-kyb-not-approved" className="block scroll-mt-32">
+  <span className="sr-only">merchant_kyb_not_approved error</span>
+</a>
+
+### `merchant_kyb_not_approved`
+
+**HTTP-státusz:** `422`<br />
+**Újrapróbálható:** Nem kerül visszaadásra<br />
+**Problématípus:** `https://docs.swipelux.com/errors/merchant-kyb-not-approved`
+
+**Jelentés:** Az integráló vállalkozás nincs jóváhagyva a kért ügyfél-létrehozási folyamathoz.
+
+**Mikor fordul elő:** Éles ügyfél-létrehozási kérés történik, mielőtt az integráló vállalkozást és az éles teret jóváhagyták volna.
+
+**Teendő:** Végezze el az integráló vállalkozás ellenőrzési folyamatát, és várja meg az éles jóváhagyást, mielőtt éles ügyfeleket hoz létre.
+
+**Újrapróbálási útmutató:** Ez a probléma nem ad vissza `retryable` értéket. Ne feltételezze, hogy a változatlan újrapróbálkozás biztonságos; kövesse a fenti teendőt és a művelet idempotencia-követelményeit.
+
+**Érintett API-műveletek:**
+
+- [`POST /v3/customers`](/api-reference/customers/post-v3-customers) (`postV3Customers`, status `422`)
+
+<a id="profile-obligation-crossheal-failed" className="block scroll-mt-32">
+  <span className="sr-only">profile_obligation_crossheal_failed error</span>
+</a>
+
+### `profile_obligation_crossheal_failed`
+
+**HTTP-státusz:** `500`<br />
+**Újrapróbálható:** Nem<br />
+**Problématípus:** `https://docs.swipelux.com/errors/profile-obligation-crossheal-failed`
+
+**Jelentés:** A Swipelux nem tudta frissíteni az ügyfél profilkövetelményeit.
+
+**Mikor fordul elő:** Egy ügyfél- vagy kapcsolódófél-frissítés nem tudja összeegyeztetni a profilmódosítást az aktuális feladatkövetelményeivel.
+
+**Teendő:** Őrizze meg a `correlationId` értéket, és lépjen kapcsolatba a Swipelux támogatással. Ne próbálja ismételten újra a változatlan frissítést.
+
+**Újrapróbálási útmutató:** Ne próbálja újra a változatlan kérést. Alkalmazza a fenti teendőt, mielőtt újabb kérést küld.
+
+**Érintett API-műveletek:**
+
+- [`PATCH /v3/customers/{customerId}`](/api-reference/customers/patch-v3-customers-by-customer-id) (`patchV3CustomersByCustomerId`, status `500`)
+- [`PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/patch-v3-customers-by-customer-id-related-parties-by-related-party-id) (`patchV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, status `500`)
+
+<a id="related-party-in-review" className="block scroll-mt-32">
+  <span className="sr-only">related_party_in_review error</span>
+</a>
+
+### `related_party_in_review`
+
+**HTTP-státusz:** `409`<br />
+**Újrapróbálható:** Nem<br />
+**Problématípus:** `https://docs.swipelux.com/errors/related-party-in-review`
+
+**Jelentés:** A kapcsolódó fél nem archiválható, amíg felülvizsgálat alatt áll.
+
+**Mikor fordul elő:** Olyan kapcsolódó felet próbál archiválni, amelynek ellenőrzési vagy felülvizsgálati munkafolyamata még aktív.
+
+**Teendő:** Várja meg a felülvizsgálati állapot változását, kérje le újra a kapcsolódó felet, és csak akkor archiválja, amikor az aktuális státusza lehetővé teszi a műveletet.
+
+**Újrapróbálási útmutató:** Ne próbálja újra a változatlan kérést. Alkalmazza a fenti teendőt, mielőtt újabb kérést küld.
+
+**Érintett API-műveletek:**
+
+- [`DELETE /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/delete-v3-customers-by-customer-id-related-parties-by-related-party-id) (`deleteV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, status `409`)
+
+<a id="related-party-not-found" className="block scroll-mt-32">
+  <span className="sr-only">related_party_not_found error</span>
+</a>
+
+### `related_party_not_found`
+
+**HTTP-státusz:** `404`<br />
+**Újrapróbálható:** Nem kerül visszaadásra<br />
+**Problématípus:** `https://docs.swipelux.com/errors/related-party-not-found`
+
+**Jelentés:** A kapcsolódó fél nem található a megadott ügyfél alatt.
+
+**Mikor fordul elő:** A kapcsolódófél-azonosító hiányzik, archivált, másik ügyfélhez tartozik, vagy nem érhető el az aktuális környezetben.
+
+**Teendő:** Ellenőrizze az ügyfél- és kapcsolódófél-azonosítókat, listázza az ügyfél kapcsolódó feleit, és próbálkozzon újra elérhető erőforrással.
+
+**Újrapróbálási útmutató:** Ez a probléma nem ad vissza `retryable` értéket. Ne feltételezze, hogy a változatlan újrapróbálkozás biztonságos; kövesse a fenti teendőt és a művelet idempotencia-követelményeit.
+
+**Érintett API-műveletek:**
+
+- [`DELETE /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/delete-v3-customers-by-customer-id-related-parties-by-related-party-id) (`deleteV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, status `404`)
+- [`GET /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/get-v3-customers-by-customer-id-related-parties-by-related-party-id) (`getV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, status `404`)
+- [`PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/patch-v3-customers-by-customer-id-related-parties-by-related-party-id) (`patchV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, status `404`)
+
+## Képességek, KYC és feladatok
+
+<a id="absence-conflicts-with-profile" className="block scroll-mt-32">
+  <span className="sr-only">absence_conflicts_with_profile error</span>
+</a>
+
+### `absence_conflicts_with_profile`
+
+**HTTP-státusz:** `409`<br />
+**Újrapróbálható:** Nem<br />
+**Problématípus:** `https://docs.swipelux.com/errors/absence-conflicts-with-profile`
+
+**Jelentés:** Egy feladatválasz, amely egy érték hiányát jelzi, ütközik az ügyfélprofilban már meglévő adatokkal.
+
+**Mikor fordul elő:** Egy beküldés hiányzóként jelöl meg egy profilalapú követelményt, miközben a `profilePointer` által azonosított kanonikus profilmezőnek még van értéke.
+
+**Teendő:** Tekintse át a `profilePointer` értékét, frissítse az ügyfélprofilt vagy küldjön be azzal konzisztens választ, kérje le újra a feladatot, és küldje be az aktuális revíziót.
+
+**Újrapróbálási útmutató:** Ne próbálja újra a változatlan kérést. Alkalmazza a fenti teendőt, mielőtt újabb kérést küld.
+
+**Érintett API-műveletek:**
+
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, status `409`)
+
+**További válaszmezők:**
+
+- `profilePointer`: A konfliktushoz tartozó kanonikus profilmező.
+
+<a id="capability-already-exists" className="block scroll-mt-32">
+  <span className="sr-only">capability_already_exists error</span>
+</a>
+
+### `capability_already_exists`
+
+**HTTP-státusz:** `409`<br />
+**Újrapróbálható:** Nem<br />
+**Problématípus:** `https://docs.swipelux.com/errors/capability-already-exists`
+
+**Jelentés:** Az ügyfél már rendelkezik a kért képességgel.
+
+**Mikor fordul elő:** Olyan képességet kér, amelynek aktuális vagy meglévő jelentkezése már ugyanazt az ügyfélképességet képviseli.
+
+**Teendő:** Olvassa be a meglévő képességet, és folytassa annak aktuális státuszától duplikátum létrehozása helyett.
+
+**Újrapróbálási útmutató:** Ne próbálja újra a változatlan kérést. Alkalmazza a fenti teendőt, mielőtt újabb kérést küld.
+
+**Érintett API-műveletek:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, status `409`)
+
+<a id="capability-ineligible" className="block scroll-mt-32">
+  <span className="sr-only">capability_ineligible error</span>
+</a>
+
+### `capability_ineligible`
+
+**HTTP-státusz:** `422`<br />
+**Újrapróbálható:** Nem<br />
+**Problématípus:** `https://docs.swipelux.com/errors/capability-ineligible`
+
+**Jelentés:** Az ügyfél a jelenlegi profilja és konfigurációja alapján nem jogosult a kért képességre.
+
+**Mikor fordul elő:** A képességértékelés megállapítja, hogy a kért lehetőség nem érhető el ennek az ügyfélnek.
+
+**Teendő:** Tekintse át a támogatott képességek válaszát és az aktuális feladatokat, majd válasszon jogosult képességet, vagy teljesítsen egy megjelenített előfeltételt, mielőtt új kérést küld.
+
+**Újrapróbálási útmutató:** Ne próbálja újra a változatlan kérést. Alkalmazza a fenti teendőt, mielőtt újabb kérést küld.
+
+**Érintett API-műveletek:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, status `422`)
+
+<a id="capability-institutions-required" className="block scroll-mt-32">
+  <span className="sr-only">capability_institutions_required error</span>
+</a>
+
+### `capability_institutions_required`
+
+**HTTP-státusz:** `422`<br />
+**Újrapróbálható:** Nem kerül visszaadásra<br />
+**Problématípus:** `https://docs.swipelux.com/errors/capability-institutions-required`
+
+**Jelentés:** A képességkéréshez egy vagy több intézmény kiválasztása szükséges.
+
+**Mikor fordul elő:** Olyan képességvariánst kér, amely intézményeket igényel, de kihagyja az intézményválasztást.
+
+**Teendő:** Listázza az ügyfél számára támogatott intézményeket, adja meg a szükséges intézményazonosítókat, és küldjön be új kérést.
+
+**Újrapróbálási útmutató:** Ez a probléma nem ad vissza `retryable` értéket. Ne feltételezze, hogy a változatlan újrapróbálkozás biztonságos; kövesse a fenti teendőt és a művelet idempotencia-követelményeit.
+
+**Érintett API-műveletek:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, status `422`)
+
+<a id="capability-institutions-unsupported" className="block scroll-mt-32">
+  <span className="sr-only">capability_institutions_unsupported error</span>
+</a>
+
+### `capability_institutions_unsupported`
+
+**HTTP-státusz:** `422`<br />
+**Újrapróbálható:** Nem<br />
+**Problématípus:** `https://docs.swipelux.com/errors/capability-institutions-unsupported`
+
+**Jelentés:** Egy vagy több kiválasztott intézmény nem támogatott a kért képességhez.
+
+**Mikor fordul elő:** A kérés olyan intézményt tartalmaz, amely kívül esik az ügyfél számára elérhető képességlehetőségeken.
+
+**Teendő:** Cserélje ki a nem támogatott választást a támogatott képességek folyamata által visszaadott intézményekre, majd küldjön be új kérést.
+
+**Újrapróbálási útmutató:** Ne próbálja újra a változatlan kérést. Alkalmazza a fenti teendőt, mielőtt újabb kérést küld.
+
+**Érintett API-műveletek:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, status `422`)
+
+<a id="capability-intent-unsupported" className="block scroll-mt-32">
+  <span className="sr-only">capability_intent_unsupported error</span>
+</a>
+
+### `capability_intent_unsupported`
+
+**HTTP-státusz:** `422`<br />
+**Újrapróbálható:** Nem kerül visszaadásra<br />
+**Problématípus:** `https://docs.swipelux.com/errors/capability-intent-unsupported`
+
+**Jelentés:** A kért képességszándék nem támogatott ennél a képességvariánsnál.
+
+**Mikor fordul elő:** A kérés olyan szándékkal kombinál egy képességet, amelyet a kiválasztott ügyfél- vagy intézménylehetőségekhez nem kínálnak.
+
+**Teendő:** Használjon a támogatott képességek válaszában megjelenített szándékot, vagy válasszon másik támogatott képességvariánst.
+
+**Újrapróbálási útmutató:** Ez a probléma nem ad vissza `retryable` értéket. Ne feltételezze, hogy a változatlan újrapróbálkozás biztonságos; kövesse a fenti teendőt és a művelet idempotencia-követelményeit.
+
+**Érintett API-műveletek:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, status `422`)
+
+<a id="capability-key-unsupported" className="block scroll-mt-32">
+  <span className="sr-only">capability_key_unsupported error</span>
+</a>
+
+### `capability_key_unsupported`
+
+**HTTP-státusz:** `422`<br />
+**Újrapróbálható:** Nem<br />
+**Problématípus:** `https://docs.swipelux.com/errors/capability-key-unsupported`
+
+**Jelentés:** A képességkulcsot ez a művelet nem támogatja.
+
+**Mikor fordul elő:** A kérés vagy a feladat-előnézet olyan képességazonosítót használ, amely nem kérhető az ügyfél számára.
+
+**Teendő:** Listázza a támogatott képességeket, és használjon az ügyfélhez visszaadott pontos képességazonosítót.
+
+**Újrapróbálási útmutató:** Ne próbálja újra a változatlan kérést. Alkalmazza a fenti teendőt, mielőtt újabb kérést küld.
+
+**Érintett API-műveletek:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, status `422`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}/tasks-preview`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id-tasks-preview) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityIdTasks-preview`, status `422`)
+
+<a id="capability-not-cancelable" className="block scroll-mt-32">
+  <span className="sr-only">capability_not_cancelable error</span>
+</a>
+
+### `capability_not_cancelable`
+
+**HTTP-státusz:** `409`<br />
+**Újrapróbálható:** Nem<br />
+**Problématípus:** `https://docs.swipelux.com/errors/capability-not-cancelable`
+
+**Jelentés:** A képesség nem mondható le az aktuális státuszából.
+
+**Mikor fordul elő:** A lemondási kérés azután érkezik, hogy a képesség nem lemondható állapotba került, vagy miközben erőforrások még blokkolják a lemondást.
+
+**Teendő:** Vizsgálja meg a `statusReason` és a `blockingResources` értékét, oldja meg vagy várja meg a felsorolt erőforrásokat, kérje le újra a képességet, és válassza az aktuális státusza által megengedett következő lépést.
+
+**Újrapróbálási útmutató:** Ne próbálja újra a változatlan kérést. Alkalmazza a fenti teendőt, mielőtt újabb kérést küld.
+
+**Érintett API-műveletek:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}/cancel`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id-cancel) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityIdCancel`, status `409`)
+
+**További válaszmezők:**
+
+- `blockingResources`: Ügyfél-erőforrások, amelyeket meg kell oldani, mielőtt a kért művelet folytatódhat, típus és azonosító szerint rendezve.
+- `statusReason`: Az állapotkonfliktus strukturált oka, amikor a sikertelen művelet az erőforrás aktuális státuszától függ.
+
+<a id="capability-not-ready" className="block scroll-mt-32">
+  <span className="sr-only">capability_not_ready error</span>
+</a>
+
+### `capability_not_ready`
+
+**HTTP-státusz:** `409`<br />
+**Újrapróbálható:** Kontextusfüggő<br />
+**Problématípus:** `https://docs.swipelux.com/errors/capability-not-ready`
+
+**Jelentés:** A kért számlához vagy pénzmozgáshoz szükséges képesség nem áll készen.
+
+**Mikor fordul elő:** A művelet egy vagy több olyan ügyfélképességtől függ, amely még nem érte el a használható állapotot.
+
+**Teendő:** Olvassa ki a képességazonosítókat a `capabilities` mezőből, végezze el a nyitott feladatokat vagy várja meg az állapotuk előrehaladását, kérje le újra őket, és küldjön új kérést, miután készen állnak.
+
+**Újrapróbálási útmutató:** Olvassa ki a válasz `retryable` értékét. Csak akkor próbálkozzon újra később, ha az `true`. Idempotens írás esetén használja újra az eredeti idempotencia-kulcsot és a változatlan kérést.
+
+**Érintett API-műveletek:**
+
+- [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) (`postV3CustomersByCustomerIdAccounts`, status `409`)
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, status `409`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, status `409`)
+
+**További válaszmezők:**
+
+- `capabilities`: A sikertelen műveletet kielégítő képességazonosítók.
+
+<a id="capability-not-supported-for-customer-type" className="block scroll-mt-32">
+  <span className="sr-only">capability_not_supported_for_customer_type error</span>
+</a>
+
+### `capability_not_supported_for_customer_type`
+
+**HTTP-státusz:** `422`<br />
+**Újrapróbálható:** Nem kerül visszaadásra<br />
+**Problématípus:** `https://docs.swipelux.com/errors/capability-not-supported-for-customer-type`
+
+**Jelentés:** A képesség nem támogatott ennél az ügyféltípusnál.
+
+**Mikor fordul elő:** Egy magánszemély vagy üzleti ügyfél olyan képességet kér, amelyet csak másik ügyféltípusnak kínálnak.
+
+**Teendő:** Használja az ügyfél támogatott képességeinek válaszát, és kérjen a meglévő típusához kínált képességet.
+
+**Újrapróbálási útmutató:** Ez a probléma nem ad vissza `retryable` értéket. Ne feltételezze, hogy a változatlan újrapróbálkozás biztonságos; kövesse a fenti teendőt és a művelet idempotencia-követelményeit.
+
+**Érintett API-műveletek:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, status `422`)
+
+<a id="capability-provider-resolution-failed" className="block scroll-mt-32">
+  <span className="sr-only">capability_provider_resolution_failed error</span>
+</a>
+
+### `capability_provider_resolution_failed`
+
+**HTTP-státusz:** `422`<br />
+**Újrapróbálható:** Nem kerül visszaadásra<br />
+**Problématípus:** `https://docs.swipelux.com/errors/capability-provider-resolution-failed`
+
+**Jelentés:** A Swipelux nem tudott teljes feldolgozási konfigurációt feloldani a képességkéréshez.
+
+**Mikor fordul elő:** A kért képességkombináció formailag érvényes, de az elérhető képességbeállítás hiányos.
+
+**Teendő:** Erősítse meg a kérést a támogatott képességek válaszával összevetve. Ha továbbra is kínált, őrizze meg a `correlationId` értéket, és lépjen kapcsolatba a Swipelux támogatással.
+
+**Újrapróbálási útmutató:** Ez a probléma nem ad vissza `retryable` értéket. Ne feltételezze, hogy a változatlan újrapróbálkozás biztonságos; kövesse a fenti teendőt és a művelet idempotencia-követelményeit.
+
+**Érintett API-műveletek:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, status `422`)
+
+<a id="capability-snapshot-corrupted" className="block scroll-mt-32">
+  <span className="sr-only">capability_snapshot_corrupted error</span>
+</a>
+
+### `capability_snapshot_corrupted`
+
+**HTTP-státusz:** `500`<br />
+**Újrapróbálható:** Nem<br />
+**Problématípus:** `https://docs.swipelux.com/errors/capability-snapshot-corrupted`
+
+**Jelentés:** A Swipelux nem tudta kiértékelni az ügyfél képességállapotát.
+
+**Mikor fordul elő:** Egy képességgel kapcsolatos művelet érvénytelen tárolt képesség-pillanatképet talál.
+
+**Teendő:** Őrizze meg a `correlationId` értéket, és lépjen kapcsolatba a Swipelux támogatással. Ne próbálja ismételten újra a változatlan kérést.
+
+**Újrapróbálási útmutató:** Ne próbálja újra a változatlan kérést. Alkalmazza a fenti teendőt, mielőtt újabb kérést küld.
+
+<Accordion title="Érintett API-műveletek (11)">
+
+- [`PATCH /v3/customers/{customerId}`](/api-reference/customers/patch-v3-customers-by-customer-id) (`patchV3CustomersByCustomerId`, status `500`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, status `500`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}/cancel`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id-cancel) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityIdCancel`, status `500`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}/tasks-preview`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id-tasks-preview) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityIdTasks-preview`, status `500`)
+- [`POST /v3/customers/{customerId}/related-parties`](/api-reference/customers/post-v3-customers-by-customer-id-related-parties) (`postV3CustomersByCustomerIdRelated-parties`, status `500`)
+- [`DELETE /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/delete-v3-customers-by-customer-id-related-parties-by-related-party-id) (`deleteV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, status `500`)
+- [`PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/patch-v3-customers-by-customer-id-related-parties-by-related-party-id) (`patchV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, status `500`)
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, status `500`)
+- [`POST /v3/sandbox/customers/{customerId}/capabilities/{capabilityId}/status`](/api-reference/sandbox/post-v3-sandbox-customers-by-customer-id-capabilities-by-capability-id-status) (`postV3SandboxCustomersByCustomerIdCapabilitiesByCapabilityIdStatus`, status `500`)
+- [`POST /v3/sandbox/tasks`](/api-reference/sandbox/post-v3-sandbox-tasks) (`postV3SandboxTasks`, status `500`)
+- [`POST /v3/sandbox/tasks/{taskId}/review`](/api-reference/sandbox/post-v3-sandbox-tasks-by-task-id-review) (`postV3SandboxTasksByTaskIdReview`, status `500`)
+
+</Accordion>
+
+<a id="capability-terminally-rejected" className="block scroll-mt-32">
+  <span className="sr-only">capability_terminally_rejected error</span>
+</a>
+
+### `capability_terminally_rejected`
+
+**HTTP-státusz:** `409`<br />
+**Újrapróbálható:** Nem<br />
+**Problématípus:** `https://docs.swipelux.com/errors/capability-terminally-rejected`
+
+**Jelentés:** A képességet már végleges állapotban elutasították.
+
+**Mikor fordul elő:** Olyan képességet kér, amelynek meglévő életciklusa már nem térhet vissza kérhető állapotba.
+
+**Teendő:** Olvassa be a meglévő képességet és a megjelenített feladatokat vagy státuszinformációkat, majd válasszon másik támogatott lehetőséget, vagy lépjen kapcsolatba a támogatással, ha az állapot váratlan.
+
+**Újrapróbálási útmutató:** Ne próbálja újra a változatlan kérést. Alkalmazza a fenti teendőt, mielőtt újabb kérést küld.
+
+**Érintett API-műveletek:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, status `409`)
+
+<a id="capability-variant-unavailable" className="block scroll-mt-32">
+  <span className="sr-only">capability_variant_unavailable error</span>
+</a>
+
+### `capability_variant_unavailable`
+
+**HTTP-státusz:** `409`, `422`<br />
+**Újrapróbálható:** Kontextusfüggő<br />
+**Problématípus:** `https://docs.swipelux.com/errors/capability-variant-unavailable`
+
+**Jelentés:** A kért képességvariáns nem érhető el a kiválasztott ügyfél-, szándék- vagy intézménykombinációhoz.
+
+**Mikor fordul elő:** A képességértékelés vagy átmeneti elérhetőségi problémát, vagy strukturálisan nem támogatott kombinációt talál.
+
+**Teendő:** Vizsgálja meg a `retryable` értéket. Próbálkozzon újra később, ha az `true`; ellenkező esetben válasszon másik variánst a támogatott képességek válaszából.
+
+**Újrapróbálási útmutató:** Olvassa ki a válasz `retryable` értékét. Csak akkor próbálkozzon újra később, ha az `true`. Idempotens írás esetén használja újra az eredeti idempotencia-kulcsot és a változatlan kérést. Ne változtassa meg a kérést átmeneti variánskiesés újrapróbálásakor; a képességválasztást akkor változtassa meg, ha a válasz nem újrapróbálható.
+
+**Érintett API-műveletek:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, status `409`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, status `422`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}/tasks-preview`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id-tasks-preview) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityIdTasks-preview`, status `422`)
+
+<a id="initial-application-identity-conflict" className="block scroll-mt-32">
+  <span className="sr-only">initial_application_identity_conflict error</span>
+</a>
+
+### `initial_application_identity_conflict`
+
+**HTTP-státusz:** `409`<br />
+**Újrapróbálható:** Nem<br />
+**Problématípus:** `https://docs.swipelux.com/errors/initial-application-identity-conflict`
+
+**Jelentés:** A kezdeti jelentkezés identitása megváltozott, mielőtt mentésre került volna.
+
+**Mikor fordul elő:** Az ügyfél-létrehozás vagy egy képességkérés ütköző identitást talál az általa létrehozott kezdeti jelentkezéshez.
+
+**Teendő:** Őrizze meg a `correlationId` értéket, és lépjen kapcsolatba a Swipelux támogatással, mielőtt újrapróbálja a képességkérést.
+
+**Újrapróbálási útmutató:** Ne próbálja újra a változatlan kérést. Alkalmazza a fenti teendőt, mielőtt újabb kérést küld.
+
+**Érintett API-műveletek:**
+
+- [`POST /v3/customers`](/api-reference/customers/post-v3-customers) (`postV3Customers`, status `409`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, status `409`)
+
+<a id="initial-application-owner-unavailable" className="block scroll-mt-32">
+  <span className="sr-only">initial_application_owner_unavailable error</span>
+</a>
+
+### `initial_application_owner_unavailable`
+
+**HTTP-státusz:** `503`<br />
+**Újrapróbálható:** Nem<br />
+**Problématípus:** `https://docs.swipelux.com/errors/initial-application-owner-unavailable`
+
+**Jelentés:** Nincs elérhető érvényes tulajdonosi útvonal a kezdeti jelentkezéshez.
+
+**Mikor fordul elő:** Egy képességkérés nem tudja a kezdeti jelentkezést támogatott intézménylehetőséghez rendelni.
+
+**Teendő:** Válasszon a képességkatalógus által visszaadott támogatott intézményt, vagy ha egyik sem érhető el, őrizze meg a `correlationId` értéket, és lépjen kapcsolatba a Swipelux támogatással.
+
+**Újrapróbálási útmutató:** Ne próbálja újra a változatlan kérést. Alkalmazza a fenti teendőt, mielőtt újabb kérést küld.
+
+**Érintett API-műveletek:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, status `503`)
+
+<a id="initial-application-scope-unavailable" className="block scroll-mt-32">
+  <span className="sr-only">initial_application_scope_unavailable error</span>
+</a>
+
+### `initial_application_scope_unavailable`
+
+**HTTP-státusz:** `503`<br />
+**Újrapróbálható:** Kontextusfüggő<br />
+**Problématípus:** `https://docs.swipelux.com/errors/initial-application-scope-unavailable`
+
+**Jelentés:** A Swipelux nem tudta feloldani a kezdeti jelentkezéshez szükséges hatókört.
+
+**Mikor fordul elő:** Az ügyfél-létrehozás vagy egy képességkérés nem tudja feloldani a kezdeti jelentkezés létrehozásához szükséges API-kulcs környezetet és megfelelőségi kontextust.
+
+**Teendő:** Ellenőrizze az API-kulcs környezetét, és őrizze meg a `correlationId` értéket. Kövesse a `retryable` értéket, ha jelen van; ellenkező esetben lépjen kapcsolatba a Swipelux támogatással az újrapróbálkozás előtt.
+
+**Újrapróbálási útmutató:** Olvassa ki a válasz `retryable` értékét. Csak akkor próbálkozzon újra később, ha az `true`. Idempotens írás esetén használja újra az eredeti idempotencia-kulcsot és a változatlan kérést.
+
+**Érintett API-műveletek:**
+
+- [`POST /v3/customers`](/api-reference/customers/post-v3-customers) (`postV3Customers`, status `503`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, status `503`)
+
+<a id="invalid-capability" className="block scroll-mt-32">
+  <span className="sr-only">invalid_capability error</span>
+</a>
+
+### `invalid_capability`
+
+**HTTP-státusz:** `400`, `422`<br />
+**Újrapróbálható:** Nem kerül visszaadásra<br />
+**Problématípus:** `https://docs.swipelux.com/errors/invalid-capability`
+
+**Jelentés:** A képességhivatkozás vagy a kért képességérték érvénytelen ehhez a művelethez.
+
+**Mikor fordul elő:** Egy képességkérés vagy sandbox-státuszváltoztatás ismeretlen vagy inkompatibilis képességazonosítót vagy -értéket használ.
+
+**Teendő:** Olvassa be az ügyfél képességeit, használjon pontos aktuális képességazonosítót, és javítsa a kérést a műveleti sémának megfelelően.
+
+**Újrapróbálási útmutató:** Ez a probléma nem ad vissza `retryable` értéket. Ne feltételezze, hogy a változatlan újrapróbálkozás biztonságos; kövesse a fenti teendőt és a művelet idempotencia-követelményeit.
+
+**Érintett API-műveletek:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, status `400`)
+- [`POST /v3/sandbox/customers/{customerId}/capabilities/{capabilityId}/status`](/api-reference/sandbox/post-v3-sandbox-customers-by-customer-id-capabilities-by-capability-id-status) (`postV3SandboxCustomersByCustomerIdCapabilitiesByCapabilityIdStatus`, status `422`)
+
+<a id="invalid-document-reference" className="block scroll-mt-32">
+  <span className="sr-only">invalid_document_reference error</span>
+</a>
+
+### `invalid_document_reference`
+
+**HTTP-státusz:** `400`<br />
+**Újrapróbálható:** Nem<br />
+**Problématípus:** `https://docs.swipelux.com/errors/invalid-document-reference`
+
+**Jelentés:** Egy feladatbeküldés olyan dokumentumhivatkozást tartalmaz, amely nem tudja kielégíteni a kiválasztott követelményt.
+
+**Mikor fordul elő:** A hivatkozott dokumentum hiányzik, nem érhető el az ügyfél számára, vagy nem felel meg a megválaszolt feladatkövetelménynek.
+
+**Teendő:** Listázza vagy töltse fel az ügyfél dokumentumait, használja a követelményhez tartozó helyes dokumentumazonosítót, kérje le újra a feladatot, és küldje be annak aktuális revízióját.
+
+**Újrapróbálási útmutató:** Ne próbálja újra a változatlan kérést. Alkalmazza a fenti teendőt, mielőtt újabb kérést küld.
+
+**Érintett API-műveletek:**
+
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, status `400`)
+
+<a id="kyc-configuration-unavailable" className="block scroll-mt-32">
+  <span className="sr-only">kyc_configuration_unavailable error</span>
+</a>
+
+### `kyc_configuration_unavailable`
+
+**HTTP-státusz:** `503`<br />
+**Újrapróbálható:** Nem<br />
+**Problématípus:** `https://docs.swipelux.com/errors/kyc-configuration-unavailable`
+
+**Jelentés:** A képesség által igényelt ellenőrzési konfiguráció nem érhető el.
+
+**Mikor fordul elő:** A Swipelux nem tudja előkészíteni a kért ellenőrzési folyamatot a jelenleg aktív nyilvános konfigurációból.
+
+**Teendő:** Őrizze meg a `correlationId` értéket, és lépjen kapcsolatba a Swipelux támogatással. Ne próbálja ismételten újra a változatlan kérést.
+
+**Újrapróbálási útmutató:** Ne próbálja újra a változatlan kérést. Alkalmazza a fenti teendőt, mielőtt újabb kérést küld.
+
+**Érintett API-műveletek:**
+
+- [`GET /kyc/redirect/{customerId}/{taskId}/{verificationSessionId}`](/api-reference/tasks/start-kyc-verification-session) (`startKycVerificationSession`, status `503`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, status `503`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}/tasks-preview`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id-tasks-preview) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityIdTasks-preview`, status `503`)
+
+<a id="kyc-level-configuration-invalid" className="block scroll-mt-32">
+  <span className="sr-only">kyc_level_configuration_invalid error</span>
+</a>
+
+### `kyc_level_configuration_invalid`
+
+**HTTP-státusz:** `503`<br />
+**Újrapróbálható:** Nem<br />
+**Problématípus:** `https://docs.swipelux.com/errors/kyc-level-configuration-invalid`
+
+**Jelentés:** Az aktív ellenőrzésiszint-konfiguráció érvénytelen.
+
+**Mikor fordul elő:** Egy hosztolt ellenőrzési munkamenet nem indulhat el, mert a konfigurált ellenőrzési szintje nem használható.
+
+**Teendő:** Őrizze meg a `correlationId` értéket, és lépjen kapcsolatba a Swipelux támogatással, hogy a konfiguráció kijavítható legyen, mielőtt újra próbálkozik.
+
+**Újrapróbálási útmutató:** Ne próbálja újra a változatlan kérést. Alkalmazza a fenti teendőt, mielőtt újabb kérést küld.
+
+**Érintett API-műveletek:**
+
+- [`GET /kyc/redirect/{customerId}/{taskId}/{verificationSessionId}`](/api-reference/tasks/start-kyc-verification-session) (`startKycVerificationSession`, status `503`)
+
+<a id="kyc-process-conflict" className="block scroll-mt-32">
+  <span className="sr-only">kyc_process_conflict error</span>
+</a>
+
+### `kyc_process_conflict`
+
+**HTTP-státusz:** `409`<br />
+**Újrapróbálható:** Igen<br />
+**Problématípus:** `https://docs.swipelux.com/errors/kyc-process-conflict`
+
+**Jelentés:** Az ellenőrzési folyamat megváltozott, mielőtt a művelet befejeződött volna.
+
+**Mikor fordul elő:** Egy másik művelet előrelépteti vagy lecseréli a feladatot vagy az ellenőrzési munkamenetet, miközben az Ön kérése folyamatban van.
+
+**Teendő:** Töltse be újra a feladatot és az elérhető ellenőrzési módszereit, majd próbálkozzon újra az aktuális folyamatállapottal szemben.
+
+**Újrapróbálási útmutató:** Próbálja újra késleltetés után. Idempotens írás esetén használja újra az eredeti idempotencia-kulcsot és a változatlan kérést.
+
+**Érintett API-műveletek:**
+
+- [`GET /kyc/redirect/{customerId}/{taskId}/{verificationSessionId}`](/api-reference/tasks/start-kyc-verification-session) (`startKycVerificationSession`, status `409`)
+- [`PATCH /v3/customers/{customerId}`](/api-reference/customers/patch-v3-customers-by-customer-id) (`patchV3CustomersByCustomerId`, status `409`)
+- [`PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/patch-v3-customers-by-customer-id-related-parties-by-related-party-id) (`patchV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, status `409`)
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, status `409`)
+
+<a id="kyc-provider-unavailable" className="block scroll-mt-32">
+  <span className="sr-only">kyc_provider_unavailable error</span>
+</a>
+
+### `kyc_provider_unavailable`
+
+**HTTP-státusz:** `502`<br />
+**Újrapróbálható:** Igen<br />
+**Problématípus:** `https://docs.swipelux.com/errors/kyc-provider-unavailable`
+
+**Jelentés:** Az ellenőrzési szolgáltatás átmenetileg nem érhető el.
+
+**Mikor fordul elő:** Egy hosztolt ellenőrzési munkamenet nem hozható létre vagy nem folytatható, mert az ellenőrzési szolgáltatás nem teljesítette a kérést.
+
+**Teendő:** Próbálja újra késleltetés után. Tartsa meg a feladat- és munkamenet-azonosítókat, és kérje le újra a feladatot, ha a kiesés elég sokáig tart ahhoz, hogy az állapota megváltozzon.
+
+**Újrapróbálási útmutató:** Próbálja újra késleltetés után. Idempotens írás esetén használja újra az eredeti idempotencia-kulcsot és a változatlan kérést.
+
+**Érintett API-műveletek:**
+
+- [`GET /kyc/redirect/{customerId}/{taskId}/{verificationSessionId}`](/api-reference/tasks/start-kyc-verification-session) (`startKycVerificationSession`, status `502`)
+
+<a id="kyc-session-terminal" className="block scroll-mt-32">
+  <span className="sr-only">kyc_session_terminal error</span>
+</a>
+
+### `kyc_session_terminal`
+
+**HTTP-státusz:** `410`<br />
+**Újrapróbálható:** Nem<br />
+**Problématípus:** `https://docs.swipelux.com/errors/kyc-session-terminal`
+
+**Jelentés:** Az ellenőrzési munkamenet már nem kezelhető.
+
+**Mikor fordul elő:** A kért hosztolt munkamenet már befejeződött, sikertelen lett, lejárt, vagy más módon végállapotba került.
+
+**Teendő:** Kérje le újra a feladatot, és használjon aktív munkamenetet, vagy indítson az aktuális feladat által megjelenített új ellenőrzési módszert.
+
+**Újrapróbálási útmutató:** Ne próbálja újra a változatlan kérést. Alkalmazza a fenti teendőt, mielőtt újabb kérést küld.
+
+**Érintett API-műveletek:**
+
+- [`GET /kyc/redirect/{customerId}/{taskId}/{verificationSessionId}`](/api-reference/tasks/start-kyc-verification-session) (`startKycVerificationSession`, status `410`)
+
+<a id="ops-rail-handoff-conflict" className="block scroll-mt-32">
+  <span className="sr-only">ops_rail_handoff_conflict error</span>
+</a>
+
+### `ops_rail_handoff_conflict`
+
+**HTTP-státusz:** `409`<br />
+**Újrapróbálható:** Nem<br />
+**Problématípus:** `https://docs.swipelux.com/errors/ops-rail-handoff-conflict`
+
+**Jelentés:** A feladatbeküldést ütköző banksín-beállítás blokkolja.
+
+**Mikor fordul elő:** Egy dokumentumfeladat-beküldés nem tudja összeegyeztetni az ügyfél aktuális banksín-állapotát.
+
+**Teendő:** Tartsa meg a feltöltött dokumentumazonosítókat, őrizze meg a `correlationId` értéket, és lépjen kapcsolatba a Swipelux támogatással, mielőtt újrapróbálja ugyanazt a beküldést. Ne töltsön fel helyettesítő másolatokat pusztán emiatt az ütközés miatt.
+
+**Újrapróbálási útmutató:** Ne próbálja újra a változatlan kérést. Alkalmazza a fenti teendőt, mielőtt újabb kérést küld.
+
+**Érintett API-műveletek:**
+
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, status `409`)
+
+<a id="provider-conflict" className="block scroll-mt-32">
+  <span className="sr-only">provider_conflict error</span>
+</a>
+
+### `provider_conflict`
+
+**HTTP-státusz:** `400`, `422`<br />
+**Újrapróbálható:** Nem<br />
+**Problématípus:** `https://docs.swipelux.com/errors/provider-conflict`
+
+**Jelentés:** A kért képesség- vagy ellenőrzési művelet ütközik az aktuális feldolgozási konfigurációval.
+
+**Mikor fordul elő:** A kérés formailag érvényes, de nem egyeztethető össze az ügyfél meglévő képesség- vagy ellenőrzési beállításával.
+
+**Teendő:** Kérje le újra az ügyfél képességeit és feladatait, és válasszon támogatott aktuális lehetőséget. Ha az ütközés továbbra is váratlan, őrizze meg a `correlationId` értéket, és lépjen kapcsolatba a támogatással.
+
+**Újrapróbálási útmutató:** Ne próbálja újra a változatlan kérést. Alkalmazza a fenti teendőt, mielőtt újabb kérést küld.
+
+**Érintett API-műveletek:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, status `400`)
+- [`POST /v3/sandbox/customers/{customerId}/verification`](/api-reference/sandbox/post-v3-sandbox-customers-by-customer-id-verification) (`postV3SandboxCustomersByCustomerIdVerification`, status `422`)
+
+<a id="submission-channel-not-allowed" className="block scroll-mt-32">
+  <span className="sr-only">submission_channel_not_allowed error</span>
+</a>
+
+### `submission_channel_not_allowed`
+
+**HTTP-státusz:** `409`<br />
+**Újrapróbálható:** Nem<br />
+**Problématípus:** `https://docs.swipelux.com/errors/submission-channel-not-allowed`
+
+**Jelentés:** Ehhez a feladathoz nem engedélyezett a közvetlen API-beküldés.
+
+**Mikor fordul elő:** A feladat másik ellenőrzési módszert igényel, és elutasítja a közvetlen beküldési végponton keresztül beküldött válaszokat.
+
+**Teendő:** Kérje le újra a feladatot, és használja az aktuális követelményei által megjelenített ellenőrzési módszerek vagy linkek egyikét.
+
+**Újrapróbálási útmutató:** Ne próbálja újra a változatlan kérést. Alkalmazza a fenti teendőt, mielőtt újabb kérést küld.
+
+**Érintett API-műveletek:**
+
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, status `409`)
+
+<a id="submission-not-found" className="block scroll-mt-32">
+  <span className="sr-only">submission_not_found error</span>
+</a>
+
+### `submission_not_found`
+
+**HTTP-státusz:** `404`<br />
+**Újrapróbálható:** Nem<br />
+**Problématípus:** `https://docs.swipelux.com/errors/submission-not-found`
+
+**Jelentés:** A kért feladatbeküldés nem található.
+
+**Mikor fordul elő:** A beküldés-azonosító helytelen, másik feladathoz vagy ügyfélhez tartozik, vagy nem érhető el az aktuális környezetben.
+
+**Teendő:** Ellenőrizze az ügyfél-, feladat- és beküldés-azonosítókat, majd listázza az aktuális feladat beküldéseit az újrapróbálkozás előtt.
+
+**Újrapróbálási útmutató:** Ne próbálja újra a változatlan kérést. Alkalmazza a fenti teendőt, mielőtt újabb kérést küld.
+
+**Érintett API-műveletek:**
+
+- [`GET /v3/customers/{customerId}/tasks/{taskId}/submissions/{submissionId}`](/api-reference/task-submissions/get-customer-task-submission) (`getCustomerTaskSubmission`, status `404`)
+
+<a id="task-changed" className="block scroll-mt-32">
+  <span className="sr-only">task_changed error</span>
+</a>
+
+### `task_changed`
+
+**HTTP-státusz:** `409`<br />
+**Újrapróbálható:** Nem<br />
+**Problématípus:** `https://docs.swipelux.com/errors/task-changed`
+
+**Jelentés:** A feladat megváltozott, miután a kliense utoljára beolvasta.
+
+**Mikor fordul elő:** Egy beküldés elavult feladatrevíziót vagy -státuszt használ, miután egy másik művelet frissítette a feladatot.
+
+**Teendő:** Használja a `taskUrl` vagy a `taskId` értéket a feladat újralekéréséhez, építse újra a válaszokat a `currentRevision` és a `currentStatus` értékekhez, és küldje be az aktuális követelményeket.
+
+**Újrapróbálási útmutató:** Ne próbálja újra a változatlan kérést. Alkalmazza a fenti teendőt, mielőtt újabb kérést küld. Mivel a kérés törzsének az új revízióra kell változnia, használjon új idempotencia-kulcsot a módosított beküldéshez.
+
+**Érintett API-műveletek:**
+
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, status `409`)
+
+**További válaszmezők:**
+
+- `currentRevision`: Az aktuális feladatrevízió.
+- `currentStatus`: Az aktuális feladatstátusz.
+- `taskId`: Az aktuális feladat azonosítója.
+- `taskUrl`: További problémakontextus.
+
+<a id="task-not-found" className="block scroll-mt-32">
+  <span className="sr-only">task_not_found error</span>
+</a>
+
+### `task_not_found`
+
+**HTTP-státusz:** `404`<br />
+**Újrapróbálható:** Nem<br />
+**Problématípus:** `https://docs.swipelux.com/errors/task-not-found`
+
+**Jelentés:** A feladat nem található a megadott ügyfélhez vagy API-kulcshoz.
+
+**Mikor fordul elő:** A feladatazonosító hiányzik, másik ügyfélhez vagy hatókörhöz tartozik, vagy nem érhető el az aktuális környezetben.
+
+**Teendő:** Ellenőrizze az ügyfél- és feladatazonosítókat, listázza az aktuális feladatokat, és folytassa egy elérhető feladattal.
+
+**Újrapróbálási útmutató:** Ne próbálja újra a változatlan kérést. Alkalmazza a fenti teendőt, mielőtt újabb kérést küld.
+
+**Érintett API-műveletek:**
+
+- [`GET /v3/customers/{customerId}/tasks/{taskId}`](/api-reference/tasks/get-customer-task) (`getCustomerTask`, status `404`)
+- [`GET /v3/customers/{customerId}/tasks/{taskId}/history`](/api-reference/tasks/list-customer-task-history) (`listCustomerTaskHistory`, status `404`)
+- [`GET /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/list-customer-task-submissions) (`listCustomerTaskSubmissions`, status `404`)
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, status `404`)
+- [`POST /v3/sandbox/tasks/{taskId}/review`](/api-reference/sandbox/post-v3-sandbox-tasks-by-task-id-review) (`postV3SandboxTasksByTaskIdReview`, status `404`)
+- [`GET /v3/tasks/{taskId}`](/api-reference/tasks/get-task) (`getTask`, status `404`)
+
+<a id="task-obligation-conflict" className="block scroll-mt-32">
+  <span className="sr-only">task_obligation_conflict error</span>
+</a>
+
+### `task_obligation_conflict`
+
+**HTTP-státusz:** `409`<br />
+**Újrapróbálható:** Nem<br />
+**Problématípus:** `https://docs.swipelux.com/errors/task-obligation-conflict`
+
+**Jelentés:** A feladat kötelezettségállapota ütközik, és nem tudja elfogadni a beküldést.
+
+**Mikor fordul elő:** A feladat aktuális követelményei olyan inkonzisztens állapotot tartalmaznak, amelyet a közvetlen beküldési folyamat nem tud biztonságosan feloldani.
+
+**Teendő:** Őrizze meg a `correlationId` értéket, kérje le egyszer újra a feladatot, és lépjen kapcsolatba a Swipelux támogatással, ha az ütközés fennmarad.
+
+**Újrapróbálási útmutató:** Ne próbálja újra a változatlan kérést. Alkalmazza a fenti teendőt, mielőtt újabb kérést küld.
+
+**Érintett API-műveletek:**
+
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, status `409`)
+
+<a id="task-submission-incomplete" className="block scroll-mt-32">
+  <span className="sr-only">task_submission_incomplete error</span>
+</a>
+
+### `task_submission_incomplete`
+
+**HTTP-státusz:** `422`<br />
+**Újrapróbálható:** Nem<br />
+**Problématípus:** `https://docs.swipelux.com/errors/task-submission-incomplete`
+
+**Jelentés:** A beküldés nem válaszol meg minden aktuális, kezelhető követelményt.
+
+**Mikor fordul elő:** A `missingRequirementIds` mezőben felsorolt egy vagy több követelményazonosítóhoz nincs érvényes válasz a kérésben.
+
+**Teendő:** Kérje le újra a feladatot, adjon választ a `missingRequirementIds` összes azonosítójára, és küldje be az aktuális feladatrevíziót.
+
+**Újrapróbálási útmutató:** Ne próbálja újra a változatlan kérést. Alkalmazza a fenti teendőt, mielőtt újabb kérést küld.
+
+**Érintett API-műveletek:**
+
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, status `422`)
+
+**További válaszmezők:**
+
+- `missingRequirementIds`: A még hiányzó, kezelhető követelményazonosítók rendezett listája.
+
+<a id="verification-collection-mapping-invalid" className="block scroll-mt-32">
+  <span className="sr-only">verification_collection_mapping_invalid error</span>
+</a>
+
+### `verification_collection_mapping_invalid`
+
+**HTTP-státusz:** `503`<br />
+**Újrapróbálható:** Nem<br />
+**Problématípus:** `https://docs.swipelux.com/errors/verification-collection-mapping-invalid`
+
+**Jelentés:** A feladat ellenőrzési követelményei nem készíthetők elő kezelhető ellenőrzési folyamattá.
+
+**Mikor fordul elő:** A Swipelux nem tudja megfeleltetni az aktuális nyilvános feladatkövetelményeket a képesség által igényelt ellenőrzési gyűjteménynek.
+
+**Teendő:** Őrizze meg a `correlationId` értéket, és lépjen kapcsolatba a Swipelux támogatással. Ne próbálja ismételten újra a változatlan kérést.
+
+**Újrapróbálási útmutató:** Ne próbálja újra a változatlan kérést. Alkalmazza a fenti teendőt, mielőtt újabb kérést küld.
+
+**Érintett API-műveletek:**
+
+- [`GET /kyc/redirect/{customerId}/{taskId}/{verificationSessionId}`](/api-reference/tasks/start-kyc-verification-session) (`startKycVerificationSession`, status `503`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, status `503`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}/tasks-preview`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id-tasks-preview) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityIdTasks-preview`, status `503`)
+
+## Számlák és fizetési sínek
+
+<a id="account-has-active-transfers" className="block scroll-mt-32">
+  <span className="sr-only">account_has_active_transfers error</span>
+</a>
+
+### `account_has_active_transfers`
+
+**HTTP-státusz:** `409`<br />
+**Újrapróbálható:** Igen<br />
+**Problématípus:** `https://docs.swipelux.com/errors/account-has-active-transfers`
+
+**Jelentés:** A számla nem archiválható, amíg egy vagy több átutalás még aktív.
+
+**Mikor fordul elő:** Olyan számlát próbál archiválni, amelyre egy folyamatban lévő átutalás hivatkozik.
+
+**Teendő:** Várja meg, amíg az aktív átutalások végállapotba érnek, vagy mondja le, illetve rendezze a még változtatható átutalásokat, majd archiválja a számlát.
+
+**Újrapróbálási útmutató:** Próbálja újra késleltetés után. Idempotens írás esetén használja újra az eredeti idempotencia-kulcsot és a változatlan kérést.
+
+**Érintett API-műveletek:**
+
+- [`DELETE /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/delete-v3-customers-by-customer-id-accounts-by-account-id) (`deleteV3CustomersByCustomerIdAccountsByAccountId`, status `409`)
+
+<a id="account-method-not-supported" className="block scroll-mt-32">
+  <span className="sr-only">account_method_not_supported error</span>
+</a>
+
+### `account_method_not_supported`
+
+**HTTP-státusz:** `422`<br />
+**Újrapróbálható:** Nem<br />
+**Problématípus:** `https://docs.swipelux.com/errors/account-method-not-supported`
+
+**Jelentés:** A kiválasztott számla nem támogatja az árajánlat által kért fizetési módot.
+
+**Mikor fordul elő:** Az árajánlat forrás- vagy célszámlája nem kompatibilis a kiválasztott pénzmozgatási módszerrel.
+
+**Teendő:** Válasszon az aktuális képesség által támogatott számla- és módszerkombinációt, majd kérjen új árajánlatot.
+
+**Újrapróbálási útmutató:** Ne próbálja újra a változatlan kérést. Alkalmazza a fenti teendőt, mielőtt újabb kérést küld.
+
+**Érintett API-műveletek:**
+
+- [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) (`postV3CustomersByCustomerIdAccounts`, status `422`)
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, status `422`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, status `422`)
+
+<a id="account-not-ready" className="block scroll-mt-32">
+  <span className="sr-only">account_not_ready error</span>
+</a>
+
+### `account_not_ready`
+
+**HTTP-státusz:** `409`<br />
+**Újrapróbálható:** Kontextusfüggő<br />
+**Problématípus:** `https://docs.swipelux.com/errors/account-not-ready`
+
+**Jelentés:** A számla létezik, de az aktuális státusza nem teszi lehetővé az árajánlatot vagy az átutalást.
+
+**Mikor fordul elő:** Egy pénzmozgatási művelet kész számlát igényel, és a kiválasztott számla még nem érte el ezt az állapotot.
+
+**Teendő:** Vizsgálja meg a `statusReason` értékét, végezze el a szükséges beállítást vagy várja meg a számlaállapot előrehaladását, kérje le újra a számlát, és küldjön új kérést, amikor az készen áll.
+
+**Újrapróbálási útmutató:** Olvassa ki a válasz `retryable` értékét. Csak akkor próbálkozzon újra később, ha az `true`. Idempotens írás esetén használja újra az eredeti idempotencia-kulcsot és a változatlan kérést.
+
+**Érintett API-műveletek:**
+
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, status `409`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, status `409`)
+
+**További válaszmezők:**
+
+- `statusReason`: Az állapotkonfliktus strukturált oka, amikor a sikertelen művelet az erőforrás aktuális státuszától függ.
+
+<a id="account-unavailable" className="block scroll-mt-32">
+  <span className="sr-only">account_unavailable error</span>
+</a>
+
+### `account_unavailable`
+
+**HTTP-státusz:** `409`<br />
+**Újrapróbálható:** Nem<br />
+**Problématípus:** `https://docs.swipelux.com/errors/account-unavailable`
+
+**Jelentés:** A kiválasztott számla nem érhető el a kért pénzmozgáshoz.
+
+**Mikor fordul elő:** A művelet nem tudja használni a számlát annak jelenlegi elérhetőségi állapotában.
+
+**Teendő:** Kérje le újra a számlát és válasszon elérhető számlát, vagy rendezze a számla állapotát, mielőtt új árajánlat- vagy átutalási kérést hoz létre.
+
+**Újrapróbálási útmutató:** Ne próbálja újra a változatlan kérést. Alkalmazza a fenti teendőt, mielőtt újabb kérést küld.
+
+**Érintett API-műveletek:**
+
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, status `409`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, status `409`)
+
+<a id="bank-not-supported-for-customer" className="block scroll-mt-32">
+  <span className="sr-only">bank_not_supported_for_customer error</span>
+</a>
+
+### `bank_not_supported_for_customer`
+
+**HTTP-státusz:** `422`<br />
+**Újrapróbálható:** Nem kerül visszaadásra<br />
+**Problématípus:** `https://docs.swipelux.com/errors/bank-not-supported-for-customer`
+
+**Jelentés:** A kiválasztott intézmény nem érhető el ehhez az ügyfélhez és képességkéréshez.
+
+**Mikor fordul elő:** Egy képességkérés olyan intézményt választ, amely nem szerepel az ügyfél számára támogatott lehetőségek között.
+
+**Teendő:** Listázza az ügyfél támogatott képességeit és intézményeit, válasszon egy elérhető lehetőséget, és küldjön be új képességkérést.
+
+**Újrapróbálási útmutató:** Ez a probléma nem ad vissza `retryable` értéket. Ne feltételezze, hogy a változatlan újrapróbálkozás biztonságos; kövesse a fenti teendőt és a művelet idempotencia-követelményeit.
+
+**Érintett API-műveletek:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, status `422`)
+
+<a id="developer-fee-invalid" className="block scroll-mt-32">
+  <span className="sr-only">developer_fee_invalid error</span>
+</a>
+
+### `developer_fee_invalid`
+
+**HTTP-státusz:** `422`<br />
+**Újrapróbálható:** Nem<br />
+**Problématípus:** `https://docs.swipelux.com/errors/developer-fee-invalid`
+
+**Jelentés:** A fejlesztői díj konfigurációja érvénytelen a kiválasztott számlához vagy pénzmozgáshoz.
+
+**Mikor fordul elő:** A díjérték érvénytelen, vagy a kiválasztott számla nem biztosít kompatibilis elszámolási célpontot a díjhoz.
+
+**Teendő:** Javítsa ki a díjértéket, használjon megfelelő számla- és elszámolási konfigurációt, majd hozzon létre új számla-, árajánlat- vagy átutalási kérést értelemszerűen.
+
+**Újrapróbálási útmutató:** Ne próbálja újra a változatlan kérést. Alkalmazza a fenti teendőt, mielőtt újabb kérést küld.
+
+**Érintett API-műveletek:**
+
+- [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) (`postV3CustomersByCustomerIdAccounts`, status `422`)
+- [`PUT /v3/customers/{customerId}/accounts/{accountId}/fees`](/api-reference/accounts/put-v3-customers-by-customer-id-accounts-by-account-id-fees) (`putV3CustomersByCustomerIdAccountsByAccountIdFees`, status `422`)
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, status `422`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, status `422`)
+
+<a id="invalid-settlement-target" className="block scroll-mt-32">
+  <span className="sr-only">invalid_settlement_target error</span>
+</a>
+
+### `invalid_settlement_target`
+
+**HTTP-státusz:** `400`<br />
+**Újrapróbálható:** Nem kerül visszaadásra<br />
+**Problématípus:** `https://docs.swipelux.com/errors/invalid-settlement-target`
+
+**Jelentés:** A kért elszámolási célpont érvénytelen a számlához.
+
+**Mikor fordul elő:** A számla létrehozása vagy frissítése olyan elszámolási célpontot választ, amely hiányzik, inkompatibilis vagy nem támogatott az adott számlakonfigurációhoz.
+
+**Teendő:** Válasszon a számlával és a képességgel kompatibilis, dokumentált elszámolási célpontot, majd küldjön javított számlakérést.
+
+**Újrapróbálási útmutató:** Ez a probléma nem ad vissza `retryable` értéket. Ne feltételezze, hogy a változatlan újrapróbálkozás biztonságos; kövesse a fenti teendőt és a művelet idempotencia-követelményeit.
+
+**Érintett API-műveletek:**
+
+- [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) (`postV3CustomersByCustomerIdAccounts`, status `400`)
+- [`PATCH /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/patch-v3-customers-by-customer-id-accounts-by-account-id) (`patchV3CustomersByCustomerIdAccountsByAccountId`, status `400`)
+
+<a id="rail-not-ready" className="block scroll-mt-32">
+  <span className="sr-only">rail_not_ready error</span>
+</a>
+
+### `rail_not_ready`
+
+**HTTP-státusz:** `409`<br />
+**Újrapróbálható:** Nem<br />
+**Problématípus:** `https://docs.swipelux.com/errors/rail-not-ready`
+
+**Jelentés:** A kiválasztott fizetési sín nem áll készen ennél az ügyfélnél.
+
+**Mikor fordul elő:** Egy célpont, árajánlat vagy átutalás olyan ügyfélsínt igényel, amely még nem fejezte be a szükséges beállítást vagy készenléti átmenetet.
+
+**Teendő:** Végezze el a szükséges sínbeállítást, várja meg, amíg a sín használatra kész, majd hozzon létre új kérést.
+
+**Újrapróbálási útmutató:** Ne próbálja újra a változatlan kérést. Alkalmazza a fenti teendőt, mielőtt újabb kérést küld.
+
+**Érintett API-műveletek:**
+
+- [`POST /v3/customers/{customerId}/recipients/{recipientId}/destinations`](/api-reference/recipients/post-v3-customers-by-customer-id-recipients-by-recipient-id-destinations) (`postV3CustomersByCustomerIdRecipientsByRecipientIdDestinations`, status `409`)
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, status `409`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, status `409`)
+
+<a id="rail-temporarily-unavailable" className="block scroll-mt-32">
+  <span className="sr-only">rail_temporarily_unavailable error</span>
+</a>
+
+### `rail_temporarily_unavailable`
+
+**HTTP-státusz:** `503`<br />
+**Újrapróbálható:** Igen<br />
+**Problématípus:** `https://docs.swipelux.com/errors/rail-temporarily-unavailable`
+
+**Jelentés:** A kiválasztott fizetési sín átmenetileg nem érhető el.
+
+**Mikor fordul elő:** Az árajánlat létrehozása nem tud egy egyébként támogatott sínt használni, mert a sínnél átmeneti elérhetőségi probléma áll fenn.
+
+**Teendő:** Próbálja újra az árajánlatkérést késleltetés után, vagy válasszon másik támogatott sínt, ha a mozgás nem várhat.
+
+**Újrapróbálási útmutató:** Próbálja újra késleltetés után. Idempotens írás esetén használja újra az eredeti idempotencia-kulcsot és a változatlan kérést.
+
+**Érintett API-műveletek:**
+
+- [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) (`postV3CustomersByCustomerIdAccounts`, status `503`)
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, status `503`)
+
+## Címzettek és célpontok
+
+<a id="destination-not-ready" className="block scroll-mt-32">
+  <span className="sr-only">destination_not_ready error</span>
+</a>
+
+### `destination_not_ready`
+
+**HTTP-státusz:** `409`<br />
+**Újrapróbálható:** Kontextusfüggő<br />
+**Problématípus:** `https://docs.swipelux.com/errors/destination-not-ready`
+
+**Jelentés:** A címzett célpontja létezik, de nem áll készen a kért árajánlathoz.
+
+**Mikor fordul elő:** Az árajánlat olyan célponttól függ, amelynek aktuális státusza nem tesz lehetővé pénzmozgást.
+
+**Teendő:** Vizsgálja meg a `statusReason` értékét, végezze el a megjelenített célpont-beállítást vagy várja meg a státusz előrehaladását, kérje le újra, és kérjen új árajánlatot, amikor készen áll.
+
+**Újrapróbálási útmutató:** Olvassa ki a válasz `retryable` értékét. Csak akkor próbálkozzon újra később, ha az `true`. Idempotens írás esetén használja újra az eredeti idempotencia-kulcsot és a változatlan kérést.
+
+**Érintett API-műveletek:**
+
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, status `409`)
+
+**További válaszmezők:**
+
+- `statusReason`: Az állapotkonfliktus strukturált oka, amikor a sikertelen művelet az erőforrás aktuális státuszától függ.
+
+<a id="payout-target-relationship-invalid" className="block scroll-mt-32">
+  <span className="sr-only">payout_target_relationship_invalid error</span>
+</a>
+
+### `payout_target_relationship_invalid`
+
+**HTTP-státusz:** `400`<br />
+**Újrapróbálható:** Nem kerül visszaadásra<br />
+**Problématípus:** `https://docs.swipelux.com/errors/payout-target-relationship-invalid`
+
+**Jelentés:** A kiválasztott kifizetési célpont nem áll érvényes kapcsolatban az árajánlatban szereplő ügyféllel vagy címzettel.
+
+**Mikor fordul elő:** Az árajánlat olyan célpontra mutat, amely nem a szándékolt kifizetési kapcsolat tulajdona, vagy nem megengedett célpontja annak.
+
+**Teendő:** Válasszon a szándékolt ügyfél alatt visszaadott számlát vagy címzett-célpontot, majd kérjen új árajánlatot.
+
+**Újrapróbálási útmutató:** Ez a probléma nem ad vissza `retryable` értéket. Ne feltételezze, hogy a változatlan újrapróbálkozás biztonságos; kövesse a fenti teendőt és a művelet idempotencia-követelményeit.
+
+**Érintett API-műveletek:**
+
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, status `400`)
+
+<a id="recipient-account-unsupported" className="block scroll-mt-32">
+  <span className="sr-only">recipient_account_unsupported error</span>
+</a>
+
+### `recipient_account_unsupported`
+
+**HTTP-státusz:** `400`<br />
+**Újrapróbálható:** Nem kerül visszaadásra<br />
+**Problématípus:** `https://docs.swipelux.com/errors/recipient-account-unsupported`
+
+**Jelentés:** A címzett számlaadatai nem támogatottak a kért célponthoz.
+
+**Mikor fordul elő:** A célpont létrehozása olyan számlatípust vagy számlaadat-kombinációt kap, amelyet a kiválasztott sín nem fogad el.
+
+**Teendő:** Használjon a kiválasztott sín által támogatott célponttípust és számlaadat-sémát, majd hozzon létre új célpontkérést.
+
+**Újrapróbálási útmutató:** Ez a probléma nem ad vissza `retryable` értéket. Ne feltételezze, hogy a változatlan újrapróbálkozás biztonságos; kövesse a fenti teendőt és a művelet idempotencia-követelményeit.
+
+**Érintett API-műveletek:**
+
+- [`POST /v3/customers/{customerId}/recipients/{recipientId}/destinations`](/api-reference/recipients/post-v3-customers-by-customer-id-recipients-by-recipient-id-destinations) (`postV3CustomersByCustomerIdRecipientsByRecipientIdDestinations`, status `400`)
+
+<a id="recipient-address-required" className="block scroll-mt-32">
+  <span className="sr-only">recipient_address_required error</span>
+</a>
+
+### `recipient_address_required`
+
+**HTTP-státusz:** `422`<br />
+**Újrapróbálható:** Nem<br />
+**Problématípus:** `https://docs.swipelux.com/errors/recipient-address-required`
+
+**Jelentés:** A címzettnek címre van szüksége, mielőtt ez a fiat célpont létrehozható.
+
+**Mikor fordul elő:** A célpont létrehozása olyan fiat kifizetési módot választ, amely címzettcím-adatokat igényel, és a címzett profilja nem tartalmazza azokat.
+
+**Teendő:** Frissítse a címzettet a szükséges címmezőkkel, majd hozza létre újra a célpontot.
+
+**Újrapróbálási útmutató:** Ne próbálja újra a változatlan kérést. Alkalmazza a fenti teendőt, mielőtt újabb kérést küld.
+
+**Érintett API-műveletek:**
+
+- [`POST /v3/customers/{customerId}/recipients/{recipientId}/destinations`](/api-reference/recipients/post-v3-customers-by-customer-id-recipients-by-recipient-id-destinations) (`postV3CustomersByCustomerIdRecipientsByRecipientIdDestinations`, status `422`)
+
+<a id="recipient-destination-invalid" className="block scroll-mt-32">
+  <span className="sr-only">recipient_destination_invalid error</span>
+</a>
+
+### `recipient_destination_invalid`
+
+**HTTP-státusz:** `400`, `422`<br />
+**Újrapróbálható:** Nem<br />
+**Problématípus:** `https://docs.swipelux.com/errors/recipient-destination-invalid`
+
+**Jelentés:** A címzett célpontja érvénytelen vagy inkompatibilis a kért művelettel.
+
+**Mikor fordul elő:** A célpont létrehozása, az árajánlat létrehozása vagy az átutalás végrehajtása olyan célpontadatokat használ, amelyek nem felelnek meg a kiválasztott célpont- vagy útvonalkövetelményeknek.
+
+**Teendő:** Javítsa ki a célpontadatokat, vagy hozzon létre támogatott helyettesítő célpontot, majd kérjen új árajánlatot vagy átutalást értelemszerűen.
+
+**Újrapróbálási útmutató:** Ne próbálja újra a változatlan kérést. Alkalmazza a fenti teendőt, mielőtt újabb kérést küld.
+
+**Érintett API-műveletek:**
+
+- [`POST /v3/customers/{customerId}/recipients/{recipientId}/destinations`](/api-reference/recipients/post-v3-customers-by-customer-id-recipients-by-recipient-id-destinations) (`postV3CustomersByCustomerIdRecipientsByRecipientIdDestinations`, status `400`)
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, status `422`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, status `422`)
+
+<a id="recipient-name-invalid" className="block scroll-mt-32">
+  <span className="sr-only">recipient_name_invalid error</span>
+</a>
+
+### `recipient_name_invalid`
+
+**HTTP-státusz:** `400`<br />
+**Újrapróbálható:** Nem kerül visszaadásra<br />
+**Problématípus:** `https://docs.swipelux.com/errors/recipient-name-invalid`
+
+**Jelentés:** A címzett neve nem felel meg a kérési sémának.
+
+**Mikor fordul elő:** A címzett létrehozása hiányzó, üres vagy érvénytelen formátumú nevet kap.
+
+**Teendő:** Adjon meg a dokumentált sémának megfelelő címzettnevet, és küldjön javított létrehozási kérést.
+
+**Újrapróbálási útmutató:** Ez a probléma nem ad vissza `retryable` értéket. Ne feltételezze, hogy a változatlan újrapróbálkozás biztonságos; kövesse a fenti teendőt és a művelet idempotencia-követelményeit.
+
+**Érintett API-műveletek:**
+
+- [`POST /v3/customers/{customerId}/recipients`](/api-reference/recipients/post-v3-customers-by-customer-id-recipients) (`postV3CustomersByCustomerIdRecipients`, status `400`)
+
+<a id="wallet-destination-not-supported" className="block scroll-mt-32">
+  <span className="sr-only">wallet_destination_not_supported error</span>
+</a>
+
+### `wallet_destination_not_supported`
+
+**HTTP-státusz:** `409`<br />
+**Újrapróbálható:** Nem<br />
+**Problématípus:** `https://docs.swipelux.com/errors/wallet-destination-not-supported`
+
+**Jelentés:** A kiválasztott pénzmozgatási módszer nem támogat tárcacélpontot.
+
+**Mikor fordul elő:** Az árajánlat létrehozása tárcacélpontot kombinál másik célponttípusra szánt sínnel vagy képességgel.
+
+**Teendő:** Válasszon kompatibilis számla- vagy címzett-célpontot, vagy válasszon támogatott tárcaátutalási módszert, majd kérjen új árajánlatot.
+
+**Újrapróbálási útmutató:** Ne próbálja újra a változatlan kérést. Alkalmazza a fenti teendőt, mielőtt újabb kérést küld.
+
+**Érintett API-műveletek:**
+
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, status `409`)
+
+## Árajánlatok és átutalások
+
+<a id="amount-not-deliverable" className="block scroll-mt-32">
+  <span className="sr-only">amount_not_deliverable error</span>
+</a>
+
+### `amount_not_deliverable`
+
+**HTTP-státusz:** `422`<br />
+**Újrapróbálható:** Nem<br />
+**Problématípus:** `https://docs.swipelux.com/errors/amount-not-deliverable`
+
+**Jelentés:** A kért összeg nem kézbesíthető a kiválasztott devizákkal, számlákkal vagy módszerrel.
+
+**Mikor fordul elő:** Az árajánlatkérés formailag érvényes, de nem tud kézbesíthető célösszeget előállítani a kiválasztott útvonalhoz.
+
+**Teendő:** Módosítsa az összeget, a devizát, a számlát, a célpontot vagy a módszert, majd kérjen új árajánlatot.
+
+**Újrapróbálási útmutató:** Ne próbálja újra a változatlan kérést. Alkalmazza a fenti teendőt, mielőtt újabb kérést küld.
+
+**Érintett API-műveletek:**
+
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, status `422`)
+
+<a id="amount-side-ambiguous" className="block scroll-mt-32">
+  <span className="sr-only">amount_side_ambiguous error</span>
+</a>
+
+### `amount_side_ambiguous`
+
+**HTTP-státusz:** `400`<br />
+**Újrapróbálható:** Nem<br />
+**Problématípus:** `https://docs.swipelux.com/errors/amount-side-ambiguous`
+
+**Jelentés:** Az árajánlatkérés nem azonosítja egyértelműen, hogy az átváltás melyik oldalán rögzített az összeg.
+
+**Mikor fordul elő:** Az összegmezők olyan kombinációban vannak megadva, amely nem teszi egyértelművé a forrás- és céloldali összegszándékot.
+
+**Teendő:** Állítsa be az összeget pontosan a szándékolt árajánlatirányhoz támogatott oldalon, majd kérjen új árajánlatot.
+
+**Újrapróbálási útmutató:** Ne próbálja újra a változatlan kérést. Alkalmazza a fenti teendőt, mielőtt újabb kérést küld.
+
+**Érintett API-műveletek:**
+
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, status `400`)
+
+<a id="capability-direction-unsupported" className="block scroll-mt-32">
+  <span className="sr-only">capability_direction_unsupported error</span>
+</a>
+
+### `capability_direction_unsupported`
+
+**HTTP-státusz:** `422`<br />
+**Újrapróbálható:** Nem<br />
+**Problématípus:** `https://docs.swipelux.com/errors/capability-direction-unsupported`
+
+**Jelentés:** A kiválasztott képesség nem támogatja az árajánlat vagy az átutalás által igényelt pénzmozgatási irányt.
+
+**Mikor fordul elő:** Az árajánlat létrehozása olyan irányt következtet ki, amelyet a kiválasztott képesség nem hirdet, vagy az átutalás létrehozása azt találja, hogy az árajánlathoz rögzített képesség már nem támogatja a tárolt irányát.
+
+**Teendő:** Válasszon olyan képességet, amely támogatja a szándékolt irányt, és kérjen új árajánlatot az átutalás létrehozása előtt.
+
+**Újrapróbálási útmutató:** Ne próbálja újra a változatlan kérést. Alkalmazza a fenti teendőt, mielőtt újabb kérést küld.
+
+**Érintett API-műveletek:**
+
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, status `422`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, status `422`)
+
+<a id="insufficient-balance" className="block scroll-mt-32">
+  <span className="sr-only">insufficient_balance error</span>
+</a>
+
+### `insufficient_balance`
+
+**HTTP-státusz:** `409`<br />
+**Újrapróbálható:** Nem<br />
+**Problématípus:** `https://docs.swipelux.com/errors/insufficient-balance`
+
+**Jelentés:** A forrásszámlán nincs elegendő rendelkezésre álló egyenleg az átutaláshoz.
+
+**Mikor fordul elő:** Az átutalás végrehajtása ellenőrzi a forrásszámlát, és a rendelkezésre álló összeg a szükséges terhelés alatt van.
+
+**Teendő:** Töltse fel a forrásszámlát vagy csökkentse az átutalási összeget, majd szerezzen új árajánlatot, és hozzon létre új átutalási kérést.
+
+**Újrapróbálási útmutató:** Ne próbálja újra a változatlan kérést. Alkalmazza a fenti teendőt, mielőtt újabb kérést küld.
+
+**Érintett API-műveletek:**
+
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, status `409`)
+
+<a id="quote-already-executed" className="block scroll-mt-32">
+  <span className="sr-only">quote_already_executed error</span>
+</a>
+
+### `quote_already_executed`
+
+**HTTP-státusz:** `409`<br />
+**Újrapróbálható:** Nem<br />
+**Problématípus:** `https://docs.swipelux.com/errors/quote-already-executed`
+
+**Jelentés:** Az árajánlatot már végrehajtották, és meglévő átutalása van.
+
+**Mikor fordul elő:** Egy második végrehajtási kérés érkezik, miután egy másik kérés sikeresen felhasználta az árajánlatot.
+
+**Teendő:** Használja a `transferId` értéket a meglévő átutalás beolvasásához és követéséhez. Ne hozzon létre újabb átutalást ugyanabból az árajánlatból.
+
+**Újrapróbálási útmutató:** Ne próbálja újra a változatlan kérést. Alkalmazza a fenti teendőt, mielőtt újabb kérést küld. A visszaadott átutalást tekintse az eredeti szándék eredményének, ahelyett hogy újrapróbálná az árajánlat végrehajtását.
+
+**Érintett API-műveletek:**
+
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, status `409`)
+
+**További válaszmezők:**
+
+- `transferId`: A meglévő átutalás, amely felhasználta az árajánlatot.
+
+**Példa:**
+
+```json
+{
+  "type": "https://docs.swipelux.com/errors/quote-already-executed",
+  "title": "Quote Already Executed",
+  "status": 409,
+  "code": "quote_already_executed",
+  "detail": "This quote was already executed by another request.",
+  "correlationId": "cor_01JMM23TRANSFERERRORS",
+  "retryable": false,
+  "transferId": "tr_6dV8xN2pQ4rT7mA9sL1kBc"
+}
+```
+
+<a id="quote-destination-missing" className="block scroll-mt-32">
+  <span className="sr-only">quote_destination_missing error</span>
+</a>
+
+### `quote_destination_missing`
+
+**HTTP-státusz:** `409`, `500`<br />
+**Újrapróbálható:** Kontextusfüggő<br />
+**Problématípus:** `https://docs.swipelux.com/errors/quote-destination-missing`
+
+**Jelentés:** Az árajánlat vagy az átutalás nem tartalmazza a művelet által igényelt célpontot.
+
+**Mikor fordul elő:** Egy új árajánlat kihagy egy kötelező célpontot, vagy egy meglévő, árajánlat-alapú erőforrás nem tudja feloldani a rögzített célpontját.
+
+**Teendő:** Új kérés esetén adjon meg érvényes számla- vagy címzett-célpontot, és kérjen új árajánlatot. Meglévő erőforrás esetén őrizze meg a `correlationId` értéket, és lépjen kapcsolatba a támogatással, ha az újralekérés nem oldja meg.
+
+**Újrapróbálási útmutató:** Olvassa ki a válasz `retryable` értékét. Csak akkor próbálkozzon újra később, ha az `true`. Idempotens írás esetén használja újra az eredeti idempotencia-kulcsot és a változatlan kérést.
+
+**Érintett API-műveletek:**
+
+- [`GET /v3/quotes/{quoteId}`](/api-reference/money-movement/get-v3-quotes-by-quote-id) (`getV3QuotesByQuoteId`, status `500`)
+- [`GET /v3/transfers`](/api-reference/money-movement/get-v3-transfers) (`getV3Transfers`, status `500`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, status `409`)
+- [`GET /v3/transfers/{transferId}`](/api-reference/money-movement/get-v3-transfers-by-transfer-id) (`getV3TransfersByTransferId`, status `500`)
+- [`POST /v3/transfers/{transferId}/cancel`](/api-reference/money-movement/post-v3-transfers-by-transfer-id-cancel) (`postV3TransfersByTransferIdCancel`, status `500`)
+- [`GET /v3/transfers/{transferId}/instructions`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-instructions) (`getV3TransfersByTransferIdInstructions`, status `500`)
+- [`GET /v3/transfers/{transferId}/tasks`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-tasks) (`getV3TransfersByTransferIdTasks`, status `500`)
+
+<a id="quote-direction-invalid" className="block scroll-mt-32">
+  <span className="sr-only">quote_direction_invalid error</span>
+</a>
+
+### `quote_direction_invalid`
+
+**HTTP-státusz:** `422`, `500`<br />
+**Újrapróbálható:** Kontextusfüggő<br />
+**Problématípus:** `https://docs.swipelux.com/errors/quote-direction-invalid`
+
+**Jelentés:** A forrás és a célpont nem alkot támogatott árajánlatirányt.
+
+**Mikor fordul elő:** A kiválasztott számla, célpont, devizák vagy módszer érvénytelen forrás–cél irányba helyezi a mozgást.
+
+**Teendő:** Javítsa ki a forrás- és célszerepeket egy támogatott pénzáramlás használatával, majd kérjen új árajánlatot.
+
+**Újrapróbálási útmutató:** Olvassa ki a válasz `retryable` értékét. Csak akkor próbálkozzon újra később, ha az `true`. Idempotens írás esetén használja újra az eredeti idempotencia-kulcsot és a változatlan kérést.
+
+**Érintett API-műveletek:**
+
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, status `422`)
+- [`GET /v3/quotes/{quoteId}`](/api-reference/money-movement/get-v3-quotes-by-quote-id) (`getV3QuotesByQuoteId`, status `500`)
+- [`GET /v3/transfers`](/api-reference/money-movement/get-v3-transfers) (`getV3Transfers`, status `500`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, status `500`)
+- [`GET /v3/transfers/{transferId}`](/api-reference/money-movement/get-v3-transfers-by-transfer-id) (`getV3TransfersByTransferId`, status `500`)
+- [`POST /v3/transfers/{transferId}/cancel`](/api-reference/money-movement/post-v3-transfers-by-transfer-id-cancel) (`postV3TransfersByTransferIdCancel`, status `500`)
+- [`GET /v3/transfers/{transferId}/instructions`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-instructions) (`getV3TransfersByTransferIdInstructions`, status `500`)
+- [`GET /v3/transfers/{transferId}/tasks`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-tasks) (`getV3TransfersByTransferIdTasks`, status `500`)
+
+<a id="quote-execution-consumed" className="block scroll-mt-32">
+  <span className="sr-only">quote_execution_consumed error</span>
+</a>
+
+### `quote_execution_consumed`
+
+**HTTP-státusz:** `409`<br />
+**Újrapróbálható:** Nem<br />
+**Problématípus:** `https://docs.swipelux.com/errors/quote-execution-consumed`
+
+**Jelentés:** Az árajánlat egyszeri végrehajtási lehetőségét már felhasználták.
+
+**Mikor fordul elő:** Egy korábbi vagy versengő végrehajtási kísérlet olyan állapotba vitte az árajánlatot, amely nem hajtható végre újra, és nincs visszaadható meglévő sikeres átutalás.
+
+**Teendő:** Kérjen új árajánlatot a szándékolt mozgáshoz, és hajtsa végre az új árajánlatot egyszer.
+
+**Újrapróbálási útmutató:** Ne próbálja újra a változatlan kérést. Alkalmazza a fenti teendőt, mielőtt újabb kérést küld.
+
+**Érintett API-műveletek:**
+
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, status `409`)
+
+<a id="quote-expired" className="block scroll-mt-32">
+  <span className="sr-only">quote_expired error</span>
+</a>
+
+### `quote_expired`
+
+**HTTP-státusz:** `409`<br />
+**Újrapróbálható:** Nem<br />
+**Problématípus:** `https://docs.swipelux.com/errors/quote-expired`
+
+**Jelentés:** Az árajánlat lejárt, mielőtt végrehajtották volna.
+
+**Mikor fordul elő:** Az átutalás létrehozása az érvényességi időszak lejárta után használ egy árajánlatot.
+
+**Teendő:** Kérjen friss árajánlatot, és hajtsa végre az új lejárati idő előtt.
+
+**Újrapróbálási útmutató:** Ne próbálja újra a változatlan kérést. Alkalmazza a fenti teendőt, mielőtt újabb kérést küld.
+
+**Érintett API-műveletek:**
+
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, status `409`)
+
+<a id="quote-failed" className="block scroll-mt-32">
+  <span className="sr-only">quote_failed error</span>
+</a>
+
+### `quote_failed`
+
+**HTTP-státusz:** `500`, `502`<br />
+**Újrapróbálható:** Kontextusfüggő<br />
+**Problématípus:** `https://docs.swipelux.com/errors/quote-failed`
+
+**Jelentés:** A Swipelux nem tudott használható árajánlatot létrehozni a kéréshez.
+
+**Mikor fordul elő:** Az árajánlat létrehozása vagy átmeneti szolgáltatáshibába, vagy a kiválasztott útvonalra vonatkozó végleges hibába ütközik.
+
+**Teendő:** Vizsgálja meg a `retryable` értéket. Próbálja újra ugyanazt az árajánlatkérést később, ha az `true`; ellenkező esetben változtassa meg az útvonal bemeneteit, vagy lépjen kapcsolatba a támogatással a `correlationId` megadásával.
+
+**Újrapróbálási útmutató:** Olvassa ki a válasz `retryable` értékét. Csak akkor próbálkozzon újra később, ha az `true`. Idempotens írás esetén használja újra az eredeti idempotencia-kulcsot és a változatlan kérést.
+
+**Érintett API-műveletek:**
+
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, status `500`)
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, status `502`)
+
+<a id="quote-mode-invalid" className="block scroll-mt-32">
+  <span className="sr-only">quote_mode_invalid error</span>
+</a>
+
+### `quote_mode_invalid`
+
+**HTTP-státusz:** `500`<br />
+**Újrapróbálható:** Igen<br />
+**Problématípus:** `https://docs.swipelux.com/errors/quote-mode-invalid`
+
+**Jelentés:** Az árajánlat nem értelmezhető a művelet által igényelt módban.
+
+**Mikor fordul elő:** Egy meglévő, árajánlat-alapú erőforrás olyan módot tartalmaz, amelyet az olvasási vagy végrehajtási útvonal nem tud feldolgozni.
+
+**Teendő:** Próbálja újra késleltetés után. Ha ugyanaz az árajánlat továbbra is hibázik, őrizze meg a `correlationId` értéket, és lépjen kapcsolatba a támogatással a tárolt árajánlat megváltoztatása helyett.
+
+**Újrapróbálási útmutató:** Próbálja újra késleltetés után. Idempotens írás esetén használja újra az eredeti idempotencia-kulcsot és a változatlan kérést.
+
+**Érintett API-műveletek:**
+
+- [`GET /v3/quotes/{quoteId}`](/api-reference/money-movement/get-v3-quotes-by-quote-id) (`getV3QuotesByQuoteId`, status `500`)
+- [`GET /v3/transfers`](/api-reference/money-movement/get-v3-transfers) (`getV3Transfers`, status `500`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, status `500`)
+- [`GET /v3/transfers/{transferId}`](/api-reference/money-movement/get-v3-transfers-by-transfer-id) (`getV3TransfersByTransferId`, status `500`)
+- [`POST /v3/transfers/{transferId}/cancel`](/api-reference/money-movement/post-v3-transfers-by-transfer-id-cancel) (`postV3TransfersByTransferIdCancel`, status `500`)
+- [`GET /v3/transfers/{transferId}/instructions`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-instructions) (`getV3TransfersByTransferIdInstructions`, status `500`)
+- [`GET /v3/transfers/{transferId}/tasks`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-tasks) (`getV3TransfersByTransferIdTasks`, status `500`)
+
+<a id="quote-not-found" className="block scroll-mt-32">
+  <span className="sr-only">quote_not_found error</span>
+</a>
+
+### `quote_not_found`
+
+**HTTP-státusz:** `404`<br />
+**Újrapróbálható:** Nem kerül visszaadásra<br />
+**Problématípus:** `https://docs.swipelux.com/errors/quote-not-found`
+
+**Jelentés:** Az árajánlat nem található ehhez az API-kulcshoz.
+
+**Mikor fordul elő:** Az árajánlat-azonosító helytelen, másik környezethez tartozik, vagy nem érhető el a hívó számára.
+
+**Teendő:** Ellenőrizze az árajánlat-azonosítót és az API-kulcs környezetét. Kérjen új árajánlatot, ha a szándékolt árajánlat nem érhető el.
+
+**Újrapróbálási útmutató:** Ez a probléma nem ad vissza `retryable` értéket. Ne feltételezze, hogy a változatlan újrapróbálkozás biztonságos; kövesse a fenti teendőt és a művelet idempotencia-követelményeit.
+
+**Érintett API-műveletek:**
+
+- [`GET /v3/quotes/{quoteId}`](/api-reference/money-movement/get-v3-quotes-by-quote-id) (`getV3QuotesByQuoteId`, status `404`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, status `404`)
+
+<a id="rate-unavailable" className="block scroll-mt-32">
+  <span className="sr-only">rate_unavailable error</span>
+</a>
+
+### `rate_unavailable`
+
+**HTTP-státusz:** `502`<br />
+**Újrapróbálható:** Igen<br />
+**Problématípus:** `https://docs.swipelux.com/errors/rate-unavailable`
+
+**Jelentés:** Egy szükséges devizaárfolyam átmenetileg nem érhető el.
+
+**Mikor fordul elő:** Az árfolyam- vagy árajánlatművelet nem tudja beszerezni a kért devizapárhoz szükséges árfolyamot.
+
+**Teendő:** Próbálja újra késleltetés után. Kérjen új árajánlatot korábbi árfolyamfeltételezés újrafelhasználása helyett.
+
+**Újrapróbálási útmutató:** Próbálja újra késleltetés után. Idempotens írás esetén használja újra az eredeti idempotencia-kulcsot és a változatlan kérést.
+
+**Érintett API-műveletek:**
+
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, status `502`)
+- [`GET /v3/rates`](/api-reference/money-movement/get-v3-rates) (`getV3Rates`, status `502`)
+
+<a id="supporting-document-not-found" className="block scroll-mt-32">
+  <span className="sr-only">supporting_document_not_found error</span>
+</a>
+
+### `supporting_document_not_found`
+
+**HTTP-státusz:** `422`<br />
+**Újrapróbálható:** Nem<br />
+**Problématípus:** `https://docs.swipelux.com/errors/supporting-document-not-found`
+
+**Jelentés:** Az átutalási kérés által hivatkozott igazoló dokumentum nem található.
+
+**Mikor fordul elő:** Az átutalás létrehozása hiányzó, nem elérhető vagy helytelen ügyféldokumentumra hivatkozik.
+
+**Teendő:** Listázza vagy töltse fel a szükséges ügyféldokumentumot, használja a helyes azonosítóját, és küldjön be új átutalási kérést.
+
+**Újrapróbálási útmutató:** Ne próbálja újra a változatlan kérést. Alkalmazza a fenti teendőt, mielőtt újabb kérést küld.
+
+**Érintett API-műveletek:**
+
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, status `422`)
+
+<a id="transfer-execution-failed" className="block scroll-mt-32">
+  <span className="sr-only">transfer_execution_failed error</span>
+</a>
+
+### `transfer_execution_failed`
+
+**HTTP-státusz:** `500`<br />
+**Újrapróbálható:** Nem<br />
+**Problématípus:** `https://docs.swipelux.com/errors/transfer-execution-failed`
+
+**Jelentés:** Az átutalás nem fejeződhetett be az árajánlat végrehajtása során.
+
+**Mikor fordul elő:** Az átutalás létrehozása megkezdi a végrehajtást, de használható átutalás létrehozása helyett végleges hibába ütközik.
+
+**Teendő:** Őrizze meg a `correlationId` értéket, olvassa be az árajánlat és az átutalás állapotát, és lépjen kapcsolatba a támogatással, mielőtt új árajánlattal újra megkísérli a szándékolt mozgást.
+
+**Újrapróbálási útmutató:** Ne próbálja újra a változatlan kérést. Alkalmazza a fenti teendőt, mielőtt újabb kérést küld.
+
+**Érintett API-műveletek:**
+
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, status `500`)
+
+<a id="transfer-has-no-instructions" className="block scroll-mt-32">
+  <span className="sr-only">transfer_has_no_instructions error</span>
+</a>
+
+### `transfer_has_no_instructions`
+
+**HTTP-státusz:** `404`<br />
+**Újrapróbálható:** Nem kerül visszaadásra<br />
+**Problématípus:** `https://docs.swipelux.com/errors/transfer-has-no-instructions`
+
+**Jelentés:** Az átutalás létezik, de nem biztosít fizetési utasításokat.
+
+**Mikor fordul elő:** Olyan átutalástípushoz vagy -állapothoz kér utasításokat, amely nem tesz közzé utasításkészletet.
+
+**Teendő:** Olvassa be az átutalás-erőforrást, és kövesse annak aktuális állapotát. Az utasításvégpontot csak olyan átutalásokhoz használja, amelyek fizetési utasításokat adnak vissza.
+
+**Újrapróbálási útmutató:** Ez a probléma nem ad vissza `retryable` értéket. Ne feltételezze, hogy a változatlan újrapróbálkozás biztonságos; kövesse a fenti teendőt és a művelet idempotencia-követelményeit.
+
+**Érintett API-műveletek:**
+
+- [`GET /v3/transfers/{transferId}/instructions`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-instructions) (`getV3TransfersByTransferIdInstructions`, status `404`)
+
+<a id="transfer-not-cancelable" className="block scroll-mt-32">
+  <span className="sr-only">transfer_not_cancelable error</span>
+</a>
+
+### `transfer_not_cancelable`
+
+**HTTP-státusz:** `409`<br />
+**Újrapróbálható:** Nem<br />
+**Problématípus:** `https://docs.swipelux.com/errors/transfer-not-cancelable`
+
+**Jelentés:** Az átutalás nem mondható le az aktuális állapotából.
+
+**Mikor fordul elő:** A lemondási kérés azután érkezik, hogy az átutalás túljutott a lemondható állapoton.
+
+**Teendő:** Kérje le újra az átutalást, és folytassa az aktuális állapotának kezelését a lemondási kérés megismétlése helyett.
+
+**Újrapróbálási útmutató:** Ne próbálja újra a változatlan kérést. Alkalmazza a fenti teendőt, mielőtt újabb kérést küld.
+
+**Érintett API-műveletek:**
+
+- [`POST /v3/transfers/{transferId}/cancel`](/api-reference/money-movement/post-v3-transfers-by-transfer-id-cancel) (`postV3TransfersByTransferIdCancel`, status `409`)
+
+<a id="transfer-not-found" className="block scroll-mt-32">
+  <span className="sr-only">transfer_not_found error</span>
+</a>
+
+### `transfer_not_found`
+
+**HTTP-státusz:** `404`<br />
+**Újrapróbálható:** Nem kerül visszaadásra<br />
+**Problématípus:** `https://docs.swipelux.com/errors/transfer-not-found`
+
+**Jelentés:** Az átutalás nem található ehhez az API-kulcshoz.
+
+**Mikor fordul elő:** Az átutalás-azonosító helytelen, másik környezethez tartozik, vagy nem érhető el a hívó számára.
+
+**Teendő:** Ellenőrizze az átutalás-azonosítót és az API-kulcs környezetét, majd listázza vagy olvassa be az átutalásokat, mielőtt elérhető átutalással próbálkozik újra.
+
+**Újrapróbálási útmutató:** Ez a probléma nem ad vissza `retryable` értéket. Ne feltételezze, hogy a változatlan újrapróbálkozás biztonságos; kövesse a fenti teendőt és a művelet idempotencia-követelményeit.
+
+**Érintett API-műveletek:**
+
+- [`POST /v3/sandbox/transfers/{transferId}/state`](/api-reference/sandbox/post-v3-sandbox-transfers-by-transfer-id-state) (`postV3SandboxTransfersByTransferIdState`, status `404`)
+- [`GET /v3/transfers`](/api-reference/money-movement/get-v3-transfers) (`getV3Transfers`, status `404`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, status `404`)
+- [`GET /v3/transfers/{transferId}`](/api-reference/money-movement/get-v3-transfers-by-transfer-id) (`getV3TransfersByTransferId`, status `404`)
+- [`POST /v3/transfers/{transferId}/cancel`](/api-reference/money-movement/post-v3-transfers-by-transfer-id-cancel) (`postV3TransfersByTransferIdCancel`, status `404`)
+- [`GET /v3/transfers/{transferId}/instructions`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-instructions) (`getV3TransfersByTransferIdInstructions`, status `404`)
+- [`GET /v3/transfers/{transferId}/tasks`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-tasks) (`getV3TransfersByTransferIdTasks`, status `404`)
+
+<a id="transfer-state-invalid" className="block scroll-mt-32">
+  <span className="sr-only">transfer_state_invalid error</span>
+</a>
+
+### `transfer_state_invalid`
+
+**HTTP-státusz:** `400`, `500`<br />
+**Újrapróbálható:** Igen<br />
+**Problématípus:** `https://docs.swipelux.com/errors/transfer-state-invalid`
+
+**Jelentés:** Az átutalás olyan állapotban van, amely nem támogatja a kért műveletet vagy átmenetet.
+
+**Mikor fordul elő:** Egy átutalás-olvasás, -végrehajtás, -lemondás vagy sandbox-állapotváltoztatás olyan állapotba ütközik, amely jelenleg nem tudja kielégíteni a műveletet.
+
+**Teendő:** Kérje le újra az átutalást, várjon egy érvényes következő állapotra vagy válasszon egyet, és csak azután próbálkozzon újra, hogy az aktuális állapot lehetővé teszi a műveletet.
+
+**Újrapróbálási útmutató:** Próbálja újra késleltetés után. Idempotens írás esetén használja újra az eredeti idempotencia-kulcsot és a változatlan kérést.
+
+**Érintett API-műveletek:**
+
+- [`POST /v3/sandbox/transfers/{transferId}/state`](/api-reference/sandbox/post-v3-sandbox-transfers-by-transfer-id-state) (`postV3SandboxTransfersByTransferIdState`, status `400`)
+- [`GET /v3/transfers`](/api-reference/money-movement/get-v3-transfers) (`getV3Transfers`, status `500`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, status `500`)
+- [`GET /v3/transfers/{transferId}`](/api-reference/money-movement/get-v3-transfers-by-transfer-id) (`getV3TransfersByTransferId`, status `500`)
+- [`POST /v3/transfers/{transferId}/cancel`](/api-reference/money-movement/post-v3-transfers-by-transfer-id-cancel) (`postV3TransfersByTransferIdCancel`, status `500`)
+- [`GET /v3/transfers/{transferId}/instructions`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-instructions) (`getV3TransfersByTransferIdInstructions`, status `500`)
+- [`GET /v3/transfers/{transferId}/tasks`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-tasks) (`getV3TransfersByTransferIdTasks`, status `500`)
+
+## Szabályok
+
+<a id="rule-already-exists" className="block scroll-mt-32">
+  <span className="sr-only">rule_already_exists error</span>
+</a>
+
+### `rule_already_exists`
+
+**HTTP-státusz:** `409`<br />
+**Újrapróbálható:** Nem<br />
+**Problématípus:** `https://docs.swipelux.com/errors/rule-already-exists`
+
+**Jelentés:** A kiváltó számlához már tartozik élő szabály.
+
+**Mikor fordul elő:** A szabály létrehozása olyan számlát céloz, amelyet már figyel egy nem archivált szabály.
+
+**Teendő:** Használja a `conflictingRuleId` értéket a meglévő szabály beolvasásához, majd frissítse, archiválja vagy használja újra duplikátum létrehozása helyett.
+
+**Újrapróbálási útmutató:** Ne próbálja újra a változatlan kérést. Alkalmazza a fenti teendőt, mielőtt újabb kérést küld.
+
+**Érintett API-műveletek:**
+
+- [`POST /v3/customers/{customerId}/rules`](/api-reference/rules/post-v3-customers-by-customer-id-rules) (`postV3CustomersByCustomerIdRules`, status `409`)
+
+**További válaszmezők:**
+
+- `conflictingRuleId`: A kéréssel ütköző meglévő élő szabály.
+
+<a id="rule-archived" className="block scroll-mt-32">
+  <span className="sr-only">rule_archived error</span>
+</a>
+
+### `rule_archived`
+
+**HTTP-státusz:** `409`<br />
+**Újrapróbálható:** Nem<br />
+**Problématípus:** `https://docs.swipelux.com/errors/rule-archived`
+
+**Jelentés:** A szabály archivált, és már nem módosítható.
+
+**Mikor fordul elő:** Olyan szabályt frissít vagy archivál, amely már elérte a végleges archivált állapotát.
+
+**Teendő:** Olvassa be az archivált szabályt az előzményekhez, és hozzon létre új szabályt, ha aktív helyettesítésre van szüksége.
+
+**Újrapróbálási útmutató:** Ne próbálja újra a változatlan kérést. Alkalmazza a fenti teendőt, mielőtt újabb kérést küld.
+
+**Érintett API-műveletek:**
+
+- [`DELETE /v3/customers/{customerId}/rules/{ruleId}`](/api-reference/rules/delete-v3-customers-by-customer-id-rules-by-rule-id) (`deleteV3CustomersByCustomerIdRulesByRuleId`, status `409`)
+- [`PATCH /v3/customers/{customerId}/rules/{ruleId}`](/api-reference/rules/patch-v3-customers-by-customer-id-rules-by-rule-id) (`patchV3CustomersByCustomerIdRulesByRuleId`, status `409`)
+
+<a id="rule-not-found" className="block scroll-mt-32">
+  <span className="sr-only">rule_not_found error</span>
+</a>
+
+### `rule_not_found`
+
+**HTTP-státusz:** `404`<br />
+**Újrapróbálható:** Nem kerül visszaadásra<br />
+**Problématípus:** `https://docs.swipelux.com/errors/rule-not-found`
+
+**Jelentés:** A szabály nem található a megadott ügyfél alatt.
+
+**Mikor fordul elő:** A szabályazonosító hiányzik, másik ügyfélhez tartozik, vagy nem érhető el az aktuális környezetben.
+
+**Teendő:** Ellenőrizze az ügyfél- és szabályazonosítókat, listázza az ügyfél szabályait, és próbálkozzon újra elérhető szabállyal.
+
+**Újrapróbálási útmutató:** Ez a probléma nem ad vissza `retryable` értéket. Ne feltételezze, hogy a változatlan újrapróbálkozás biztonságos; kövesse a fenti teendőt és a művelet idempotencia-követelményeit.
+
+**Érintett API-műveletek:**
+
+- [`DELETE /v3/customers/{customerId}/rules/{ruleId}`](/api-reference/rules/delete-v3-customers-by-customer-id-rules-by-rule-id) (`deleteV3CustomersByCustomerIdRulesByRuleId`, status `404`)
+- [`GET /v3/customers/{customerId}/rules/{ruleId}`](/api-reference/rules/get-v3-customers-by-customer-id-rules-by-rule-id) (`getV3CustomersByCustomerIdRulesByRuleId`, status `404`)
+- [`PATCH /v3/customers/{customerId}/rules/{ruleId}`](/api-reference/rules/patch-v3-customers-by-customer-id-rules-by-rule-id) (`patchV3CustomersByCustomerIdRulesByRuleId`, status `404`)
+
+<a id="rule-target-invalid" className="block scroll-mt-32">
+  <span className="sr-only">rule_target_invalid error</span>
+</a>
+
+### `rule_target_invalid`
+
+**HTTP-státusz:** `400`<br />
+**Újrapróbálható:** Nem kerül visszaadásra<br />
+**Problématípus:** `https://docs.swipelux.com/errors/rule-target-invalid`
+
+**Jelentés:** A szabályművelet célpontja érvénytelen ennél az ügyfélnél vagy szabálytípusnál.
+
+**Mikor fordul elő:** A szabály létrehozása hiányzó, nem elérhető, archivált vagy inkompatibilis számlát vagy célpontot választ műveleti célpontként.
+
+**Teendő:** Válasszon az ügyfélhez visszaadott, a szabályműveleti séma által támogatott aktív célpontot, majd hozzon létre új szabálykérést.
+
+**Újrapróbálási útmutató:** Ez a probléma nem ad vissza `retryable` értéket. Ne feltételezze, hogy a változatlan újrapróbálkozás biztonságos; kövesse a fenti teendőt és a művelet idempotencia-követelményeit.
+
+**Érintett API-műveletek:**
+
+- [`POST /v3/customers/{customerId}/rules`](/api-reference/rules/post-v3-customers-by-customer-id-rules) (`postV3CustomersByCustomerIdRules`, status `400`)
+
+<a id="rule-trigger-account-invalid" className="block scroll-mt-32">
+  <span className="sr-only">rule_trigger_account_invalid error</span>
+</a>
+
+### `rule_trigger_account_invalid`
+
+**HTTP-státusz:** `400`<br />
+**Újrapróbálható:** Nem kerül visszaadásra<br />
+**Problématípus:** `https://docs.swipelux.com/errors/rule-trigger-account-invalid`
+
+**Jelentés:** A szabály kiváltójaként kiválasztott számla érvénytelen.
+
+**Mikor fordul elő:** A szabály létrehozása olyan számlát használ, amely hiányzik, archivált, nem elérhető, vagy nem jogosult kiváltóként működni.
+
+**Teendő:** Válasszon az ügyfélhez visszaadott aktív, jogosult számlát, majd hozzon létre új szabálykérést.
+
+**Újrapróbálási útmutató:** Ez a probléma nem ad vissza `retryable` értéket. Ne feltételezze, hogy a változatlan újrapróbálkozás biztonságos; kövesse a fenti teendőt és a művelet idempotencia-követelményeit.
+
+**Érintett API-műveletek:**
+
+- [`POST /v3/customers/{customerId}/rules`](/api-reference/rules/post-v3-customers-by-customer-id-rules) (`postV3CustomersByCustomerIdRules`, status `400`)
+
+## Idempotencia- és platformhibák
+
+<a id="conflict" className="block scroll-mt-32">
+  <span className="sr-only">conflict error</span>
+</a>
+
+### `conflict`
+
+**HTTP-státusz:** `409`<br />
+**Újrapróbálható:** Nem<br />
+**Problématípus:** `https://docs.swipelux.com/errors/conflict`
+
+**Jelentés:** A kért művelet ütközik az erőforrás aktuális állapotával.
+
+**Mikor fordul elő:** A művelet nem folytatódhat, mert egy erőforrás megváltozott, archivált, hiányzik egy szükséges befejezett lépése, vagy más módon állapotkonfliktusa van konkrétabb nyilvános kód nélkül.
+
+**Teendő:** Kérje le újra az érintett erőforrást, használja a `detail` mezőt az aktuális előfeltétel azonosításához, változtassa meg a kérést vagy az erőforrás állapotát, majd küldjön új kérést.
+
+**Újrapróbálási útmutató:** Ne próbálja újra a változatlan kérést. Alkalmazza a fenti teendőt, mielőtt újabb kérést küld.
+
+**Érintett API-műveletek:**
+
+- [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) (`postV3CustomersByCustomerIdAccounts`, status `409`)
+- [`DELETE /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/delete-v3-customers-by-customer-id-accounts-by-account-id) (`deleteV3CustomersByCustomerIdAccountsByAccountId`, status `409`)
+- [`PATCH /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/patch-v3-customers-by-customer-id-accounts-by-account-id) (`patchV3CustomersByCustomerIdAccountsByAccountId`, status `409`)
+- [`POST /v3/customers/{customerId}/export`](/api-reference/customers/post-v3-customers-by-customer-id-export) (`postV3CustomersByCustomerIdExport`, status `409`)
+- [`POST /v3/sandbox/accounts/{accountId}/topup`](/api-reference/sandbox/post-v3-sandbox-accounts-by-account-id-topup) (`postV3SandboxAccountsByAccountIdTopup`, status `409`)
+- [`POST /v3/sandbox/tasks/{taskId}/review`](/api-reference/sandbox/post-v3-sandbox-tasks-by-task-id-review) (`postV3SandboxTasksByTaskIdReview`, status `409`)
+
+<a id="idempotency-conflict" className="block scroll-mt-32">
+  <span className="sr-only">idempotency_conflict error</span>
+</a>
+
+### `idempotency_conflict`
+
+**HTTP-státusz:** `409`<br />
+**Újrapróbálható:** Nem<br />
+**Problématípus:** `https://docs.swipelux.com/errors/idempotency-conflict`
+
+**Jelentés:** Az idempotencia-kulcsot már felhasználták egy másik kéréshez.
+
+**Mikor fordul elő:** Egy írás meglévő `Idempotency-Key` értéket használ újra megváltozott metódussal, útvonallal, törzzsel vagy szándékolt művelettel.
+
+**Teendő:** Ne próbálja újra a megváltozott kérést ezzel a kulccsal. Adott esetben kérje le az eredeti művelet eredményét, vagy használjon új kulcsot egy valóban új művelethez.
+
+**Újrapróbálási útmutató:** Ne próbálja újra a változatlan kérést. Alkalmazza a fenti teendőt, mielőtt újabb kérést küld. Az idempotencia-kulcs véglegesen azonosítja az eredeti kérését; a hasznos teher megváltoztatásához új kulcs szükséges.
+
+<Accordion title="Érintett API-műveletek (30)">
+
+- [`POST /v3/customers`](/api-reference/customers/post-v3-customers) (`postV3Customers`, status `409`)
+- [`DELETE /v3/customers/{customerId}`](/api-reference/customers/delete-v3-customers-by-customer-id) (`deleteV3CustomersByCustomerId`, status `409`)
+- [`PATCH /v3/customers/{customerId}`](/api-reference/customers/patch-v3-customers-by-customer-id) (`patchV3CustomersByCustomerId`, status `409`)
+- [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) (`postV3CustomersByCustomerIdAccounts`, status `409`)
+- [`DELETE /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/delete-v3-customers-by-customer-id-accounts-by-account-id) (`deleteV3CustomersByCustomerIdAccountsByAccountId`, status `409`)
+- [`PATCH /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/patch-v3-customers-by-customer-id-accounts-by-account-id) (`patchV3CustomersByCustomerIdAccountsByAccountId`, status `409`)
+- [`PUT /v3/customers/{customerId}/accounts/{accountId}/fees`](/api-reference/accounts/put-v3-customers-by-customer-id-accounts-by-account-id-fees) (`putV3CustomersByCustomerIdAccountsByAccountIdFees`, status `409`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, status `409`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}/cancel`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id-cancel) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityIdCancel`, status `409`)
+- [`POST /v3/customers/{customerId}/documents`](/api-reference/documents/post-v3-customers-by-customer-id-documents) (`postV3CustomersByCustomerIdDocuments`, status `409`)
+- [`DELETE /v3/customers/{customerId}/documents/{documentId}`](/api-reference/documents/delete-v3-customers-by-customer-id-documents-by-document-id) (`deleteV3CustomersByCustomerIdDocumentsByDocumentId`, status `409`)
+- [`POST /v3/customers/{customerId}/export`](/api-reference/customers/post-v3-customers-by-customer-id-export) (`postV3CustomersByCustomerIdExport`, status `409`)
+- [`POST /v3/customers/{customerId}/recipients`](/api-reference/recipients/post-v3-customers-by-customer-id-recipients) (`postV3CustomersByCustomerIdRecipients`, status `409`)
+- [`DELETE /v3/customers/{customerId}/recipients/{recipientId}`](/api-reference/recipients/delete-v3-customers-by-customer-id-recipients-by-recipient-id) (`deleteV3CustomersByCustomerIdRecipientsByRecipientId`, status `409`)
+- [`PATCH /v3/customers/{customerId}/recipients/{recipientId}`](/api-reference/recipients/patch-v3-customers-by-customer-id-recipients-by-recipient-id) (`patchV3CustomersByCustomerIdRecipientsByRecipientId`, status `409`)
+- [`POST /v3/customers/{customerId}/recipients/{recipientId}/destinations`](/api-reference/recipients/post-v3-customers-by-customer-id-recipients-by-recipient-id-destinations) (`postV3CustomersByCustomerIdRecipientsByRecipientIdDestinations`, status `409`)
+- [`DELETE /v3/customers/{customerId}/recipients/{recipientId}/destinations/{destinationId}`](/api-reference/recipients/delete-v3-customers-by-customer-id-recipients-by-recipient-id-destinations-by-destination-id) (`deleteV3CustomersByCustomerIdRecipientsByRecipientIdDestinationsByDestinationId`, status `409`)
+- [`POST /v3/customers/{customerId}/related-parties`](/api-reference/customers/post-v3-customers-by-customer-id-related-parties) (`postV3CustomersByCustomerIdRelated-parties`, status `409`)
+- [`DELETE /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/delete-v3-customers-by-customer-id-related-parties-by-related-party-id) (`deleteV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, status `409`)
+- [`PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/patch-v3-customers-by-customer-id-related-parties-by-related-party-id) (`patchV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, status `409`)
+- [`POST /v3/customers/{customerId}/rules`](/api-reference/rules/post-v3-customers-by-customer-id-rules) (`postV3CustomersByCustomerIdRules`, status `409`)
+- [`DELETE /v3/customers/{customerId}/rules/{ruleId}`](/api-reference/rules/delete-v3-customers-by-customer-id-rules-by-rule-id) (`deleteV3CustomersByCustomerIdRulesByRuleId`, status `409`)
+- [`PATCH /v3/customers/{customerId}/rules/{ruleId}`](/api-reference/rules/patch-v3-customers-by-customer-id-rules-by-rule-id) (`patchV3CustomersByCustomerIdRulesByRuleId`, status `409`)
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, status `409`)
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, status `409`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, status `409`)
+- [`POST /v3/transfers/{transferId}/cancel`](/api-reference/money-movement/post-v3-transfers-by-transfer-id-cancel) (`postV3TransfersByTransferIdCancel`, status `409`)
+- [`POST /v3/webhooks`](/api-reference/webhooks/post-v3-webhooks) (`postV3Webhooks`, status `409`)
+- [`DELETE /v3/webhooks/{webhookId}`](/api-reference/webhooks/delete-v3-webhooks-by-webhook-id) (`deleteV3WebhooksByWebhookId`, status `409`)
+- [`PATCH /v3/webhooks/{webhookId}`](/api-reference/webhooks/patch-v3-webhooks-by-webhook-id) (`patchV3WebhooksByWebhookId`, status `409`)
+
+</Accordion>
+
+**Példa:**
+
+```json
+{
+  "type": "https://docs.swipelux.com/errors/idempotency-conflict",
+  "title": "Idempotency Conflict",
+  "status": 409,
+  "code": "idempotency_conflict",
+  "detail": "Idempotency-Key was already used with a different request.",
+  "correlationId": "cor_01JMM23TRANSFERERRORS",
+  "retryable": false
+}
+```
+
+<a id="idempotency-request-in-progress" className="block scroll-mt-32">
+  <span className="sr-only">idempotency_request_in_progress error</span>
+</a>
+
+### `idempotency_request_in_progress`
+
+**HTTP-státusz:** `409`<br />
+**Újrapróbálható:** Igen<br />
+**Problématípus:** `https://docs.swipelux.com/errors/idempotency-request-in-progress`
+
+**Jelentés:** Egy azonos idempotencia-kulcsú, egyező kérés feldolgozása még folyamatban van.
+
+**Mikor fordul elő:** Ugyanaz az idempotens írás újra beküldésre kerül, mielőtt az első kísérlet befejeződne.
+
+**Teendő:** Várjon rövid ideig, majd próbálja újra az azonos kérést ugyanazzal az `Idempotency-Key` értékkel, amíg az eredeti eredmény elérhetővé nem válik.
+
+**Újrapróbálási útmutató:** Próbálja újra késleltetés után. Idempotens írás esetén használja újra az eredeti idempotencia-kulcsot és a változatlan kérést. Tartsa a metódust, az útvonalat és a törzset bájtról bájtra megegyezőnek az eredeti szándékkal.
+
+<Accordion title="Érintett API-műveletek (13)">
+
+- [`POST /v3/customers`](/api-reference/customers/post-v3-customers) (`postV3Customers`, status `409`)
+- [`DELETE /v3/customers/{customerId}`](/api-reference/customers/delete-v3-customers-by-customer-id) (`deleteV3CustomersByCustomerId`, status `409`)
+- [`PATCH /v3/customers/{customerId}`](/api-reference/customers/patch-v3-customers-by-customer-id) (`patchV3CustomersByCustomerId`, status `409`)
+- [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) (`postV3CustomersByCustomerIdAccounts`, status `409`)
+- [`DELETE /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/delete-v3-customers-by-customer-id-accounts-by-account-id) (`deleteV3CustomersByCustomerIdAccountsByAccountId`, status `409`)
+- [`PATCH /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/patch-v3-customers-by-customer-id-accounts-by-account-id) (`patchV3CustomersByCustomerIdAccountsByAccountId`, status `409`)
+- [`PUT /v3/customers/{customerId}/accounts/{accountId}/fees`](/api-reference/accounts/put-v3-customers-by-customer-id-accounts-by-account-id-fees) (`putV3CustomersByCustomerIdAccountsByAccountIdFees`, status `409`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}/cancel`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id-cancel) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityIdCancel`, status `409`)
+- [`POST /v3/customers/{customerId}/export`](/api-reference/customers/post-v3-customers-by-customer-id-export) (`postV3CustomersByCustomerIdExport`, status `409`)
+- [`POST /v3/customers/{customerId}/related-parties`](/api-reference/customers/post-v3-customers-by-customer-id-related-parties) (`postV3CustomersByCustomerIdRelated-parties`, status `409`)
+- [`DELETE /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/delete-v3-customers-by-customer-id-related-parties-by-related-party-id) (`deleteV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, status `409`)
+- [`PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/patch-v3-customers-by-customer-id-related-parties-by-related-party-id) (`patchV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, status `409`)
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, status `409`)
+
+</Accordion>
+
+**Példa:**
+
+```json
+{
+  "type": "https://docs.swipelux.com/errors/idempotency-request-in-progress",
+  "title": "Idempotency Request In Progress",
+  "status": 409,
+  "code": "idempotency_request_in_progress",
+  "detail": "A request with this Idempotency-Key is still in progress.",
+  "correlationId": "01JERRORIDEMPOTENCY",
+  "retryable": true
+}
+```
+
+<a id="internal-error" className="block scroll-mt-32">
+  <span className="sr-only">internal_error error</span>
+</a>
+
+### `internal_error`
+
+**HTTP-státusz:** `500`<br />
+**Újrapróbálható:** Igen<br />
+**Problématípus:** `https://docs.swipelux.com/errors/internal-error`
+
+**Jelentés:** A Swipelux váratlan szerverhibába ütközött a művelet feldolgozása közben.
+
+**Mikor fordul elő:** A kérés kezeletlen platformhibába fut konkrétabb nyilvános probléma helyett.
+
+**Teendő:** Őrizze meg a `correlationId` értéket, próbálja újra késleltetés után, és lépjen kapcsolatba a Swipelux támogatással, ha a hiba továbbra is fennáll.
+
+**Újrapróbálási útmutató:** Próbálja újra késleltetés után. Idempotens írás esetén használja újra az eredeti idempotencia-kulcsot és a változatlan kérést.
+
+**Érintett API-műveletek:** Az összes nyilvános API-művelet.
+
+<a id="not-found" className="block scroll-mt-32">
+  <span className="sr-only">not_found error</span>
+</a>
+
+### `not_found`
+
+**HTTP-státusz:** `404`<br />
+**Újrapróbálható:** Nem<br />
+**Problématípus:** `https://docs.swipelux.com/errors/not-found`
+
+**Jelentés:** A kért erőforrás nem található ehhez az API-kulcshoz és kérési útvonalhoz.
+
+**Mikor fordul elő:** Egy erőforrás-azonosító hiányzik, másik környezethez vagy szülő-erőforráshoz tartozik, vagy már nem érhető el a hívó számára.
+
+**Teendő:** Ellenőrizze az azonosítót, a szülő-erőforrást és az API-kulcs környezetét, majd olvassa be vagy listázza az erőforrást, mielőtt újra megpróbálja a műveletet.
+
+**Újrapróbálási útmutató:** Ne próbálja újra a változatlan kérést. Alkalmazza a fenti teendőt, mielőtt újabb kérést küld.
+
+<Accordion title="Érintett API-műveletek (36)">
+
+- [`GET /kyc/redirect/{customerId}/{taskId}/{verificationSessionId}`](/api-reference/tasks/start-kyc-verification-session) (`startKycVerificationSession`, status `404`)
+- [`GET /v3/customers/{customerId}/accounts`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts) (`getV3CustomersByCustomerIdAccounts`, status `404`)
+- [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) (`postV3CustomersByCustomerIdAccounts`, status `404`)
+- [`DELETE /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/delete-v3-customers-by-customer-id-accounts-by-account-id) (`deleteV3CustomersByCustomerIdAccountsByAccountId`, status `404`)
+- [`GET /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts-by-account-id) (`getV3CustomersByCustomerIdAccountsByAccountId`, status `404`)
+- [`PATCH /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/patch-v3-customers-by-customer-id-accounts-by-account-id) (`patchV3CustomersByCustomerIdAccountsByAccountId`, status `404`)
+- [`GET /v3/customers/{customerId}/accounts/{accountId}/fees`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts-by-account-id-fees) (`getV3CustomersByCustomerIdAccountsByAccountIdFees`, status `404`)
+- [`PUT /v3/customers/{customerId}/accounts/{accountId}/fees`](/api-reference/accounts/put-v3-customers-by-customer-id-accounts-by-account-id-fees) (`putV3CustomersByCustomerIdAccountsByAccountIdFees`, status `404`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityId`, status `404`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}/applications`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id-applications) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityIdApplications`, status `404`)
+- [`GET /v3/customers/{customerId}/capabilities/{capabilityId}/applications/{applicationId}/history`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id-applications-by-application-id-history) (`getV3CustomersByCustomerIdCapabilitiesByCapabilityIdApplicationsByApplicationIdHistory`, status `404`)
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}/cancel`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id-cancel) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityIdCancel`, status `404`)
+- [`GET /v3/customers/{customerId}/recipients`](/api-reference/recipients/get-v3-customers-by-customer-id-recipients) (`getV3CustomersByCustomerIdRecipients`, status `404`)
+- [`POST /v3/customers/{customerId}/recipients`](/api-reference/recipients/post-v3-customers-by-customer-id-recipients) (`postV3CustomersByCustomerIdRecipients`, status `404`)
+- [`DELETE /v3/customers/{customerId}/recipients/{recipientId}`](/api-reference/recipients/delete-v3-customers-by-customer-id-recipients-by-recipient-id) (`deleteV3CustomersByCustomerIdRecipientsByRecipientId`, status `404`)
+- [`GET /v3/customers/{customerId}/recipients/{recipientId}`](/api-reference/recipients/get-v3-customers-by-customer-id-recipients-by-recipient-id) (`getV3CustomersByCustomerIdRecipientsByRecipientId`, status `404`)
+- [`PATCH /v3/customers/{customerId}/recipients/{recipientId}`](/api-reference/recipients/patch-v3-customers-by-customer-id-recipients-by-recipient-id) (`patchV3CustomersByCustomerIdRecipientsByRecipientId`, status `404`)
+- [`GET /v3/customers/{customerId}/recipients/{recipientId}/destinations`](/api-reference/recipients/get-v3-customers-by-customer-id-recipients-by-recipient-id-destinations) (`getV3CustomersByCustomerIdRecipientsByRecipientIdDestinations`, status `404`)
+- [`POST /v3/customers/{customerId}/recipients/{recipientId}/destinations`](/api-reference/recipients/post-v3-customers-by-customer-id-recipients-by-recipient-id-destinations) (`postV3CustomersByCustomerIdRecipientsByRecipientIdDestinations`, status `404`)
+- [`DELETE /v3/customers/{customerId}/recipients/{recipientId}/destinations/{destinationId}`](/api-reference/recipients/delete-v3-customers-by-customer-id-recipients-by-recipient-id-destinations-by-destination-id) (`deleteV3CustomersByCustomerIdRecipientsByRecipientIdDestinationsByDestinationId`, status `404`)
+- [`GET /v3/customers/{customerId}/recipients/{recipientId}/destinations/{destinationId}`](/api-reference/recipients/get-v3-customers-by-customer-id-recipients-by-recipient-id-destinations-by-destination-id) (`getV3CustomersByCustomerIdRecipientsByRecipientIdDestinationsByDestinationId`, status `404`)
+- [`GET /v3/customers/{customerId}/rules`](/api-reference/rules/get-v3-customers-by-customer-id-rules) (`getV3CustomersByCustomerIdRules`, status `404`)
+- [`POST /v3/customers/{customerId}/rules`](/api-reference/rules/post-v3-customers-by-customer-id-rules) (`postV3CustomersByCustomerIdRules`, status `404`)
+- [`DELETE /v3/customers/{customerId}/rules/{ruleId}`](/api-reference/rules/delete-v3-customers-by-customer-id-rules-by-rule-id) (`deleteV3CustomersByCustomerIdRulesByRuleId`, status `404`)
+- [`GET /v3/customers/{customerId}/rules/{ruleId}`](/api-reference/rules/get-v3-customers-by-customer-id-rules-by-rule-id) (`getV3CustomersByCustomerIdRulesByRuleId`, status `404`)
+- [`PATCH /v3/customers/{customerId}/rules/{ruleId}`](/api-reference/rules/patch-v3-customers-by-customer-id-rules-by-rule-id) (`patchV3CustomersByCustomerIdRulesByRuleId`, status `404`)
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, status `404`)
+- [`GET /v3/quotes/{quoteId}`](/api-reference/money-movement/get-v3-quotes-by-quote-id) (`getV3QuotesByQuoteId`, status `404`)
+- [`POST /v3/sandbox/accounts/{accountId}/topup`](/api-reference/sandbox/post-v3-sandbox-accounts-by-account-id-topup) (`postV3SandboxAccountsByAccountIdTopup`, status `404`)
+- [`POST /v3/sandbox/customers/{customerId}/capabilities/{capabilityId}/status`](/api-reference/sandbox/post-v3-sandbox-customers-by-customer-id-capabilities-by-capability-id-status) (`postV3SandboxCustomersByCustomerIdCapabilitiesByCapabilityIdStatus`, status `404`)
+- [`POST /v3/sandbox/customers/{customerId}/verification`](/api-reference/sandbox/post-v3-sandbox-customers-by-customer-id-verification) (`postV3SandboxCustomersByCustomerIdVerification`, status `404`)
+- [`POST /v3/sandbox/tasks`](/api-reference/sandbox/post-v3-sandbox-tasks) (`postV3SandboxTasks`, status `404`)
+- [`POST /v3/sandbox/transfers/{transferId}/state`](/api-reference/sandbox/post-v3-sandbox-transfers-by-transfer-id-state) (`postV3SandboxTransfersByTransferIdState`, status `404`)
+- [`POST /v3/transfers`](/api-reference/money-movement/post-v3-transfers) (`postV3Transfers`, status `404`)
+- [`DELETE /v3/webhooks/{webhookId}`](/api-reference/webhooks/delete-v3-webhooks-by-webhook-id) (`deleteV3WebhooksByWebhookId`, status `404`)
+- [`PATCH /v3/webhooks/{webhookId}`](/api-reference/webhooks/patch-v3-webhooks-by-webhook-id) (`patchV3WebhooksByWebhookId`, status `404`)
+
+</Accordion>
+
+<a id="request-failed" className="block scroll-mt-32">
+  <span className="sr-only">request_failed error</span>
+</a>
+
+### `request_failed`
+
+**HTTP-státusz:** `502`, `503`<br />
+**Újrapróbálható:** Kontextusfüggő<br />
+**Problématípus:** `https://docs.swipelux.com/errors/request-failed`
+
+**Jelentés:** A művelet befejezéséhez szükséges egyik szolgáltatás nem dolgozta fel sikeresen a kérést.
+
+**Mikor fordul elő:** Az ügyfélexport, a webhook-kezelés vagy a sandbox-ellenőrzés külső szolgáltatáshibába vagy nem elérhető konfigurációba ütközik.
+
+**Teendő:** Vizsgálja meg a `retryable` értéket. Próbálkozzon újra később, ha az `true`; ellenkező esetben őrizze meg a `correlationId` értéket, ellenőrizze a kérés előfeltételeit, és lépjen kapcsolatba a támogatással, ha a hiba továbbra is fennáll.
+
+**Újrapróbálási útmutató:** Olvassa ki a válasz `retryable` értékét. Csak akkor próbálkozzon újra később, ha az `true`. Idempotens írás esetén használja újra az eredeti idempotencia-kulcsot és a változatlan kérést.
+
+<Accordion title="Érintett API-műveletek (9)">
+
+- [`POST /v3/customers/{customerId}/export`](/api-reference/customers/post-v3-customers-by-customer-id-export) (`postV3CustomersByCustomerIdExport`, status `502`)
+- [`POST /v3/customers/{customerId}/export`](/api-reference/customers/post-v3-customers-by-customer-id-export) (`postV3CustomersByCustomerIdExport`, status `503`)
+- [`POST /v3/sandbox/customers/{customerId}/verification`](/api-reference/sandbox/post-v3-sandbox-customers-by-customer-id-verification) (`postV3SandboxCustomersByCustomerIdVerification`, status `502`)
+- [`POST /v3/sandbox/customers/{customerId}/verification`](/api-reference/sandbox/post-v3-sandbox-customers-by-customer-id-verification) (`postV3SandboxCustomersByCustomerIdVerification`, status `503`)
+- [`GET /v3/webhooks`](/api-reference/webhooks/get-v3-webhooks) (`getV3Webhooks`, status `502`)
+- [`POST /v3/webhooks`](/api-reference/webhooks/post-v3-webhooks) (`postV3Webhooks`, status `502`)
+- [`DELETE /v3/webhooks/{webhookId}`](/api-reference/webhooks/delete-v3-webhooks-by-webhook-id) (`deleteV3WebhooksByWebhookId`, status `502`)
+- [`PATCH /v3/webhooks/{webhookId}`](/api-reference/webhooks/patch-v3-webhooks-by-webhook-id) (`patchV3WebhooksByWebhookId`, status `502`)
+- [`GET /v3/webhooks/portal`](/api-reference/webhooks/get-v3-webhooks-portal) (`getV3WebhooksPortal`, status `502`)
+
+</Accordion>
+
+## Következő lépés
+
+Használja a fenti műveletlinkeket az éppen kezelt pontos kérés- és válaszséma megerősítéséhez, majd gyakorolja a hibaútvonalat a [Sandbox tesztelés](/hu/integration/sandbox) oldalon.
