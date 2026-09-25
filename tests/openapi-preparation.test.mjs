@@ -356,6 +356,57 @@ test("removes only legacy customer webhook branches and keeps v3 examples", () =
   );
 });
 
+test("rewrites legacy version references in the documents upload contract", () => {
+  const reason = "Remove legacy API version references from the public contract.";
+  const source = makeFixture();
+  source.paths["/v3/customers/{customerId}/documents"] = {
+    post: {
+      ...operation("uploadCustomerDocument", "Documents", {
+        "201": { description: "Created" },
+      }),
+      description: "Consume a storageKey returned by the V2 direct-upload flow.",
+      requestBody: {
+        content: {
+          "application/json": {
+            schema: {
+              type: "object",
+              properties: {
+                storageKey: {
+                  type: "string",
+                  description:
+                    "Opaque storageKey returned by POST /v2/documents/direct-upload.",
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  };
+
+  const { spec, transformations } = prepareOpenApi(source, SOURCE_SHA256);
+  const upload = spec.paths["/v3/customers/{customerId}/documents"].post;
+  assert.doesNotMatch(upload.description, /v2/i);
+  assert.doesNotMatch(
+    upload.requestBody.content["application/json"].schema.properties.storageKey
+      .description,
+    /v2/i,
+  );
+  assert.equal(
+    transformations.filter((item) => item.reason === reason).length,
+    2,
+  );
+  assert.doesNotThrow(() =>
+    compareSourceToPrepared(source, spec, transformations),
+  );
+
+  const clean = prepareOpenApi(makeFixture(), SOURCE_SHA256);
+  assert.equal(
+    clean.transformations.some((item) => item.reason === reason),
+    false,
+  );
+});
+
 test("publishes only X-API-Key authentication", () => {
   const { spec } = prepareOpenApi(makeFixture(), SOURCE_SHA256);
   assert.deepEqual(Object.keys(spec.components.securitySchemes), ["apiKey"]);
