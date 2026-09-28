@@ -168,7 +168,7 @@ test("webhooks document authenticated at-least-once processing", () => {
     "at least once",
     "duplicate",
     "delayed",
-    "out of order",
+    "out-of-order",
     "durable inbox",
     "return `2xx`",
     "refetch",
