@@ -51,6 +51,63 @@ Content-Type: application/json
 
 将返回的 `data.id` 保存为 `BANK_ACCOUNT_ID`。同时保留 `data.status`、`data.openTaskIds`、`data.details` 以及结算关系。
 
+可选请求字段:
+
+| 字段 | 适用范围 | 行为 |
+| --- | --- | --- |
+| `institution` | 发行的 `ach`、`wire` 和 `swift` | 精确选择该银行。Swipelux 不会回退到其他银行。请使用受支持能力响应中返回的机构 ID。 |
+| `allowPending` | 发行的 `ach`、`wire` 和 `swift` | 设为 `true` 可在所选银行的申请等待批准期间保存该请求。需要同时提供 `institution`。 |
+| `settlement.currency` | 发行的 `USD` 银行账户 | `USDC` 或 `USDT`。设置交付到结算钱包的稳定币。 |
+
+### 选择银行 {#choose-the-bank}
+
+当客户需要来自特定银行的银行账户信息时,请发送 `institution`。Swipelux 会为每个客户、支付方式、币种和机构的组合预留一个发行账户。省略 `institution` 时,每种支付方式和币种只有一个发行账户,覆盖所有银行。此时针对该支付方式和币种的第二次创建请求会返回 `409 conflict`。
+
+账户读取会以 `institution` 返回所选银行,其中包含 `id`、`name` 和 `bic`。`bic` 可能为 `null`。
+
+幂等性作用于所选银行。重放相同的请求会返回原始账户。在同一个 `Idempotency-Key` 下更改 `institution` 会返回 `409 idempotency_conflict`。
+
+### 在银行批准前保存请求 {#save-the-request-before-bank-approval}
+
+默认情况下,Swipelux 仅在银行能力就绪后才接受发行银行账户的请求。如需提前收集客户的账户设置,请同时发送 `allowPending: true` 和 `institution`:
+
+```json
+{
+  "origin": "issued",
+  "type": "bank",
+  "method": "wire",
+  "country": "US",
+  "currency": "USD",
+  "institution": "${INSTITUTION_ID}",
+  "allowPending": true,
+  "settlement": {
+    "accountId": "${SETTLEMENT_WALLET_ID}"
+  },
+  "label": "USD wire account"
+}
+```
+
+在银行审核申请期间,该账户返回 `status: "in_review"`,且 `statusReason.code` 为 `waiting_for_approval`。响应中还包含 `applicationId` 以及该申请的 `openTaskIds`。请通过[能力与任务](/cn/integration/onboarding/capabilities-and-requirements)完成这些任务。
+
+已保存的请求会保留其账户 ID、结算钱包和账户名额。待申请和能力就绪后,Swipelux 会在同一个 `BANK_ACCOUNT_ID` 下开通银行账户信息。请继续读取该 ID,切勿再创建新的请求。
+
+如果申请先被拒绝、取消或归档,该账户会变为 `rejected`。它不再占用账户名额,因此您可以发送新的请求。
+
+### 选择结算币种 {#choose-the-settlement-currency}
+
+默认情况下,入金以结算钱包的币种结算。将 `settlement.currency` 设为 `USDC` 或 `USDT`,即可独立于钱包币种选择交付的资产:
+
+```json
+{
+  "settlement": {
+    "accountId": "${SETTLEMENT_WALLET_ID}",
+    "currency": "USDT"
+  }
+}
+```
+
+账户读取会返回已保存的选择,包括账户仍在开通期间。之后更改结算币种不会更改钱包,也不会对 Swipelux 已归属到该账户的入金重新定价。
+
 银行账户 ID 与钱包 ID 承担不同的角色。使用银行账户 ID 来读取开通进度和银行账户信息。使用结算钱包 ID 来标识入金记账到哪里。
 
 ## 3. 监控开通进度
@@ -59,11 +116,15 @@ Content-Type: application/json
 
 在 `details` 缺失期间,保持客户界面处于待处理状态。如果 `openTaskIds` 非空,请完成最新任务,然后重新拉取该账户。切勿仅凭经过的时间来推断就绪状态。
 
+如果该账户是通过 `allowPending: true` 保存的,在银行批准申请之前,它会一直保持 `in_review`,且 `statusReason.code` 为 `waiting_for_approval`。
+
 如果最新的 `statusReason.code` 为 `awaiting_assignment`,请通过[接收资金](/cn/integration/receive-funds)为同一客户、能力和结算钱包创建第一笔入金,然后再次读取该银行账户。仅当当前账户明确要求时才走此分支。
 
 ## 4. 安全展示银行账户信息
 
 请只展示最新一次账户读取所返回的完整信息。当 `details.referenceRequired` 为 true 时,请展示准确的 `details.reference` 并允许复制。当其为 false 时,请勿自行编造 reference。
+
+对于发行的 `swift` 账户,请在返回时展示 `details.swiftCode`(收款银行的 BIC)、`details.accountNumber`、`details.accountHolderName` 和 `details.accountHolderAddress`。汇款方必须将受益人地址原样填写到国际电汇中。同时请展示 `details.bankAddress` 以及账户返回的所有中间行字段。
 
 这些银行账户信息是可复用的。切勿用来自某次获得报价入金中的入金指令替换它们,那些指令仅属于那一笔转账。
 
