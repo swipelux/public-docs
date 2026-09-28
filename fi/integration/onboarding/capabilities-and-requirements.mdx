@@ -34,6 +34,23 @@ curl --request GET \
 
 Valitse vastauskohta, joka vastaa aiottua `directions`-, `method`- ja `accountType`-arvoa. Jatka vain, kun `availability` on `available` tai `beta` ja `eligibility.eligible` on `true`. Jos `institutions` palautetaan, valitse vain ID kyseisestä vastauksesta.
 
+Jokainen instituutiomerkintä sisältää `logoUrl`-kentän ja `isDefault`-lipun. Käytä `logoUrl`-arvoa pankin logon näyttämiseen pankinvalintakäyttöliittymässä ja näytä oma yleinen pankkikuvakkeesi, kun arvo on `null`. `isDefault` koskee vain tätä asiakasta ja kykyä, ei instituutiota yleisesti. [`GET /v3/institutions`](/api-reference/institutions/get-v3-institutions) palauttaa saman null-arvoja sallivan `logoUrl`-kentän. Instituutioiden ID:t ovat läpinäkymättömiä, joten käsittele uudet ID:t ilman koodimuutoksia.
+
+```json
+{
+  "institutions": [
+    {
+      "id": "jpmorgan",
+      "name": "JPMorgan Chase",
+      "bic": "CHASUS33",
+      "logoUrl": "https://wallet.swipelux.com/bank-logos/jpmorgan.png",
+      "countries": ["US"],
+      "isDefault": true
+    }
+  ]
+}
+```
+
 Tallenna valittu `data[].id` muuttujaan `CAPABILITY_ID`. Älä koskaan kopioi kyky-ID:tä toiselta asiakkaalta tai ympäristöstä.
 
 ### Jaetut ja nimelliset tilityypit
@@ -44,6 +61,10 @@ Pankkikykyjä on kahta muunnelmaa, jotka koodataan `accountType`-kenttään ja k
 - **`named`**: asiakkaalle omistettu pankkitilitiedot (virtuaalinen IBAN, omistettu ACH-tili). Uudelleenkäytettävä ja jaettavissa minkä tahansa maksajan kanssa. Vaaditaan [luotuja pankkitilejä](/fi/integration/issue-bank-account) varten.
 
 Käytä oletuksena `pooled`. Käytä `named`-tyyppiä vain, kun asiakas tarvitsee uudelleenkäytettäviä pankkitilitietoja. Tarkista `supported`-vastauksesta, mitkä muunnelmat ovat saatavilla.
+
+Jos haluat vastaanottaa SWIFT-talletuksia tai luoda SWIFT-pankkitilitiedot, käytä `swift_named`-vaihtoehtoa. `swift_pooled` tukee vain maksuja ulos, joten tarkista kunkin vaihtoehdon `directions`-arvo tuettu-kykyvastauksesta. Nimellinen SWIFT-tili palauttaa uudelleenkäytettävät vastaanottotiedot, mukaan lukien pankin BIC-tunnuksen, viitteen, kun sellainen vaaditaan, ja edunsaajan osoitteen, kun pankki toimittaa sen.
+
+Luoduille ACH-, Wire- ja SWIFT-tileille voit valita tarkan pankin `institution`-kentällä ja tallentaa tilipyynnön ennen kuin pankki hyväksyy asiakkaan. Katso [Luo pankkitili](/fi/integration/issue-bank-account#choose-the-bank).
 
 ## Pyydä kyky
 
@@ -62,6 +83,84 @@ Käytä eksplisiittistä `institutions`-taulukkoa vain, kun sinun täytyy valita
 
 Tallenna `data.status` muuttujaan `CAPABILITY_STATUS`, `data.accountProvisioning` muuttujaan `ACCOUNT_PROVISIONING_STATUS`, `data.openTaskIds` muuttujaan `OPEN_TASK_IDS` ja kukin `data.applications[].id` muuttujaan `APPLICATION_IDS`.
 
+### Pankkikohtaiset jaetut hakemukset {#shared-applications-per-bank}
+
+Nimellisissä pankkikyvyissä jokaisella asiakkaalla on yksi hakemustapaus pankkia kohden. Jaetut kyvyt ja alustakyvyt käyttävät tapauksia ilman pankkia. Swipelux jakaa tapauksen kaikkien pyytämiesi yhteensopivien kykyjen kesken:
+
+- Yksi hyväksyntä voi kattaa useita kykyjä. Esimerkiksi yhden pankin hyväksytty tapaus voi tehdä sekä ACH- että wire-kyvystä `ready`-tilaisen.
+- Myöhempi pyyntö, joka vastaa olemassa olevaa tapausta, käyttää sitä uudelleen. Swipelux ei avaa toista hakemusta eikä lisää päällekkäisiä tehtäviä.
+- Eri pankkien tapaukset ovat toisistaan riippumattomia. Hylkäys yhdessä pankissa ei vaikuta toisen pankin tapaukseen.
+
+Pyynnön vastaus kertoo, mitä tapausta Swipelux käytti:
+
+- `201` tarkoittaa, että pyyntö avasi uuden hakemustapauksen.
+- `200` tarkoittaa, että pyyntö kohdistui hakemustapaukseen, joka asiakkaalla jo oli, esimerkiksi toistettu pyyntö pankkikyvylle, joka asiakkaalla jo on, tai pyyntö peruutetulle kyvylle. Toistettu pyyntö kyvylle `card` tai `stablecoin_transfers` palauttaa edelleen [`409 capability_already_exists`](/integration/errors#capability-already-exists).
+- `selectedApplicationId` on ylätason kenttä `data`-kentän vieressä, ja se sisältää pyynnön valitseman tai avaaman tapauksen ID:n. Swipelux jättää sen pois, kun pyyntö ei valinnut tapausta. Idempotentti uusinta palauttaa saman arvon.
+
+Lyhennetty vastaus:
+
+```json
+{
+  "data": {
+    "id": "ach_named",
+    "status": "pending",
+    "openTaskIds": ["tsk_000000000000000002"],
+    "applications": [{ "id": "apl_000000000000000005", "status": "in_review" }]
+  },
+  "selectedApplicationId": "apl_000000000000000005"
+}
+```
+
+Nimellisissä kyvyissä lähetä sama `institutions`-luettelo uudelleen valitaksesi saman tapauksen, tai lähetä yksi instituution ID kohdistaaksesi pyynnön kyseiseen pankkiin. Pankki, joka on hylännyt asiakkaan lopullisesti, ohitetaan. Kun nimeät vain kyseisen pankin tai kaikki kelvolliset pankit ovat hylänneet asiakkaan, pyyntö palauttaa [`409 capability_terminally_rejected`](/integration/errors#capability-terminally-rejected). Kokeillaksesi toista pankkia hylkäyksen jälkeen pyydä kykyä uudelleen kyseisen pankin instituution ID:llä.
+
+Kyvyn tila heijastaa kaikkia asiakkaan siihen liittyviä tapauksia. Nimellisessä kyvyssä yksi `ready`-tapaus, jonka hyväksyntä kattaa kyvyn, riittää tekemään siitä `ready`-tilaisen riippumatta siitä, mitä muut pankit raportoivat. Jaettu kyky odottaa lisäksi maksutapansa tarkistusta, joka raportoidaan `probes`-kentässä asiakkaan hakemusluettelossa.
+
+#### Listaa asiakkaan hakemukset {#list-the-customers-applications}
+
+Listaa kaikki asiakkaan hakemustapaukset [`GET /v3/customers/{customerId}/applications`](/api-reference/capabilities/get-v3-customers-by-customer-id-applications) -toiminnolla. Tulokset sivutetaan `nextCursor`- ja `hasMore`-kentillä, ja ne hyväksyvät `updatedAfter`-parametrin:
+
+```bash
+curl --request GET \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/applications" \
+  --header "X-API-Key: ${SWIPELUX_API_KEY}"
+```
+
+Jokainen merkintä sisältää kyvyn `applications[]`-kentässä palautettavat hakemuskentät sekä lisäksi:
+
+- `scope`: `named` yhden pankin tapaukselle, `provider_pooled` tai `platform` tapauksille ilman pankkia, tai `null` luokittelemattomalle historialliselle tapaukselle. `institution` puuttuu `provider_pooled`- ja `platform`-tapauksista.
+- `requestedScope[]`: tapaukseen kohdistetut pyydetyt kykyavaimet, kukin ensimmäisellä `requestedAt`-arvollaan. Merkintöjä ei koskaan poisteta.
+- `coverage[]`: kykyavaimet, jotka tapauksen hyväksyntä kattaa, kukin `grantedAt`- ja `source`-arvoineen. Kattavuus kirjaa laajuuden, ei valtuutusta. Lue kyky saadaksesi sen nykyisen tilan.
+- `probes[]`: maksutavan tarkistukset tapauksen kattamille jaetuille kykyavaimille, kukin `capabilityKey`-, `status`- ja `reason`-arvoineen. Nimelliset avaimet eivät koskaan vaadi tarkistusta.
+- `generation`, `predecessorApplicationId` ja `supersededByApplicationId`: seuraantolinkit. Kun `supersededByApplicationId` on asetettu, tapaus on korvattu. Seuraa kyseistä ID:tä nykyiseen tapaukseen.
+
+Lyhennetty vastaus:
+
+```json
+{
+  "data": [
+    {
+      "id": "apl_000000000000000005",
+      "status": "ready",
+      "scope": "named",
+      "institution": { "id": "jpmorgan", "name": "JPMorgan Chase", "bic": "CHASUS33" },
+      "requestedScope": [
+        { "capabilityKey": "ach_named", "requestedAt": "2026-09-20T10:00:00.000Z" }
+      ],
+      "coverage": [
+        { "capabilityKey": "ach_named", "grantedAt": "2026-09-22T12:00:00.000Z", "source": "approval" },
+        { "capabilityKey": "wire_named", "grantedAt": "2026-09-22T12:00:00.000Z", "source": "approval" }
+      ],
+      "probes": [],
+      "generation": 1,
+      "predecessorApplicationId": null,
+      "supersededByApplicationId": null
+    }
+  ],
+  "nextCursor": null,
+  "hasMore": false
+}
+```
+
 ## Suorita nykyiset tehtävät {#complete-current-tasks}
 
 Listaa tehtävät [`GET /v3/customers/{customerId}/tasks`](/api-reference/tasks/list-customer-tasks) -toiminnolla, valitse ID:t muuttujasta `OPEN_TASK_IDS`, lue sitten kukin nykyinen tehtävä [`GET /v3/customers/{customerId}/tasks/{taskId}`](/api-reference/tasks/get-customer-task) -toiminnolla:
@@ -73,6 +172,47 @@ curl --request GET \
 ```
 
 Käytä uusinta `data.revision`- ja `data.requirements`-arvoa. Hae tehtävä uudelleen juuri ennen lähettämistä, jos jompikumpi voi olla muuttunut.
+
+### Uudelleenkäytetyt profiilitodisteet {#reused-profile-evidence}
+
+Hakemuksen intake-tehtävissä, jotka hyväksyvät suoran API-lähetyksen, Swipelux käyttää uudelleen tietoja, jotka asiakas on jo antanut. Kun tällainen tehtävä luodaan tai täsmäytetään, Swipelux tarkistaa asiakasprofiilin ja asiakkaan itse lataamat asiakirjat. Kelvolliset vaatimukset, joiden tukena on jo käyttökelpoinen profiiliarvo tai asiakirja, siirtyvät tilaan `in_review` sen sijaan, että ne jäisivät toimintakelpoisiksi. Profiilin päivitykset ja uudet asiakirjalataukset käynnistävät saman tarkistuksen olemassa oleville tehtäville.
+
+Vain puuttuvat tai yhteensopimattomat arvot jäävät toimintakelpoisiksi. Uudelleenkäyttö ei hyväksy todisteita. Swipelux tarkistaa ne silti. Eksplisiittiset korjauspyynnöt ja aiemmin vastatut vaatimukset jäävät toimintakelpoisiksi. Omistajien ja liittyvien osapuolten asiakirjoja ei käytetä uudelleen, ja vaatimukset, jotka kerätään vain isännöidyn istunnon kautta, noudattavat normaalia kulkuaan.
+
+### Vaatimusten esittäminen {#render-requirements}
+
+Rakenna lomakkeet kunkin vaatimuksen palauttamista metatiedoista vaatimusavainten sijaan. Vaatimus voi sisältää valinnaisen lyhyen `title`-kentän, ja jokainen `request` sisältää `prompt`-kentän, joka näytetään otsikon alla.
+
+Vaatimukset, joiden `request.type: "profile"`, yksilöivät profiilikentän `profilePointer`-kentällä ja lisäävät syötteen metatietoja:
+
+- `allowedValues`: sallitut arvot skalaarikentälle tai taulukkokentän jokaiselle alkiolle. Lähetä nämä arvot, älä käännettyjä näyttöotsikoita.
+- `valueSchema`: itsenäinen JSON Schema Draft 7 -dokumentti, joka kuvaa syötteen muodon, sisäkkäiset ominaisuudet, pakolliset kentät ja rakenteelliset rajoitteet. Objektien enumit näkyvät asianomaisessa ominaisuudessa, esimerkiksi `valueSchema.items.properties.type.enum` verotunnisteille. Swipelux soveltaa silti kenttien välistä validointia ja tarkastusvalidointia lähetyksen jälkeen, joten skeeman läpäisevä arvo voidaan silti hylätä.
+- `valueType: "country"`, tai taulukoille `itemValueType: "country"`: kenttä hyväksyy isoilla kirjaimilla kirjoitettuja ISO 3166-1 alpha-2 -koodeja. `valueSchema`-skeeman sisäkkäiset maaominaisuudet käyttävät `format: "iso-3166-1-alpha-2"`. Käytä vakiomaaluetteloa lokalisoituja otsikoita varten.
+
+```json
+{
+  "id": "req_000000000000000010",
+  "key": "account_purposes",
+  "title": "Account purpose",
+  "status": "action_required",
+  "request": {
+    "type": "profile",
+    "prompt": "Select every purpose that applies.",
+    "required": true,
+    "profilePointer": "/financialProfile/accountPurposes",
+    "valueType": "array",
+    "itemValueType": "string",
+    "allowedValues": ["business_expenses", "ecommerce", "payroll"],
+    "valueSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "array",
+      "items": { "enum": ["business_expenses", "ecommerce", "payroll"] }
+    }
+  }
+}
+```
+
+Tämä esimerkki lyhentää arvoluetteloa; API palauttaa kaikki sallitut arvot. Joillakin profiilivaatimuksilla ei ole julkaistua skeemaa, ja niistä puuttuvat `valueSchema` ja `allowedValues`. Esitä ne `prompt`- ja `valueType`-kenttien perusteella.
 
 Jokainen avoin tehtävä sisältää `dueAt`-aikaleiman. Kun Swipelux luo tehtävän ilman eksplisiittistä eräpäivää, `dueAt` on oletuksena tasan 31 päivää tehtävän `createdAt`-ajankohdan jälkeen. Käsittele `dueAt`-arvoa informatiivisena: et voi asettaa sitä API:n kautta, eikä se laukaise automaattista elinkaarisiirtymää. Vain erillinen `deadline`-kenttä aiheuttaa automaattisen siirtymän, jos se on asetettu.
 
