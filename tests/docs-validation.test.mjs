@@ -396,6 +396,23 @@ for (const [label, banned, pattern] of [
   });
 }
 
+test("allows institution logo assets on the wallet host", () => {
+  assert.deepEqual(
+    validatePublishedText(
+      "integration/example.mdx",
+      validPage("Render https://wallet.swipelux.com/bank-logos/jpmorgan.png as the bank logo."),
+    ),
+    [],
+  );
+  assertHasError(
+    validatePublishedText(
+      "integration/example.mdx",
+      validPage("Call https://wallet.swipelux.com/api/customers."),
+    ),
+    /deprecated wallet\.swipelux\.com host/i,
+  );
+});
+
 test("rejects internal documentation implementation details in Integration pages", () => {
   for (const value of [
     "openapi-coverage.json",
@@ -1424,7 +1441,7 @@ test("rejects omitting any approved non-Terms source page", () => {
 test("validates the committed redirect inventory", () => {
   const { inventory, marker } = committedRedirectState();
 
-  assert.equal(inventory.length, 167);
+  assert.equal(inventory.length, 174);
   assert.ok(["current", "final"].includes(marker.phase));
   assert.equal(assertRedirectRepositoryState(marker, inventory), marker.phase);
 });

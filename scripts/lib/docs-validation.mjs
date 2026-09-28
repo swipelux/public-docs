@@ -894,7 +894,7 @@ export function validatePublishedText(path, text, options = {}) {
           },
         ]),
     {
-      pattern: /wallet\.swipelux\.com/i,
+      pattern: /wallet\.swipelux\.com(?!\/bank-logos\/)/i,
       label: "deprecated wallet.swipelux.com host",
     },
     {
