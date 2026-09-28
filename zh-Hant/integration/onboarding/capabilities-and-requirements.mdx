@@ -60,7 +60,7 @@ curl --request POST \
 
 僅在您需要從支援能力回應所提供的 ID 中挑選時,才使用明確的 `institutions` 陣列。
 
-將 `data.status` 儲存為 `CAPABILITY_STATUS`、`data.openTaskIds` 儲存為 `OPEN_TASK_IDS`,並將每個 `data.applications[].id` 存入 `APPLICATION_IDS`。
+將 `data.status` 儲存為 `CAPABILITY_STATUS`、`data.accountProvisioning` 儲存為 `ACCOUNT_PROVISIONING_STATUS`、`data.openTaskIds` 儲存為 `OPEN_TASK_IDS`,並將每個 `data.applications[].id` 存入 `APPLICATION_IDS`。
 
 ## 完成當前任務 {#complete-current-tasks}
 
@@ -73,6 +73,8 @@ curl --request GET \
 ```
 
 請使用最新的 `data.revision` 與 `data.requirements`。若兩者中任一可能已變更,請在提交前立即重新讀取任務。
+
+每個未完成任務都包含 `dueAt` 時間戳記。當 Swipelux 建立任務且未明確指定到期日期時,`dueAt` 預設為任務 `createdAt` 之後整整 31 天。請將 `dueAt` 視為僅供參考:您無法透過 API 設定它,它也不會觸發任何自動生命週期轉換。只有單獨的 `deadline` 欄位(如存在)才會觸發自動轉換。
 
 ### 託管操作
 
@@ -130,6 +132,8 @@ curl --request POST \
 
 在提交引用該文件的答覆前,將回傳的 `data.id` 儲存為 `DOCUMENT_ID`。
 
+若之後要取回已儲存的檔案,請呼叫 [`GET /v3/customers/{customerId}/documents/{documentId}/download`](/api-reference/documents/get-v3-customers-by-customer-id-documents-by-document-id-download)。Swipelux 會回傳一個 `url`,以附件形式下載檔案,且該連結於一小時後到期。已封存的文件會回傳 `404`。
+
 ### API 答覆
 
 使用 [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) 為當前版本提交一組完整的答覆:
@@ -158,6 +162,31 @@ JSON
 
 請從最新的任務中取用每個 requirement ID 與答覆類型。若 API 回報任務已變更,請重新讀取,並根據新版本重新建構提交內容。
 
+### 企業的最終受益人前置條件 {#beneficial-owner-prerequisite-for-businesses}
+
+申請需要最終受益人佐證的企業能力,即使客戶尚未有符合資格的所有者,也會成功。該能力會以 `restricted` 建立,並帶有 `statusReason.code: tasks_due`,而企業資料收集任務會要求缺少的所有權事實,包括所有權結構。
+
+同一任務帶有一項 `resource_reference` 要求,其請求包含 `qualification: "beneficial_owner"`:
+
+```json
+{
+  "type": "resource_reference",
+  "prompt": "Add or select a qualifying beneficial owner.",
+  "required": true,
+  "resourceType": "related_party",
+  "qualification": "beneficial_owner"
+}
+```
+
+當關係人為同一客戶名下的有效 `person` 關係人,且具有 `ownership.declared: true` 或提供的所有權比例達 25 以上時,即符合資格。
+
+該要求是從當前的關係人名冊推導而來,因此您通常不會直接答覆它:
+
+- 建立或更新符合資格的關係人,會在同一次重新評估中滿足該要求,並開啟該所有者本身的個人資料與文件工作。請參閱[新增企業關係人](/zh-Hant/integration/onboarding/customers#add-business-related-parties)。
+- 您也可以使用帶有其 `relatedPartyId` 的 `resource_reference` 答覆,明確引用符合資格的關係人。
+- 該要求在被滿足後仍會列在當前任務中。當沒有其他未完成的義務時,任務會變為 `satisfied`。
+- 封存最後一位符合資格的關係人,或移除使其符合資格的事實,會重新開啟該要求,即使任務先前已為 `satisfied`。
+
 ## 能力就緒後繼續
 
 使用 [`GET /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id) 再次讀取能力:
@@ -168,6 +197,8 @@ curl --request GET \
   --header "X-API-Key: ${SWIPELUX_API_KEY}"
 ```
 
-將儲存的狀態與任務 ID 替換為最新的回應。僅在當前能力狀態允許您預期建立的帳戶、報價或轉帳時才繼續。
+將儲存的狀態、帳戶核發狀態與任務 ID 替換為最新的回應。能力的 `status` 回報權限是否已獲核准。對於會核發帳戶的能力,`accountProvisioning` 會另外回報該帳戶為 `not_started`、`in_progress`、`issued` 或 `failed`;不核發帳戶的能力則會回傳 `not_applicable`。
+
+僅在當前能力狀態允許您預期建立的帳戶、報價或轉帳時才繼續。若流程需要已核發的帳戶,也請等待 `accountProvisioning` 變為 `issued`。
 
 接下來,請於[常見流程](/zh-Hant/integration/common-flows) 中選擇對應的路徑。

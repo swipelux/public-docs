@@ -60,7 +60,7 @@ curl --request POST \
 
 Izmantojiet skaidru `institutions` masīvu tikai tad, kad jums nepieciešams izvēlēties no atbalstīto iespēju atbildē atgrieztajiem ID.
 
-Saglabājiet `data.status` kā `CAPABILITY_STATUS`, `data.openTaskIds` kā `OPEN_TASK_IDS` un katru `data.applications[].id` sarakstā `APPLICATION_IDS`.
+Saglabājiet `data.status` kā `CAPABILITY_STATUS`, `data.accountProvisioning` kā `ACCOUNT_PROVISIONING_STATUS`, `data.openTaskIds` kā `OPEN_TASK_IDS` un katru `data.applications[].id` sarakstā `APPLICATION_IDS`.
 
 ## Pabeidziet pašreizējos uzdevumus {#complete-current-tasks}
 
@@ -73,6 +73,8 @@ curl --request GET \
 ```
 
 Izmantojiet jaunāko `data.revision` un `data.requirements`. Uzreiz pirms iesniegšanas atkārtoti ielādējiet uzdevumu, ja kāds no tiem varētu būt mainījies.
+
+Katrs atvērtais uzdevums ietver `dueAt` laika zīmogu. Kad Swipelux izveido uzdevumu bez skaidri norādīta izpildes termiņa, `dueAt` pēc noklusējuma tiek iestatīts tieši 31 dienu pēc uzdevuma `createdAt`. Uztveriet `dueAt` kā informatīvu: to nevar iestatīt caur API, un tas neizraisa automātisku dzīves cikla pāreju. Tikai atsevišķais lauks `deadline`, ja tas ir norādīts, izraisa automātisku pāreju.
 
 ### Uzņemtās darbības
 
@@ -130,6 +132,8 @@ curl --request POST \
 
 Saglabājiet atgriezto `data.id` kā `DOCUMENT_ID`, pirms iesniedzat atbildi, kas uz to atsaucas.
 
+Lai vēlāk izgūtu saglabātu failu, izsauciet [`GET /v3/customers/{customerId}/documents/{documentId}/download`](/api-reference/documents/get-v3-customers-by-customer-id-documents-by-document-id-download). Swipelux atgriež `url`, kas lejupielādē failu kā pielikumu un kura derīgums beidzas pēc vienas stundas. Arhivēti dokumenti atgriež `404`.
+
 ### API atbildes
 
 Iesniedziet vienu pilnu atbilžu kopu pašreizējai versijai ar [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission):
@@ -158,6 +162,31 @@ JSON
 
 Ņemiet katru prasības ID un atbildes veidu no jaunākā uzdevuma. Ja API ziņo, ka uzdevums ir mainījies, atkārtoti ielādējiet to un pārveidojiet iesniegumu no jaunās versijas.
 
+### Patiesā labuma guvēja priekšnosacījums uzņēmumiem {#beneficial-owner-prerequisite-for-businesses}
+
+Uzņēmuma iespējas pieprasīšana, kurai nepieciešami patiesā labuma guvēja pierādījumi, izdodas arī tad, kad klientam vēl nav kvalificējoša īpašnieka. Iespēja tiek izveidota kā `restricted` ar `statusReason.code: tasks_due`, un uzņēmuma datu ievākšanas uzdevums pieprasa trūkstošos īpašumtiesību faktus, tostarp īpašumtiesību struktūru.
+
+Tas pats uzdevums ietver `resource_reference` prasību, kuras pieprasījums ietver `qualification: "beneficial_owner"`:
+
+```json
+{
+  "type": "resource_reference",
+  "prompt": "Add or select a qualifying beneficial owner.",
+  "required": true,
+  "resourceType": "related_party",
+  "qualification": "beneficial_owner"
+}
+```
+
+Saistītā puse kvalificējas, kad tā ir tā paša klienta aktīva `person` puse ar `ownership.declared: true` vai norādītu īpašumtiesību procentu vismaz 25.
+
+Prasība tiek atvasināta no pašreizējā saistīto pušu saraksta, tāpēc parasti uz to neatbildat tieši:
+
+- Kvalificējošas saistītās puses izveide vai atjaunināšana izpilda prasību tajā pašā pārvērtēšanā un atver šī īpašnieka paša profila un dokumentu darbu. Skatiet [Pievienojiet uzņēmuma saistītās puses](/lv/integration/onboarding/customers#add-business-related-parties).
+- Varat arī tieši atsaukties uz kvalificējošu pusi ar `resource_reference` atbildi, kas satur tās `relatedPartyId`.
+- Prasība paliek uzskaitīta pašreizējā uzdevumā arī pēc tās izpildes. Kad neviena cita saistība vairs nav atvērta, uzdevums kļūst `satisfied`.
+- Pēdējās kvalificējošās puses arhivēšana vai to faktu noņemšana, kas to kvalificēja, atkārtoti atver prasību pat pēc tam, kad uzdevums bija `satisfied`.
+
 ## Turpiniet, kad iespēja ir gatava
 
 Atkārtoti nolasiet iespēju ar [`GET /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id):
@@ -168,6 +197,8 @@ curl --request GET \
   --header "X-API-Key: ${SWIPELUX_API_KEY}"
 ```
 
-Aizstājiet saglabāto statusu un uzdevumu ID ar jaunāko atbildi. Turpiniet tikai tad, kad pašreizējais iespējas statuss atļauj kontu, kotāciju vai pārvedumu, ko paredzat izveidot.
+Aizstājiet saglabāto statusu, konta izsniegšanas statusu un uzdevumu ID ar jaunāko atbildi. Iespējas `status` ziņo, vai tiesības ir apstiprinātas. Iespējai, kas izsniedz kontu, `accountProvisioning` atsevišķi ziņo, vai šis konts ir `not_started`, `in_progress`, `issued` vai `failed`; iespēja, kas neizsniedz kontu, atgriež `not_applicable`.
+
+Turpiniet tikai tad, kad pašreizējais iespējas statuss atļauj kontu, kotāciju vai pārvedumu, ko paredzat izveidot. Ja plūsmai nepieciešams izsniegts konts, gaidiet arī, līdz `accountProvisioning` kļūst `issued`.
 
 Tālāk izvēlieties atbilstošo ceļojumu sadaļā [Biežākās plūsmas](/lv/integration/common-flows).

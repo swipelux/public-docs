@@ -60,7 +60,7 @@ curl --request POST \
 
 एक explicit `institutions` array का उपयोग केवल तब करें जब आपको supported-capability response द्वारा लौटाए गए IDs में से चयन करने की आवश्यकता हो।
 
-`data.status` को `CAPABILITY_STATUS`, `data.openTaskIds` को `OPEN_TASK_IDS`, और प्रत्येक `data.applications[].id` को `APPLICATION_IDS` में संग्रहीत करें।
+`data.status` को `CAPABILITY_STATUS`, `data.accountProvisioning` को `ACCOUNT_PROVISIONING_STATUS`, `data.openTaskIds` को `OPEN_TASK_IDS`, और प्रत्येक `data.applications[].id` को `APPLICATION_IDS` में संग्रहीत करें।
 
 ## वर्तमान tasks पूरे करें {#complete-current-tasks}
 
@@ -73,6 +73,8 @@ curl --request GET \
 ```
 
 नवीनतम `data.revision` और `data.requirements` का उपयोग करें। यदि दोनों में से कोई बदल सकता है, तो submit करने से ठीक पहले task को पुन: प्राप्त करें।
+
+प्रत्येक खुले टास्क में एक `dueAt` टाइमस्टैम्प शामिल होता है। जब Swipelux बिना किसी स्पष्ट नियत तिथि के टास्क बनाता है, तो `dueAt` डिफ़ॉल्ट रूप से टास्क के `createdAt` के ठीक 31 दिन बाद सेट होता है। `dueAt` को केवल सूचनात्मक मानें: आप इसे API के माध्यम से सेट नहीं कर सकते, और यह कोई स्वचालित लाइफ़साइकल ट्रांज़िशन ट्रिगर नहीं करता। केवल अलग `deadline` फ़ील्ड, यदि मौजूद हो, स्वचालित ट्रांज़िशन का कारण बनता है।
 
 ### Hosted actions
 
@@ -130,6 +132,8 @@ curl --request POST \
 
 Answer submit करने से पहले जो इसे संदर्भित करता है, लौटाए गए `data.id` को `DOCUMENT_ID` के रूप में संग्रहीत करें।
 
+किसी संग्रहीत फ़ाइल को बाद में प्राप्त करने के लिए, [`GET /v3/customers/{customerId}/documents/{documentId}/download`](/api-reference/documents/get-v3-customers-by-customer-id-documents-by-document-id-download) कॉल करें। Swipelux एक `url` लौटाता है जो फ़ाइल को attachment के रूप में download करता है और एक घंटे बाद समाप्त हो जाता है। Archived documents `404` लौटाते हैं।
+
 ### API answers
 
 वर्तमान revision के लिए एक पूर्ण answer set [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) के साथ submit करें:
@@ -158,6 +162,31 @@ JSON
 
 प्रत्येक requirement ID और answer type नवीनतम task से लें। यदि API यह रिपोर्ट करता है कि task बदल गया है, तो इसे पुन: प्राप्त करें और नए revision से submission को फिर से बनाएँ।
 
+### Businesses के लिए beneficial-owner पूर्वापेक्षा {#beneficial-owner-prerequisite-for-businesses}
+
+ऐसी business capability का अनुरोध करना जिसे beneficial-owner evidence की आवश्यकता है, तब भी सफल होता है जब customer के पास अभी तक कोई qualifying owner नहीं है। Capability `restricted` के रूप में `statusReason.code: tasks_due` के साथ बनाई जाती है, और business intake task छूटे हुए ownership facts का अनुरोध करता है, जिसमें ownership structure शामिल है।
+
+वही task एक `resource_reference` requirement रखता है जिसके request में `qualification: "beneficial_owner"` शामिल है:
+
+```json
+{
+  "type": "resource_reference",
+  "prompt": "Add or select a qualifying beneficial owner.",
+  "required": true,
+  "resourceType": "related_party",
+  "qualification": "beneficial_owner"
+}
+```
+
+एक related party तब qualify करती है जब वह उसी customer की एक active `person` party हो जिसके पास `ownership.declared: true` हो या कम से कम 25 का supplied ownership percentage हो।
+
+यह requirement वर्तमान related-party roster से derive होता है, इसलिए आप आमतौर पर इसका सीधे उत्तर नहीं देते:
+
+- एक qualifying related party बनाना या अपडेट करना उसी reevaluation में requirement को पूरा करता है और उस owner के अपने profile और document work को खोलता है। [Business related parties जोड़ें](/hi/integration/onboarding/customers#add-business-related-parties) देखें।
+- आप एक `resource_reference` answer के साथ, जो उसका `relatedPartyId` रखता है, किसी qualifying party को स्पष्ट रूप से reference भी कर सकते हैं।
+- पूरा होने के बाद भी requirement वर्तमान task में सूचीबद्ध रहता है। जब कोई अन्य obligation खुला नहीं रहता, तो task `satisfied` हो जाता है।
+- आखिरी qualifying party को archive करना, या उसे qualify करने वाले facts को हटाना, requirement को फिर से खोल देता है, भले ही task `satisfied` हो चुका हो।
+
 ## जब capability तैयार हो तो जारी रखें
 
 Capability को [`GET /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id) के साथ फिर से पढ़ें:
@@ -168,6 +197,8 @@ curl --request GET \
   --header "X-API-Key: ${SWIPELUX_API_KEY}"
 ```
 
-संग्रहीत status और task IDs को नवीनतम response से बदलें। केवल तब जारी रखें जब वर्तमान capability status उस account, quote, या transfer की अनुमति देती है जिसे आप बनाने का इरादा रखते हैं।
+संग्रहीत status, account-provisioning status, और task IDs को नवीनतम response से बदलें। Capability `status` रिपोर्ट करता है कि entitlement approve हुआ है या नहीं। Account जारी करने वाली capability के लिए, `accountProvisioning` अलग से रिपोर्ट करता है कि वह account `not_started`, `in_progress`, `issued`, या `failed` है; जो capability account जारी नहीं करती वह `not_applicable` लौटाती है।
+
+केवल तब जारी रखें जब वर्तमान capability status उस account, quote, या transfer की अनुमति देती है जिसे आप बनाने का इरादा रखते हैं। जब flow को issued account की आवश्यकता हो, तो `accountProvisioning` के `issued` होने की भी प्रतीक्षा करें।
 
 आगे, [Common flows](/hi/integration/common-flows) में मेल खाती यात्रा चुनें।

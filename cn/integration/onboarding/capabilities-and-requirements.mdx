@@ -60,7 +60,7 @@ curl --request POST \
 
 仅当您需要从受支持能力响应返回的 ID 中做出选择时,才显式传入 `institutions` 数组。
 
-将 `data.status` 保存为 `CAPABILITY_STATUS`,`data.openTaskIds` 保存为 `OPEN_TASK_IDS`,并将每个 `data.applications[].id` 保存到 `APPLICATION_IDS`。
+将 `data.status` 保存为 `CAPABILITY_STATUS`,`data.accountProvisioning` 保存为 `ACCOUNT_PROVISIONING_STATUS`,`data.openTaskIds` 保存为 `OPEN_TASK_IDS`,并将每个 `data.applications[].id` 保存到 `APPLICATION_IDS`。
 
 ## 完成当前任务 {#complete-current-tasks}
 
@@ -73,6 +73,8 @@ curl --request GET \
 ```
 
 请使用最新的 `data.revision` 和 `data.requirements`。如果它们可能已经变化,请在提交前立即重新拉取任务。
+
+每个未完成任务都包含 `dueAt` 时间戳。当 Swipelux 创建任务且未显式指定到期日期时,`dueAt` 默认为任务 `createdAt` 之后整 31 天。请将 `dueAt` 视为仅供参考:您无法通过 API 设置它,它也不会触发任何自动生命周期转换。只有单独的 `deadline` 字段(如存在)才会触发自动转换。
 
 ### 托管操作
 
@@ -130,6 +132,8 @@ curl --request POST \
 
 在提交引用它的答案之前,将返回的 `data.id` 保存为 `DOCUMENT_ID`。
 
+如需之后取回已存储的文件,请调用 [`GET /v3/customers/{customerId}/documents/{documentId}/download`](/api-reference/documents/get-v3-customers-by-customer-id-documents-by-document-id-download)。Swipelux 会返回一个 `url`,该 `url` 以附件形式下载文件,并在一小时后过期。已归档的文件会返回 `404`。
+
 ### API 答案
 
 使用 [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) 针对当前版本提交一份完整的答案集:
@@ -158,6 +162,31 @@ JSON
 
 请从最新的任务中获取每个要求 ID 和答案类型。如果 API 报告任务已发生变化,请重新拉取该任务,并基于新的版本重新构建提交内容。
 
+### 企业的受益所有人前提条件 {#beneficial-owner-prerequisite-for-businesses}
+
+申请一个需要受益所有人证据的企业能力时,即使客户尚无符合条件的所有人,申请也会成功。该能力会以 `restricted` 状态创建,并带有 `statusReason.code: tasks_due`,同时企业信息采集任务会请求缺失的所有权信息,包括股权结构。
+
+同一任务包含一个 `resource_reference` 要求,其请求中包含 `qualification: "beneficial_owner"`:
+
+```json
+{
+  "type": "resource_reference",
+  "prompt": "Add or select a qualifying beneficial owner.",
+  "required": true,
+  "resourceType": "related_party",
+  "qualification": "beneficial_owner"
+}
+```
+
+当相关方是同一客户下处于活跃状态的 `person` 相关方,且 `ownership.declared: true` 或提供的持股比例不低于 25 时,该相关方即符合条件。
+
+该要求由当前的相关方名单推导得出,因此你通常无需直接作答:
+
+- 创建或更新一个符合条件的相关方会在同一次重新评估中满足该要求,并开启该所有人自己的资料和材料工作。参见[添加企业相关人员](/cn/integration/onboarding/customers#add-business-related-parties)。
+- 你也可以通过携带其 `relatedPartyId` 的 `resource_reference` 答案显式引用一个符合条件的相关方。
+- 该要求在被满足后仍会列在当前任务中。当没有其他未完成的义务时,任务会变为 `satisfied`。
+- 归档最后一个符合条件的相关方,或移除使其符合条件的信息,会重新开启该要求,即使任务已经是 `satisfied`。
+
 ## 在能力就绪时继续
 
 使用 [`GET /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id) 再次读取该能力:
@@ -168,6 +197,8 @@ curl --request GET \
   --header "X-API-Key: ${SWIPELUX_API_KEY}"
 ```
 
-用最新响应替换已保存的状态和任务 ID。仅当能力的当前状态允许您计划创建的账户、报价或转账时才继续。
+用最新响应替换已保存的状态、账户签发状态和任务 ID。能力的 `status` 表示权限是否已获批准。对于会签发账户的能力,`accountProvisioning` 会单独报告该账户是 `not_started`、`in_progress`、`issued` 还是 `failed`;不签发账户的能力返回 `not_applicable`。
+
+仅当能力的当前状态允许您计划创建的账户、报价或转账时才继续。当流程需要一个已签发的账户时,还需等待 `accountProvisioning` 变为 `issued`。
 
 接下来,请在[常见流程](/cn/integration/common-flows)中选择匹配的路径。

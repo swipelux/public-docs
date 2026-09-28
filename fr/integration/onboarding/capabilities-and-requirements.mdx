@@ -60,7 +60,7 @@ curl --request POST \
 
 Utilisez un tableau `institutions` explicite uniquement lorsque vous devez sélectionner parmi les IDs renvoyés par la réponse de capacité prise en charge.
 
-Stockez `data.status` en tant que `CAPABILITY_STATUS`, `data.openTaskIds` en tant que `OPEN_TASK_IDS`, et chaque `data.applications[].id` dans `APPLICATION_IDS`.
+Stockez `data.status` en tant que `CAPABILITY_STATUS`, `data.accountProvisioning` en tant que `ACCOUNT_PROVISIONING_STATUS`, `data.openTaskIds` en tant que `OPEN_TASK_IDS`, et chaque `data.applications[].id` dans `APPLICATION_IDS`.
 
 ## Compléter les tâches actuelles {#complete-current-tasks}
 
@@ -73,6 +73,8 @@ curl --request GET \
 ```
 
 Utilisez le dernier `data.revision` et les dernières `data.requirements`. Récupérez à nouveau la tâche juste avant la soumission si l'un ou l'autre peut avoir changé.
+
+Chaque tâche ouverte inclut un horodatage `dueAt`. Lorsque Swipelux crée une tâche sans date d'échéance explicite, `dueAt` prend par défaut exactement 31 jours après le `createdAt` de la tâche. Traitez `dueAt` comme informatif : vous ne pouvez pas le définir via l'API et il ne déclenche aucune transition automatique du cycle de vie. Seul le champ distinct `deadline`, lorsqu'il est présent, provoque une transition automatique.
 
 ### Actions hébergées
 
@@ -130,6 +132,8 @@ curl --request POST \
 
 Stockez le `data.id` renvoyé en tant que `DOCUMENT_ID` avant de soumettre la réponse qui y fait référence.
 
+Pour récupérer un fichier stocké ultérieurement, appelez [`GET /v3/customers/{customerId}/documents/{documentId}/download`](/api-reference/documents/get-v3-customers-by-customer-id-documents-by-document-id-download). Swipelux renvoie une `url` qui télécharge le fichier en pièce jointe et expire après une heure. Les documents archivés renvoient `404`.
+
 ### Réponses API
 
 Soumettez un ensemble complet de réponses pour la révision actuelle avec [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) :
@@ -158,6 +162,31 @@ JSON
 
 Prenez chaque ID d'exigence et type de réponse depuis la dernière tâche. Si l'API signale que la tâche a changé, récupérez-la à nouveau et reconstruisez la soumission à partir de la nouvelle révision.
 
+### Prérequis de bénéficiaire effectif pour les entreprises {#beneficial-owner-prerequisite-for-businesses}
+
+Demander une capacité professionnelle qui nécessite des preuves de bénéficiaire effectif réussit même lorsque le client n'a pas encore de propriétaire qualifié. La capacité est créée en `restricted` avec `statusReason.code: tasks_due`, et la tâche d'intake professionnelle demande les faits de propriété manquants, y compris la structure de propriété.
+
+La même tâche porte une exigence `resource_reference` dont la demande inclut `qualification: "beneficial_owner"` :
+
+```json
+{
+  "type": "resource_reference",
+  "prompt": "Add or select a qualifying beneficial owner.",
+  "required": true,
+  "resourceType": "related_party",
+  "qualification": "beneficial_owner"
+}
+```
+
+Une partie liée est qualifiée lorsqu'il s'agit d'une partie `person` active du même client avec `ownership.declared: true` ou un pourcentage de propriété fourni d'au moins 25.
+
+L'exigence est dérivée de la liste actuelle des parties liées, vous n'y répondez donc généralement pas directement :
+
+- Créer ou mettre à jour une partie liée qualifiée satisfait l'exigence lors de la même réévaluation et ouvre le travail de profil et de documents propre à ce propriétaire. Consultez [Ajouter des parties liées professionnelles](/fr/integration/onboarding/customers#add-business-related-parties).
+- Vous pouvez aussi référencer explicitement une partie qualifiée avec une réponse `resource_reference` portant son `relatedPartyId`.
+- L'exigence reste listée dans la tâche actuelle après avoir été satisfaite. Lorsqu'aucune autre obligation ne reste ouverte, la tâche devient `satisfied`.
+- Archiver la dernière partie qualifiée, ou supprimer les faits qui la qualifiaient, rouvre l'exigence, même après que la tâche est passée à `satisfied`.
+
 ## Continuer lorsque la capacité est prête
 
 Lisez à nouveau la capacité avec [`GET /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id) :
@@ -168,6 +197,8 @@ curl --request GET \
   --header "X-API-Key: ${SWIPELUX_API_KEY}"
 ```
 
-Remplacez le statut stocké et les IDs de tâche par la dernière réponse. Continuez uniquement lorsque le statut de capacité actuel autorise le compte, le devis ou le transfert que vous prévoyez de créer.
+Remplacez le statut stocké, le statut de provisionnement de compte et les IDs de tâche par la dernière réponse. Le `status` de la capacité indique si le droit est approuvé. Pour une capacité qui émet un compte, `accountProvisioning` indique séparément si ce compte est `not_started`, `in_progress`, `issued` ou `failed` ; une capacité qui n'émet pas de compte renvoie `not_applicable`.
+
+Continuez uniquement lorsque le statut de capacité actuel autorise le compte, le devis ou le transfert que vous prévoyez de créer. Lorsque le flux nécessite un compte émis, attendez également que `accountProvisioning` devienne `issued`.
 
 Ensuite, choisissez le parcours correspondant dans [Flux courants](/fr/integration/common-flows).

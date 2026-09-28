@@ -60,7 +60,7 @@ curl --request POST \
 
 Gebruik alleen een expliciete `institutions`-array wanneer je moet kiezen uit ID's die de supported-capability-respons heeft geretourneerd.
 
-Bewaar `data.status` als `CAPABILITY_STATUS`, `data.openTaskIds` als `OPEN_TASK_IDS` en elke `data.applications[].id` in `APPLICATION_IDS`.
+Bewaar `data.status` als `CAPABILITY_STATUS`, `data.accountProvisioning` als `ACCOUNT_PROVISIONING_STATUS`, `data.openTaskIds` als `OPEN_TASK_IDS` en elke `data.applications[].id` in `APPLICATION_IDS`.
 
 ## Voltooi huidige taken {#complete-current-tasks}
 
@@ -73,6 +73,8 @@ curl --request GET \
 ```
 
 Gebruik de nieuwste `data.revision` en `data.requirements`. Refetch de taak direct vóór indiening als een van beide kan zijn gewijzigd.
+
+Elke open taak bevat een `dueAt`-tijdstempel. Wanneer Swipelux een taak aanmaakt zonder expliciete vervaldatum, staat `dueAt` standaard op precies 31 dagen na de `createdAt` van de taak. Behandel `dueAt` als informatief: je kunt het niet via de API instellen en het activeert geen automatische levenscyclusovergang. Alleen het aparte veld `deadline` veroorzaakt, indien aanwezig, een automatische overgang.
 
 ### Gehoste acties
 
@@ -130,6 +132,8 @@ curl --request POST \
 
 Bewaar de geretourneerde `data.id` als `DOCUMENT_ID` voordat je het antwoord indient dat ernaar verwijst.
 
+Om een opgeslagen bestand later op te halen, roep je [`GET /v3/customers/{customerId}/documents/{documentId}/download`](/api-reference/documents/get-v3-customers-by-customer-id-documents-by-document-id-download) aan. Swipelux retourneert een `url` die het bestand als bijlage downloadt en na één uur verloopt. Gearchiveerde documenten retourneren `404`.
+
 ### API-antwoorden
 
 Dien één volledige antwoordset in voor de huidige revisie met [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission):
@@ -158,6 +162,31 @@ JSON
 
 Neem elke requirement-ID en elk antwoordtype uit de nieuwste taak. Als de API meldt dat de taak is gewijzigd, refetch je hem en bouw je de submission opnieuw op vanuit de nieuwe revisie.
 
+### UBO-voorwaarde voor bedrijven {#beneficial-owner-prerequisite-for-businesses}
+
+Het aanvragen van een zakelijke capability die UBO-bewijs nodig heeft, slaagt ook wanneer de klant nog geen kwalificerende eigenaar heeft. De capability wordt aangemaakt als `restricted` met `statusReason.code: tasks_due`, en de zakelijke intake-taak vraagt de ontbrekende ownership facts op, inclusief de eigendomsstructuur.
+
+Dezelfde taak bevat een `resource_reference` vereiste waarvan het verzoek `qualification: "beneficial_owner"` bevat:
+
+```json
+{
+  "type": "resource_reference",
+  "prompt": "Add or select a qualifying beneficial owner.",
+  "required": true,
+  "resourceType": "related_party",
+  "qualification": "beneficial_owner"
+}
+```
+
+Een related party kwalificeert wanneer die een actieve `person` party van dezelfde klant is met `ownership.declared: true` of een opgegeven eigendomspercentage van ten minste 25.
+
+De vereiste wordt afgeleid uit het huidige related-party bestand, dus je beantwoordt hem meestal niet direct:
+
+- Het aanmaken of bijwerken van een kwalificerende related party voldoet aan de vereiste in dezelfde herevaluatie en opent het eigen profiel- en documentwerk van die eigenaar. Zie [Voeg zakelijke related parties toe](/nl/integration/onboarding/customers#add-business-related-parties).
+- Je kunt ook expliciet naar een kwalificerende party verwijzen met een `resource_reference` antwoord dat de bijbehorende `relatedPartyId` bevat.
+- De vereiste blijft in de huidige taak vermeld nadat eraan is voldaan. Wanneer geen andere verplichting meer openstaat, wordt de taak `satisfied`.
+- Het archiveren van de laatste kwalificerende party, of het verwijderen van de facts die hem kwalificeerden, heropent de vereiste, zelfs nadat de taak `satisfied` was.
+
 ## Ga verder wanneer de capability ready is
 
 Lees de capability opnieuw met [`GET /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id):
@@ -168,6 +197,8 @@ curl --request GET \
   --header "X-API-Key: ${SWIPELUX_API_KEY}"
 ```
 
-Vervang de opgeslagen status en task-ID's door de nieuwste respons. Ga alleen verder wanneer de huidige capability-status het account, de quote of de transfer die je wilt aanmaken toestaat.
+Vervang de opgeslagen status, account-provisioning-status en task-ID's door de nieuwste respons. De capability-`status` geeft aan of de bevoegdheid is goedgekeurd. Voor een capability die een account uitgeeft, rapporteert `accountProvisioning` afzonderlijk of dat account `not_started`, `in_progress`, `issued` of `failed` is; een capability die geen account uitgeeft retourneert `not_applicable`.
+
+Ga alleen verder wanneer de huidige capability-status het account, de quote of de transfer die je wilt aanmaken toestaat. Wanneer de flow een uitgegeven account nodig heeft, wacht je ook tot `accountProvisioning` de status `issued` bereikt.
 
 Kies vervolgens de bijpassende journey in [Common flows](/nl/integration/common-flows).
