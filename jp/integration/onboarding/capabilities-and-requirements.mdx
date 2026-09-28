@@ -1,6 +1,6 @@
 ---
 title: "ケイパビリティとタスク"
-description: "各支払いフローに対する顧客ケイパビリティの発見、リクエスト、有効化の進め方と、オープンな KYC / KYB タスクの確認と完了方法、プール型と名義型の口座タイプの選択基準を解説する、Swipelux オンボーディングのケイパビリティとタスクの実践ガイドです。"
+description: "支払いフローに対する顧客のケイパビリティを発見、リクエスト、有効化し、オープンタスクを完了して、プール型と名義型の口座タイプを選択します。"
 ---
 
 ケイパビリティは、顧客が特定の成果、支払い方法、方向を利用できるかを示します。オープンタスクは、そのケイパビリティや関連リソースが進む前に何を完了する必要があるかを示します。
@@ -60,7 +60,7 @@ curl --request POST \
 
 明示的な `institutions` 配列は、サポート対象ケイパビリティのレスポンスから返された ID を選択する必要がある場合にのみ使用してください。
 
-`data.status` を `CAPABILITY_STATUS`、`data.openTaskIds` を `OPEN_TASK_IDS` として保存し、各 `data.applications[].id` を `APPLICATION_IDS` に保存します。
+`data.status` を `CAPABILITY_STATUS`、`data.accountProvisioning` を `ACCOUNT_PROVISIONING_STATUS`、`data.openTaskIds` を `OPEN_TASK_IDS` として保存し、各 `data.applications[].id` を `APPLICATION_IDS` に保存します。
 
 ## 現在のタスクを完了する {#complete-current-tasks}
 
@@ -73,6 +73,8 @@ curl --request GET \
 ```
 
 最新の `data.revision` と `data.requirements` を使用してください。いずれかが変更された可能性がある場合は、送信直前にタスクを再取得してください。
+
+すべてのオープンなタスクには `dueAt` タイムスタンプが含まれます。Swipelux が明示的な期日なしでタスクを作成した場合、`dueAt` はタスクの `createdAt` からちょうど 31 日後がデフォルトになります。`dueAt` は情報提供のみを目的としたものとして扱ってください。API 経由で設定することはできず、自動的なライフサイクル遷移も発生しません。自動遷移を引き起こすのは、別途設定される `deadline` フィールドのみです。
 
 ### ホスト型アクション
 
@@ -130,6 +132,8 @@ curl --request POST \
 
 そのドキュメントを参照する回答を送信する前に、返された `data.id` を `DOCUMENT_ID` として保存してください。
 
+保存済みのファイルを後で取得するには、[`GET /v3/customers/{customerId}/documents/{documentId}/download`](/api-reference/documents/get-v3-customers-by-customer-id-documents-by-document-id-download) を呼び出します。Swipelux は、ファイルを添付ファイルとしてダウンロードする `url` を返します。この URL は 1 時間後に期限切れになります。アーカイブ済みのドキュメントは `404` を返します。
+
 ### API 回答
 
 現在のリビジョンに対する完全な回答セットを [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) で 1 回送信します。
@@ -158,6 +162,31 @@ JSON
 
 すべての要件 ID と回答タイプは、最新のタスクから取得してください。API がタスクの変更を報告した場合は、タスクを再取得し、新しいリビジョンから送信を再構築してください。
 
+### ビジネスにおける実質的支配者の前提条件 {#beneficial-owner-prerequisite-for-businesses}
+
+実質的支配者(beneficial owner)の証拠を必要とするビジネスケイパビリティのリクエストは、顧客に適格な所有者がまだ存在しない場合でも成功します。ケイパビリティは `statusReason.code: tasks_due` を伴う `restricted` として作成され、ビジネスインテークタスクが、所有構造を含む不足している所有の事実を要求します。
+
+同じタスクには、リクエストに `qualification: "beneficial_owner"` を含む `resource_reference` 要件が含まれます。
+
+```json
+{
+  "type": "resource_reference",
+  "prompt": "Add or select a qualifying beneficial owner.",
+  "required": true,
+  "resourceType": "related_party",
+  "qualification": "beneficial_owner"
+}
+```
+
+関連当事者は、同じ顧客のアクティブな `person` 当事者であり、`ownership.declared: true` であるか、25 以上の所有割合が提供されている場合に適格となります。
+
+この要件は現在の関連当事者の一覧から導出されるため、通常は直接回答しません。
+
+- 適格な関連当事者を作成または更新すると、同じ再評価内で要件が満たされ、その所有者自身のプロファイルおよびドキュメント作業が開始されます。[ビジネスの関連当事者を追加する](/jp/integration/onboarding/customers#add-business-related-parties) をご覧ください。
+- `relatedPartyId` を含む `resource_reference` 回答で、適格な当事者を明示的に参照することもできます。
+- 要件は、満たされた後も現在のタスクに一覧表示されたままになります。他に未完了の義務が残っていない場合、タスクは `satisfied` になります。
+- 最後の適格な当事者をアーカイブしたり、適格とした事実を削除したりすると、タスクが `satisfied` になった後であっても、要件が再度オープンされます。
+
 ## ケイパビリティが ready になったら続行する
 
 [`GET /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-by-capability-id) で再度ケイパビリティを読み取ります。
@@ -168,6 +197,8 @@ curl --request GET \
   --header "X-API-Key: ${SWIPELUX_API_KEY}"
 ```
 
-保存されているステータスとタスク ID を、最新のレスポンスで置き換えてください。作成しようとしている口座、見積もり、送金を、現在のケイパビリティステータスが許可している場合にのみ続行します。
+保存されているステータス、口座発行ステータス、タスク ID を、最新のレスポンスで置き換えてください。ケイパビリティの `status` は、利用権限が承認されているかどうかを示します。口座を発行するケイパビリティでは、その口座が `not_started`、`in_progress`、`issued`、`failed` のいずれであるかを `accountProvisioning` が個別に報告します。口座を発行しないケイパビリティは `not_applicable` を返します。
+
+作成しようとしている口座、見積もり、送金を、現在のケイパビリティステータスが許可している場合にのみ続行します。フローに発行済みの口座が必要な場合は、`accountProvisioning` が `issued` になるまで待機してください。
 
 次に、[共通フロー](/jp/integration/common-flows) で該当するジャーニーを選択してください。

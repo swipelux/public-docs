@@ -1,6 +1,6 @@
 ---
 title: "Geld ontvangen"
-description: "Maak een eenmalige Swipelux fiat pay-in-transfer aan, toon de exacte bank- of kaart-fundinginstructies en settel ontvangen geld in een klant-wallet."
+description: "Maak een eenmalige Swipelux fiat pay-in, toon de exacte bank- of kaartinstructies voor funding en verreken de ontvangen middelen in een wallet van de klant."
 ---
 
 Gebruik een gequote pay-in wanneer de klant een specifiek bedrag moet financieren. De transfer wikkelt stablecoin af naar een uitgegeven wallet.
@@ -64,6 +64,34 @@ Content-Type: application/json
 
 Bewaar transfer `data.id` als `TRANSFER_ID` en behoud de huidige state.
 
+### Voeg een terugkeer-URL toe voor kaart en Apple Pay
+
+Voor een kaart- of Apple Pay-quote kun je in hetzelfde verzoek een optionele `redirectUrl` opnemen. Nadat de klant de gehoste checkout heeft afgerond, opent de checkout-pagina deze URL om de klant terug te brengen naar je app.
+
+```json
+{
+  "quoteId": "${QUOTE_ID}",
+  "redirectUrl": "https://your-app.example/payments/complete"
+}
+```
+
+`redirectUrl` moet een absolute HTTPS-URL van maximaal 2048 tekens zijn en mag geen ingebedde inloggegevens bevatten. Het versturen van een `redirectUrl` voor een quote die geen terugkeernavigatie ondersteunt, faalt bij validatie in plaats van genegeerd te worden.
+
+Aankomst op de `redirectUrl` is uitsluitend browsernavigatie. Het bevestigt niet dat de betaling of de transfer is voltooid. Bepaal voltooiing op basis van de transfer-state in stap 4 en van webhook-events.
+
+### Selecteer vooraf de checkout-methode voor een kaart-quote
+
+Voor een kaart-quote kun je in hetzelfde verzoek een optionele `checkoutMethod` opnemen om te kiezen met welke betaaloptie de gehoste checkout opent. De huidige waarden zijn `card`, `apple_pay`, `google_pay`, `cash_app`, `sepa` en `blik`. De lijst is open en kan groeien, dus tolereer in transfer-reads waarden die je niet herkent. De checkout opent met de aangevraagde methode wanneer die beschikbaar is voor de klant en zijn apparaat, en de klant kan nog steeds elke andere methode kiezen die de checkout aanbiedt. Laat het veld weg om de standaard voorselectie te behouden.
+
+```json
+{
+  "quoteId": "${QUOTE_ID}",
+  "checkoutMethod": "apple_pay"
+}
+```
+
+`checkoutMethod` is een voorkeur, geen garantie. De beschikbaarheid hangt af van de klant, zijn apparaat en de checkout, dus het aanvragen van een methode maakt die niet beschikbaar. `sepa` en `blik` zijn hier betaalopties binnen de kaart-checkout, geen Swipelux-capabilities, -rails of -rekeningen. De voorselectie verandert de capability, bedragen of kosten van de quote niet, en de checkout bevestigt de definitieve kosten. Transfer-reads geven de aangevraagde waarde terug; ze bevestigen niet welke methode de klant heeft gebruikt. Het versturen van een `checkoutMethod` voor een quote die geen kaart-quote is, faalt bij validatie in plaats van genegeerd te worden, en een herhaling met dezelfde idempotency key moet dezelfde `checkoutMethod` versturen.
+
 ## 3. Haal funding-instructies op
 
 Lees [`GET /v3/transfers/{transferId}/instructions`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-instructions). Render de geretourneerde `data.instructions`-variant zonder aannames over het type te maken.
@@ -71,6 +99,25 @@ Lees [`GET /v3/transfers/{transferId}/instructions`](/api-reference/money-moveme
 Deze gegevens zijn transferspecifiek. Hergebruik nooit de bankcoördinaten, code, gehoste URL, bedrag, referentie of vervaldatum van één transfer voor een andere pay-in.
 
 Voor bankinstructies: wanneer `reference.required` true is, toon je de exacte `reference.value` naast de bankcoördinaten en maak je die kopieerbaar. Toon het geretourneerde bedrag en de valuta uit dezelfde instructieset.
+
+Bankinstructies kunnen ook de optionele velden `bankName`, `bankAddress`, `accountHolderName` en `accountHolderAddress` bevatten. Toon elk geretourneerd veld naast de andere bankcoördinaten. Verzendende banken vereisen vaak het adres van de ontvangende bank voor `swift` en andere internationale overboekingen, dus toon `bankAddress` telkens wanneer het wordt geretourneerd.
+
+```json
+{
+  "type": "bank",
+  "method": "swift",
+  "amount": { "amount": "150.00", "currency": "USD" },
+  "accountHolderName": "Swipelux FBO Customer",
+  "accountHolderAddress": "8 The Green, Dover, DE",
+  "bankName": "JPMorgan Chase",
+  "bankAddress": "383 Madison Avenue, New York, NY",
+  "details": {
+    "swiftCode": "CHASUS33",
+    "accountNumber": "123456789"
+  },
+  "reference": { "value": "SWIFTMEMO1", "required": true }
+}
+```
 
 Een uitgegeven bankrekening is iets anders: die biedt herbruikbare gegevens voor latere stortingen. Zie [Een bankrekening uitgeven](/nl/integration/issue-bank-account) wanneer dat de beoogde ervaring is.
 

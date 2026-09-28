@@ -74,6 +74,8 @@ curl --request GET \
 
 Use the latest `data.revision` and `data.requirements`. Refetch the task immediately before submitting if either may have changed.
 
+Every open task includes a `dueAt` timestamp. When Swipelux authors a task without an explicit due date, `dueAt` defaults to exactly 31 days after the task's `createdAt`. Treat `dueAt` as informational: you cannot set it through the API, and it does not trigger an automatic lifecycle transition. Only the separate `deadline` field, when present, causes an automatic transition.
+
 ### Hosted actions
 
 In the task-detail response, each entry in `verificationSessions` and `tosSessions` includes an `action` object. Task-list responses do not include these action links. Store each session `id`, then read `action.kind` before dispatching the customer; do not infer link availability from session `status`.
@@ -130,6 +132,8 @@ curl --request POST \
 
 Store the returned `data.id` as `DOCUMENT_ID` before submitting the answer that references it.
 
+To retrieve a stored file later, call [`GET /v3/customers/{customerId}/documents/{documentId}/download`](/api-reference/documents/get-v3-customers-by-customer-id-documents-by-document-id-download). Swipelux returns a `url` that downloads the file as an attachment and expires after one hour. Archived documents return `404`.
+
 ### API answers
 
 Submit one complete answer set for the current revision with [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission):
@@ -157,6 +161,31 @@ JSON
 ```
 
 Take every requirement ID and answer type from the latest task. If the API reports that the task changed, refetch it and rebuild the submission from the new revision.
+
+### Beneficial-owner prerequisite for businesses
+
+Requesting a business capability that needs beneficial-owner evidence succeeds even when the customer has no qualifying owner yet. The capability is created as `restricted` with `statusReason.code: tasks_due`, and the business intake task requests the missing ownership facts, including the ownership structure.
+
+The same task carries a `resource_reference` requirement whose request includes `qualification: "beneficial_owner"`:
+
+```json
+{
+  "type": "resource_reference",
+  "prompt": "Add or select a qualifying beneficial owner.",
+  "required": true,
+  "resourceType": "related_party",
+  "qualification": "beneficial_owner"
+}
+```
+
+A related party qualifies when it is an active `person` party of the same customer with `ownership.declared: true` or a supplied ownership percentage of at least 25.
+
+The requirement is derived from the current related-party roster, so you usually do not answer it directly:
+
+- Creating or updating a qualifying related party meets the requirement in the same reevaluation and opens that owner's own profile and document work. See [Add business related parties](/integration/onboarding/customers#add-business-related-parties).
+- You can also reference a qualifying party explicitly with a `resource_reference` answer that carries its `relatedPartyId`.
+- The requirement stays listed in the current task after it is met. When no other obligation remains open, the task becomes `satisfied`.
+- Archiving the last qualifying party, or removing the facts that qualified it, reopens the requirement, even after the task was `satisfied`.
 
 ## Continue when the capability is ready
 

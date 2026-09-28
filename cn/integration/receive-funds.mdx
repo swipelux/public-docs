@@ -1,6 +1,6 @@
 ---
 title: "接收资金"
-description: "使用 Swipelux API 创建一次性的法币入金转账，向客户展示准确的银行或银行卡付款指令，并在收到资金后自动结算到客户钱包。本页详解入金流程的每个 API 步骤、转账状态变化以及用于对账和通知的 Webhook 事件，适用于单次充值或一次性收款等场景。支持多种法币与支付渠道。"
+description: "创建一次性的 Swipelux 法币入金转账,展示准确的银行或银行卡入金指令,并将收到的资金结算到客户钱包。"
 ---
 
 当客户需要按特定金额入金时,请使用获得报价的入金。该笔转账会将稳定币结算到一个发行的钱包中。
@@ -64,6 +64,34 @@ Content-Type: application/json
 
 将转账的 `data.id` 保存为 `TRANSFER_ID` 并保留其当前状态。
 
+### 为银行卡和 Apple Pay 添加返回 URL
+
+对于银行卡或 Apple Pay 报价,您可以在同一请求中包含可选的 `redirectUrl`。当客户完成托管结账后,结账页面会打开此 URL,将客户带回您的应用。
+
+```json
+{
+  "quoteId": "${QUOTE_ID}",
+  "redirectUrl": "https://your-app.example/payments/complete"
+}
+```
+
+`redirectUrl` 必须是不超过 2048 个字符的绝对 HTTPS URL,且不得包含内嵌凭据。对于不支持返回跳转的报价,发送 `redirectUrl` 会导致校验失败,而不会被忽略。
+
+到达 `redirectUrl` 仅代表浏览器完成了跳转。它并不确认付款或转账已完成。请根据第 4 步中的转账状态以及 Webhook 事件来判断是否完成。
+
+### 为银行卡报价预选结账方式
+
+对于银行卡报价,您可以在同一请求中包含可选的 `checkoutMethod`,用于选择托管结账打开时预选的付款选项。当前取值为 `card`、`apple_pay`、`google_pay`、`cash_app`、`sepa` 和 `blik`。该列表是开放的,可能会增加,因此在转账读取中请容忍您不认识的值。当请求的方式对客户及其设备可用时,结账会以该方式打开,客户仍可选择结账提供的任何其他方式。省略该字段即可保留默认预选。
+
+```json
+{
+  "quoteId": "${QUOTE_ID}",
+  "checkoutMethod": "apple_pay"
+}
+```
+
+`checkoutMethod` 是一种偏好,而不是保证。可用性取决于客户、其设备和结账页面,因此请求某种方式并不会使其变得可用。这里的 `sepa` 和 `blik` 是银行卡结账内部的付款选项,而不是 Swipelux 的能力、通道或账户。预选不会更改报价的能力、金额或费用,最终费用由结账页面确认。转账读取会回显请求的值,但不会确认客户实际使用了哪种方式。对于非银行卡报价发送 `checkoutMethod` 会导致校验失败,而不会被忽略;使用相同幂等键的重放必须发送相同的 `checkoutMethod`。
+
 ## 3. 获取入金指令
 
 读取 [`GET /v3/transfers/{transferId}/instructions`](/api-reference/money-movement/get-v3-transfers-by-transfer-id-instructions)。按返回的 `data.instructions` 变体进行渲染,不要臆测其类型。
@@ -71,6 +99,25 @@ Content-Type: application/json
 这些信息与本次转账绑定。切勿将某一笔转账的银行账户信息、代码、托管页面 URL、金额、备注或过期时间用于另一笔入金。
 
 对于银行入金指令,当 `reference.required` 为 true 时,请在银行账户信息旁展示准确的 `reference.value` 并允许复制。请展示同一指令集中返回的金额和币种。
+
+银行入金指令还可返回可选的 `bankName`、`bankAddress`、`accountHolderName` 和 `accountHolderAddress` 字段。请将返回的每个字段与其他银行账户信息一并展示。对于 `swift` 及其他国际电汇,汇出银行通常要求提供收款银行地址,因此只要返回了 `bankAddress` 就请展示。
+
+```json
+{
+  "type": "bank",
+  "method": "swift",
+  "amount": { "amount": "150.00", "currency": "USD" },
+  "accountHolderName": "Swipelux FBO Customer",
+  "accountHolderAddress": "8 The Green, Dover, DE",
+  "bankName": "JPMorgan Chase",
+  "bankAddress": "383 Madison Avenue, New York, NY",
+  "details": {
+    "swiftCode": "CHASUS33",
+    "accountNumber": "123456789"
+  },
+  "reference": { "value": "SWIFTMEMO1", "required": true }
+}
+```
 
 发行的银行账户则不同:它提供可用于后续入账的可复用账户信息。若您期望的是这种体验,请参阅[发行银行账户](/cn/integration/issue-bank-account)。
 
