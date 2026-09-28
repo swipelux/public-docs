@@ -34,6 +34,23 @@ curl --request GET \
 
 Kies een response-entry die overeenkomt met de beoogde `directions`, `method` en `accountType`. Ga alleen verder wanneer `availability` gelijk is aan `available` of `beta` en `eligibility.eligible` gelijk is aan `true`. Als er `institutions` worden geretourneerd, selecteer je alleen een ID uit die respons.
 
+Elke institution-entry bevat een `logoUrl` en een `isDefault`-vlag. Gebruik `logoUrl` om het logo van de bank te tonen in een UI voor bankselectie, en toon je eigen generieke bankicoon wanneer het `null` is. `isDefault` geldt alleen voor deze klant en capability, niet globaal voor de institution. [`GET /v3/institutions`](/api-reference/institutions/get-v3-institutions) retourneert dezelfde nullable `logoUrl`. Institution-ID's zijn opaque, dus verwerk nieuwe ID's zonder codewijzigingen.
+
+```json
+{
+  "institutions": [
+    {
+      "id": "jpmorgan",
+      "name": "JPMorgan Chase",
+      "bic": "CHASUS33",
+      "logoUrl": "https://wallet.swipelux.com/bank-logos/jpmorgan.png",
+      "countries": ["US"],
+      "isDefault": true
+    }
+  ]
+}
+```
+
 Bewaar de geselecteerde `data[].id` als `CAPABILITY_ID`. Kopieer nooit een capability-ID van een andere klant of omgeving.
 
 ### Pooled vs named accounttypes
@@ -66,6 +83,84 @@ Gebruik alleen een expliciete `institutions`-array wanneer je moet kiezen uit ID
 
 Bewaar `data.status` als `CAPABILITY_STATUS`, `data.accountProvisioning` als `ACCOUNT_PROVISIONING_STATUS`, `data.openTaskIds` als `OPEN_TASK_IDS` en elke `data.applications[].id` in `APPLICATION_IDS`.
 
+### Gedeelde applications per bank {#shared-applications-per-bank}
+
+Voor named bank-capabilities heeft elke klant één application-case per bank. Pooled en platform-capabilities gebruiken cases zonder bank. Swipelux deelt een case over elke compatibele capability die je aanvraagt:
+
+- Eén goedkeuring kan meerdere capabilities dekken. Een goedgekeurde case bij één bank kan bijvoorbeeld zowel een ACH- als een wire-capability `ready` maken.
+- Een later verzoek dat overeenkomt met een bestaande case, hergebruikt die. Swipelux opent geen tweede application en voegt geen dubbele taken toe.
+- Cases bij verschillende banken zijn onafhankelijk. Een afwijzing bij één bank heeft geen invloed op een case bij een andere bank.
+
+De respons op het verzoek vertelt je welke case Swipelux heeft gebruikt:
+
+- `201` betekent dat het verzoek een nieuwe application-case heeft geopend.
+- `200` betekent dat het verzoek is uitgekomen bij een application-case die de klant al had, bijvoorbeeld een herhaald verzoek voor een bank-capability die de klant al heeft, of een verzoek voor een geannuleerde capability. Een herhaald verzoek voor `card` of `stablecoin_transfers` retourneert nog steeds [`409 capability_already_exists`](/integration/errors#capability-already-exists).
+- `selectedApplicationId` is een top-level veld naast `data` met de ID van de case die het verzoek heeft geselecteerd of geopend. Swipelux laat het weg wanneer het verzoek geen case heeft geselecteerd. Een idempotente replay retourneert dezelfde waarde.
+
+Verkorte respons:
+
+```json
+{
+  "data": {
+    "id": "ach_named",
+    "status": "pending",
+    "openTaskIds": ["tsk_000000000000000002"],
+    "applications": [{ "id": "apl_000000000000000005", "status": "in_review" }]
+  },
+  "selectedApplicationId": "apl_000000000000000005"
+}
+```
+
+Stuur voor named capabilities dezelfde `institutions`-lijst opnieuw om dezelfde case te selecteren, of stuur één institution-ID om die bank te targeten. Een bank die de klant definitief heeft afgewezen, wordt overgeslagen. Wanneer je alleen die bank noemt, of elke eligible bank de klant heeft afgewezen, retourneert het verzoek [`409 capability_terminally_rejected`](/integration/errors#capability-terminally-rejected). Om na een afwijzing een andere bank te proberen, vraag je de capability opnieuw aan met de institution-ID van die bank.
+
+De status van een capability weerspiegelt alle gerelateerde cases van de klant. Voor een named capability is één `ready` case waarvan de goedkeuring hem dekt genoeg om hem `ready` te maken, ongeacht wat andere banken melden. Een pooled capability wacht ook op zijn methodecontrole, gemeld in `probes` in de lijst met applications van de klant.
+
+#### Bekijk de applications van de klant {#list-the-customers-applications}
+
+Bekijk elke application-case van de klant met [`GET /v3/customers/{customerId}/applications`](/api-reference/capabilities/get-v3-customers-by-customer-id-applications). Resultaten worden gepagineerd met `nextCursor` en `hasMore`, en accepteren `updatedAfter`:
+
+```bash
+curl --request GET \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/applications" \
+  --header "X-API-Key: ${SWIPELUX_API_KEY}"
+```
+
+Elke entry bevat de application-velden die worden geretourneerd in de `applications[]` van een capability, plus:
+
+- `scope`: `named` voor een case bij één bank, `provider_pooled` of `platform` voor cases zonder bank, of `null` voor een niet-geclassificeerde historische case. `institution` ontbreekt bij `provider_pooled`- en `platform`-cases.
+- `requestedScope[]`: de capability-keys die voor de case zijn aangevraagd, elk met de eerste `requestedAt`. Entries worden nooit verwijderd.
+- `coverage[]`: de capability-keys die de goedkeuring van de case dekt, elk met `grantedAt` en `source`. Coverage legt scope vast, geen autorisatie. Lees de capability voor de huidige status.
+- `probes[]`: methodecontroles voor de pooled capability-keys die de case dekt, elk met `capabilityKey`, `status` en `reason`. Named keys vereisen nooit een probe.
+- `generation`, `predecessorApplicationId` en `supersededByApplicationId`: opvolgingslinks. Wanneer `supersededByApplicationId` is ingesteld, is de case vervangen. Volg die ID naar de huidige case.
+
+Verkorte respons:
+
+```json
+{
+  "data": [
+    {
+      "id": "apl_000000000000000005",
+      "status": "ready",
+      "scope": "named",
+      "institution": { "id": "jpmorgan", "name": "JPMorgan Chase", "bic": "CHASUS33" },
+      "requestedScope": [
+        { "capabilityKey": "ach_named", "requestedAt": "2026-09-20T10:00:00.000Z" }
+      ],
+      "coverage": [
+        { "capabilityKey": "ach_named", "grantedAt": "2026-09-22T12:00:00.000Z", "source": "approval" },
+        { "capabilityKey": "wire_named", "grantedAt": "2026-09-22T12:00:00.000Z", "source": "approval" }
+      ],
+      "probes": [],
+      "generation": 1,
+      "predecessorApplicationId": null,
+      "supersededByApplicationId": null
+    }
+  ],
+  "nextCursor": null,
+  "hasMore": false
+}
+```
+
 ## Voltooi huidige taken {#complete-current-tasks}
 
 Bekijk taken met [`GET /v3/customers/{customerId}/tasks`](/api-reference/tasks/list-customer-tasks), selecteer ID's uit `OPEN_TASK_IDS` en lees elke huidige taak met [`GET /v3/customers/{customerId}/tasks/{taskId}`](/api-reference/tasks/get-customer-task):
@@ -77,6 +172,47 @@ curl --request GET \
 ```
 
 Gebruik de nieuwste `data.revision` en `data.requirements`. Refetch de taak direct vóór indiening als een van beide kan zijn gewijzigd.
+
+### Hergebruikt profielbewijs {#reused-profile-evidence}
+
+Voor application-intaketaken die directe indiening via de API accepteren, hergebruikt Swipelux informatie die de klant al heeft verstrekt. Wanneer zo'n taak wordt aangemaakt of gereconcilieerd, controleert Swipelux het klantprofiel en de door de klant zelf geüploade documenten. Eligible vereisten die al worden onderbouwd door een bruikbare profielwaarde of een bruikbaar document, gaan naar `in_review` in plaats van actionable te blijven. Profielupdates en nieuwe documentuploads activeren dezelfde controle voor bestaande taken.
+
+Alleen ontbrekende of incompatibele waarden blijven actionable. Hergebruik keurt het bewijs niet goed. Swipelux beoordeelt het nog steeds. Expliciete correctieverzoeken en eerder beantwoorde vereisten blijven actionable. Documenten van eigenaren en related parties worden niet hergebruikt, en vereisten die alleen via een hosted session worden verzameld, behouden hun normale flow.
+
+### Vereisten renderen {#render-requirements}
+
+Bouw formulieren op basis van de metadata die elke vereiste retourneert, niet op basis van requirement-keys. Een vereiste kan een optionele korte `title` bevatten, en elke `request` bevat een `prompt` om onder de kop te tonen.
+
+Vereisten met `request.type: "profile"` identificeren het profielveld met `profilePointer` en voegen invoermetadata toe:
+
+- `allowedValues`: de toegestane waarden voor een scalair veld, of voor elk item van een arrayveld. Dien deze waarden in, niet vertaalde weergavelabels.
+- `valueSchema`: een zelfstandig JSON Schema Draft 7-document dat de invoervorm, geneste properties, verplichte velden en structurele beperkingen beschrijft. Enums op objecten staan op de relevante property, bijvoorbeeld `valueSchema.items.properties.type.enum` voor fiscale identificatiecodes. Swipelux past na indiening nog steeds veldoverschrijdende validatie en reviewvalidatie toe, dus een waarde die het schema doorstaat, kan nog steeds worden afgewezen.
+- `valueType: "country"`, of `itemValueType: "country"` voor arrays: het veld accepteert ISO 3166-1 alpha-2-codes in hoofdletters. Geneste landproperties in `valueSchema` gebruiken `format: "iso-3166-1-alpha-2"`. Gebruik een standaard landenlijst voor gelokaliseerde labels.
+
+```json
+{
+  "id": "req_000000000000000010",
+  "key": "account_purposes",
+  "title": "Account purpose",
+  "status": "action_required",
+  "request": {
+    "type": "profile",
+    "prompt": "Select every purpose that applies.",
+    "required": true,
+    "profilePointer": "/financialProfile/accountPurposes",
+    "valueType": "array",
+    "itemValueType": "string",
+    "allowedValues": ["business_expenses", "ecommerce", "payroll"],
+    "valueSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "array",
+      "items": { "enum": ["business_expenses", "ecommerce", "payroll"] }
+    }
+  }
+}
+```
+
+Dit voorbeeld verkort de waardencatalogus; de API retourneert elke toegestane waarde. Sommige profielvereisten hebben geen gepubliceerd schema en laten `valueSchema` en `allowedValues` weg. Render die op basis van `prompt` en `valueType`.
 
 Elke open taak bevat een `dueAt`-tijdstempel. Wanneer Swipelux een taak aanmaakt zonder expliciete vervaldatum, staat `dueAt` standaard op precies 31 dagen na de `createdAt` van de taak. Behandel `dueAt` als informatief: je kunt het niet via de API instellen en het activeert geen automatische levenscyclusovergang. Alleen het aparte veld `deadline` veroorzaakt, indien aanwezig, een automatische overgang.
 

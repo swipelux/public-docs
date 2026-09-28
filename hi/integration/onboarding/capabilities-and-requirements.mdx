@@ -34,6 +34,23 @@ curl --request GET \
 
 एक response entry चुनें जो इच्छित `directions`, `method`, और `accountType` से मेल खाती हो। केवल तब जारी रखें जब `availability` `available` या `beta` हो और `eligibility.eligible` `true` हो। यदि `institutions` लौटाए जाते हैं, तो केवल उस response से एक ID चुनें।
 
+प्रत्येक institution entry में एक `logoUrl` और एक `isDefault` flag शामिल होता है। Bank selection UI में bank का logo दिखाने के लिए `logoUrl` का उपयोग करें, और जब यह `null` हो तो अपना generic bank icon render करें। `isDefault` केवल इस customer और capability पर लागू होता है, institution पर globally नहीं। [`GET /v3/institutions`](/api-reference/institutions/get-v3-institutions) वही nullable `logoUrl` लौटाता है। Institution IDs opaque हैं, इसलिए code बदले बिना नए IDs को handle करें।
+
+```json
+{
+  "institutions": [
+    {
+      "id": "jpmorgan",
+      "name": "JPMorgan Chase",
+      "bic": "CHASUS33",
+      "logoUrl": "https://wallet.swipelux.com/bank-logos/jpmorgan.png",
+      "countries": ["US"],
+      "isDefault": true
+    }
+  ]
+}
+```
+
 चयनित `data[].id` को `CAPABILITY_ID` के रूप में संग्रहीत करें। किसी अन्य customer या environment से capability ID को कभी copy न करें।
 
 ### Pooled बनाम named account types
@@ -66,6 +83,84 @@ curl --request POST \
 
 `data.status` को `CAPABILITY_STATUS`, `data.accountProvisioning` को `ACCOUNT_PROVISIONING_STATUS`, `data.openTaskIds` को `OPEN_TASK_IDS`, और प्रत्येक `data.applications[].id` को `APPLICATION_IDS` में संग्रहीत करें।
 
+### प्रति bank साझा applications {#shared-applications-per-bank}
+
+Named bank capabilities के लिए, प्रत्येक customer के पास प्रति bank एक application case होता है। Pooled और platform capabilities बिना bank वाले cases का उपयोग करती हैं। Swipelux आपके द्वारा अनुरोधित हर compatible capability में एक case साझा करता है:
+
+- एक approval कई capabilities को cover कर सकता है। उदाहरण के लिए, एक bank पर approved case ACH और wire दोनों capabilities को `ready` बना सकता है।
+- बाद का कोई request जो किसी मौजूदा case से मेल खाता है, उसी का पुन: उपयोग करता है। Swipelux कोई दूसरा application नहीं खोलता और कोई duplicate tasks नहीं जोड़ता।
+- अलग-अलग banks पर cases स्वतंत्र होते हैं। एक bank पर rejection किसी दूसरे bank के case को प्रभावित नहीं करता।
+
+Request response आपको बताता है कि Swipelux ने किस case का उपयोग किया:
+
+- `201` का अर्थ है कि request ने एक नया application case खोला।
+- `200` का अर्थ है कि request किसी ऐसे application case पर resolve हुआ जो customer के पास पहले से था, उदाहरण के लिए ऐसी bank capability के लिए दोहराया गया request जो customer के पास पहले से है, या किसी canceled capability के लिए request। `card` या `stablecoin_transfers` के लिए दोहराया गया request अब भी [`409 capability_already_exists`](/integration/errors#capability-already-exists) लौटाता है।
+- `selectedApplicationId` `data` के बगल में एक top-level field है, जिसमें उस case का ID होता है जिसे request ने चुना या खोला। जब request ने कोई case नहीं चुना, तो Swipelux इसे छोड़ देता है। Idempotent replay वही value लौटाता है।
+
+संक्षिप्त response:
+
+```json
+{
+  "data": {
+    "id": "ach_named",
+    "status": "pending",
+    "openTaskIds": ["tsk_000000000000000002"],
+    "applications": [{ "id": "apl_000000000000000005", "status": "in_review" }]
+  },
+  "selectedApplicationId": "apl_000000000000000005"
+}
+```
+
+Named capabilities के लिए, उसी case को चुनने के लिए वही `institutions` list फिर से भेजें, या उस bank को target करने के लिए एक institution ID भेजें। जिस bank ने customer को terminally reject किया है, उसे skip किया जाता है। जब आप केवल उसी bank का नाम देते हैं, या हर eligible bank ने customer को reject कर दिया है, तो request [`409 capability_terminally_rejected`](/integration/errors#capability-terminally-rejected) लौटाता है। Rejection के बाद किसी दूसरे bank को आज़माने के लिए, उस bank के institution ID के साथ capability का फिर से अनुरोध करें।
+
+किसी capability का status customer के सभी संबंधित cases को दर्शाता है। Named capability के लिए, एक `ready` case जिसका approval उसे cover करता है, उसे `ready` बनाने के लिए पर्याप्त है, चाहे दूसरे banks कुछ भी report करें। Pooled capability अपने method check की भी प्रतीक्षा करती है, जो customer applications list पर `probes` में report होता है।
+
+#### Customer के applications सूचीबद्ध करें {#list-the-customers-applications}
+
+Customer के हर application case को [`GET /v3/customers/{customerId}/applications`](/api-reference/capabilities/get-v3-customers-by-customer-id-applications) के साथ सूचीबद्ध करें। Results `nextCursor` और `hasMore` के साथ paginated होते हैं, और `updatedAfter` स्वीकार करते हैं:
+
+```bash
+curl --request GET \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/applications" \
+  --header "X-API-Key: ${SWIPELUX_API_KEY}"
+```
+
+प्रत्येक entry में capability के `applications[]` में लौटाए गए application fields शामिल होते हैं, साथ ही:
+
+- `scope`: एक bank पर case के लिए `named`, बिना bank वाले cases के लिए `provider_pooled` या `platform`, या unclassified historical case के लिए `null`। `provider_pooled` और `platform` cases के लिए `institution` मौजूद नहीं होता।
+- `requestedScope[]`: case के विरुद्ध अनुरोधित capability keys, प्रत्येक अपने पहले `requestedAt` के साथ। Entries कभी हटाई नहीं जातीं।
+- `coverage[]`: वे capability keys जिन्हें case का approval cover करता है, प्रत्येक `grantedAt` और `source` के साथ। Coverage scope record करता है, authorization नहीं। वर्तमान status के लिए capability पढ़ें।
+- `probes[]`: case द्वारा cover की गई pooled capability keys के लिए method checks, प्रत्येक `capabilityKey`, `status`, और `reason` के साथ। Named keys को कभी probe की आवश्यकता नहीं होती।
+- `generation`, `predecessorApplicationId`, और `supersededByApplicationId`: succession links। जब `supersededByApplicationId` set हो, तो case को replace कर दिया गया है। वर्तमान case तक पहुँचने के लिए उस ID का पालन करें।
+
+संक्षिप्त response:
+
+```json
+{
+  "data": [
+    {
+      "id": "apl_000000000000000005",
+      "status": "ready",
+      "scope": "named",
+      "institution": { "id": "jpmorgan", "name": "JPMorgan Chase", "bic": "CHASUS33" },
+      "requestedScope": [
+        { "capabilityKey": "ach_named", "requestedAt": "2026-09-20T10:00:00.000Z" }
+      ],
+      "coverage": [
+        { "capabilityKey": "ach_named", "grantedAt": "2026-09-22T12:00:00.000Z", "source": "approval" },
+        { "capabilityKey": "wire_named", "grantedAt": "2026-09-22T12:00:00.000Z", "source": "approval" }
+      ],
+      "probes": [],
+      "generation": 1,
+      "predecessorApplicationId": null,
+      "supersededByApplicationId": null
+    }
+  ],
+  "nextCursor": null,
+  "hasMore": false
+}
+```
+
 ## वर्तमान tasks पूरे करें {#complete-current-tasks}
 
 Tasks को [`GET /v3/customers/{customerId}/tasks`](/api-reference/tasks/list-customer-tasks) के साथ सूचीबद्ध करें, `OPEN_TASK_IDS` से IDs चुनें, फिर प्रत्येक वर्तमान task को [`GET /v3/customers/{customerId}/tasks/{taskId}`](/api-reference/tasks/get-customer-task) के साथ पढ़ें:
@@ -77,6 +172,47 @@ curl --request GET \
 ```
 
 नवीनतम `data.revision` और `data.requirements` का उपयोग करें। यदि दोनों में से कोई बदल सकता है, तो submit करने से ठीक पहले task को पुन: प्राप्त करें।
+
+### पुन: उपयोग किए गए profile evidence {#reused-profile-evidence}
+
+Direct API submission स्वीकार करने वाले application intake tasks के लिए, Swipelux उस जानकारी का पुन: उपयोग करता है जो customer पहले ही दे चुका है। जब ऐसा task बनाया या reconcile किया जाता है, तो Swipelux customer profile और customer के अपने upload किए गए documents की जाँच करता है। जो eligible requirements पहले से किसी usable profile value या document द्वारा समर्थित हैं, वे actionable रहने के बजाय `in_review` में चली जाती हैं। Profile updates और नए document uploads मौजूदा tasks के लिए वही जाँच trigger करते हैं।
+
+केवल missing या incompatible values actionable रहती हैं। पुन: उपयोग evidence को approve नहीं करता। Swipelux फिर भी उसकी review करता है। Explicit correction requests और पहले से answered requirements actionable रहती हैं। Owner और related-party documents का पुन: उपयोग नहीं होता, और केवल hosted session के माध्यम से collect की जाने वाली requirements अपने सामान्य flow का पालन करती हैं।
+
+### Requirements render करें {#render-requirements}
+
+Forms को requirement keys के बजाय प्रत्येक requirement द्वारा लौटाए गए metadata से बनाएँ। एक requirement में एक वैकल्पिक छोटा `title` शामिल हो सकता है, और हर `request` में heading के नीचे दिखाने के लिए एक `prompt` शामिल होता है।
+
+`request.type: "profile"` वाली requirements `profilePointer` के साथ profile field की पहचान करती हैं और input metadata जोड़ती हैं:
+
+- `allowedValues`: किसी scalar field के लिए, या किसी array field के प्रत्येक item के लिए अनुमत values। इन्हीं values को submit करें, translated display labels को नहीं।
+- `valueSchema`: एक self-contained JSON Schema Draft 7 document जो input shape, nested properties, required fields, और structural constraints का वर्णन करता है। Objects पर enums संबंधित property पर दिखाई देते हैं, उदाहरण के लिए tax identifiers के लिए `valueSchema.items.properties.type.enum`। Swipelux submission के बाद भी cross-field और review validation लागू करता है, इसलिए schema पास करने वाली value भी reject हो सकती है।
+- `valueType: "country"`, या arrays के लिए `itemValueType: "country"`: field uppercase ISO 3166-1 alpha-2 codes लेता है। `valueSchema` में nested country properties `format: "iso-3166-1-alpha-2"` का उपयोग करती हैं। Localized labels के लिए एक standard country list का उपयोग करें।
+
+```json
+{
+  "id": "req_000000000000000010",
+  "key": "account_purposes",
+  "title": "Account purpose",
+  "status": "action_required",
+  "request": {
+    "type": "profile",
+    "prompt": "Select every purpose that applies.",
+    "required": true,
+    "profilePointer": "/financialProfile/accountPurposes",
+    "valueType": "array",
+    "itemValueType": "string",
+    "allowedValues": ["business_expenses", "ecommerce", "payroll"],
+    "valueSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "array",
+      "items": { "enum": ["business_expenses", "ecommerce", "payroll"] }
+    }
+  }
+}
+```
+
+यह उदाहरण value catalog को छोटा करता है; API हर अनुमत value लौटाता है। कुछ profile requirements का कोई published schema नहीं होता और वे `valueSchema` और `allowedValues` को छोड़ देती हैं। उन्हें `prompt` और `valueType` से render करें।
 
 प्रत्येक खुले टास्क में एक `dueAt` टाइमस्टैम्प शामिल होता है। जब Swipelux बिना किसी स्पष्ट नियत तिथि के टास्क बनाता है, तो `dueAt` डिफ़ॉल्ट रूप से टास्क के `createdAt` के ठीक 31 दिन बाद सेट होता है। `dueAt` को केवल सूचनात्मक मानें: आप इसे API के माध्यम से सेट नहीं कर सकते, और यह कोई स्वचालित लाइफ़साइकल ट्रांज़िशन ट्रिगर नहीं करता। केवल अलग `deadline` फ़ील्ड, यदि मौजूद हो, स्वचालित ट्रांज़िशन का कारण बनता है।
 

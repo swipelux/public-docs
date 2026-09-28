@@ -34,6 +34,23 @@ curl --request GET \
 
 选择在 `directions`、`method` 和 `accountType` 上与您意图匹配的响应条目。仅当 `availability` 为 `available` 或 `beta`,并且 `eligibility.eligible` 为 `true` 时才继续。如果返回了 `institutions`,请只从该响应中的 ID 中做选择。
 
+每个机构条目都包含 `logoUrl` 和 `isDefault` 标志。使用 `logoUrl` 在银行选择界面中显示银行的徽标；当其为 `null` 时，请显示您自己的通用银行图标。`isDefault` 仅适用于该客户和该能力，而非全局适用于该机构。[`GET /v3/institutions`](/api-reference/institutions/get-v3-institutions) 返回同样可为空的 `logoUrl`。机构 ID 是不透明的，因此请在不修改代码的情况下处理新的 ID。
+
+```json
+{
+  "institutions": [
+    {
+      "id": "jpmorgan",
+      "name": "JPMorgan Chase",
+      "bic": "CHASUS33",
+      "logoUrl": "https://wallet.swipelux.com/bank-logos/jpmorgan.png",
+      "countries": ["US"],
+      "isDefault": true
+    }
+  ]
+}
+```
+
 将选中的 `data[].id` 保存为 `CAPABILITY_ID`。切勿从其他客户或其他环境复制能力 ID。
 
 ### 共享账户 vs 专属账户
@@ -66,6 +83,84 @@ curl --request POST \
 
 将 `data.status` 保存为 `CAPABILITY_STATUS`,`data.accountProvisioning` 保存为 `ACCOUNT_PROVISIONING_STATUS`,`data.openTaskIds` 保存为 `OPEN_TASK_IDS`,并将每个 `data.applications[].id` 保存到 `APPLICATION_IDS`。
 
+### 按银行共享的申请 {#shared-applications-per-bank}
+
+对于专属银行能力，每个客户在每家银行只有一个申请案例。共享能力和平台能力使用不关联银行的案例。Swipelux 会在您申请的所有兼容能力之间共享同一个案例：
+
+- 一次批准可以覆盖多个能力。例如，某家银行已批准的案例可以让 ACH 能力和 wire 能力都变为 `ready`。
+- 之后与现有案例匹配的请求会复用该案例。Swipelux 不会开启第二个申请，也不会添加重复任务。
+- 不同银行的案例相互独立。一家银行的拒绝不会影响另一家银行的案例。
+
+请求响应会告诉您 Swipelux 使用了哪个案例：
+
+- `201` 表示该请求开启了一个新的申请案例。
+- `200` 表示该请求解析到了客户已有的申请案例，例如对客户已持有的银行能力的重复请求，或对已取消能力的请求。对 `card` 或 `stablecoin_transfers` 的重复请求仍会返回 [`409 capability_already_exists`](/integration/errors#capability-already-exists)。
+- `selectedApplicationId` 是与 `data` 并列的顶层字段，包含该请求所选择或开启的案例 ID。当请求未选择任何案例时，Swipelux 会省略该字段。幂等重放会返回相同的值。
+
+简化响应：
+
+```json
+{
+  "data": {
+    "id": "ach_named",
+    "status": "pending",
+    "openTaskIds": ["tsk_000000000000000002"],
+    "applications": [{ "id": "apl_000000000000000005", "status": "in_review" }]
+  },
+  "selectedApplicationId": "apl_000000000000000005"
+}
+```
+
+对于专属能力，再次发送相同的 `institutions` 列表可选择同一个案例，或者发送单个机构 ID 以指定该银行。已最终拒绝该客户的银行会被跳过。当您只指定了该银行，或所有符合条件的银行都已拒绝该客户时，请求会返回 [`409 capability_terminally_rejected`](/integration/errors#capability-terminally-rejected)。如需在被拒绝后尝试另一家银行，请使用该银行的机构 ID 再次申请该能力。
+
+能力的状态反映该客户所有相关案例的情况。对于专属能力，只要有一个 `ready` 案例的批准覆盖了它，它就会变为 `ready`，无论其他银行报告什么。共享能力还需等待其方式检查完成，检查结果会在客户申请列表的 `probes` 中报告。
+
+#### 列出客户的申请 {#list-the-customers-applications}
+
+使用 [`GET /v3/customers/{customerId}/applications`](/api-reference/capabilities/get-v3-customers-by-customer-id-applications) 列出该客户的所有申请案例。结果通过 `nextCursor` 和 `hasMore` 分页，并支持 `updatedAfter`：
+
+```bash
+curl --request GET \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/applications" \
+  --header "X-API-Key: ${SWIPELUX_API_KEY}"
+```
+
+每个条目都包含能力的 `applications[]` 中返回的申请字段，另外还有：
+
+- `scope`：单家银行的案例为 `named`，不关联银行的案例为 `provider_pooled` 或 `platform`，未分类的历史案例为 `null`。`provider_pooled` 和 `platform` 案例不包含 `institution`。
+- `requestedScope[]`：针对该案例申请过的能力键，每个都带有其首次的 `requestedAt`。条目永远不会被移除。
+- `coverage[]`：该案例的批准所覆盖的能力键，每个都带有 `grantedAt` 和 `source`。覆盖记录的是范围，而非授权。请读取能力以获取其当前状态。
+- `probes[]`：针对该案例所覆盖的共享能力键的方式检查，每个都带有 `capabilityKey`、`status` 和 `reason`。专属能力键从不需要检查。
+- `generation`、`predecessorApplicationId` 和 `supersededByApplicationId`：继承关系链接。当设置了 `supersededByApplicationId` 时，表示该案例已被替换。请根据该 ID 找到当前案例。
+
+简化响应：
+
+```json
+{
+  "data": [
+    {
+      "id": "apl_000000000000000005",
+      "status": "ready",
+      "scope": "named",
+      "institution": { "id": "jpmorgan", "name": "JPMorgan Chase", "bic": "CHASUS33" },
+      "requestedScope": [
+        { "capabilityKey": "ach_named", "requestedAt": "2026-09-20T10:00:00.000Z" }
+      ],
+      "coverage": [
+        { "capabilityKey": "ach_named", "grantedAt": "2026-09-22T12:00:00.000Z", "source": "approval" },
+        { "capabilityKey": "wire_named", "grantedAt": "2026-09-22T12:00:00.000Z", "source": "approval" }
+      ],
+      "probes": [],
+      "generation": 1,
+      "predecessorApplicationId": null,
+      "supersededByApplicationId": null
+    }
+  ],
+  "nextCursor": null,
+  "hasMore": false
+}
+```
+
 ## 完成当前任务 {#complete-current-tasks}
 
 使用 [`GET /v3/customers/{customerId}/tasks`](/api-reference/tasks/list-customer-tasks) 列出任务,从 `OPEN_TASK_IDS` 中选择 ID,然后使用 [`GET /v3/customers/{customerId}/tasks/{taskId}`](/api-reference/tasks/get-customer-task) 读取每个当前任务:
@@ -77,6 +172,47 @@ curl --request GET \
 ```
 
 请使用最新的 `data.revision` 和 `data.requirements`。如果它们可能已经变化,请在提交前立即重新拉取任务。
+
+### 复用的资料证据 {#reused-profile-evidence}
+
+对于接受直接通过 API 提交的申请信息采集任务，Swipelux 会复用客户已经提供的信息。当此类任务被创建或重新核对时，Swipelux 会检查客户资料以及客户本人上传的文件。已由可用的资料值或文件支撑的符合条件的要求会转为 `in_review`，而不再保持可执行状态。资料更新和新文件上传会对现有任务触发同样的检查。
+
+只有缺失或不兼容的值会保持可执行状态。复用并不代表批准该证据，Swipelux 仍会对其进行审核。明确的更正请求以及此前已作答的要求会保持可执行状态。所有人和相关方的文件不会被复用，仅通过托管会话收集的要求会保持其常规流程。
+
+### 渲染要求 {#render-requirements}
+
+请根据每个要求返回的元数据构建表单，而不是根据要求键。要求可以包含一个可选的简短 `title`，并且每个 `request` 都包含一个 `prompt`，用于显示在标题下方。
+
+`request.type: "profile"` 的要求通过 `profilePointer` 标识资料字段，并添加输入元数据：
+
+- `allowedValues`：标量字段的允许值，或数组字段中每一项的允许值。请提交这些值，而不是翻译后的显示标签。
+- `valueSchema`：一个自包含的 JSON Schema Draft 7 文档，描述输入的结构、嵌套属性、必填字段和结构约束。对象上的枚举出现在相应的属性上，例如税务识别号的 `valueSchema.items.properties.type.enum`。Swipelux 在提交后仍会进行跨字段校验和审核校验，因此通过 schema 校验的值仍可能被拒绝。
+- `valueType: "country"`，或数组的 `itemValueType: "country"`：该字段接受大写的 ISO 3166-1 alpha-2 代码。`valueSchema` 中嵌套的国家属性使用 `format: "iso-3166-1-alpha-2"`。请使用标准国家列表来获取本地化标签。
+
+```json
+{
+  "id": "req_000000000000000010",
+  "key": "account_purposes",
+  "title": "Account purpose",
+  "status": "action_required",
+  "request": {
+    "type": "profile",
+    "prompt": "Select every purpose that applies.",
+    "required": true,
+    "profilePointer": "/financialProfile/accountPurposes",
+    "valueType": "array",
+    "itemValueType": "string",
+    "allowedValues": ["business_expenses", "ecommerce", "payroll"],
+    "valueSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "array",
+      "items": { "enum": ["business_expenses", "ecommerce", "payroll"] }
+    }
+  }
+}
+```
+
+此示例对值目录做了缩减；API 会返回所有允许的值。部分资料要求没有已发布的 schema，会省略 `valueSchema` 和 `allowedValues`。请根据 `prompt` 和 `valueType` 渲染这些要求。
 
 每个未完成任务都包含 `dueAt` 时间戳。当 Swipelux 创建任务且未显式指定到期日期时,`dueAt` 默认为任务 `createdAt` 之后整 31 天。请将 `dueAt` 视为仅供参考:您无法通过 API 设置它,它也不会触发任何自动生命周期转换。只有单独的 `deadline` 字段(如存在)才会触发自动转换。
 

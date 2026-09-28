@@ -34,6 +34,23 @@ curl --request GET \
 
 Velg en responsoppføring som samsvarer med tiltenkt `directions`, `method` og `accountType`. Fortsett kun når `availability` er `available` eller `beta` og `eligibility.eligible` er `true`. Hvis `institutions` returneres, velg kun én ID fra den responsen.
 
+Hver institusjonsoppføring inneholder en `logoUrl` og et `isDefault`-flagg. Bruk `logoUrl` til å vise bankens logo i et grensesnitt for bankvalg, og vis ditt eget generiske bankikon når den er `null`. `isDefault` gjelder kun for denne kunden og capability-en, ikke for institusjonen globalt. [`GET /v3/institutions`](/api-reference/institutions/get-v3-institutions) returnerer den samme `logoUrl`, som kan være null. Institusjons-ID-er er ugjennomsiktige, så håndter nye ID-er uten kodeendringer.
+
+```json
+{
+  "institutions": [
+    {
+      "id": "jpmorgan",
+      "name": "JPMorgan Chase",
+      "bic": "CHASUS33",
+      "logoUrl": "https://wallet.swipelux.com/bank-logos/jpmorgan.png",
+      "countries": ["US"],
+      "isDefault": true
+    }
+  ]
+}
+```
+
 Lagre den valgte `data[].id` som `CAPABILITY_ID`. Kopier aldri en capability-ID fra en annen kunde eller et annet miljø.
 
 ### Pooled vs named kontotyper
@@ -66,6 +83,84 @@ Bruk en eksplisitt `institutions`-liste kun når du må velge fra ID-er returner
 
 Lagre `data.status` som `CAPABILITY_STATUS`, `data.accountProvisioning` som `ACCOUNT_PROVISIONING_STATUS`, `data.openTaskIds` som `OPEN_TASK_IDS`, og hver `data.applications[].id` i `APPLICATION_IDS`.
 
+### Delte søknader per bank {#shared-applications-per-bank}
+
+For named bankcapabilities har hver kunde én søknadssak per bank. Pooled- og plattform-capabilities bruker saker uten bank. Swipelux deler en sak på tvers av alle kompatible capabilities du ber om:
+
+- Én godkjenning kan dekke flere capabilities. For eksempel kan en godkjent sak hos én bank gjøre både en ACH- og en wire-capability `ready`.
+- En senere forespørsel som samsvarer med en eksisterende sak, gjenbruker den. Swipelux åpner ingen ny søknad og legger ikke til dupliserte oppgaver.
+- Saker hos forskjellige banker er uavhengige. Et avslag hos én bank påvirker ikke en sak hos en annen bank.
+
+Responsen på forespørselen forteller deg hvilken sak Swipelux brukte:
+
+- `201` betyr at forespørselen åpnet en ny søknadssak.
+- `200` betyr at forespørselen ble løst til en søknadssak kunden allerede hadde, for eksempel en gjentatt forespørsel om en bankcapability kunden allerede har, eller en forespørsel om en kansellert capability. En gjentatt forespørsel om `card` eller `stablecoin_transfers` returnerer fortsatt [`409 capability_already_exists`](/integration/errors#capability-already-exists).
+- `selectedApplicationId` er et felt på toppnivå ved siden av `data` med ID-en til saken som forespørselen valgte eller åpnet. Swipelux utelater feltet når forespørselen ikke valgte noen sak. En idempotent gjentakelse returnerer samme verdi.
+
+Forkortet respons:
+
+```json
+{
+  "data": {
+    "id": "ach_named",
+    "status": "pending",
+    "openTaskIds": ["tsk_000000000000000002"],
+    "applications": [{ "id": "apl_000000000000000005", "status": "in_review" }]
+  },
+  "selectedApplicationId": "apl_000000000000000005"
+}
+```
+
+For named capabilities sender du den samme `institutions`-listen på nytt for å velge den samme saken, eller én institusjons-ID for å målrette den banken. En bank som endelig har avslått kunden, hoppes over. Når du bare angir den banken, eller alle kvalifiserte banker har avslått kunden, returnerer forespørselen [`409 capability_terminally_rejected`](/integration/errors#capability-terminally-rejected). For å prøve en annen bank etter et avslag, be om capability-en på nytt med den bankens institusjons-ID.
+
+Statusen til en capability gjenspeiler alle kundens relaterte saker. For en named capability er én `ready`-sak med en godkjenning som dekker den, nok til å gjøre den `ready`, uansett hva andre banker rapporterer. En pooled capability venter også på metodesjekken sin, som rapporteres i `probes` i kundens søknadsliste.
+
+#### List kundens søknader {#list-the-customers-applications}
+
+List alle søknadssaker for kunden med [`GET /v3/customers/{customerId}/applications`](/api-reference/capabilities/get-v3-customers-by-customer-id-applications). Resultatene pagineres med `nextCursor` og `hasMore`, og godtar `updatedAfter`:
+
+```bash
+curl --request GET \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/applications" \
+  --header "X-API-Key: ${SWIPELUX_API_KEY}"
+```
+
+Hver oppføring inneholder søknadsfeltene som returneres i en capabilitys `applications[]`, samt:
+
+- `scope`: `named` for en sak hos én bank, `provider_pooled` eller `platform` for saker uten bank, eller `null` for en uklassifisert historisk sak. `institution` er fraværende for `provider_pooled`- og `platform`-saker.
+- `requestedScope[]`: capability-nøklene som er forespurt mot saken, hver med sin første `requestedAt`. Oppføringer fjernes aldri.
+- `coverage[]`: capability-nøklene som sakens godkjenning dekker, hver med `grantedAt` og `source`. Dekningen registrerer omfang, ikke autorisasjon. Les capability-en for å se gjeldende status.
+- `probes[]`: metodesjekker for de pooled capability-nøklene saken dekker, hver med `capabilityKey`, `status` og `reason`. Named nøkler krever aldri en probe.
+- `generation`, `predecessorApplicationId` og `supersededByApplicationId`: etterfølgerlenker. Når `supersededByApplicationId` er satt, er saken erstattet. Følg den ID-en til den gjeldende saken.
+
+Forkortet respons:
+
+```json
+{
+  "data": [
+    {
+      "id": "apl_000000000000000005",
+      "status": "ready",
+      "scope": "named",
+      "institution": { "id": "jpmorgan", "name": "JPMorgan Chase", "bic": "CHASUS33" },
+      "requestedScope": [
+        { "capabilityKey": "ach_named", "requestedAt": "2026-09-20T10:00:00.000Z" }
+      ],
+      "coverage": [
+        { "capabilityKey": "ach_named", "grantedAt": "2026-09-22T12:00:00.000Z", "source": "approval" },
+        { "capabilityKey": "wire_named", "grantedAt": "2026-09-22T12:00:00.000Z", "source": "approval" }
+      ],
+      "probes": [],
+      "generation": 1,
+      "predecessorApplicationId": null,
+      "supersededByApplicationId": null
+    }
+  ],
+  "nextCursor": null,
+  "hasMore": false
+}
+```
+
 ## Fullfør gjeldende oppgaver {#complete-current-tasks}
 
 List oppgaver med [`GET /v3/customers/{customerId}/tasks`](/api-reference/tasks/list-customer-tasks), velg ID-er fra `OPEN_TASK_IDS`, og les så hver gjeldende oppgave med [`GET /v3/customers/{customerId}/tasks/{taskId}`](/api-reference/tasks/get-customer-task):
@@ -77,6 +172,47 @@ curl --request GET \
 ```
 
 Bruk siste `data.revision` og `data.requirements`. Hent oppgaven på nytt umiddelbart før innsending hvis noen av delene kan ha endret seg.
+
+### Gjenbrukte profilbevis {#reused-profile-evidence}
+
+For intake-oppgaver for søknader som godtar direkte innsending via API, gjenbruker Swipelux informasjon kunden allerede har oppgitt. Når en slik oppgave opprettes eller avstemmes, sjekker Swipelux kundeprofilen og kundens egne opplastede dokumenter. Kvalifiserte krav som allerede støttes av en brukbar profilverdi eller et dokument, flyttes til `in_review` i stedet for å forbli handlingsklare. Profiloppdateringer og nye dokumentopplastinger utløser den samme sjekken for eksisterende oppgaver.
+
+Kun manglende eller inkompatible verdier forblir handlingsklare. Gjenbruk godkjenner ikke beviset. Swipelux gjennomgår det fortsatt. Eksplisitte forespørsler om korrigering og krav som allerede er besvart, forblir handlingsklare. Dokumenter for eiere og nærstående parter gjenbrukes ikke, og krav som kun samles inn gjennom en hosted sesjon, følger sin vanlige flyt.
+
+### Gjengi krav {#render-requirements}
+
+Bygg skjemaer fra metadataene hvert krav returnerer, ikke fra kravnøkler. Et krav kan inneholde en valgfri kort `title`, og hver `request` inneholder en `prompt` som skal vises under overskriften.
+
+Krav med `request.type: "profile"` identifiserer profilfeltet med `profilePointer` og legger til metadata for inndata:
+
+- `allowedValues`: de tillatte verdiene for et skalarfelt, eller for hvert element i et array-felt. Send inn disse verdiene, ikke oversatte visningsetiketter.
+- `valueSchema`: et selvstendig JSON Schema Draft 7-dokument som beskriver formen på inndataene, nestede egenskaper, påkrevde felt og strukturelle begrensninger. Enums på objekter vises på den aktuelle egenskapen, for eksempel `valueSchema.items.properties.type.enum` for skatteidentifikatorer. Swipelux utfører fortsatt validering på tvers av felt og ved gjennomgang etter innsending, så en verdi som består skjemaet, kan likevel bli avvist.
+- `valueType: "country"`, eller `itemValueType: "country"` for arrays: feltet tar ISO 3166-1 alpha-2-koder med store bokstaver. Nestede landegenskaper i `valueSchema` bruker `format: "iso-3166-1-alpha-2"`. Bruk en standard landliste for lokaliserte etiketter.
+
+```json
+{
+  "id": "req_000000000000000010",
+  "key": "account_purposes",
+  "title": "Account purpose",
+  "status": "action_required",
+  "request": {
+    "type": "profile",
+    "prompt": "Select every purpose that applies.",
+    "required": true,
+    "profilePointer": "/financialProfile/accountPurposes",
+    "valueType": "array",
+    "itemValueType": "string",
+    "allowedValues": ["business_expenses", "ecommerce", "payroll"],
+    "valueSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "array",
+      "items": { "enum": ["business_expenses", "ecommerce", "payroll"] }
+    }
+  }
+}
+```
+
+Dette eksempelet forkorter verdikatalogen. API-et returnerer alle tillatte verdier. Noen profilkrav har ikke noe publisert skjema og utelater `valueSchema` og `allowedValues`. Gjengi disse fra `prompt` og `valueType`.
 
 Hver åpen oppgave inneholder et `dueAt`-tidsstempel. Når Swipelux oppretter en oppgave uten en eksplisitt forfallsdato, settes `dueAt` som standard til nøyaktig 31 dager etter oppgavens `createdAt`. Behandle `dueAt` som informativt: du kan ikke sette det via API-et, og det utløser ingen automatisk livssyklusovergang. Bare det separate feltet `deadline` forårsaker en automatisk overgang når det er satt.
 

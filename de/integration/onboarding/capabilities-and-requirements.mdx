@@ -34,6 +34,23 @@ curl --request GET \
 
 Wählen Sie einen Antwort-Eintrag, der den beabsichtigten `directions`, `method` und `accountType` entspricht. Fahren Sie nur fort, wenn `availability` gleich `available` oder `beta` und `eligibility.eligible` gleich `true` ist. Wenn `institutions` zurückgegeben werden, wählen Sie nur eine ID aus dieser Antwort aus.
 
+Jeder Institutionseintrag enthält eine `logoUrl` und ein `isDefault`-Flag. Verwenden Sie `logoUrl`, um das Logo der Bank in einer Bankauswahl-UI anzuzeigen, und rendern Sie Ihr eigenes generisches Banksymbol, wenn der Wert `null` ist. `isDefault` gilt nur für diesen Kunden und diese Fähigkeit, nicht global für die Institution. [`GET /v3/institutions`](/api-reference/institutions/get-v3-institutions) gibt dieselbe nullable `logoUrl` zurück. Institutions-IDs sind opak, verarbeiten Sie neue IDs daher ohne Codeänderungen.
+
+```json
+{
+  "institutions": [
+    {
+      "id": "jpmorgan",
+      "name": "JPMorgan Chase",
+      "bic": "CHASUS33",
+      "logoUrl": "https://wallet.swipelux.com/bank-logos/jpmorgan.png",
+      "countries": ["US"],
+      "isDefault": true
+    }
+  ]
+}
+```
+
 Speichern Sie die ausgewählte `data[].id` als `CAPABILITY_ID`. Kopieren Sie niemals eine Fähigkeits-ID von einem anderen Kunden oder aus einer anderen Umgebung.
 
 ### Pooled vs. named Kontotypen
@@ -66,6 +83,84 @@ Verwenden Sie ein explizites `institutions`-Array nur, wenn Sie aus IDs auswähl
 
 Speichern Sie `data.status` als `CAPABILITY_STATUS`, `data.accountProvisioning` als `ACCOUNT_PROVISIONING_STATUS`, `data.openTaskIds` als `OPEN_TASK_IDS` und jede `data.applications[].id` in `APPLICATION_IDS`.
 
+### Gemeinsame Anträge pro Bank {#shared-applications-per-bank}
+
+Bei named Bank-Fähigkeiten hat jeder Kunde einen Antragsfall pro Bank. Pooled- und Plattform-Fähigkeiten verwenden Fälle ohne Bank. Swipelux teilt einen Fall über alle kompatiblen Fähigkeiten, die Sie anfordern:
+
+- Eine Genehmigung kann mehrere Fähigkeiten abdecken. Zum Beispiel kann ein genehmigter Fall bei einer Bank sowohl eine ACH- als auch eine Wire-Fähigkeit `ready` machen.
+- Eine spätere Anfrage, die zu einem bestehenden Fall passt, verwendet diesen wieder. Swipelux eröffnet keinen zweiten Antrag und fügt keine doppelten Aufgaben hinzu.
+- Fälle bei verschiedenen Banken sind unabhängig. Eine Ablehnung bei einer Bank wirkt sich nicht auf einen Fall bei einer anderen Bank aus.
+
+Die Antwort auf die Anfrage zeigt Ihnen, welchen Fall Swipelux verwendet hat:
+
+- `201` bedeutet, dass die Anfrage einen neuen Antragsfall eröffnet hat.
+- `200` bedeutet, dass die Anfrage einem Antragsfall zugeordnet wurde, den der Kunde bereits hatte, zum Beispiel bei einer wiederholten Anfrage für eine Bank-Fähigkeit, die der Kunde bereits besitzt, oder bei einer Anfrage für eine stornierte Fähigkeit. Eine wiederholte Anfrage für `card` oder `stablecoin_transfers` gibt weiterhin [`409 capability_already_exists`](/integration/errors#capability-already-exists) zurück.
+- `selectedApplicationId` ist ein Feld auf oberster Ebene neben `data` mit der ID des Falls, den die Anfrage ausgewählt oder eröffnet hat. Swipelux lässt es weg, wenn die Anfrage keinen Fall ausgewählt hat. Eine idempotente Wiederholung gibt denselben Wert zurück.
+
+Gekürzte Antwort:
+
+```json
+{
+  "data": {
+    "id": "ach_named",
+    "status": "pending",
+    "openTaskIds": ["tsk_000000000000000002"],
+    "applications": [{ "id": "apl_000000000000000005", "status": "in_review" }]
+  },
+  "selectedApplicationId": "apl_000000000000000005"
+}
+```
+
+Senden Sie bei named Fähigkeiten dieselbe `institutions`-Liste erneut, um denselben Fall auszuwählen, oder senden Sie eine einzelne Institutions-ID, um gezielt diese Bank anzusprechen. Eine Bank, die den Kunden endgültig abgelehnt hat, wird übersprungen. Wenn Sie nur diese Bank angeben oder alle berechtigten Banken den Kunden abgelehnt haben, gibt die Anfrage [`409 capability_terminally_rejected`](/integration/errors#capability-terminally-rejected) zurück. Um es nach einer Ablehnung bei einer anderen Bank zu versuchen, fordern Sie die Fähigkeit erneut mit der Institutions-ID dieser Bank an.
+
+Der Status einer Fähigkeit spiegelt alle zugehörigen Fälle des Kunden wider. Bei einer named Fähigkeit genügt ein `ready`-Fall, dessen Genehmigung sie abdeckt, damit sie `ready` wird, unabhängig davon, was andere Banken melden. Eine pooled Fähigkeit wartet zusätzlich auf ihre Methodenprüfung, die in `probes` in der Antragsliste des Kunden gemeldet wird.
+
+#### Anträge des Kunden auflisten {#list-the-customers-applications}
+
+Listen Sie alle Antragsfälle des Kunden mit [`GET /v3/customers/{customerId}/applications`](/api-reference/capabilities/get-v3-customers-by-customer-id-applications) auf. Die Ergebnisse sind mit `nextCursor` und `hasMore` paginiert und akzeptieren `updatedAfter`:
+
+```bash
+curl --request GET \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/applications" \
+  --header "X-API-Key: ${SWIPELUX_API_KEY}"
+```
+
+Jeder Eintrag enthält die Antragsfelder, die in `applications[]` einer Fähigkeit zurückgegeben werden, und zusätzlich:
+
+- `scope`: `named` für einen Fall bei einer Bank, `provider_pooled` oder `platform` für Fälle ohne Bank oder `null` für einen nicht klassifizierten historischen Fall. `institution` fehlt bei `provider_pooled`- und `platform`-Fällen.
+- `requestedScope[]`: die Fähigkeitsschlüssel, die für den Fall angefordert wurden, jeweils mit ihrem ersten `requestedAt`. Einträge werden nie entfernt.
+- `coverage[]`: die Fähigkeitsschlüssel, die die Genehmigung des Falls abdeckt, jeweils mit `grantedAt` und `source`. Coverage erfasst den Umfang, nicht die Autorisierung. Lesen Sie die Fähigkeit, um ihren aktuellen Status zu erhalten.
+- `probes[]`: Methodenprüfungen für die pooled Fähigkeitsschlüssel, die der Fall abdeckt, jeweils mit `capabilityKey`, `status` und `reason`. Named Schlüssel erfordern nie eine Prüfung.
+- `generation`, `predecessorApplicationId` und `supersededByApplicationId`: Nachfolgeverknüpfungen. Wenn `supersededByApplicationId` gesetzt ist, wurde der Fall ersetzt. Folgen Sie dieser ID zum aktuellen Fall.
+
+Gekürzte Antwort:
+
+```json
+{
+  "data": [
+    {
+      "id": "apl_000000000000000005",
+      "status": "ready",
+      "scope": "named",
+      "institution": { "id": "jpmorgan", "name": "JPMorgan Chase", "bic": "CHASUS33" },
+      "requestedScope": [
+        { "capabilityKey": "ach_named", "requestedAt": "2026-09-20T10:00:00.000Z" }
+      ],
+      "coverage": [
+        { "capabilityKey": "ach_named", "grantedAt": "2026-09-22T12:00:00.000Z", "source": "approval" },
+        { "capabilityKey": "wire_named", "grantedAt": "2026-09-22T12:00:00.000Z", "source": "approval" }
+      ],
+      "probes": [],
+      "generation": 1,
+      "predecessorApplicationId": null,
+      "supersededByApplicationId": null
+    }
+  ],
+  "nextCursor": null,
+  "hasMore": false
+}
+```
+
 ## Aktuelle Aufgaben erledigen {#complete-current-tasks}
 
 Listen Sie Aufgaben mit [`GET /v3/customers/{customerId}/tasks`](/api-reference/tasks/list-customer-tasks) auf, wählen Sie IDs aus `OPEN_TASK_IDS` aus und lesen Sie dann jede aktuelle Aufgabe mit [`GET /v3/customers/{customerId}/tasks/{taskId}`](/api-reference/tasks/get-customer-task):
@@ -77,6 +172,47 @@ curl --request GET \
 ```
 
 Verwenden Sie die neuesten `data.revision` und `data.requirements`. Rufen Sie die Aufgabe unmittelbar vor dem Absenden erneut ab, wenn sich eines von beiden geändert haben könnte.
+
+### Wiederverwendete Profilnachweise {#reused-profile-evidence}
+
+Bei Antragsaufnahme-Aufgaben, die eine direkte API-Einreichung akzeptieren, verwendet Swipelux Informationen wieder, die der Kunde bereits bereitgestellt hat. Wenn eine solche Aufgabe erstellt oder abgeglichen wird, prüft Swipelux das Kundenprofil und die vom Kunden selbst hochgeladenen Dokumente. Berechtigte Anforderungen, die bereits durch einen verwendbaren Profilwert oder ein Dokument belegt sind, wechseln zu `in_review`, statt handlungsfähig zu bleiben. Profilaktualisierungen und neue Dokument-Uploads lösen dieselbe Prüfung für bestehende Aufgaben aus.
+
+Nur fehlende oder inkompatible Werte bleiben handlungsfähig. Die Wiederverwendung genehmigt die Nachweise nicht. Swipelux prüft sie weiterhin. Ausdrückliche Korrekturanfragen und bereits beantwortete Anforderungen bleiben handlungsfähig. Dokumente von Eigentümern und verbundenen Parteien werden nicht wiederverwendet, und Anforderungen, die nur über eine gehostete Session erfasst werden, behalten ihren normalen Ablauf.
+
+### Anforderungen rendern {#render-requirements}
+
+Erstellen Sie Formulare aus den Metadaten, die jede Anforderung zurückgibt, statt aus Anforderungsschlüsseln. Eine Anforderung kann einen optionalen kurzen `title` enthalten, und jeder `request` enthält einen `prompt`, der unter der Überschrift angezeigt wird.
+
+Anforderungen mit `request.type: "profile"` identifizieren das Profilfeld mit `profilePointer` und ergänzen Eingabemetadaten:
+
+- `allowedValues`: die zulässigen Werte für ein skalares Feld oder für jedes Element eines Array-Felds. Senden Sie diese Werte, nicht übersetzte Anzeigebezeichnungen.
+- `valueSchema`: ein eigenständiges JSON Schema Draft 7-Dokument, das die Eingabeform, verschachtelte Eigenschaften, Pflichtfelder und strukturelle Einschränkungen beschreibt. Enums für Objekte erscheinen an der jeweiligen Eigenschaft, zum Beispiel `valueSchema.items.properties.type.enum` für Steueridentifikatoren. Swipelux wendet nach der Einreichung weiterhin feldübergreifende Validierung und Prüfungsvalidierung an, daher kann ein Wert, der das Schema erfüllt, dennoch abgelehnt werden.
+- `valueType: "country"` oder `itemValueType: "country"` für Arrays: Das Feld akzeptiert ISO 3166-1 alpha-2-Codes in Großbuchstaben. Verschachtelte Ländereigenschaften in `valueSchema` verwenden `format: "iso-3166-1-alpha-2"`. Verwenden Sie für lokalisierte Bezeichnungen eine Standard-Länderliste.
+
+```json
+{
+  "id": "req_000000000000000010",
+  "key": "account_purposes",
+  "title": "Account purpose",
+  "status": "action_required",
+  "request": {
+    "type": "profile",
+    "prompt": "Select every purpose that applies.",
+    "required": true,
+    "profilePointer": "/financialProfile/accountPurposes",
+    "valueType": "array",
+    "itemValueType": "string",
+    "allowedValues": ["business_expenses", "ecommerce", "payroll"],
+    "valueSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "array",
+      "items": { "enum": ["business_expenses", "ecommerce", "payroll"] }
+    }
+  }
+}
+```
+
+Dieses Beispiel kürzt den Wertekatalog; die API gibt jeden zulässigen Wert zurück. Einige Profilanforderungen haben kein veröffentlichtes Schema und lassen `valueSchema` und `allowedValues` weg. Rendern Sie diese anhand von `prompt` und `valueType`.
 
 Jede offene Aufgabe enthält einen `dueAt`-Zeitstempel. Wenn Swipelux eine Aufgabe ohne explizites Fälligkeitsdatum erstellt, wird `dueAt` standardmäßig auf genau 31 Tage nach dem `createdAt` der Aufgabe gesetzt. Behandeln Sie `dueAt` als informativ: Sie können es nicht über die API setzen, und es löst keinen automatischen Lebenszyklusübergang aus. Nur das separate Feld `deadline` verursacht, falls vorhanden, einen automatischen Übergang.
 

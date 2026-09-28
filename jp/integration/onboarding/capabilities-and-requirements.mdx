@@ -34,6 +34,23 @@ curl --request GET \
 
 意図する `directions`、`method`、`accountType` に一致するレスポンスエントリを選択してください。`availability` が `available` または `beta` かつ `eligibility.eligible` が `true` の場合にのみ続行します。`institutions` が返された場合は、そのレスポンスに含まれる ID のみを選択してください。
 
+各金融機関エントリには `logoUrl` と `isDefault` フラグが含まれます。`logoUrl` は銀行選択 UI で銀行のロゴを表示するために使用し、`null` の場合は独自の汎用的な銀行アイコンを表示してください。`isDefault` はこの顧客とケイパビリティにのみ適用され、金融機関全体に適用されるものではありません。[`GET /v3/institutions`](/api-reference/institutions/get-v3-institutions) も同じく null 許容の `logoUrl` を返します。金融機関 ID は不透明な値であるため、新しい ID にはコードを変更せずに対応できるようにしてください。
+
+```json
+{
+  "institutions": [
+    {
+      "id": "jpmorgan",
+      "name": "JPMorgan Chase",
+      "bic": "CHASUS33",
+      "logoUrl": "https://wallet.swipelux.com/bank-logos/jpmorgan.png",
+      "countries": ["US"],
+      "isDefault": true
+    }
+  ]
+}
+```
+
 選択した `data[].id` を `CAPABILITY_ID` として保存します。他の顧客や環境からケイパビリティ ID をコピーしてはいけません。
 
 ### プール型と名義型の口座タイプ
@@ -66,6 +83,84 @@ curl --request POST \
 
 `data.status` を `CAPABILITY_STATUS`、`data.accountProvisioning` を `ACCOUNT_PROVISIONING_STATUS`、`data.openTaskIds` を `OPEN_TASK_IDS` として保存し、各 `data.applications[].id` を `APPLICATION_IDS` に保存します。
 
+### 銀行ごとの共有申請 {#shared-applications-per-bank}
+
+名義型の銀行ケイパビリティでは、各顧客は銀行ごとに 1 つの申請ケースを持ちます。プール型およびプラットフォームのケイパビリティは、銀行に紐づかないケースを使用します。Swipelux は、リクエストされた互換性のあるすべてのケイパビリティ間でケースを共有します。
+
+- 1 回の承認で複数のケイパビリティをカバーできます。たとえば、ある銀行で承認されたケースによって、ACH と Wire の両方のケイパビリティが `ready` になる場合があります。
+- 既存のケースに一致する後続のリクエストは、そのケースを再利用します。Swipelux は 2 つ目の申請を作成せず、重複するタスクも追加しません。
+- 異なる銀行のケースは互いに独立しています。ある銀行での却下は、別の銀行のケースに影響しません。
+
+リクエストのレスポンスから、Swipelux がどのケースを使用したかがわかります。
+
+- `201` は、リクエストによって新しい申請ケースが作成されたことを意味します。
+- `200` は、リクエストが顧客の既存の申請ケースに解決されたことを意味します。たとえば、顧客がすでに保有している銀行ケイパビリティへの繰り返しのリクエストや、キャンセルされたケイパビリティへのリクエストが該当します。`card` または `stablecoin_transfers` への繰り返しのリクエストは、引き続き [`409 capability_already_exists`](/integration/errors#capability-already-exists) を返します。
+- `selectedApplicationId` は `data` と同階層のトップレベルフィールドで、リクエストが選択または作成したケースの ID を含みます。リクエストがケースを選択しなかった場合、Swipelux はこのフィールドを省略します。冪等なリプレイでは同じ値が返されます。
+
+省略したレスポンス:
+
+```json
+{
+  "data": {
+    "id": "ach_named",
+    "status": "pending",
+    "openTaskIds": ["tsk_000000000000000002"],
+    "applications": [{ "id": "apl_000000000000000005", "status": "in_review" }]
+  },
+  "selectedApplicationId": "apl_000000000000000005"
+}
+```
+
+名義型ケイパビリティでは、同じケースを選択するには同じ `institutions` リストを再度送信し、特定の銀行を対象にするにはその金融機関 ID を 1 つ送信します。顧客を最終的に却下した銀行はスキップされます。その銀行のみを指定した場合、または適格なすべての銀行が顧客を却下した場合、リクエストは [`409 capability_terminally_rejected`](/integration/errors#capability-terminally-rejected) を返します。却下後に別の銀行を試すには、その銀行の金融機関 ID を指定してケイパビリティを再度リクエストしてください。
+
+ケイパビリティのステータスは、顧客の関連するすべてのケースを反映します。名義型ケイパビリティでは、そのケイパビリティをカバーする承認を持つ `ready` のケースが 1 つあれば、他の銀行の報告内容にかかわらず `ready` になります。プール型ケイパビリティは、さらにメソッドチェックも待機します。このチェックは、顧客の申請一覧の `probes` で報告されます。
+
+#### 顧客の申請を一覧表示する {#list-the-customers-applications}
+
+[`GET /v3/customers/{customerId}/applications`](/api-reference/capabilities/get-v3-customers-by-customer-id-applications) で、顧客のすべての申請ケースを一覧表示します。結果は `nextCursor` と `hasMore` でページ分割され、`updatedAfter` を指定できます。
+
+```bash
+curl --request GET \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/applications" \
+  --header "X-API-Key: ${SWIPELUX_API_KEY}"
+```
+
+各エントリには、ケイパビリティの `applications[]` で返される申請フィールドに加えて、次の項目が含まれます。
+
+- `scope`: 1 つの銀行のケースは `named`、銀行に紐づかないケースは `provider_pooled` または `platform`、未分類の過去のケースは `null` です。`provider_pooled` および `platform` のケースには `institution` が含まれません。
+- `requestedScope[]`: ケースに対してリクエストされたケイパビリティキーで、それぞれ最初の `requestedAt` を含みます。エントリが削除されることはありません。
+- `coverage[]`: ケースの承認がカバーするケイパビリティキーで、それぞれ `grantedAt` と `source` を含みます。カバレッジはスコープを記録するものであり、認可を示すものではありません。現在のステータスはケイパビリティを読み取って確認してください。
+- `probes[]`: ケースがカバーするプール型ケイパビリティキーのメソッドチェックで、それぞれ `capabilityKey`、`status`、`reason` を含みます。名義型キーにプローブが必要になることはありません。
+- `generation`、`predecessorApplicationId`、`supersededByApplicationId`: 継承関係のリンクです。`supersededByApplicationId` が設定されている場合、そのケースは置き換えられています。その ID をたどって現在のケースを参照してください。
+
+省略したレスポンス:
+
+```json
+{
+  "data": [
+    {
+      "id": "apl_000000000000000005",
+      "status": "ready",
+      "scope": "named",
+      "institution": { "id": "jpmorgan", "name": "JPMorgan Chase", "bic": "CHASUS33" },
+      "requestedScope": [
+        { "capabilityKey": "ach_named", "requestedAt": "2026-09-20T10:00:00.000Z" }
+      ],
+      "coverage": [
+        { "capabilityKey": "ach_named", "grantedAt": "2026-09-22T12:00:00.000Z", "source": "approval" },
+        { "capabilityKey": "wire_named", "grantedAt": "2026-09-22T12:00:00.000Z", "source": "approval" }
+      ],
+      "probes": [],
+      "generation": 1,
+      "predecessorApplicationId": null,
+      "supersededByApplicationId": null
+    }
+  ],
+  "nextCursor": null,
+  "hasMore": false
+}
+```
+
 ## 現在のタスクを完了する {#complete-current-tasks}
 
 [`GET /v3/customers/{customerId}/tasks`](/api-reference/tasks/list-customer-tasks) でタスクを一覧表示し、`OPEN_TASK_IDS` から ID を選択して、[`GET /v3/customers/{customerId}/tasks/{taskId}`](/api-reference/tasks/get-customer-task) で各現在のタスクを読み取ります。
@@ -77,6 +172,47 @@ curl --request GET \
 ```
 
 最新の `data.revision` と `data.requirements` を使用してください。いずれかが変更された可能性がある場合は、送信直前にタスクを再取得してください。
+
+### 再利用されるプロファイルの証拠 {#reused-profile-evidence}
+
+直接の API 送信を受け付ける申請受付タスクでは、Swipelux は顧客がすでに提供した情報を再利用します。そのようなタスクが作成または調整されると、Swipelux は顧客プロファイルと、顧客自身がアップロードしたドキュメントを確認します。使用可能なプロファイル値またはドキュメントによってすでに裏付けられている適格な要件は、実行可能な状態のままではなく `in_review` に移行します。プロファイルの更新や新しいドキュメントのアップロードも、既存のタスクに対して同じ確認をトリガーします。
+
+欠落している値または互換性のない値のみが実行可能な状態のまま残ります。再利用によって証拠が承認されるわけではなく、Swipelux は引き続きそれを審査します。明示的な修正依頼と、以前に回答済みの要件は、実行可能な状態のまま残ります。所有者および関連当事者のドキュメントは再利用されず、ホスト型セッションでのみ収集される要件は通常のフローに従います。
+
+### 要件をレンダリングする {#render-requirements}
+
+フォームは、要件キーではなく、各要件が返すメタデータから構築してください。要件には任意の短い `title` を含めることができ、すべての `request` には見出しの下に表示する `prompt` が含まれます。
+
+`request.type: "profile"` の要件は、`profilePointer` でプロファイルフィールドを識別し、入力メタデータを追加します。
+
+- `allowedValues`: スカラーフィールド、または配列フィールドの各項目で許可される値です。翻訳された表示ラベルではなく、これらの値を送信してください。
+- `valueSchema`: 入力の形状、ネストされたプロパティ、必須フィールド、構造上の制約を記述する、自己完結型の JSON Schema Draft 7 ドキュメントです。オブジェクトの列挙値は該当するプロパティに表示されます。たとえば、税識別子の場合は `valueSchema.items.properties.type.enum` です。Swipelux は送信後もフィールド間の検証と審査による検証を適用するため、スキーマに適合した値でも却下される場合があります。
+- `valueType: "country"`、または配列の場合は `itemValueType: "country"`: このフィールドは大文字の ISO 3166-1 alpha-2 コードを受け付けます。`valueSchema` 内のネストされた国プロパティは `format: "iso-3166-1-alpha-2"` を使用します。ローカライズされたラベルには標準の国リストを使用してください。
+
+```json
+{
+  "id": "req_000000000000000010",
+  "key": "account_purposes",
+  "title": "Account purpose",
+  "status": "action_required",
+  "request": {
+    "type": "profile",
+    "prompt": "Select every purpose that applies.",
+    "required": true,
+    "profilePointer": "/financialProfile/accountPurposes",
+    "valueType": "array",
+    "itemValueType": "string",
+    "allowedValues": ["business_expenses", "ecommerce", "payroll"],
+    "valueSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "array",
+      "items": { "enum": ["business_expenses", "ecommerce", "payroll"] }
+    }
+  }
+}
+```
+
+この例では値の一覧を短縮していますが、API は許可されるすべての値を返します。一部のプロファイル要件には公開されたスキーマがなく、`valueSchema` と `allowedValues` が省略されます。その場合は `prompt` と `valueType` からレンダリングしてください。
 
 すべてのオープンなタスクには `dueAt` タイムスタンプが含まれます。Swipelux が明示的な期日なしでタスクを作成した場合、`dueAt` はタスクの `createdAt` からちょうど 31 日後がデフォルトになります。`dueAt` は情報提供のみを目的としたものとして扱ってください。API 経由で設定することはできず、自動的なライフサイクル遷移も発生しません。自動遷移を引き起こすのは、別途設定される `deadline` フィールドのみです。
 

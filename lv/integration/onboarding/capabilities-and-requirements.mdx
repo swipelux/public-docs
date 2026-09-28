@@ -34,6 +34,23 @@ curl --request GET \
 
 Izvēlieties atbildes ierakstu, kas atbilst paredzētajiem `directions`, `method` un `accountType`. Turpiniet tikai tad, kad `availability` ir `available` vai `beta` un `eligibility.eligible` ir `true`. Ja tiek atgrieztas `institutions`, izvēlieties tikai ID no šīs atbildes.
 
+Katrs iestādes ieraksts ietver `logoUrl` un karodziņu `isDefault`. Izmantojiet `logoUrl`, lai parādītu bankas logotipu bankas izvēles saskarnē, un attēlojiet savu vispārīgo bankas ikonu, kad tā vērtība ir `null`. `isDefault` attiecas tikai uz šo klientu un iespēju, nevis uz iestādi globāli. [`GET /v3/institutions`](/api-reference/institutions/get-v3-institutions) atgriež to pašu `logoUrl`, kura vērtība var būt `null`. Iestāžu ID ir necaurredzami, tāpēc apstrādājiet jaunus ID bez koda izmaiņām.
+
+```json
+{
+  "institutions": [
+    {
+      "id": "jpmorgan",
+      "name": "JPMorgan Chase",
+      "bic": "CHASUS33",
+      "logoUrl": "https://wallet.swipelux.com/bank-logos/jpmorgan.png",
+      "countries": ["US"],
+      "isDefault": true
+    }
+  ]
+}
+```
+
 Saglabājiet izvēlēto `data[].id` kā `CAPABILITY_ID`. Nekad nekopējiet iespējas ID no cita klienta vai vides.
 
 ### Apkopotais un nosauktais konta veids
@@ -66,6 +83,84 @@ Izmantojiet skaidru `institutions` masīvu tikai tad, kad jums nepieciešams izv
 
 Saglabājiet `data.status` kā `CAPABILITY_STATUS`, `data.accountProvisioning` kā `ACCOUNT_PROVISIONING_STATUS`, `data.openTaskIds` kā `OPEN_TASK_IDS` un katru `data.applications[].id` sarakstā `APPLICATION_IDS`.
 
+### Kopīgi pieteikumi katrai bankai {#shared-applications-per-bank}
+
+Nosauktajām bankas iespējām katram klientam ir viena pieteikuma lieta katrā bankā. Apkopotās un platformas iespējas izmanto lietas bez bankas. Swipelux koplieto lietu starp visām saderīgajām iespējām, ko pieprasāt:
+
+- Viens apstiprinājums var aptvert vairākas iespējas. Piemēram, apstiprināta lieta vienā bankā var padarīt gan ACH, gan Wire iespēju `ready`.
+- Vēlāks pieprasījums, kas atbilst esošai lietai, to izmanto atkārtoti. Swipelux neatver otru pieteikumu un nepievieno dublētus uzdevumus.
+- Lietas dažādās bankās ir neatkarīgas. Noraidījums vienā bankā neietekmē lietu citā bankā.
+
+Pieprasījuma atbilde norāda, kuru lietu Swipelux izmantoja:
+
+- `201` nozīmē, ka pieprasījums atvēra jaunu pieteikuma lietu.
+- `200` nozīmē, ka pieprasījums tika piesaistīts pieteikuma lietai, kas klientam jau bija, piemēram, atkārtots pieprasījums bankas iespējai, kas klientam jau ir, vai pieprasījums atceltai iespējai. Atkārtots pieprasījums iespējām `card` vai `stablecoin_transfers` joprojām atgriež [`409 capability_already_exists`](/integration/errors#capability-already-exists).
+- `selectedApplicationId` ir augstākā līmeņa lauks blakus `data`, kas satur pieprasījuma izvēlētās vai atvērtās lietas ID. Swipelux to izlaiž, ja pieprasījums neizvēlējās lietu. Idempotenta atkārtošana atgriež to pašu vērtību.
+
+Saīsināta atbilde:
+
+```json
+{
+  "data": {
+    "id": "ach_named",
+    "status": "pending",
+    "openTaskIds": ["tsk_000000000000000002"],
+    "applications": [{ "id": "apl_000000000000000005", "status": "in_review" }]
+  },
+  "selectedApplicationId": "apl_000000000000000005"
+}
+```
+
+Nosauktajām iespējām vēlreiz nosūtiet to pašu `institutions` sarakstu, lai izvēlētos to pašu lietu, vai nosūtiet viena iestādes ID, lai mērķētu uz šo banku. Banka, kas klientu ir galīgi noraidījusi, tiek izlaista. Ja norādāt tikai šo banku vai ja visas atbilstošās bankas ir klientu noraidījušas, pieprasījums atgriež [`409 capability_terminally_rejected`](/integration/errors#capability-terminally-rejected). Lai pēc noraidījuma mēģinātu citu banku, vēlreiz pieprasiet iespēju ar šīs bankas iestādes ID.
+
+Iespējas statuss atspoguļo visas klienta saistītās lietas. Nosauktai iespējai pietiek ar vienu `ready` lietu, kuras apstiprinājums to aptver, lai tā kļūtu `ready`, neatkarīgi no tā, ko ziņo citas bankas. Apkopotā iespēja gaida arī savu metodes pārbaudi, kas tiek norādīta `probes` klienta pieteikumu sarakstā.
+
+#### Uzskaitiet klienta pieteikumus {#list-the-customers-applications}
+
+Uzskaitiet visas klienta pieteikuma lietas ar [`GET /v3/customers/{customerId}/applications`](/api-reference/capabilities/get-v3-customers-by-customer-id-applications). Rezultāti tiek lapoti ar `nextCursor` un `hasMore`, un tie pieņem `updatedAfter`:
+
+```bash
+curl --request GET \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/applications" \
+  --header "X-API-Key: ${SWIPELUX_API_KEY}"
+```
+
+Katrs ieraksts ietver pieteikuma laukus, kas tiek atgriezti iespējas `applications[]`, kā arī:
+
+- `scope`: `named` lietai vienā bankā, `provider_pooled` vai `platform` lietām bez bankas, vai `null` neklasificētai vēsturiskai lietai. `institution` nav iekļauts `provider_pooled` un `platform` lietām.
+- `requestedScope[]`: iespēju atslēgas, kas pieprasītas attiecībā uz lietu, katra ar savu pirmo `requestedAt`. Ieraksti nekad netiek noņemti.
+- `coverage[]`: iespēju atslēgas, ko aptver lietas apstiprinājums, katra ar `grantedAt` un `source`. Pārklājums fiksē tvērumu, nevis autorizāciju. Nolasiet iespēju, lai uzzinātu tās pašreizējo statusu.
+- `probes[]`: metožu pārbaudes apkopotajām iespēju atslēgām, ko lieta aptver, katra ar `capabilityKey`, `status` un `reason`. Nosauktajām atslēgām pārbaude nekad nav nepieciešama.
+- `generation`, `predecessorApplicationId` un `supersededByApplicationId`: pēctecības saites. Ja ir iestatīts `supersededByApplicationId`, lieta ir aizstāta. Sekojiet šim ID uz pašreizējo lietu.
+
+Saīsināta atbilde:
+
+```json
+{
+  "data": [
+    {
+      "id": "apl_000000000000000005",
+      "status": "ready",
+      "scope": "named",
+      "institution": { "id": "jpmorgan", "name": "JPMorgan Chase", "bic": "CHASUS33" },
+      "requestedScope": [
+        { "capabilityKey": "ach_named", "requestedAt": "2026-09-20T10:00:00.000Z" }
+      ],
+      "coverage": [
+        { "capabilityKey": "ach_named", "grantedAt": "2026-09-22T12:00:00.000Z", "source": "approval" },
+        { "capabilityKey": "wire_named", "grantedAt": "2026-09-22T12:00:00.000Z", "source": "approval" }
+      ],
+      "probes": [],
+      "generation": 1,
+      "predecessorApplicationId": null,
+      "supersededByApplicationId": null
+    }
+  ],
+  "nextCursor": null,
+  "hasMore": false
+}
+```
+
 ## Pabeidziet pašreizējos uzdevumus {#complete-current-tasks}
 
 Uzskaitiet uzdevumus ar [`GET /v3/customers/{customerId}/tasks`](/api-reference/tasks/list-customer-tasks), izvēlieties ID no `OPEN_TASK_IDS`, pēc tam nolasiet katru pašreizējo uzdevumu ar [`GET /v3/customers/{customerId}/tasks/{taskId}`](/api-reference/tasks/get-customer-task):
@@ -77,6 +172,47 @@ curl --request GET \
 ```
 
 Izmantojiet jaunāko `data.revision` un `data.requirements`. Uzreiz pirms iesniegšanas atkārtoti ielādējiet uzdevumu, ja kāds no tiem varētu būt mainījies.
+
+### Atkārtoti izmantoti profila pierādījumi {#reused-profile-evidence}
+
+Pieteikuma datu ievākšanas uzdevumiem, kas pieņem tiešu iesniegšanu caur API, Swipelux atkārtoti izmanto informāciju, ko klients jau ir sniedzis. Kad šāds uzdevums tiek izveidots vai saskaņots, Swipelux pārbauda klienta profilu un paša klienta augšupielādētos dokumentus. Atbilstošās prasības, ko jau pamato izmantojama profila vērtība vai dokuments, pāriet uz `in_review`, nevis paliek rīkojamas. Profila atjauninājumi un jaunu dokumentu augšupielāde izraisa to pašu pārbaudi esošajiem uzdevumiem.
+
+Rīkojamas paliek tikai trūkstošās vai nesaderīgās vērtības. Atkārtota izmantošana neapstiprina pierādījumus. Swipelux tos joprojām pārskata. Skaidri labojumu pieprasījumi un iepriekš atbildētas prasības paliek rīkojamas. Īpašnieku un saistīto pušu dokumenti netiek izmantoti atkārtoti, un prasības, kas tiek ievāktas tikai mitinātā sesijā, saglabā savu parasto plūsmu.
+
+### Prasību attēlošana {#render-requirements}
+
+Veidojiet formas no metadatiem, ko atgriež katra prasība, nevis no prasību atslēgām. Prasība var ietvert neobligātu īsu `title`, un katrs `request` ietver `prompt`, ko parādīt zem virsraksta.
+
+Prasības ar `request.type: "profile"` identificē profila lauku ar `profilePointer` un pievieno ievades metadatus:
+
+- `allowedValues`: atļautās vērtības skalāram laukam vai katram masīva lauka elementam. Iesniedziet šīs vērtības, nevis tulkotas attēlojamās etiķetes.
+- `valueSchema`: pašpietiekams JSON Schema Draft 7 dokuments, kas apraksta ievades formu, ligzdotos rekvizītus, obligātos laukus un strukturālos ierobežojumus. Objektu uzskaitījumi parādās attiecīgajā rekvizītā, piemēram, `valueSchema.items.properties.type.enum` nodokļu identifikatoriem. Swipelux pēc iesniegšanas joprojām piemēro starplauku un pārskatīšanas validāciju, tāpēc vērtību, kas atbilst shēmai, joprojām var noraidīt.
+- `valueType: "country"` vai masīviem `itemValueType: "country"`: lauks pieņem ISO 3166-1 alpha-2 kodus ar lielajiem burtiem. Ligzdotie valsts rekvizīti `valueSchema` izmanto `format: "iso-3166-1-alpha-2"`. Lokalizētām etiķetēm izmantojiet standarta valstu sarakstu.
+
+```json
+{
+  "id": "req_000000000000000010",
+  "key": "account_purposes",
+  "title": "Account purpose",
+  "status": "action_required",
+  "request": {
+    "type": "profile",
+    "prompt": "Select every purpose that applies.",
+    "required": true,
+    "profilePointer": "/financialProfile/accountPurposes",
+    "valueType": "array",
+    "itemValueType": "string",
+    "allowedValues": ["business_expenses", "ecommerce", "payroll"],
+    "valueSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "array",
+      "items": { "enum": ["business_expenses", "ecommerce", "payroll"] }
+    }
+  }
+}
+```
+
+Šis piemērs saīsina vērtību katalogu, bet API atgriež visas atļautās vērtības. Dažām profila prasībām nav publicētas shēmas, un tās izlaiž `valueSchema` un `allowedValues`. Attēlojiet tās, izmantojot `prompt` un `valueType`.
 
 Katrs atvērtais uzdevums ietver `dueAt` laika zīmogu. Kad Swipelux izveido uzdevumu bez skaidri norādīta izpildes termiņa, `dueAt` pēc noklusējuma tiek iestatīts tieši 31 dienu pēc uzdevuma `createdAt`. Uztveriet `dueAt` kā informatīvu: to nevar iestatīt caur API, un tas neizraisa automātisku dzīves cikla pāreju. Tikai atsevišķais lauks `deadline`, ja tas ir norādīts, izraisa automātisku pāreju.
 

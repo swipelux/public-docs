@@ -34,6 +34,23 @@ curl --request GET \
 
 Vyberte položku odpovědi, která odpovídá zamýšleným `directions`, `method` a `accountType`. Pokračujte jen tehdy, když `availability` je `available` nebo `beta` a `eligibility.eligible` je `true`. Pokud jsou vráceny `institutions`, vyberte pouze ID z této odpovědi.
 
+Každá položka instituce obsahuje `logoUrl` a příznak `isDefault`. Pomocí `logoUrl` zobrazte logo banky v rozhraní pro výběr banky, a když je `null`, vykreslete vlastní obecnou ikonu banky. `isDefault` platí pouze pro tohoto zákazníka a tuto capability, nikoli pro instituci globálně. [`GET /v3/institutions`](/api-reference/institutions/get-v3-institutions) vrací stejné `logoUrl`, které může být `null`. ID institucí jsou neprůhledná, proto nová ID zpracovávejte bez změn kódu.
+
+```json
+{
+  "institutions": [
+    {
+      "id": "jpmorgan",
+      "name": "JPMorgan Chase",
+      "bic": "CHASUS33",
+      "logoUrl": "https://wallet.swipelux.com/bank-logos/jpmorgan.png",
+      "countries": ["US"],
+      "isDefault": true
+    }
+  ]
+}
+```
+
 Uložte vybrané `data[].id` jako `CAPABILITY_ID`. Nikdy nekopírujte ID capability od jiného zákazníka nebo z jiného prostředí.
 
 ### Sdružené vs. pojmenované typy účtů
@@ -66,6 +83,84 @@ Explicitní pole `institutions` používejte pouze tehdy, když potřebujete vyb
 
 Uložte `data.status` jako `CAPABILITY_STATUS`, `data.accountProvisioning` jako `ACCOUNT_PROVISIONING_STATUS`, `data.openTaskIds` jako `OPEN_TASK_IDS` a každé `data.applications[].id` do `APPLICATION_IDS`.
 
+### Sdílené aplikace pro každou banku {#shared-applications-per-bank}
+
+U pojmenovaných bankovních capabilities má každý zákazník jeden případ aplikace pro každou banku. Sdružené a platformní capabilities používají případy bez banky. Swipelux sdílí případ napříč všemi kompatibilními capabilities, o které požádáte:
+
+- Jedno schválení může pokrýt několik capabilities. Například schválený případ u jedné banky může převést capability ACH i wire do stavu `ready`.
+- Pozdější požadavek, který odpovídá existujícímu případu, jej znovu použije. Swipelux neotevře druhou aplikaci a nepřidá duplicitní úkoly.
+- Případy u různých bank jsou nezávislé. Zamítnutí u jedné banky neovlivní případ u jiné banky.
+
+Odpověď na požadavek vám sdělí, který případ Swipelux použil:
+
+- `201` znamená, že požadavek otevřel nový případ aplikace.
+- `200` znamená, že požadavek byl přiřazen k případu aplikace, který zákazník již měl, například při opakovaném požadavku na bankovní capability, kterou zákazník již má, nebo při požadavku na zrušenou capability. Opakovaný požadavek na `card` nebo `stablecoin_transfers` stále vrací [`409 capability_already_exists`](/integration/errors#capability-already-exists).
+- `selectedApplicationId` je pole nejvyšší úrovně vedle `data` s ID případu, který požadavek vybral nebo otevřel. Swipelux jej vynechá, když požadavek žádný případ nevybral. Idempotentní opakování vrací stejnou hodnotu.
+
+Zkrácená odpověď:
+
+```json
+{
+  "data": {
+    "id": "ach_named",
+    "status": "pending",
+    "openTaskIds": ["tsk_000000000000000002"],
+    "applications": [{ "id": "apl_000000000000000005", "status": "in_review" }]
+  },
+  "selectedApplicationId": "apl_000000000000000005"
+}
+```
+
+U pojmenovaných capabilities pošlete znovu stejný seznam `institutions`, abyste vybrali stejný případ, nebo pošlete jedno ID instituce, abyste cílili na danou banku. Banka, která zákazníka definitivně zamítla, se přeskočí. Když uvedete pouze tuto banku, nebo když zákazníka zamítly všechny způsobilé banky, požadavek vrátí [`409 capability_terminally_rejected`](/integration/errors#capability-terminally-rejected). Chcete-li po zamítnutí zkusit jinou banku, požádejte o capability znovu s ID instituce této banky.
+
+Stav capability odráží všechny související případy zákazníka. U pojmenované capability stačí k tomu, aby byla `ready`, jeden případ ve stavu `ready`, jehož schválení ji pokrývá, bez ohledu na to, co hlásí ostatní banky. Sdružená capability navíc čeká na kontrolu své metody, která je uvedena v `probes` v seznamu aplikací zákazníka.
+
+#### Zobrazte aplikace zákazníka {#list-the-customers-applications}
+
+Vypište všechny případy aplikací zákazníka pomocí [`GET /v3/customers/{customerId}/applications`](/api-reference/capabilities/get-v3-customers-by-customer-id-applications). Výsledky jsou stránkované pomocí `nextCursor` a `hasMore` a přijímají `updatedAfter`:
+
+```bash
+curl --request GET \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/applications" \
+  --header "X-API-Key: ${SWIPELUX_API_KEY}"
+```
+
+Každá položka obsahuje pole aplikace, která se vracejí v `applications[]` capability, a navíc:
+
+- `scope`: `named` pro případ u jedné banky, `provider_pooled` nebo `platform` pro případy bez banky, nebo `null` pro nezařazený historický případ. U případů `provider_pooled` a `platform` pole `institution` chybí.
+- `requestedScope[]`: klíče capabilities, o které bylo v rámci případu požádáno, každý s prvním `requestedAt`. Položky se nikdy neodstraňují.
+- `coverage[]`: klíče capabilities, které schválení případu pokrývá, každý s `grantedAt` a `source`. Pokrytí zaznamenává rozsah, nikoli autorizaci. Aktuální stav zjistěte přečtením capability.
+- `probes[]`: kontroly metod pro klíče sdružených capabilities, které případ pokrývá, každá s `capabilityKey`, `status` a `reason`. Pojmenované klíče kontrolu nikdy nevyžadují.
+- `generation`, `predecessorApplicationId` a `supersededByApplicationId`: odkazy na posloupnost případů. Když je nastaveno `supersededByApplicationId`, případ byl nahrazen. Pokračujte podle tohoto ID k aktuálnímu případu.
+
+Zkrácená odpověď:
+
+```json
+{
+  "data": [
+    {
+      "id": "apl_000000000000000005",
+      "status": "ready",
+      "scope": "named",
+      "institution": { "id": "jpmorgan", "name": "JPMorgan Chase", "bic": "CHASUS33" },
+      "requestedScope": [
+        { "capabilityKey": "ach_named", "requestedAt": "2026-09-20T10:00:00.000Z" }
+      ],
+      "coverage": [
+        { "capabilityKey": "ach_named", "grantedAt": "2026-09-22T12:00:00.000Z", "source": "approval" },
+        { "capabilityKey": "wire_named", "grantedAt": "2026-09-22T12:00:00.000Z", "source": "approval" }
+      ],
+      "probes": [],
+      "generation": 1,
+      "predecessorApplicationId": null,
+      "supersededByApplicationId": null
+    }
+  ],
+  "nextCursor": null,
+  "hasMore": false
+}
+```
+
 ## Dokončete aktuální úkoly {#complete-current-tasks}
 
 Zjistěte úkoly pomocí [`GET /v3/customers/{customerId}/tasks`](/api-reference/tasks/list-customer-tasks), vyberte ID z `OPEN_TASK_IDS`, poté přečtěte každý aktuální úkol pomocí [`GET /v3/customers/{customerId}/tasks/{taskId}`](/api-reference/tasks/get-customer-task):
@@ -77,6 +172,47 @@ curl --request GET \
 ```
 
 Použijte nejnovější `data.revision` a `data.requirements`. Znovu načtěte úkol bezprostředně před odesláním, pokud se některé z nich mohlo změnit.
+
+### Znovu použité důkazy z profilu {#reused-profile-evidence}
+
+U úkolů příjmu aplikace, které přijímají přímé odeslání přes API, Swipelux znovu používá informace, které zákazník již poskytl. Když je takový úkol vytvořen nebo sladěn, Swipelux zkontroluje profil zákazníka a dokumenty, které zákazník sám nahrál. Způsobilé požadavky, které již podkládá použitelná hodnota profilu nebo dokument, přejdou do `in_review`, místo aby zůstaly akční. Aktualizace profilu a nahrání nových dokumentů spouštějí stejnou kontrolu u existujících úkolů.
+
+Akční zůstávají pouze chybějící nebo nekompatibilní hodnoty. Opětovné použití důkazy neschvaluje. Swipelux je stále posuzuje. Explicitní žádosti o opravu a dříve zodpovězené požadavky zůstávají akční. Dokumenty vlastníků a propojených stran se znovu nepoužívají a požadavky shromažďované pouze prostřednictvím hostované relace si zachovávají svůj běžný postup.
+
+### Vykreslete požadavky {#render-requirements}
+
+Formuláře sestavujte z metadat, která vrací každý požadavek, nikoli z klíčů požadavků. Požadavek může obsahovat volitelný krátký `title` a každý `request` obsahuje `prompt`, který se zobrazí pod nadpisem.
+
+Požadavky s `request.type: "profile"` identifikují pole profilu pomocí `profilePointer` a přidávají metadata vstupu:
+
+- `allowedValues`: povolené hodnoty skalárního pole nebo každé položky pole typu array. Odesílejte tyto hodnoty, nikoli přeložené zobrazované popisky.
+- `valueSchema`: samostatný dokument JSON Schema Draft 7, který popisuje tvar vstupu, vnořené vlastnosti, povinná pole a strukturální omezení. Výčty u objektů se objevují u příslušné vlastnosti, například `valueSchema.items.properties.type.enum` u daňových identifikátorů. Swipelux po odeslání stále provádí validaci napříč poli a validaci v rámci posouzení, takže hodnota, která projde schématem, může být přesto zamítnuta.
+- `valueType: "country"`, nebo `itemValueType: "country"` u polí typu array: pole přijímá kódy ISO 3166-1 alpha-2 velkými písmeny. Vnořené vlastnosti země ve `valueSchema` používají `format: "iso-3166-1-alpha-2"`. Pro lokalizované popisky použijte standardní seznam zemí.
+
+```json
+{
+  "id": "req_000000000000000010",
+  "key": "account_purposes",
+  "title": "Account purpose",
+  "status": "action_required",
+  "request": {
+    "type": "profile",
+    "prompt": "Select every purpose that applies.",
+    "required": true,
+    "profilePointer": "/financialProfile/accountPurposes",
+    "valueType": "array",
+    "itemValueType": "string",
+    "allowedValues": ["business_expenses", "ecommerce", "payroll"],
+    "valueSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "array",
+      "items": { "enum": ["business_expenses", "ecommerce", "payroll"] }
+    }
+  }
+}
+```
+
+Tento příklad zkracuje katalog hodnot; API vrací všechny povolené hodnoty. Některé požadavky profilu nemají publikované schéma a vynechávají `valueSchema` a `allowedValues`. Ty vykreslete z `prompt` a `valueType`.
 
 Každý otevřený úkol obsahuje časové razítko `dueAt`. Když Swipelux vytvoří úkol bez explicitního data splatnosti, nastaví se `dueAt` výchozím způsobem přesně na 31 dní po `createdAt` úkolu. Berte `dueAt` jako informativní: nelze jej nastavit přes API a nespouští žádný automatický přechod životního cyklu. Pouze samostatné pole `deadline`, pokud je nastaveno, způsobí automatický přechod.
 
