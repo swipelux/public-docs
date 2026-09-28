@@ -34,6 +34,23 @@ curl --request GET \
 
 의도한 `directions`, `method`, `accountType`과 일치하는 응답 항목을 선택하세요. `availability`가 `available` 또는 `beta`이고 `eligibility.eligible`이 `true`일 때만 진행하세요. `institutions`가 반환되면 그 응답의 ID만 선택하세요.
 
+각 기관 항목에는 `logoUrl`과 `isDefault` 플래그가 포함돼요. 은행 선택 UI에서 은행 로고를 보여줄 때 `logoUrl`을 사용하고, 값이 `null`이면 자체 일반 은행 아이콘을 렌더링하세요. `isDefault`는 기관 전체가 아니라 이 고객과 케이퍼빌리티에만 적용돼요. [`GET /v3/institutions`](/api-reference/institutions/get-v3-institutions)도 같은 nullable `logoUrl`을 반환해요. 기관 ID는 불투명한 값이므로 코드 변경 없이 새 ID를 처리할 수 있게 하세요.
+
+```json
+{
+  "institutions": [
+    {
+      "id": "jpmorgan",
+      "name": "JPMorgan Chase",
+      "bic": "CHASUS33",
+      "logoUrl": "https://wallet.swipelux.com/bank-logos/jpmorgan.png",
+      "countries": ["US"],
+      "isDefault": true
+    }
+  ]
+}
+```
+
 선택한 `data[].id`를 `CAPABILITY_ID`로 저장하세요. 다른 고객이나 환경의 케이퍼빌리티 ID를 절대 복사하지 마세요.
 
 ### 풀 계좌 대 명명 계좌 유형
@@ -44,6 +61,10 @@ curl --request GET \
 - **`named`**: 고객 전용 은행 정보예요(가상 IBAN, 전용 ACH 계좌). 재사용 가능하며 어떤 지불자와도 공유할 수 있어요. [발급 은행 계좌](/ko/integration/issue-bank-account)에 필수예요.
 
 기본값은 `pooled`이에요. 고객이 재사용 가능한 은행 정보가 필요할 때만 `named`를 사용하세요. 사용 가능한 변형은 `supported` 응답을 확인하세요.
+
+SWIFT 입금을 받거나 SWIFT 은행 정보를 발급하려면 `swift_named`를 사용하세요. `swift_pooled`는 페이아웃만 지원하므로, 지원되는 케이퍼빌리티 응답에서 각 옵션의 `directions`를 확인하세요. 명명 SWIFT 계좌는 은행의 BIC, 필요한 경우 참조, 그리고 은행이 제공하는 경우 수취인 주소를 포함한 재사용 가능한 수취 정보를 반환해요.
+
+발급 ACH, Wire, SWIFT 계좌의 경우 `institution`으로 특정 은행을 선택하고, 은행이 고객을 승인하기 전에 계좌 요청을 저장할 수 있어요. [은행 계좌 발급](/ko/integration/issue-bank-account#choose-the-bank)을 참고하세요.
 
 ## 케이퍼빌리티 요청
 
@@ -62,6 +83,84 @@ curl --request POST \
 
 `data.status`를 `CAPABILITY_STATUS`, `data.accountProvisioning`을 `ACCOUNT_PROVISIONING_STATUS`, `data.openTaskIds`를 `OPEN_TASK_IDS`, 각 `data.applications[].id`를 `APPLICATION_IDS`에 저장하세요.
 
+### 은행별 공유 신청 {#shared-applications-per-bank}
+
+명명 은행 케이퍼빌리티의 경우 각 고객은 은행마다 하나의 신청 건을 가져요. 풀 및 플랫폼 케이퍼빌리티는 은행이 없는 신청 건을 사용해요. Swipelux는 요청한 모든 호환 케이퍼빌리티에서 신청 건을 공유해요:
+
+- 한 번의 승인으로 여러 케이퍼빌리티를 커버할 수 있어요. 예를 들어 한 은행에서 승인된 신청 건으로 ACH와 wire 케이퍼빌리티가 모두 `ready`가 될 수 있어요.
+- 기존 신청 건과 일치하는 이후 요청은 그 신청 건을 재사용해요. Swipelux는 두 번째 신청을 열지 않고 중복 태스크도 추가하지 않아요.
+- 서로 다른 은행의 신청 건은 독립적이에요. 한 은행의 거절은 다른 은행의 신청 건에 영향을 주지 않아요.
+
+요청 응답을 보면 Swipelux가 어떤 신청 건을 사용했는지 알 수 있어요:
+
+- `201`은 요청이 새 신청 건을 열었다는 뜻이에요.
+- `200`은 요청이 고객이 이미 가진 신청 건으로 확인되었다는 뜻이에요. 예를 들어 고객이 이미 보유한 은행 케이퍼빌리티를 반복 요청하거나, 취소된 케이퍼빌리티를 요청한 경우예요. `card` 또는 `stablecoin_transfers`를 반복 요청하면 여전히 [`409 capability_already_exists`](/integration/errors#capability-already-exists)를 반환해요.
+- `selectedApplicationId`는 `data` 옆에 있는 최상위 필드로, 요청이 선택하거나 연 신청 건의 ID를 담고 있어요. 요청이 신청 건을 선택하지 않았다면 Swipelux는 이 필드를 생략해요. 멱등 재실행은 같은 값을 반환해요.
+
+축약된 응답:
+
+```json
+{
+  "data": {
+    "id": "ach_named",
+    "status": "pending",
+    "openTaskIds": ["tsk_000000000000000002"],
+    "applications": [{ "id": "apl_000000000000000005", "status": "in_review" }]
+  },
+  "selectedApplicationId": "apl_000000000000000005"
+}
+```
+
+명명 케이퍼빌리티의 경우 같은 신청 건을 선택하려면 같은 `institutions` 목록을 다시 보내고, 특정 은행을 대상으로 하려면 기관 ID 하나를 보내세요. 고객을 최종 거절한 은행은 건너뛰어요. 그 은행만 지정했거나 모든 적격 은행이 고객을 거절했다면 요청은 [`409 capability_terminally_rejected`](/integration/errors#capability-terminally-rejected)를 반환해요. 거절 후 다른 은행을 시도하려면 그 은행의 기관 ID로 케이퍼빌리티를 다시 요청하세요.
+
+케이퍼빌리티의 상태는 고객의 관련된 모든 신청 건을 반영해요. 명명 케이퍼빌리티의 경우, 승인이 해당 케이퍼빌리티를 커버하는 `ready` 신청 건이 하나만 있으면 다른 은행이 무엇을 보고하든 `ready`가 돼요. 풀 케이퍼빌리티는 방법 확인도 기다리며, 이는 고객 신청 목록의 `probes`에 보고돼요.
+
+#### 고객의 신청 나열 {#list-the-customers-applications}
+
+[`GET /v3/customers/{customerId}/applications`](/api-reference/capabilities/get-v3-customers-by-customer-id-applications)로 고객의 모든 신청 건을 나열하세요. 결과는 `nextCursor`와 `hasMore`로 페이지가 나뉘며 `updatedAfter`를 받아요:
+
+```bash
+curl --request GET \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/applications" \
+  --header "X-API-Key: ${SWIPELUX_API_KEY}"
+```
+
+각 항목에는 케이퍼빌리티의 `applications[]`에서 반환되는 신청 필드와 함께 다음이 포함돼요:
+
+- `scope`: 한 은행의 신청 건은 `named`, 은행이 없는 신청 건은 `provider_pooled` 또는 `platform`, 분류되지 않은 과거 신청 건은 `null`이에요. `provider_pooled`와 `platform` 신청 건에는 `institution`이 없어요.
+- `requestedScope[]`: 신청 건에 대해 요청된 케이퍼빌리티 키로, 각각 최초 `requestedAt`을 포함해요. 항목은 절대 제거되지 않아요.
+- `coverage[]`: 신청 건의 승인이 커버하는 케이퍼빌리티 키로, 각각 `grantedAt`과 `source`를 포함해요. 커버리지는 범위를 기록할 뿐 권한 부여를 뜻하지 않아요. 현재 상태는 케이퍼빌리티를 조회해 확인하세요.
+- `probes[]`: 신청 건이 커버하는 풀 케이퍼빌리티 키에 대한 방법 확인으로, 각각 `capabilityKey`, `status`, `reason`을 포함해요. 명명 키는 프로브가 필요하지 않아요.
+- `generation`, `predecessorApplicationId`, `supersededByApplicationId`: 승계 링크예요. `supersededByApplicationId`가 설정되어 있으면 해당 신청 건은 대체된 거예요. 그 ID를 따라 현재 신청 건으로 이동하세요.
+
+축약된 응답:
+
+```json
+{
+  "data": [
+    {
+      "id": "apl_000000000000000005",
+      "status": "ready",
+      "scope": "named",
+      "institution": { "id": "jpmorgan", "name": "JPMorgan Chase", "bic": "CHASUS33" },
+      "requestedScope": [
+        { "capabilityKey": "ach_named", "requestedAt": "2026-09-20T10:00:00.000Z" }
+      ],
+      "coverage": [
+        { "capabilityKey": "ach_named", "grantedAt": "2026-09-22T12:00:00.000Z", "source": "approval" },
+        { "capabilityKey": "wire_named", "grantedAt": "2026-09-22T12:00:00.000Z", "source": "approval" }
+      ],
+      "probes": [],
+      "generation": 1,
+      "predecessorApplicationId": null,
+      "supersededByApplicationId": null
+    }
+  ],
+  "nextCursor": null,
+  "hasMore": false
+}
+```
+
 ## 현재 태스크 완료 {#complete-current-tasks}
 
 [`GET /v3/customers/{customerId}/tasks`](/api-reference/tasks/list-customer-tasks)로 태스크를 나열하고, `OPEN_TASK_IDS`에서 ID를 선택한 뒤, [`GET /v3/customers/{customerId}/tasks/{taskId}`](/api-reference/tasks/get-customer-task)로 각 현재 태스크를 조회하세요:
@@ -73,6 +172,47 @@ curl --request GET \
 ```
 
 최신 `data.revision`과 `data.requirements`를 사용하세요. 둘 중 하나가 변경되었을 수 있다면 제출 직전에 태스크를 다시 조회하세요.
+
+### 재사용되는 프로필 증거 {#reused-profile-evidence}
+
+직접 API 제출을 받는 신청 접수 태스크에서 Swipelux는 고객이 이미 제공한 정보를 재사용해요. 이런 태스크가 생성되거나 조정될 때 Swipelux는 고객 프로필과 고객이 직접 업로드한 문서를 확인해요. 사용 가능한 프로필 값이나 문서로 이미 뒷받침되는 적격 요건은 실행 가능 상태로 남지 않고 `in_review`로 이동해요. 프로필 업데이트와 새 문서 업로드도 기존 태스크에 대해 같은 확인을 트리거해요.
+
+누락되었거나 호환되지 않는 값만 실행 가능 상태로 남아요. 재사용이 증거를 승인하는 것은 아니며, Swipelux는 여전히 이를 검토해요. 명시적인 수정 요청과 이전에 답변한 요건은 실행 가능 상태로 남아요. 소유자와 관계자 문서는 재사용되지 않으며, 호스팅된 세션을 통해서만 수집되는 요건은 일반 흐름을 따라요.
+
+### 요건 렌더링 {#render-requirements}
+
+요건 키가 아니라 각 요건이 반환하는 메타데이터로 양식을 구성하세요. 요건에는 선택적인 짧은 `title`이 포함될 수 있으며, 모든 `request`에는 제목 아래에 표시할 `prompt`가 포함돼요.
+
+`request.type: "profile"`인 요건은 `profilePointer`로 프로필 필드를 식별하고 입력 메타데이터를 추가해요:
+
+- `allowedValues`: 스칼라 필드 또는 배열 필드의 각 항목에 허용되는 값이에요. 번역된 표시 레이블이 아니라 이 값을 제출하세요.
+- `valueSchema`: 입력 형태, 중첩 속성, 필수 필드, 구조적 제약을 설명하는 독립적인 JSON Schema Draft 7 문서예요. 객체의 열거형은 관련 속성에 나타나요. 예를 들어 세금 식별자의 경우 `valueSchema.items.properties.type.enum`이에요. Swipelux는 제출 후에도 필드 간 검증과 검토 검증을 적용하므로, 스키마를 통과한 값도 거절될 수 있어요.
+- `valueType: "country"`, 또는 배열의 경우 `itemValueType: "country"`: 이 필드는 대문자 ISO 3166-1 alpha-2 코드를 받아요. `valueSchema`의 중첩 국가 속성은 `format: "iso-3166-1-alpha-2"`를 사용해요. 현지화된 레이블에는 표준 국가 목록을 사용하세요.
+
+```json
+{
+  "id": "req_000000000000000010",
+  "key": "account_purposes",
+  "title": "Account purpose",
+  "status": "action_required",
+  "request": {
+    "type": "profile",
+    "prompt": "Select every purpose that applies.",
+    "required": true,
+    "profilePointer": "/financialProfile/accountPurposes",
+    "valueType": "array",
+    "itemValueType": "string",
+    "allowedValues": ["business_expenses", "ecommerce", "payroll"],
+    "valueSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "array",
+      "items": { "enum": ["business_expenses", "ecommerce", "payroll"] }
+    }
+  }
+}
+```
+
+이 예시는 값 목록을 줄여서 보여주며, API는 허용되는 모든 값을 반환해요. 일부 프로필 요건은 공개된 스키마가 없어 `valueSchema`와 `allowedValues`를 생략해요. 이런 요건은 `prompt`와 `valueType`으로 렌더링하세요.
 
 모든 열린 작업에는 `dueAt` 타임스탬프가 포함됩니다. Swipelux가 명시적인 기한 없이 작업을 생성하면 `dueAt`은 기본적으로 작업의 `createdAt`으로부터 정확히 31일 후로 설정됩니다. `dueAt`은 참고용으로만 취급하세요. API를 통해 설정할 수 없으며 자동 수명 주기 전환을 트리거하지 않습니다. 자동 전환은 별도로 설정된 `deadline` 필드가 있는 경우에만 발생합니다.
 

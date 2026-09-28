@@ -34,6 +34,23 @@ curl --request GET \
 
 Válasszon egy válaszelemet, amely megfelel a szándékolt `directions`, `method` és `accountType` értékeknek. Csak akkor folytassa, ha az `availability` értéke `available` vagy `beta`, és az `eligibility.eligible` értéke `true`. Ha `institutions` értéket ad vissza, csak abból a válaszból válasszon azonosítót.
 
+Minden intézménybejegyzés tartalmaz egy `logoUrl` mezőt és egy `isDefault` jelzőt. A `logoUrl` segítségével jelenítse meg a bank logóját a bankválasztó felületen, és ha értéke `null`, jelenítse meg saját általános bankikonját. Az `isDefault` csak erre az ügyfélre és képességre vonatkozik, nem globálisan az intézményre. A [`GET /v3/institutions`](/api-reference/institutions/get-v3-institutions) ugyanezt a nullázható `logoUrl` mezőt adja vissza. Az intézményazonosítók átlátszatlanok, ezért kezelje az új azonosítókat kódmódosítás nélkül.
+
+```json
+{
+  "institutions": [
+    {
+      "id": "jpmorgan",
+      "name": "JPMorgan Chase",
+      "bic": "CHASUS33",
+      "logoUrl": "https://wallet.swipelux.com/bank-logos/jpmorgan.png",
+      "countries": ["US"],
+      "isDefault": true
+    }
+  ]
+}
+```
+
 Tárolja a kiválasztott `data[].id` értéket `CAPABILITY_ID`-ként. Soha ne másoljon képességazonosítót másik ügyféltől vagy környezetből.
 
 ### Közös és dedikált számlatípusok
@@ -44,6 +61,10 @@ A banki képességek két változatban léteznek, amelyeket az `accountType` mez
 - **`named`**: dedikált banki adatok az ügyfélnek (virtuális IBAN, dedikált ACH számla). Újrafelhasználható és megosztható bármely fizetővel. [Kibocsátott bankszámlákhoz](/hu/integration/issue-bank-account) szükséges.
 
 Alapértelmezés szerint válassza a `pooled` opciót. `named`-et csak akkor használjon, ha az ügyfélnek újrafelhasználható banki adatok szükségesek. Ellenőrizze a `supported` válaszban, hogy mely változatok érhetők el.
+
+SWIFT betétek fogadásához vagy SWIFT banki adatok kibocsátásához használja a `swift_named` opciót. A `swift_pooled` csak kifizetéseket támogat, ezért ellenőrizze az egyes opciók `directions` értékét a támogatott képesség válaszában. Egy dedikált SWIFT számla újrafelhasználható fogadási adatokat ad vissza, beleértve a bank BIC-kódját, szükség esetén egy hivatkozást, valamint a kedvezményezett címét, ha a bank megadja.
+
+Kibocsátott ACH, Wire és SWIFT számlák esetén az `institution` mezővel kiválaszthat egy pontos bankot, és elmentheti a számlakérést, mielőtt a bank jóváhagyja az ügyfelet. Lásd: [Bankszámla kibocsátása](/hu/integration/issue-bank-account#choose-the-bank).
 
 ## A képesség kérése
 
@@ -62,6 +83,84 @@ Csak akkor használjon explicit `institutions` tömböt, ha a támogatott képes
 
 Tárolja a `data.status` értéket `CAPABILITY_STATUS`-ként, a `data.accountProvisioning` értéket `ACCOUNT_PROVISIONING_STATUS`-ként, a `data.openTaskIds` értéket `OPEN_TASK_IDS`-ként, és minden `data.applications[].id` értéket az `APPLICATION_IDS` alatt.
 
+### Megosztott alkalmazások bankonként {#shared-applications-per-bank}
+
+Dedikált (named) banki képességek esetén minden ügyfélnek bankonként egy alkalmazási esete van. A közös (pooled) és platformképességek bank nélküli eseteket használnak. A Swipelux egy esetet megoszt az Ön által kért összes kompatibilis képesség között:
+
+- Egyetlen jóváhagyás több képességet is lefedhet. Például egy banknál jóváhagyott eset egy ACH és egy wire képességet is `ready` állapotba hozhat.
+- Egy későbbi kérés, amely egy meglévő esetnek megfelel, azt újrahasznosítja. A Swipelux nem nyit második alkalmazást, és nem ad hozzá duplikált feladatokat.
+- A különböző bankoknál lévő esetek függetlenek. Az egyik banknál történt elutasítás nem érinti a másik banknál lévő esetet.
+
+A kérésre adott válasz megmutatja, melyik esetet használta a Swipelux:
+
+- A `201` azt jelenti, hogy a kérés új alkalmazási esetet nyitott.
+- A `200` azt jelenti, hogy a kérés egy, az ügyfélnél már meglévő alkalmazási esetre oldódott fel, például egy olyan banki képesség ismételt kérésekor, amellyel az ügyfél már rendelkezik, vagy egy törölt képesség kérésekor. A `card` vagy `stablecoin_transfers` ismételt kérése továbbra is [`409 capability_already_exists`](/integration/errors#capability-already-exists) hibát ad vissza.
+- A `selectedApplicationId` egy legfelső szintű mező a `data` mellett, amely a kérés által kiválasztott vagy megnyitott eset azonosítóját tartalmazza. A Swipelux kihagyja, ha a kérés nem választott ki esetet. Egy idempotens ismétlés ugyanazt az értéket adja vissza.
+
+Rövidített válasz:
+
+```json
+{
+  "data": {
+    "id": "ach_named",
+    "status": "pending",
+    "openTaskIds": ["tsk_000000000000000002"],
+    "applications": [{ "id": "apl_000000000000000005", "status": "in_review" }]
+  },
+  "selectedApplicationId": "apl_000000000000000005"
+}
+```
+
+Dedikált képességek esetén küldje el újra ugyanazt az `institutions` listát ugyanazon eset kiválasztásához, vagy küldjön egyetlen intézményazonosítót az adott bank megcélzásához. A Swipelux kihagyja azt a bankot, amely véglegesen elutasította az ügyfelet. Ha csak ezt a bankot nevezi meg, vagy minden jogosult bank elutasította az ügyfelet, a kérés [`409 capability_terminally_rejected`](/integration/errors#capability-terminally-rejected) hibát ad vissza. Ha elutasítás után egy másik bankkal szeretne próbálkozni, kérje újra a képességet az adott bank intézményazonosítójával.
+
+Egy képesség státusza az ügyfél összes kapcsolódó esetét tükrözi. Dedikált képesség esetén egyetlen `ready` eset, amelynek jóváhagyása lefedi a képességet, elegendő ahhoz, hogy az `ready` legyen, függetlenül attól, mit jeleznek más bankok. A közös képesség a módszerellenőrzését is megvárja, amelyet az ügyfél alkalmazáslistájában a `probes` jelez.
+
+#### Az ügyfél alkalmazásainak listázása {#list-the-customers-applications}
+
+Listázza az ügyfél összes alkalmazási esetét a [`GET /v3/customers/{customerId}/applications`](/api-reference/capabilities/get-v3-customers-by-customer-id-applications) művelettel. Az eredmények lapozása a `nextCursor` és `hasMore` mezőkkel történik, és elfogadják az `updatedAfter` paramétert:
+
+```bash
+curl --request GET \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/applications" \
+  --header "X-API-Key: ${SWIPELUX_API_KEY}"
+```
+
+Minden bejegyzés tartalmazza a képesség `applications[]` tömbjében visszaadott alkalmazásmezőket, továbbá:
+
+- `scope`: `named` egy banknál lévő esethez, `provider_pooled` vagy `platform` bank nélküli esetekhez, vagy `null` egy besorolatlan korábbi esethez. Az `institution` hiányzik a `provider_pooled` és `platform` eseteknél.
+- `requestedScope[]`: az esethez kért képességkulcsok, mindegyik az első `requestedAt` értékével. A bejegyzések soha nem törlődnek.
+- `coverage[]`: az eset jóváhagyása által lefedett képességkulcsok, mindegyik `grantedAt` és `source` értékkel. A lefedettség a hatókört rögzíti, nem az engedélyezést. Az aktuális státuszért olvassa be a képességet.
+- `probes[]`: módszerellenőrzések az eset által lefedett közös képességkulcsokhoz, mindegyik `capabilityKey`, `status` és `reason` értékkel. A dedikált kulcsokhoz soha nem szükséges ellenőrzés.
+- `generation`, `predecessorApplicationId` és `supersededByApplicationId`: utódlási hivatkozások. Ha a `supersededByApplicationId` be van állítva, az esetet lecserélték. Kövesse ezt az azonosítót az aktuális esethez.
+
+Rövidített válasz:
+
+```json
+{
+  "data": [
+    {
+      "id": "apl_000000000000000005",
+      "status": "ready",
+      "scope": "named",
+      "institution": { "id": "jpmorgan", "name": "JPMorgan Chase", "bic": "CHASUS33" },
+      "requestedScope": [
+        { "capabilityKey": "ach_named", "requestedAt": "2026-09-20T10:00:00.000Z" }
+      ],
+      "coverage": [
+        { "capabilityKey": "ach_named", "grantedAt": "2026-09-22T12:00:00.000Z", "source": "approval" },
+        { "capabilityKey": "wire_named", "grantedAt": "2026-09-22T12:00:00.000Z", "source": "approval" }
+      ],
+      "probes": [],
+      "generation": 1,
+      "predecessorApplicationId": null,
+      "supersededByApplicationId": null
+    }
+  ],
+  "nextCursor": null,
+  "hasMore": false
+}
+```
+
 ## Aktuális feladatok elvégzése {#complete-current-tasks}
 
 Sorolja fel a feladatokat a [`GET /v3/customers/{customerId}/tasks`](/api-reference/tasks/list-customer-tasks) művelettel, válassza ki az azonosítókat az `OPEN_TASK_IDS`-ből, majd olvassa be minden aktuális feladatot a [`GET /v3/customers/{customerId}/tasks/{taskId}`](/api-reference/tasks/get-customer-task) művelettel:
@@ -73,6 +172,47 @@ curl --request GET \
 ```
 
 Használja a legfrissebb `data.revision` és `data.requirements` értékeit. Frissítse le a feladatot közvetlenül a beküldés előtt, ha bármelyik megváltozhatott.
+
+### Újrahasznosított profilbizonyítékok {#reused-profile-evidence}
+
+A közvetlen API-beküldést elfogadó alkalmazási adatfelvételi feladatoknál a Swipelux újrahasznosítja az ügyfél által már megadott információkat. Amikor egy ilyen feladat létrejön vagy egyeztetésre kerül, a Swipelux ellenőrzi az ügyfélprofilt és az ügyfél saját feltöltött dokumentumait. Azok a jogosult követelmények, amelyeket már egy használható profilérték vagy dokumentum alátámaszt, `in_review` állapotba kerülnek ahelyett, hogy cselekvést igénylők maradnának. A profilfrissítések és az új dokumentumfeltöltések ugyanezt az ellenőrzést indítják el a meglévő feladatoknál.
+
+Csak a hiányzó vagy nem kompatibilis értékek maradnak cselekvést igénylők. Az újrahasznosítás nem hagyja jóvá a bizonyítékot. A Swipelux továbbra is felülvizsgálja azt. Az explicit javítási kérések és a korábban megválaszolt követelmények cselekvést igénylők maradnak. A tulajdonosi és kapcsolt féltől származó dokumentumokat a Swipelux nem hasznosítja újra, és a csak hosted munkamenetben gyűjtött követelmények a szokásos folyamatukat követik.
+
+### Követelmények megjelenítése {#render-requirements}
+
+Az űrlapokat az egyes követelmények által visszaadott metaadatokból építse fel, ne a követelménykulcsokból. Egy követelmény tartalmazhat opcionális rövid `title` értéket, és minden `request` tartalmaz egy `prompt` szöveget, amelyet a címsor alatt kell megjeleníteni.
+
+A `request.type: "profile"` típusú követelmények a `profilePointer` segítségével azonosítják a profilmezőt, és beviteli metaadatokat adnak hozzá:
+
+- `allowedValues`: a megengedett értékek egy skaláris mezőhöz, vagy egy tömbmező minden eleméhez. Ezeket az értékeket küldje be, ne a lefordított megjelenítési címkéket.
+- `valueSchema`: önálló JSON Schema Draft 7 dokumentum, amely leírja a bevitel alakját, a beágyazott tulajdonságokat, a kötelező mezőket és a szerkezeti megkötéseket. Az objektumokon lévő enumok a megfelelő tulajdonságon jelennek meg, például adóazonosítóknál a `valueSchema.items.properties.type.enum` helyen. A Swipelux a beküldés után továbbra is alkalmaz mezők közötti és felülvizsgálati validációt, így a sémának megfelelő érték is elutasításra kerülhet.
+- `valueType: "country"`, vagy tömbök esetén `itemValueType: "country"`: a mező nagybetűs ISO 3166-1 alpha-2 kódokat fogad. A `valueSchema` beágyazott országtulajdonságai a `format: "iso-3166-1-alpha-2"` értéket használják. A lokalizált címkékhez használjon szabványos országlistát.
+
+```json
+{
+  "id": "req_000000000000000010",
+  "key": "account_purposes",
+  "title": "Account purpose",
+  "status": "action_required",
+  "request": {
+    "type": "profile",
+    "prompt": "Select every purpose that applies.",
+    "required": true,
+    "profilePointer": "/financialProfile/accountPurposes",
+    "valueType": "array",
+    "itemValueType": "string",
+    "allowedValues": ["business_expenses", "ecommerce", "payroll"],
+    "valueSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "array",
+      "items": { "enum": ["business_expenses", "ecommerce", "payroll"] }
+    }
+  }
+}
+```
+
+Ez a példa lerövidíti az értékkatalógust; az API minden megengedett értéket visszaad. Egyes profilkövetelményeknek nincs közzétett sémája, és kihagyják a `valueSchema` és `allowedValues` mezőket. Ezeket a `prompt` és `valueType` alapján jelenítse meg.
 
 Minden nyitott feladat tartalmaz egy `dueAt` időbélyeget. Amikor a Swipelux explicit határidő nélkül hoz létre egy feladatot, a `dueAt` alapértelmezés szerint pontosan 31 nappal a feladat `createdAt` értéke utánra kerül. Kezelje a `dueAt` mezőt tájékoztató jellegűként: nem állíthatja be az API-n keresztül, és nem vált ki automatikus életciklus-átmenetet. Csak a különálló `deadline` mező okoz automatikus átmenetet, ha meg van adva.
 
