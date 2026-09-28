@@ -74,6 +74,8 @@ curl --request GET \
 
 Usa la última `data.revision` y `data.requirements`. Vuelve a obtener la tarea justo antes de enviar si alguno de estos puede haber cambiado.
 
+Cada tarea abierta incluye una marca de tiempo `dueAt`. Cuando Swipelux crea una tarea sin una fecha de vencimiento explícita, `dueAt` toma por defecto exactamente 31 días después del `createdAt` de la tarea. Trata `dueAt` como informativo: no puedes definirlo a través de la API y no desencadena ninguna transición automática del ciclo de vida. Solo el campo separado `deadline`, cuando está presente, provoca una transición automática.
+
 ### Acciones alojadas
 
 En la respuesta de detalle de la tarea, cada entrada de `verificationSessions` y `tosSessions` incluye un objeto `action`. Las respuestas de la lista de tareas no incluyen estos enlaces de acción. Guarda el `id` de cada sesión y lee `action.kind` antes de enviar al cliente; no deduzcas la disponibilidad del enlace a partir del `status` de la sesión.
@@ -130,6 +132,8 @@ curl --request POST \
 
 Guarda el `data.id` devuelto como `DOCUMENT_ID` antes de enviar la respuesta que lo referencia.
 
+Para recuperar un archivo almacenado más tarde, llama a [`GET /v3/customers/{customerId}/documents/{documentId}/download`](/api-reference/documents/get-v3-customers-by-customer-id-documents-by-document-id-download). Swipelux devuelve una `url` que descarga el archivo como adjunto y expira después de una hora. Los documentos archivados devuelven `404`.
+
 ### Respuestas por API
 
 Envía un conjunto completo de respuestas para la revisión actual con [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission):
@@ -157,6 +161,31 @@ JSON
 ```
 
 Toma cada ID de requisito y tipo de respuesta de la última tarea. Si la API informa de que la tarea cambió, vuelve a obtenerla y reconstruye el envío a partir de la nueva revisión.
+
+### Prerrequisito de beneficiario final para empresas {#beneficial-owner-prerequisite-for-businesses}
+
+Solicitar una capacidad de empresa que necesita evidencia de beneficiario final tiene éxito incluso cuando el cliente todavía no tiene ningún propietario que califique. La capacidad se crea como `restricted` con `statusReason.code: tasks_due`, y la tarea de intake de la empresa solicita los hechos de propiedad faltantes, incluida la estructura de propiedad.
+
+La misma tarea contiene un requisito `resource_reference` cuya solicitud incluye `qualification: "beneficial_owner"`:
+
+```json
+{
+  "type": "resource_reference",
+  "prompt": "Add or select a qualifying beneficial owner.",
+  "required": true,
+  "resourceType": "related_party",
+  "qualification": "beneficial_owner"
+}
+```
+
+Una parte relacionada califica cuando es una parte `person` activa del mismo cliente con `ownership.declared: true` o un porcentaje de propiedad proporcionado de al menos 25.
+
+El requisito se deriva del listado actual de partes relacionadas, por lo que normalmente no lo respondes directamente:
+
+- Crear o actualizar una parte relacionada que califique cumple el requisito en la misma reevaluación y abre el trabajo de perfil y documentos propio de ese propietario. Consulta [Añade partes relacionadas de la empresa](/es/integration/onboarding/customers#add-business-related-parties).
+- También puedes referenciar explícitamente una parte que califique con una respuesta `resource_reference` que incluya su `relatedPartyId`.
+- El requisito permanece listado en la tarea actual después de cumplirse. Cuando no queda ninguna otra obligación abierta, la tarea pasa a `satisfied`.
+- Archivar la última parte que califica, o eliminar los hechos que la calificaban, reabre el requisito, incluso después de que la tarea haya quedado `satisfied`.
 
 ## Continúa cuando la capacidad esté lista
 
