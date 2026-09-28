@@ -260,7 +260,7 @@ test("webhooks verify, persist, acknowledge, and refetch safely", () => {
   assert.ok(rawBody >= 0 && rawBody < verify && verify < persist && persist < response);
 
   assert.match(text, /Delivery is at least once/i);
-  assert.match(text, /duplicate, delayed, and out of order/i);
+  assert.match(text, /duplicate, delayed, and out-of-order/i);
   assert.match(text, /uniqueness constraint on the envelope `id`/i);
   assert.match(text, /return `2xx` promptly[\s\S]{0,100}process it asynchronously/i);
   assert.match(text, /Do not use the envelope `attempt` field as a deduplication key/i);
