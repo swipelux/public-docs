@@ -34,15 +34,17 @@ curl --request GET \
 
 Choose a response entry that matches the intended `directions`, `method`, and `accountType`. Continue only when `availability` is `available` or `beta` and `eligibility.eligible` is `true`. If `institutions` are returned, select only an ID from that response.
 
-Each institution entry includes a `logoUrl` and an `isDefault` flag. Use `logoUrl` to show the bank's logo in a bank selection UI. When `logoUrl` is `null`, render your own generic bank icon. `isDefault` applies to this customer and capability only, not to the institution globally. [`GET /v3/institutions`](/api-reference/institutions/get-v3-institutions) returns the same nullable `logoUrl`. Institution IDs are opaque, so handle new IDs without code changes.
+Each institution entry includes a `logoUrl` and an `isDefault` flag. Use `logoUrl` to show the bank's logo in a bank selection UI, and render your own generic bank icon when it is `null`. `isDefault` applies to this customer and capability only, not to the institution globally. [`GET /v3/institutions`](/api-reference/institutions/get-v3-institutions) returns the same nullable `logoUrl`. Institution IDs are opaque, so handle new IDs without code changes.
 
 ```json
 {
   "institutions": [
     {
-      "id": "lead_bank",
-      "name": "Lead Bank",
-      "logoUrl": "https://wallet.swipelux.com/bank-logos/lead_bank.png",
+      "id": "jpmorgan",
+      "name": "JPMorgan Chase",
+      "bic": "CHASUS33",
+      "logoUrl": "https://wallet.swipelux.com/bank-logos/jpmorgan.png",
+      "countries": ["US"],
       "isDefault": true
     }
   ]
@@ -83,7 +85,7 @@ Store `data.status` as `CAPABILITY_STATUS`, `data.accountProvisioning` as `ACCOU
 
 ### Shared applications per bank
 
-Each customer has one application case per bank. Swipelux shares that case across every compatible capability you request at the same bank:
+For named bank capabilities, each customer has one application case per bank. Pooled and platform capabilities use cases without a bank. Swipelux shares a case across every compatible capability you request:
 
 - One approval can cover several capabilities. For example, an approved case at one bank can make both an ACH and a wire capability `ready`.
 - A later request that matches an existing case reuses it. Swipelux opens no second application and adds no duplicate tasks.
@@ -92,8 +94,10 @@ Each customer has one application case per bank. Swipelux shares that case acros
 The request response tells you which case Swipelux used:
 
 - `201` means the request opened a new application case.
-- `200` means the request matched an existing case, including a repeated request for a capability the customer already holds.
-- `selectedApplicationId` is a top-level field next to `data`. It contains the ID of the case the request selected. Swipelux omits it when the request did not select a case. An idempotent replay returns the same value.
+- `200` means the request resolved to an application case the customer already had, for example a repeated request for a bank capability the customer already holds, or a request for a canceled capability. A repeated request for `card` or `stablecoin_transfers` still returns [`409 capability_already_exists`](/integration/errors#capability-already-exists).
+- `selectedApplicationId` is a top-level field next to `data` with the ID of the case the request selected or opened. Swipelux omits it when the request did not select a case. An idempotent replay returns the same value.
+
+Abbreviated response:
 
 ```json
 {
@@ -101,40 +105,44 @@ The request response tells you which case Swipelux used:
     "id": "ach_named",
     "status": "pending",
     "openTaskIds": ["tsk_000000000000000002"],
-    "applications": [{ "id": "app_000000000000000005", "status": "in_review" }]
+    "applications": [{ "id": "apl_000000000000000005", "status": "in_review" }]
   },
-  "selectedApplicationId": "app_000000000000000005"
+  "selectedApplicationId": "apl_000000000000000005"
 }
 ```
 
-When you omit `institutions`, Swipelux prefers a bank where the customer already has a case, then the default bank. Send the same list again to select the same case. Send one institution ID to target that bank. A bank that terminally rejected the customer is skipped. When you name only that bank, or every eligible bank has rejected the customer, the request returns [`409 capability_terminally_rejected`](/integration/errors#capability-terminally-rejected). To try another bank after a rejection, request the capability again with that bank's institution ID.
+For named capabilities, send the same `institutions` list again to select the same case, or send one institution ID to target that bank. A bank that terminally rejected the customer is skipped. When you name only that bank, or every eligible bank has rejected the customer, the request returns [`409 capability_terminally_rejected`](/integration/errors#capability-terminally-rejected). To try another bank after a rejection, request the capability again with that bank's institution ID.
 
-A capability's status reflects all of the customer's related cases. One `ready` case whose approval covers the capability is enough to make it `ready`, whatever other banks report.
+A capability's status reflects all of the customer's related cases. For a named capability, one `ready` case whose approval covers it is enough to make it `ready`, whatever other banks report. A pooled capability also waits for its method check, reported in `probes` on the customer applications list.
 
 #### List the customer's applications
 
-List every application case for the customer with `GET /v3/customers/{customerId}/applications`. Results are paginated with `nextCursor` and `hasMore`, and accept `updatedAfter`:
+List every application case for the customer with [`GET /v3/customers/{customerId}/applications`](/api-reference/capabilities/get-v3-customers-by-customer-id-applications). Results are paginated with `nextCursor` and `hasMore`, and accept `updatedAfter`:
 
-```http
-GET /v3/customers/{customerId}/applications
-X-API-Key: {apiKey}
+```bash
+curl --request GET \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/applications" \
+  --header "X-API-Key: ${SWIPELUX_API_KEY}"
 ```
 
 Each entry includes the application fields returned in a capability's `applications[]`, plus:
 
-- `scope`: `named` for a case at one bank, or `provider_pooled` or `platform` for cases without a bank. `institution` is present only for `named` cases.
+- `scope`: `named` for a case at one bank, `provider_pooled` or `platform` for cases without a bank, or `null` for an unclassified historical case. `institution` is absent for `provider_pooled` and `platform` cases.
 - `requestedScope[]`: the capability keys requested against the case, each with its first `requestedAt`. Entries are never removed.
 - `coverage[]`: the capability keys the case's approval covers, each with `grantedAt` and `source`. Coverage records scope, not authorization. Read the capability for its current status.
+- `probes[]`: method checks for the pooled capability keys the case covers, each with `capabilityKey`, `status`, and `reason`. Named keys never require a probe.
 - `generation`, `predecessorApplicationId`, and `supersededByApplicationId`: succession links. When `supersededByApplicationId` is set, the case was replaced. Follow that ID to the current case.
+
+Abbreviated response:
 
 ```json
 {
   "data": [
     {
-      "id": "app_000000000000000005",
+      "id": "apl_000000000000000005",
       "status": "ready",
       "scope": "named",
-      "institution": { "id": "lead_bank", "name": "Lead Bank" },
+      "institution": { "id": "jpmorgan", "name": "JPMorgan Chase", "bic": "CHASUS33" },
       "requestedScope": [
         { "capabilityKey": "ach_named", "requestedAt": "2026-09-20T10:00:00.000Z" }
       ],
@@ -142,6 +150,7 @@ Each entry includes the application fields returned in a capability's `applicati
         { "capabilityKey": "ach_named", "grantedAt": "2026-09-22T12:00:00.000Z", "source": "approval" },
         { "capabilityKey": "wire_named", "grantedAt": "2026-09-22T12:00:00.000Z", "source": "approval" }
       ],
+      "probes": [],
       "generation": 1,
       "predecessorApplicationId": null,
       "supersededByApplicationId": null
@@ -166,17 +175,13 @@ Use the latest `data.revision` and `data.requirements`. Refetch the task immedia
 
 ### Reused profile evidence
 
-Swipelux reuses information the customer already provided. When a task is created or reconciled, Swipelux checks the customer profile and the customer's uploaded documents. Requirements already backed by a usable profile value or document move to `in_review` instead of staying actionable. Profile updates and new document uploads trigger the same check for existing tasks.
+For application intake tasks that accept direct API submission, Swipelux reuses information the customer already provided. When such a task is created or reconciled, Swipelux checks the customer profile and the customer's own uploaded documents. Eligible requirements already backed by a usable profile value or document move to `in_review` instead of staying actionable. Profile updates and new document uploads trigger the same check for existing tasks.
 
-Only missing or incompatible values stay actionable. Reuse does not approve the evidence. Swipelux still reviews it. Explicit correction requests and previously answered requirements stay actionable.
+Only missing or incompatible values stay actionable. Reuse does not approve the evidence. Swipelux still reviews it. Explicit correction requests and previously answered requirements stay actionable. Owner and related-party documents are not reused, and requirements collected only through a hosted session keep their normal flow.
 
 ### Render requirements
 
-Build forms from the metadata each requirement returns rather than from requirement keys. Every requirement can include:
-
-- `title`: an optional short heading.
-- `prompt` on `request`: the instruction to show beneath the heading.
-- `whyNeeded`: an optional customer-visible reason for the request. Show it next to the requirement when present. It is not a review decision. Swipelux omits the field when no reason is set, and can edit it without changing the requirement ID or task revision.
+Build forms from the metadata each requirement returns rather than from requirement keys. A requirement can include an optional short `title`, and every `request` includes a `prompt` to show beneath the heading.
 
 Requirements with `request.type: "profile"` identify the profile field with `profilePointer` and add input metadata:
 
@@ -187,25 +192,27 @@ Requirements with `request.type: "profile"` identify the profile field with `pro
 ```json
 {
   "id": "req_000000000000000010",
+  "key": "account_purposes",
   "title": "Account purpose",
-  "whyNeeded": "The bank needs to know how the account will be used.",
   "status": "action_required",
   "request": {
     "type": "profile",
     "prompt": "Select every purpose that applies.",
+    "required": true,
     "profilePointer": "/financialProfile/accountPurposes",
     "valueType": "array",
     "itemValueType": "string",
-    "allowedValues": ["business_expenses", "..."],
+    "allowedValues": ["business_expenses", "ecommerce", "payroll"],
     "valueSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
       "type": "array",
-      "items": { "type": "string", "enum": ["business_expenses", "..."] }
+      "items": { "enum": ["business_expenses", "ecommerce", "payroll"] }
     }
   }
 }
 ```
 
-Unknown future profile pointers and request types still appear without a schema. Render them from `prompt` and handle them without failing.
+This example shortens the value catalog; the API returns every permitted value. Some profile requirements have no published schema and omit `valueSchema` and `allowedValues`. Render those from `prompt` and `valueType`.
 
 Every open task includes a `dueAt` timestamp. When Swipelux authors a task without an explicit due date, `dueAt` defaults to exactly 31 days after the task's `createdAt`. Treat `dueAt` as informational: you cannot set it through the API, and it does not trigger an automatic lifecycle transition. Only the separate `deadline` field, when present, causes an automatic transition.
 
