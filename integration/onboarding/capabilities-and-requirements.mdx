@@ -34,6 +34,21 @@ curl --request GET \
 
 Choose a response entry that matches the intended `directions`, `method`, and `accountType`. Continue only when `availability` is `available` or `beta` and `eligibility.eligible` is `true`. If `institutions` are returned, select only an ID from that response.
 
+Each institution entry includes a `logoUrl` and an `isDefault` flag. Use `logoUrl` to show the bank's logo in a bank selection UI. When `logoUrl` is `null`, render your own generic bank icon. `isDefault` applies to this customer and capability only, not to the institution globally. [`GET /v3/institutions`](/api-reference/institutions/get-v3-institutions) returns the same nullable `logoUrl`. Institution IDs are opaque, so handle new IDs without code changes.
+
+```json
+{
+  "institutions": [
+    {
+      "id": "lead_bank",
+      "name": "Lead Bank",
+      "logoUrl": "https://wallet.swipelux.com/bank-logos/lead_bank.png",
+      "isDefault": true
+    }
+  ]
+}
+```
+
 Store the selected `data[].id` as `CAPABILITY_ID`. Never copy a capability ID from another customer or environment.
 
 ### Pooled vs named account types
@@ -62,6 +77,77 @@ Use an explicit `institutions` array only when you need to select from IDs retur
 
 Store `data.status` as `CAPABILITY_STATUS`, `data.accountProvisioning` as `ACCOUNT_PROVISIONING_STATUS`, `data.openTaskIds` as `OPEN_TASK_IDS`, and each `data.applications[].id` in `APPLICATION_IDS`.
 
+### Shared applications per bank
+
+Each customer has one application case per bank. Swipelux shares that case across every compatible capability you request at the same bank:
+
+- One approval can cover several capabilities. For example, an approved case at one bank can make both an ACH and a wire capability `ready`.
+- A later request that matches an existing case reuses it. Swipelux opens no second application and adds no duplicate tasks.
+- Cases at different banks are independent. A rejection at one bank does not affect a case at another bank.
+
+The request response tells you which case Swipelux used:
+
+- `201` means the request opened a new application case.
+- `200` means the request matched an existing case, including a repeated request for a capability the customer already holds.
+- `selectedApplicationId` is a top-level field next to `data`. It contains the ID of the case the request selected. Swipelux omits it when the request did not select a case. An idempotent replay returns the same value.
+
+```json
+{
+  "data": {
+    "id": "ach_named",
+    "status": "pending",
+    "openTaskIds": ["tsk_000000000000000002"],
+    "applications": [{ "id": "app_000000000000000005", "status": "in_review" }]
+  },
+  "selectedApplicationId": "app_000000000000000005"
+}
+```
+
+When you omit `institutions`, Swipelux prefers a bank where the customer already has a case, then the default bank. Send the same list again to select the same case. Send one institution ID to target that bank. A bank that terminally rejected the customer is skipped. When you name only that bank, or every eligible bank has rejected the customer, the request returns [`409 capability_terminally_rejected`](/integration/errors#capability-terminally-rejected). To try another bank after a rejection, request the capability again with that bank's institution ID.
+
+A capability's status reflects all of the customer's related cases. One `ready` case whose approval covers the capability is enough to make it `ready`, whatever other banks report.
+
+#### List the customer's applications
+
+List every application case for the customer with `GET /v3/customers/{customerId}/applications`. Results are paginated with `nextCursor` and `hasMore`, and accept `updatedAfter`:
+
+```http
+GET /v3/customers/{customerId}/applications
+X-API-Key: {apiKey}
+```
+
+Each entry includes the application fields returned in a capability's `applications[]`, plus:
+
+- `scope`: `named` for a case at one bank, or `provider_pooled` or `platform` for cases without a bank. `institution` is present only for `named` cases.
+- `requestedScope[]`: the capability keys requested against the case, each with its first `requestedAt`. Entries are never removed.
+- `coverage[]`: the capability keys the case's approval covers, each with `grantedAt` and `source`. Coverage records scope, not authorization. Read the capability for its current status.
+- `generation`, `predecessorApplicationId`, and `supersededByApplicationId`: succession links. When `supersededByApplicationId` is set, the case was replaced. Follow that ID to the current case.
+
+```json
+{
+  "data": [
+    {
+      "id": "app_000000000000000005",
+      "status": "ready",
+      "scope": "named",
+      "institution": { "id": "lead_bank", "name": "Lead Bank" },
+      "requestedScope": [
+        { "capabilityKey": "ach_named", "requestedAt": "2026-09-20T10:00:00.000Z" }
+      ],
+      "coverage": [
+        { "capabilityKey": "ach_named", "grantedAt": "2026-09-22T12:00:00.000Z", "source": "approval" },
+        { "capabilityKey": "wire_named", "grantedAt": "2026-09-22T12:00:00.000Z", "source": "approval" }
+      ],
+      "generation": 1,
+      "predecessorApplicationId": null,
+      "supersededByApplicationId": null
+    }
+  ],
+  "nextCursor": null,
+  "hasMore": false
+}
+```
+
 ## Complete current tasks
 
 List tasks with [`GET /v3/customers/{customerId}/tasks`](/api-reference/tasks/list-customer-tasks), select IDs from `OPEN_TASK_IDS`, then read each current task with [`GET /v3/customers/{customerId}/tasks/{taskId}`](/api-reference/tasks/get-customer-task):
@@ -73,6 +159,49 @@ curl --request GET \
 ```
 
 Use the latest `data.revision` and `data.requirements`. Refetch the task immediately before submitting if either may have changed.
+
+### Reused profile evidence
+
+Swipelux reuses information the customer already provided. When a task is created or reconciled, Swipelux checks the customer profile and the customer's uploaded documents. Requirements already backed by a usable profile value or document move to `in_review` instead of staying actionable. Profile updates and new document uploads trigger the same check for existing tasks.
+
+Only missing or incompatible values stay actionable. Reuse does not approve the evidence. Swipelux still reviews it. Explicit correction requests and previously answered requirements stay actionable.
+
+### Render requirements
+
+Build forms from the metadata each requirement returns rather than from requirement keys. Every requirement can include:
+
+- `title`: an optional short heading.
+- `prompt` on `request`: the instruction to show beneath the heading.
+- `whyNeeded`: an optional customer-visible reason for the request. Show it next to the requirement when present. It is not a review decision. Swipelux omits the field when no reason is set, and can edit it without changing the requirement ID or task revision.
+
+Requirements with `request.type: "profile"` identify the profile field with `profilePointer` and add input metadata:
+
+- `allowedValues`: the permitted values for a scalar field, or for each item of an array field. Submit these values, not translated display labels.
+- `valueSchema`: a self-contained JSON Schema Draft 7 document that describes the input shape, nested properties, required fields, and structural constraints. Enums on objects appear on the relevant property, for example `valueSchema.items.properties.type.enum` for tax identifiers. Swipelux still applies cross-field and review validation after submission, so a value that passes the schema can still be rejected.
+- `valueType: "country"`, or `itemValueType: "country"` for arrays: the field takes uppercase ISO 3166-1 alpha-2 codes. Nested country properties in `valueSchema` use `format: "iso-3166-1-alpha-2"`. Use a standard country list for localized labels.
+
+```json
+{
+  "id": "req_000000000000000010",
+  "title": "Account purpose",
+  "whyNeeded": "The bank needs to know how the account will be used.",
+  "status": "action_required",
+  "request": {
+    "type": "profile",
+    "prompt": "Select every purpose that applies.",
+    "profilePointer": "/financialProfile/accountPurposes",
+    "valueType": "array",
+    "itemValueType": "string",
+    "allowedValues": ["business_expenses", "..."],
+    "valueSchema": {
+      "type": "array",
+      "items": { "type": "string", "enum": ["business_expenses", "..."] }
+    }
+  }
+}
+```
+
+Unknown future profile pointers and request types still appear without a schema. Render them from `prompt` and handle them without failing.
 
 Every open task includes a `dueAt` timestamp. When Swipelux authors a task without an explicit due date, `dueAt` defaults to exactly 31 days after the task's `createdAt`. Treat `dueAt` as informational: you cannot set it through the API, and it does not trigger an automatic lifecycle transition. Only the separate `deadline` field, when present, causes an automatic transition.
 
