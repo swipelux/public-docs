@@ -34,6 +34,23 @@ curl --request GET \
 
 Choisissez une entrée de réponse qui correspond aux `directions`, à la `method` et au `accountType` prévus. Continuez uniquement lorsque `availability` est `available` ou `beta` et `eligibility.eligible` est `true`. Si des `institutions` sont renvoyées, sélectionnez uniquement un ID de cette réponse.
 
+Chaque entrée d'institution inclut un `logoUrl` et un indicateur `isDefault`. Utilisez `logoUrl` pour afficher le logo de la banque dans une interface de sélection de banque, et affichez votre propre icône de banque générique lorsqu'il vaut `null`. `isDefault` s'applique uniquement à ce client et à cette capacité, pas à l'institution de manière globale. [`GET /v3/institutions`](/api-reference/institutions/get-v3-institutions) renvoie le même `logoUrl` nullable. Les ID d'institution sont opaques : gérez donc les nouveaux ID sans modifier votre code.
+
+```json
+{
+  "institutions": [
+    {
+      "id": "jpmorgan",
+      "name": "JPMorgan Chase",
+      "bic": "CHASUS33",
+      "logoUrl": "https://wallet.swipelux.com/bank-logos/jpmorgan.png",
+      "countries": ["US"],
+      "isDefault": true
+    }
+  ]
+}
+```
+
 Stockez le `data[].id` sélectionné en tant que `CAPABILITY_ID`. Ne copiez jamais un ID de capacité d'un autre client ou environnement.
 
 ### Types de comptes mutualisés vs nominatifs
@@ -44,6 +61,10 @@ Les capacités bancaires existent en deux variantes, encodées dans le champ `ac
 - **`named`** : coordonnées bancaires dédiées au client (IBAN virtuel, compte ACH dédié). Réutilisables et partageables avec n'importe quel payeur. Requis pour les [comptes bancaires émis](/fr/integration/issue-bank-account).
 
 Par défaut, utilisez `pooled`. Utilisez `named` uniquement lorsque le client a besoin de coordonnées bancaires réutilisables. Vérifiez la réponse `supported` pour savoir quelles variantes sont disponibles.
+
+Pour recevoir des dépôts SWIFT ou émettre des coordonnées bancaires SWIFT, utilisez `swift_named`. `swift_pooled` ne prend en charge que les paiements, vérifiez donc les `directions` de chaque option dans la réponse de capacité prise en charge. Un compte SWIFT named renvoie des coordonnées de réception réutilisables, notamment le BIC de la banque, une référence lorsqu'elle est requise et l'adresse du bénéficiaire lorsque la banque la fournit.
+
+Pour les comptes ACH, Wire et SWIFT émis, vous pouvez choisir une banque précise avec `institution` et enregistrer la demande de compte avant que la banque n'approuve le client. Consultez [Émettre un compte bancaire](/fr/integration/issue-bank-account#choose-the-bank).
 
 ## Demander la capacité
 
@@ -62,6 +83,84 @@ Utilisez un tableau `institutions` explicite uniquement lorsque vous devez séle
 
 Stockez `data.status` en tant que `CAPABILITY_STATUS`, `data.accountProvisioning` en tant que `ACCOUNT_PROVISIONING_STATUS`, `data.openTaskIds` en tant que `OPEN_TASK_IDS`, et chaque `data.applications[].id` dans `APPLICATION_IDS`.
 
+### Applications partagées par banque {#shared-applications-per-bank}
+
+Pour les capacités bancaires named, chaque client dispose d'un dossier d'application par banque. Les capacités pooled et de plateforme utilisent des dossiers sans banque. Swipelux partage un dossier entre toutes les capacités compatibles que vous demandez :
+
+- Une seule approbation peut couvrir plusieurs capacités. Par exemple, un dossier approuvé auprès d'une banque peut rendre `ready` à la fois une capacité ACH et une capacité Wire.
+- Une demande ultérieure qui correspond à un dossier existant le réutilise. Swipelux n'ouvre pas de deuxième application et n'ajoute aucune tâche en double.
+- Les dossiers auprès de banques différentes sont indépendants. Un rejet auprès d'une banque n'affecte pas un dossier auprès d'une autre banque.
+
+La réponse à la demande vous indique quel dossier Swipelux a utilisé :
+
+- `201` signifie que la demande a ouvert un nouveau dossier d'application.
+- `200` signifie que la demande a abouti à un dossier d'application que le client possédait déjà, par exemple une demande répétée pour une capacité bancaire que le client détient déjà, ou une demande pour une capacité annulée. Une demande répétée pour `card` ou `stablecoin_transfers` renvoie toujours [`409 capability_already_exists`](/integration/errors#capability-already-exists).
+- `selectedApplicationId` est un champ de premier niveau à côté de `data` qui contient l'ID du dossier que la demande a sélectionné ou ouvert. Swipelux l'omet lorsque la demande n'a sélectionné aucun dossier. Une relecture idempotente renvoie la même valeur.
+
+Réponse abrégée :
+
+```json
+{
+  "data": {
+    "id": "ach_named",
+    "status": "pending",
+    "openTaskIds": ["tsk_000000000000000002"],
+    "applications": [{ "id": "apl_000000000000000005", "status": "in_review" }]
+  },
+  "selectedApplicationId": "apl_000000000000000005"
+}
+```
+
+Pour les capacités named, renvoyez la même liste `institutions` pour sélectionner le même dossier, ou envoyez un seul ID d'institution pour cibler cette banque. Une banque qui a définitivement rejeté le client est ignorée. Lorsque vous ne nommez que cette banque, ou que toutes les banques éligibles ont rejeté le client, la demande renvoie [`409 capability_terminally_rejected`](/integration/errors#capability-terminally-rejected). Pour essayer une autre banque après un rejet, demandez à nouveau la capacité avec l'ID d'institution de cette banque.
+
+Le statut d'une capacité reflète l'ensemble des dossiers associés du client. Pour une capacité named, un seul dossier `ready` dont l'approbation la couvre suffit à la rendre `ready`, quel que soit le statut signalé par les autres banques. Une capacité pooled attend également sa vérification de méthode, signalée dans `probes` sur la liste des applications du client.
+
+#### Lister les applications du client {#list-the-customers-applications}
+
+Listez tous les dossiers d'application du client avec [`GET /v3/customers/{customerId}/applications`](/api-reference/capabilities/get-v3-customers-by-customer-id-applications). Les résultats sont paginés avec `nextCursor` et `hasMore`, et acceptent `updatedAfter` :
+
+```bash
+curl --request GET \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/applications" \
+  --header "X-API-Key: ${SWIPELUX_API_KEY}"
+```
+
+Chaque entrée inclut les champs d'application renvoyés dans le `applications[]` d'une capacité, ainsi que :
+
+- `scope` : `named` pour un dossier auprès d'une seule banque, `provider_pooled` ou `platform` pour les dossiers sans banque, ou `null` pour un dossier historique non classé. `institution` est absent pour les dossiers `provider_pooled` et `platform`.
+- `requestedScope[]` : les clés de capacité demandées pour le dossier, chacune avec son premier `requestedAt`. Les entrées ne sont jamais supprimées.
+- `coverage[]` : les clés de capacité couvertes par l'approbation du dossier, chacune avec `grantedAt` et `source`. La couverture enregistre une portée, pas une autorisation. Lisez la capacité pour connaître son statut actuel.
+- `probes[]` : les vérifications de méthode pour les clés de capacité pooled couvertes par le dossier, chacune avec `capabilityKey`, `status` et `reason`. Les clés named ne nécessitent jamais de vérification.
+- `generation`, `predecessorApplicationId` et `supersededByApplicationId` : liens de succession. Lorsque `supersededByApplicationId` est défini, le dossier a été remplacé. Suivez cet ID jusqu'au dossier actuel.
+
+Réponse abrégée :
+
+```json
+{
+  "data": [
+    {
+      "id": "apl_000000000000000005",
+      "status": "ready",
+      "scope": "named",
+      "institution": { "id": "jpmorgan", "name": "JPMorgan Chase", "bic": "CHASUS33" },
+      "requestedScope": [
+        { "capabilityKey": "ach_named", "requestedAt": "2026-09-20T10:00:00.000Z" }
+      ],
+      "coverage": [
+        { "capabilityKey": "ach_named", "grantedAt": "2026-09-22T12:00:00.000Z", "source": "approval" },
+        { "capabilityKey": "wire_named", "grantedAt": "2026-09-22T12:00:00.000Z", "source": "approval" }
+      ],
+      "probes": [],
+      "generation": 1,
+      "predecessorApplicationId": null,
+      "supersededByApplicationId": null
+    }
+  ],
+  "nextCursor": null,
+  "hasMore": false
+}
+```
+
 ## Compléter les tâches actuelles {#complete-current-tasks}
 
 Listez les tâches avec [`GET /v3/customers/{customerId}/tasks`](/api-reference/tasks/list-customer-tasks), sélectionnez les IDs de `OPEN_TASK_IDS`, puis lisez chaque tâche actuelle avec [`GET /v3/customers/{customerId}/tasks/{taskId}`](/api-reference/tasks/get-customer-task) :
@@ -73,6 +172,47 @@ curl --request GET \
 ```
 
 Utilisez le dernier `data.revision` et les dernières `data.requirements`. Récupérez à nouveau la tâche juste avant la soumission si l'un ou l'autre peut avoir changé.
+
+### Preuves de profil réutilisées {#reused-profile-evidence}
+
+Pour les tâches d'intake d'application qui acceptent la soumission directe via l'API, Swipelux réutilise les informations que le client a déjà fournies. Lorsqu'une telle tâche est créée ou réconciliée, Swipelux vérifie le profil du client et les documents que le client a lui-même téléversés. Les exigences éligibles déjà étayées par une valeur de profil ou un document utilisable passent à `in_review` au lieu de rester actionnables. Les mises à jour du profil et les nouveaux téléversements de documents déclenchent la même vérification pour les tâches existantes.
+
+Seules les valeurs manquantes ou incompatibles restent actionnables. La réutilisation n'approuve pas les preuves : Swipelux les examine toujours. Les demandes de correction explicites et les exigences déjà répondues restent actionnables. Les documents des propriétaires et des parties liées ne sont pas réutilisés, et les exigences collectées uniquement via une session hébergée conservent leur flux habituel.
+
+### Afficher les exigences {#render-requirements}
+
+Construisez les formulaires à partir des métadonnées renvoyées par chaque exigence plutôt qu'à partir des clés d'exigence. Une exigence peut inclure un `title` court facultatif, et chaque `request` inclut un `prompt` à afficher sous le titre.
+
+Les exigences avec `request.type: "profile"` identifient le champ de profil avec `profilePointer` et ajoutent des métadonnées de saisie :
+
+- `allowedValues` : les valeurs autorisées pour un champ scalaire, ou pour chaque élément d'un champ de type tableau. Soumettez ces valeurs, pas des libellés d'affichage traduits.
+- `valueSchema` : un document JSON Schema Draft 7 autonome qui décrit la forme de la saisie, les propriétés imbriquées, les champs obligatoires et les contraintes structurelles. Les enums sur les objets apparaissent sur la propriété concernée, par exemple `valueSchema.items.properties.type.enum` pour les identifiants fiscaux. Swipelux applique toujours une validation inter-champs et de revue après la soumission, donc une valeur conforme au schéma peut tout de même être rejetée.
+- `valueType: "country"`, ou `itemValueType: "country"` pour les tableaux : le champ accepte des codes ISO 3166-1 alpha-2 en majuscules. Les propriétés de pays imbriquées dans `valueSchema` utilisent `format: "iso-3166-1-alpha-2"`. Utilisez une liste de pays standard pour les libellés localisés.
+
+```json
+{
+  "id": "req_000000000000000010",
+  "key": "account_purposes",
+  "title": "Account purpose",
+  "status": "action_required",
+  "request": {
+    "type": "profile",
+    "prompt": "Select every purpose that applies.",
+    "required": true,
+    "profilePointer": "/financialProfile/accountPurposes",
+    "valueType": "array",
+    "itemValueType": "string",
+    "allowedValues": ["business_expenses", "ecommerce", "payroll"],
+    "valueSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "array",
+      "items": { "enum": ["business_expenses", "ecommerce", "payroll"] }
+    }
+  }
+}
+```
+
+Cet exemple raccourcit le catalogue de valeurs ; l'API renvoie toutes les valeurs autorisées. Certaines exigences de profil n'ont pas de schéma publié et omettent `valueSchema` et `allowedValues`. Affichez-les à partir de `prompt` et `valueType`.
 
 Chaque tâche ouverte inclut un horodatage `dueAt`. Lorsque Swipelux crée une tâche sans date d'échéance explicite, `dueAt` prend par défaut exactement 31 jours après le `createdAt` de la tâche. Traitez `dueAt` comme informatif : vous ne pouvez pas le définir via l'API et il ne déclenche aucune transition automatique du cycle de vie. Seul le champ distinct `deadline`, lorsqu'il est présent, provoque une transition automatique.
 
