@@ -48,8 +48,9 @@ Retry idempotent writes with the original `Idempotency-Key` and the unchanged me
 | [`account_unavailable`](#account-unavailable) | `409` | No | The selected account is unavailable for the requested money movement. |
 | [`amount_not_deliverable`](#amount-not-deliverable) | `422` | No | The requested amount cannot be delivered with the selected currencies, accounts, or method. |
 | [`amount_side_ambiguous`](#amount-side-ambiguous) | `400` | No | The quote request does not unambiguously identify which side of the conversion has the fixed amount. |
-| [`bank_not_supported_for_customer`](#bank-not-supported-for-customer) | `422` | Not returned | The selected institution is not available for this customer and capability request. |
+| [`bank_not_supported_for_customer`](#bank-not-supported-for-customer) | `422` | Contextual | The selected institution is not available for this customer and capability request, or for this payout quote. |
 | [`capability_already_exists`](#capability-already-exists) | `409` | No | The customer already has the requested capability. |
+| [`capability_application_stale`](#capability-application-stale) | `409` | No | The capability predates the current onboarding model and must be requested again. |
 | [`capability_direction_unsupported`](#capability-direction-unsupported) | `422` | No | The selected capability does not support the money-movement direction required by the quote or transfer. |
 | [`capability_ineligible`](#capability-ineligible) | `422` | No | The customer is not eligible for the requested capability in its current profile and configuration. |
 | [`capability_institutions_required`](#capability-institutions-required) | `422` | Not returned | The capability request requires one or more institution selections. |
@@ -295,7 +296,7 @@ Retry idempotent writes with the original `Idempotency-Key` and the unchanged me
 
 **Meaning:** The request does not satisfy the operation's input schema.
 
-**When it occurs:** Required values are missing, fields have invalid types or formats, or request parameters fail validation.
+**When it occurs:** Required values are missing, fields have invalid types or formats, or request parameters fail validation. Bank identifiers that fail format or checksum checks, such as an ABA routing number, IBAN, BIC, or account number, also return this code. So does `institutionId` on a quote that is not a crypto-to-fiat payout.
 
 **What to do:** Use `errors[]` and each JSON Pointer to correct the request, compare it with the operation schema, and send a new request.
 
@@ -674,6 +675,30 @@ Retry idempotent writes with the original `Idempotency-Key` and the unchanged me
 **Relevant API operations:**
 
 - [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, status `409`)
+
+<a id="capability-application-stale" className="block scroll-mt-32">
+  <span className="sr-only">capability_application_stale error</span>
+</a>
+
+### `capability_application_stale`
+
+**HTTP status:** `409`<br />
+**Retryable:** No<br />
+**Problem type:** `https://docs.swipelux.com/errors/capability-application-stale`
+
+**Meaning:** The capability predates the current onboarding model and must be requested again.
+
+**When it occurs:** You request, submit tasks for, or force the sandbox status of a capability whose application was created under the previous onboarding model.
+
+**What to do:** Request the capability again with [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id), then continue from the new capability's status and tasks. In sandbox, forcing the capability status re-routes it when a sandbox provider is available.
+
+**Retry guidance:** Do not retry the unchanged request. Apply the action above before sending another request.
+
+**Relevant API operations:**
+
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, status `409`)
+- [`POST /v3/customers/{customerId}/tasks/{taskId}/submissions`](/api-reference/task-submissions/create-customer-task-submission) (`createCustomerTaskSubmission`, status `409`)
+- [`POST /v3/sandbox/customers/{customerId}/capabilities/{capabilityId}/status`](/api-reference/sandbox/post-v3-sandbox-customers-by-customer-id-capabilities-by-capability-id-status) (`postV3SandboxCustomersByCustomerIdCapabilitiesByCapabilityIdStatus`, status `409`)
 
 <a id="capability-ineligible" className="block scroll-mt-32">
   <span className="sr-only">capability_ineligible error</span>
@@ -1515,20 +1540,24 @@ Retry idempotent writes with the original `Idempotency-Key` and the unchanged me
 ### `bank_not_supported_for_customer`
 
 **HTTP status:** `422`<br />
-**Retryable:** Not returned<br />
+**Retryable:** Contextual<br />
 **Problem type:** `https://docs.swipelux.com/errors/bank-not-supported-for-customer`
 
-**Meaning:** The selected institution is not available for this customer and capability request.
+**Meaning:** The selected institution is not available for this customer and capability request, or for this payout quote.
 
-**When it occurs:** A capability request selects an institution that is not among the supported options for the customer.
+**When it occurs:**
 
-**What to do:** List the customer's supported capabilities and institutions, select an available option, and submit a new capability request.
+- A capability request selects an institution that is not among the supported options for the customer.
+- A crypto-to-fiat payout quote sets `institutionId` to a bank that has no approved, ready route for the customer, capability, and destination. The response includes an `errors[]` entry with the pointer `/institutionId` and the code `not_available`.
 
-**Retry guidance:** This problem does not return `retryable`. Do not assume an unchanged retry is safe; follow the action above and the operation's idempotency requirements.
+**What to do:** For a capability request, list the customer's supported capabilities and institutions, select an available option, and submit a new capability request. For a payout quote, choose another approved bank, update the payout destination, or omit `institutionId` to use automatic routing. Swipelux never falls back to a different bank when you set `institutionId`.
+
+**Retry guidance:** The capability request response does not return `retryable`, and the quote response returns `retryable: false`. Do not retry the unchanged request. Follow the action above and the operation's idempotency requirements.
 
 **Relevant API operations:**
 
 - [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) (`postV3CustomersByCustomerIdCapabilitiesByCapabilityId`, status `422`)
+- [`POST /v3/quotes`](/api-reference/money-movement/post-v3-quotes) (`postV3Quotes`, status `422`)
 
 <a id="developer-fee-invalid" className="block scroll-mt-32">
   <span className="sr-only">developer_fee_invalid error</span>
@@ -1801,7 +1830,7 @@ Retry idempotent writes with the original `Idempotency-Key` and the unchanged me
 
 **Meaning:** The requested amount cannot be delivered with the selected currencies, accounts, or method.
 
-**When it occurs:** The quote request is valid in shape but cannot produce a deliverable destination amount for the selected route.
+**When it occurs:** The quote request is valid in shape but cannot produce a deliverable destination amount for the selected route. For example, a Wire pay-in quote below the 20.00 USD minimum, or an amount too small to cover the bank's transfer fees, returns this code.
 
 **What to do:** Adjust the amount, currency, account, destination, or method, then request a new quote.
 
