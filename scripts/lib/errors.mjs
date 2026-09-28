@@ -23,7 +23,6 @@ export const INTERNAL_ONLY_PROBLEM_CODES = Object.freeze([
   "requirement_not_cancelable",
   "payout_target_archived",
   "profile_required_by_capabilities",
-  "verification_session_not_allowed",
 ]);
 
 export const FORBIDDEN_GENERATED_TERMS = Object.freeze([
