@@ -29,6 +29,8 @@ const stylePath = resolve(projectRoot, "style.css");
 const styleText = existsSync(stylePath) ? read("style.css") : "";
 const LANGUAGE_PICKER_LAYOUT_BLOCK =
   /\/\* language-picker-layout:start \*\/[\s\S]*?\/\* language-picker-layout:end \*\//;
+const ASSISTANT_BAR_BLOCK =
+  /\/\* assistant-bar:start \*\/([\s\S]*?)\/\* assistant-bar:end \*\//;
 const redirectInventory = JSON.parse(read("docs/redirect-inventory.json"));
 
 const INTEGRATION_GROUPS = [
@@ -105,7 +107,6 @@ const API_REFERENCE_GROUPS = [
   },
   {
     group: "Versioning",
-    icon: "code-branch",
     pages: [
       "api-reference/versioning/migrate-to-v3",
       "api-reference/versioning/changelog",
@@ -117,6 +118,35 @@ const API_REFERENCE_GROUPS = [
     pages: [],
   },
 ];
+
+const ENDPOINT_GROUPS = [
+  "Customers",
+  "Related parties",
+  "Capabilities",
+  "Tasks",
+  "Task submissions",
+  "Documents",
+  "Accounts",
+  "Institutions",
+  "Recipients",
+  "Quotes and transfers",
+  "Rules",
+  "Webhooks",
+  "Webhook events",
+  "Sandbox",
+];
+
+const LANGUAGE_CHROME_KEYS = ["footer", "language", "navbar", "tabs"];
+
+function withoutEndpointPages(navigation) {
+  const copy = structuredClone(navigation);
+  for (const tab of copy.tabs ?? []) {
+    for (const group of tab.groups ?? []) {
+      if (group.openapi) group.pages = [];
+    }
+  }
+  return copy;
+}
 
 const STRUCTURE_REDIRECTS = {
   "/integration/api-reliability": "/api-reference/introduction",
@@ -255,7 +285,7 @@ const LIGHT_DOCS_BACKGROUND = "#FFFFFF";
 const PUBLIC_DOCS_COLORS = {
   primary: "#252525",
   light: "#FFFFFF",
-  dark: "#777777",
+  dark: "#767676",
 };
 
 function relativeLuminance(hex) {
@@ -343,16 +373,31 @@ test("uses the approved Swipelux identity and site controls", () => {
   assert.equal(config.appearance, undefined);
   assert.equal(config.icons, undefined);
   assert.equal(config.background, undefined);
-  assert.deepEqual(config.api?.playground, { display: "none" });
-  assert.deepEqual(config.contextual, { options: ["copy", "view"] });
+  assert.deepEqual(config.api, {
+    playground: { display: "simple" },
+    examples: {
+      languages: ["bash", "node", "python", "go", "java", "php", "ruby"],
+    },
+  });
+  assert.deepEqual(config.contextual, {
+    options: [
+      "copy",
+      "view",
+      "chatgpt",
+      "claude",
+      "cursor",
+      "vscode",
+      "mcp",
+      "download-spec",
+    ],
+  });
 });
 
 test("keeps Mintlify's native layout while styling components", () => {
   assert.equal(existsSync(stylePath), true, "style.css must style docs components");
-  const nativeComponentStyle = styleText.replace(
-    LANGUAGE_PICKER_LAYOUT_BLOCK,
-    "",
-  );
+  const nativeComponentStyle = styleText
+    .replace(LANGUAGE_PICKER_LAYOUT_BLOCK, "")
+    .replace(ASSISTANT_BAR_BLOCK, "");
   assert.doesNotMatch(
     nativeComponentStyle,
     /#(?:navbar|sidebar|sidebar-content|content-area|content|page-title|table-of-contents)\b|(?:^|[\n,])\s*(?:html|body|mdx-content|\.mdx-content)\b/m,
@@ -377,6 +422,15 @@ test("keeps Mintlify's native layout while styling components", () => {
       `${selector} should keep the approved component styling`,
     );
   }
+});
+
+test("hides only the floating assistant bar and keeps the navbar assistant", () => {
+  const block = ASSISTANT_BAR_BLOCK.exec(styleText)?.[1];
+  assert.ok(block, "style.css must contain the assistant bar block");
+  assert.equal(
+    block.replace(/\s+/g, " ").trim(),
+    "[data-assistant-bar], .chat-assistant-floating-input { display: none !important; }",
+  );
 });
 
 test("shows the language picker on every translated authored page and places it by the theme control", () => {
@@ -421,11 +475,22 @@ test("shows the language picker on every translated authored page and places it 
   );
 });
 
-test("uses an accessible mpanel primary color for docs UI text and controls", () => {
-  const ratio = contrastRatio(config.colors.primary, LIGHT_DOCS_BACKGROUND);
+test("uses accessible text colors for docs UI text and controls", () => {
+  const secondary = /:root\s*\{[^}]*--swipelux-content-secondary:\s*(#[0-9A-Fa-f]{6});/.exec(
+    styleText,
+  )?.[1];
+  assert.ok(secondary, "style.css must define --swipelux-content-secondary");
+  for (const color of [config.colors.primary, secondary]) {
+    const ratio = contrastRatio(color, LIGHT_DOCS_BACKGROUND);
+    assert.ok(
+      ratio >= 4.5,
+      `${color} has ${ratio.toFixed(2)}:1 contrast against ${LIGHT_DOCS_BACKGROUND}; expected at least 4.5:1`,
+    );
+  }
+  const buttonRatio = contrastRatio("#FFFFFF", config.colors.dark);
   assert.ok(
-    ratio >= 4.5,
-    `${config.colors.primary} has ${ratio.toFixed(2)}:1 contrast against ${LIGHT_DOCS_BACKGROUND}; expected at least 4.5:1`,
+    buttonRatio >= 4.5,
+    `White button text has ${buttonRatio.toFixed(2)}:1 contrast against ${config.colors.dark}; expected at least 4.5:1`,
   );
 });
 
@@ -438,16 +503,23 @@ test("uses the approved language navigation and English tab skeleton", () => {
   );
 
   const defaultNavigation = getDefaultNavigation(config.navigation);
-  assert.deepEqual(defaultNavigation, {
+  assert.deepEqual(withoutEndpointPages(defaultNavigation), {
     language: "en",
     default: true,
     ...ENGLISH_NAVIGATION,
   });
+  const endpoints = defaultNavigation.tabs
+    .find(({ tab }) => tab === "API Reference")
+    .groups.find(({ group }) => group === "Endpoints");
+  assert.deepEqual(
+    endpoints.pages.map(({ group }) => group),
+    ENDPOINT_GROUPS,
+  );
 
   const localizedNavigation = config.navigation.languages.slice(1);
   for (const languageNavigation of localizedNavigation) {
     const { language, tabs } = languageNavigation;
-    assert.deepEqual(Object.keys(languageNavigation).sort(), ["language", "tabs"]);
+    assert.deepEqual(Object.keys(languageNavigation).sort(), LANGUAGE_CHROME_KEYS);
     assert.equal(tabs.length, LOCALIZED_TAB_GROUPS.length);
 
     tabs.forEach((tab, tabIndex) => {
@@ -550,11 +622,8 @@ test("makes API Reference the sole owner of openapi.json", () => {
     ({ group }) => group === "Endpoints",
   );
   assert.strictEqual(owners[0], endpoints);
-  assert.deepEqual(owners[0], {
-    group: "Endpoints",
-    openapi: "openapi.json",
-    pages: [],
-  });
+  assert.deepEqual(Object.keys(owners[0]).sort(), ["group", "openapi", "pages"]);
+  assert.equal(owners[0].openapi, "openapi.json");
 });
 
 test("copies the exact approved redirect pairs without internal metadata", () => {
@@ -584,15 +653,44 @@ test("copies the exact approved redirect pairs without internal metadata", () =>
   }
 });
 
-test("links only to the verified public company and support destinations", () => {
-  assert.deepEqual(config.navbar, {
-    links: [
-      { label: "Company", href: "https://www.swipelux.com" },
-      { label: "Support", href: "mailto:support@swipelux.com" },
-    ],
-  });
-  assert.equal(config.navbar.primary, undefined);
-  assert.equal(config.footer, undefined);
+test("links only to the verified public company, dashboard, support, and legal destinations", () => {
+  const approvedDestinations = new Set([
+    "https://www.swipelux.com",
+    "https://www.swipelux.app",
+    "mailto:support@swipelux.com",
+    "https://www.swipelux.com/legal/privacy-policy",
+    "https://www.swipelux.com/legal/terms-of-use",
+    "https://www.swipelux.com/legal/api-sdk-terms",
+  ]);
+  const approvedSocials = {
+    x: "https://x.com/swipelux_",
+    linkedin: "https://www.linkedin.com/company/goswipelux",
+    telegram: "https://t.me/swipelux",
+    github: "https://github.com/swipelux",
+  };
+  const chrome = [
+    { navbar: config.navbar, footer: config.footer },
+    ...config.navigation.languages.slice(1),
+  ];
+
+  assert.equal(chrome.length, 1 + EXPECTED_TRANSLATED_LOCALES.length);
+  for (const { navbar, footer } of chrome) {
+    assert.deepEqual(
+      navbar.links.map(({ href }) => href),
+      ["https://www.swipelux.com", "mailto:support@swipelux.com"],
+    );
+    assert.deepEqual(
+      { type: navbar.primary.type, href: navbar.primary.href },
+      { type: "button", href: "https://www.swipelux.app" },
+    );
+    assert.deepEqual(footer.socials, approvedSocials);
+    const footerLinks = footer.links.flatMap(({ items }) => items);
+    assert.equal(footerLinks.length, 6);
+    for (const { label, href } of [...navbar.links, navbar.primary, ...footerLinks]) {
+      assert.ok(approvedDestinations.has(href), `${label} links to ${href}`);
+      assert.notEqual(label.trim(), "");
+    }
+  }
   assert.equal(config.navigation.global, undefined);
 });
 
@@ -614,7 +712,6 @@ test("removes starter configuration, links, profiles, and page names", () => {
     /Write a short description of your product here/i,
     /<Card[^>]+title="(?:Quickstart|Components|Settings)"/i,
     /href="\/quickstart"/i,
-    /\bDashboard\b/i,
   ]) {
     assert.doesNotMatch(searchable, pattern);
   }
@@ -628,7 +725,7 @@ test("removes the starter quickstart page", () => {
   assert.equal(existsSync(resolve(projectRoot, "quickstart.mdx")), false);
 });
 
-test("uses mpanel logo treatment without changing the compact symbol", () => {
+test("uses the mpanel wordmark logo without changing the compact symbol", () => {
   const favicon = read("favicon.svg").trim();
   const lightLogo = read("logo/light.svg").trim();
   const darkLogo = read("logo/dark.svg").trim();
@@ -638,20 +735,20 @@ test("uses mpanel logo treatment without changing the compact symbol", () => {
     [...svg.matchAll(/<path\b[^>]*\bd="([^"]+)"[^>]*>/g)].map(
       (match) => match[1],
     );
-  assert.deepEqual(paths(lightLogo), paths(favicon));
-  assert.deepEqual(paths(darkLogo), paths(favicon));
+  assert.equal(paths(lightLogo).length, 4, "logo is the wordmark plus the three-part symbol");
+  assert.deepEqual(paths(darkLogo), paths(lightLogo));
 
   assert.deepEqual(
     [...lightLogo.matchAll(/\bfill="(#[A-F0-9]{6})"/g)].map(
       (match) => match[1],
     ),
-    ["#252525", "#777777", "#A4A4A4"],
+    ["#2E2E38", "#252525", "#777777", "#A4A4A4"],
   );
   assert.deepEqual(
     [...darkLogo.matchAll(/\bfill="(#[A-F0-9]{6})"/g)].map(
       (match) => match[1],
     ),
-    ["#FFFFFF", "#FFFFFF", "#FFFFFF"],
+    ["#FFFFFF", "#FFFFFF", "#FFFFFF", "#FFFFFF"],
   );
   assert.deepEqual(
     [...darkLogo.matchAll(/\bopacity="([0-9.]+)"/g)].map(
@@ -661,7 +758,6 @@ test("uses mpanel logo treatment without changing the compact symbol", () => {
   );
 
   for (const svg of [favicon, lightLogo, darkLogo]) {
-    assert.equal((svg.match(/<path\b/g) ?? []).length, 3);
     assert.doesNotMatch(svg, /Mintlify|Starter Kit|<text\b/i);
   }
 });
