@@ -825,6 +825,41 @@ test("rejects OpenAPI navigation placed on another top-level tab", () => {
   assertHasError(errors, /top-level API Reference tab/i);
 });
 
+test("lists every OpenAPI operation and webhook exactly once in navigation", () => {
+  const config = navigationFixture();
+  config.navigation.tabs[1].pages = [
+    "integration/overview",
+    "POST /v3/customers",
+    "POST /v3/customers",
+    "GET /v3/unknown",
+    "webhook customer.created",
+  ];
+  const openapi = {
+    paths: {
+      "/v3/customers": { post: {}, get: {}, parameters: [] },
+    },
+    webhooks: { "customer.created": { post: {} }, "customer.updated": { post: {} } },
+  };
+  const errors = validateNavigation(config, {
+    pageExists: () => true,
+    requiredPages: ["integration/overview"],
+    openapi,
+  });
+
+  assertHasError(errors, /API reference POST \/v3\/customers appears 2 times/);
+  assertHasError(errors, /API reference GET \/v3\/unknown is not in openapi\.json/);
+  assertHasError(errors, /openapi\.json GET \/v3\/customers is missing from navigation/);
+  assertHasError(
+    errors,
+    /openapi\.json webhook customer\.updated is missing from navigation/,
+  );
+  assert.equal(
+    errors.filter((error) => /unexpected navigation page|missing from disk/.test(error)).length,
+    0,
+    "endpoint references are not treated as MDX pages",
+  );
+});
+
 test("keeps uppercase page extensions in Mintlify navigation slugs", () => {
   const config = navigationFixture(["integration/overview.MDX"]);
   const errors = validateNavigation(config, {

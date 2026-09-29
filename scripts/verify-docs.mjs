@@ -142,6 +142,11 @@ for (const path of publishedPages) {
 const publishedPageRoutes = new Set(publishedPages.map(pagePathToRoute));
 const pageExists = (page) => publishedPageRoutes.has(page);
 
+const openapi = readJson("openapi.json");
+if (openapi) {
+  add(validatePublishedJsonStrings("openapi.json", openapi));
+}
+
 const docsConfig = readJson("docs.json");
 if (docsConfig) {
   add(validatePublishedJsonStrings("docs.json", docsConfig));
@@ -149,13 +154,9 @@ if (docsConfig) {
     validateNavigation(docsConfig, {
       pageExists,
       requiredPages: REQUIRED_NAVIGATION_PAGES,
+      openapi,
     }),
   );
-}
-
-const openapi = readJson("openapi.json");
-if (openapi) {
-  add(validatePublishedJsonStrings("openapi.json", openapi));
 }
 
 const coverage = readJson("openapi-coverage.json");

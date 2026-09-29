@@ -82,21 +82,20 @@ test("publishes API Reference overview and versioning before generated endpoints
   const reference = getDefaultNavigation(config.navigation).tabs.find(
     ({ tab }) => tab === "API Reference",
   );
-  assert.deepEqual(reference, {
-    tab: "API Reference",
-    groups: [
-      { group: "Overview", pages: ["api-reference/introduction"] },
-      {
-        group: "Versioning",
-        icon: "code-branch",
-        pages: [
-          "api-reference/versioning/migrate-to-v3",
-          "api-reference/versioning/changelog",
-        ],
-      },
-      { group: "Endpoints", openapi: "openapi.json", pages: [] },
-    ],
-  });
+  assert.deepEqual(reference.groups.slice(0, 2), [
+    { group: "Overview", pages: ["api-reference/introduction"] },
+    {
+      group: "Versioning",
+      pages: [
+        "api-reference/versioning/migrate-to-v3",
+        "api-reference/versioning/changelog",
+      ],
+    },
+  ]);
+  assert.deepEqual(
+    reference.groups.slice(2).map(({ group, openapi }) => ({ group, openapi })),
+    [{ group: "Endpoints", openapi: "openapi.json" }],
+  );
 
   const text = page("api-reference/introduction");
   for (const value of [
