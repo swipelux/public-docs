@@ -11,7 +11,9 @@ const integrationTab = getDefaultNavigation(config.navigation).tabs.find(
 );
 assert.ok(integrationTab, "Missing Integration Docs tab");
 
-const PAGES = integrationTab.groups.flatMap(({ pages }) => pages);
+const PAGES = integrationTab.groups
+  .filter(({ hidden }) => !hidden)
+  .flatMap(({ pages }) => pages);
 const RETIRED_ROUTES = new Set([
   "/integration/environments",
   "/integration/pagination-and-sync",

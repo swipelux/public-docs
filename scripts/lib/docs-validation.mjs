@@ -97,16 +97,18 @@ export const LOCALIZED_HOME_PAGES = Object.freeze(
   TRANSLATED_LOCALES.map((locale) => `${locale}/index`),
 );
 
+// Each language lists its home page first, in a hidden searchable group, so
+// Mintlify renders home pages with that language's navigation and labels.
 export const REQUIRED_NAVIGATION_PAGES = Object.freeze([
+  "index",
   ...CANONICAL_NAVIGATION_PAGES,
-  ...LOCALIZED_NAVIGATION_PAGES,
+  ...TRANSLATED_LOCALES.flatMap((locale) => [
+    `${locale}/index`,
+    ...LOCALIZABLE_NAVIGATION_PAGES.map((page) => `${locale}/${page}`),
+  ]),
 ]);
 
-export const REQUIRED_PUBLISHED_PAGES = Object.freeze([
-  "index",
-  ...LOCALIZED_HOME_PAGES,
-  ...REQUIRED_NAVIGATION_PAGES,
-]);
+export const REQUIRED_PUBLISHED_PAGES = REQUIRED_NAVIGATION_PAGES;
 
 // Independent oracle for the approved ledger's release decisions. Source-page
 // and expected redirect-source inventories derive from this data, never from
