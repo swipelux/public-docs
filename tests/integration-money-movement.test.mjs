@@ -371,7 +371,7 @@ function responseEnum(method, path, status, field) {
 }
 
 function jsonBlocks(text) {
-  return [...text.matchAll(/```json\n([\s\S]*?)```/g)].map((match, index) => {
+  return [...text.matchAll(/```json(?:[ \t][^\n]*)?\n([\s\S]*?)```/g)].map((match, index) => {
     try {
       return JSON.parse(match[1]);
     } catch (error) {
@@ -788,7 +788,7 @@ test("anchors account ownership and pooled assignment in OpenAPI", () => {
     /`origin: "issued"` for platform-issued[\s\S]*`origin: "external"` for customer-owned/i,
   );
   const issuedBankExample = createAccount.responses?.["201"]?.content?.["application/json"]
-    ?.examples?.issuedAch?.description;
+    ?.examples?.["Issued ACH account"]?.description;
   assert.match(
     issuedBankExample,
     /pooled ACH[\s\S]*`awaiting_assignment`[\s\S]*first payin/i,
@@ -901,7 +901,7 @@ test("send funds separates first-party and third-party payout preparation", () =
   const tabsEnd = text.indexOf("</Tabs>");
   const execute = text.indexOf("## 2. Create the payout quote");
   assert.ok(tabsEnd >= 0 && execute > tabsEnd, "Transfer execution must follow both preparation tabs");
-  assert.equal((text.match(/```json\n\{\n  "quoteId": "\$\{QUOTE_ID\}"\n\}\n```/g) ?? []).length, 1);
+  assert.equal((text.match(/```json(?:[ \t][^\n]*)?\n\{\n  "quoteId": "\$\{QUOTE_ID\}"\n\}\n```/g) ?? []).length, 1);
   assert.match(text, /Store transfer `data\.id` as `TRANSFER_ID`/i);
   assert.match(text, /latest `data\.state`, `data\.stateDetail`, and `data\.openTaskIds`/i);
   assert.ok(text.includes("[Quotes and transfers](/integration/quotes-and-transfers)"));

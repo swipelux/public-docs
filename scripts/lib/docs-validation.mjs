@@ -951,8 +951,21 @@ function normalizeNavigationPage(page) {
   return normalized === "" ? "index" : normalized;
 }
 
-export function collectNavigationPages(navigation) {
-  const pages = [];
+const OPENAPI_HTTP_METHODS = [
+  "get",
+  "put",
+  "post",
+  "patch",
+  "delete",
+  "head",
+  "options",
+  "trace",
+];
+const OPENAPI_NAVIGATION_REFERENCE =
+  /^(?:GET|PUT|POST|PATCH|DELETE|HEAD|OPTIONS|TRACE) \/\S*$|^webhook \S+$/;
+
+function collectNavigationStrings(navigation) {
+  const strings = [];
 
   function walk(node) {
     if (Array.isArray(node)) {
@@ -963,7 +976,7 @@ export function collectNavigationPages(navigation) {
 
     if (Array.isArray(node.pages)) {
       for (const item of node.pages) {
-        if (typeof item === "string") pages.push(normalizeNavigationPage(item));
+        if (typeof item === "string") strings.push(item);
         else walk(item);
       }
     }
@@ -974,7 +987,61 @@ export function collectNavigationPages(navigation) {
   }
 
   walk(navigation);
-  return pages;
+  return strings;
+}
+
+export function collectNavigationPages(navigation) {
+  return collectNavigationStrings(navigation)
+    .filter((item) => !OPENAPI_NAVIGATION_REFERENCE.test(item))
+    .map(normalizeNavigationPage);
+}
+
+export function collectNavigationOpenApiReferences(navigation) {
+  return collectNavigationStrings(navigation).filter((item) =>
+    OPENAPI_NAVIGATION_REFERENCE.test(item),
+  );
+}
+
+function openApiNavigationReferences(openapi) {
+  const references = [];
+  for (const path of Object.keys(openapi?.paths ?? {})) {
+    for (const method of Object.keys(openapi.paths[path] ?? {})) {
+      if (OPENAPI_HTTP_METHODS.includes(method)) {
+        references.push(`${method.toUpperCase()} ${path}`);
+      }
+    }
+  }
+  for (const name of Object.keys(openapi?.webhooks ?? {})) {
+    references.push(`webhook ${name}`);
+  }
+  return references;
+}
+
+function validateOpenApiNavigation(navigation, openapi) {
+  const errors = [];
+  const listed = collectNavigationOpenApiReferences(navigation);
+  const counts = new Map();
+  for (const reference of listed) {
+    counts.set(reference, (counts.get(reference) ?? 0) + 1);
+  }
+  const expected = new Set(openApiNavigationReferences(openapi));
+
+  for (const [reference, count] of [...counts].sort(([left], [right]) =>
+    compareStrings(left, right),
+  )) {
+    if (count > 1) {
+      errors.push(`docs.json: API reference ${reference} appears ${count} times`);
+    }
+    if (!expected.has(reference)) {
+      errors.push(`docs.json: API reference ${reference} is not in openapi.json`);
+    }
+  }
+  for (const reference of [...expected].sort(compareStrings)) {
+    if (!counts.has(reference)) {
+      errors.push(`docs.json: openapi.json ${reference} is missing from navigation`);
+    }
+  }
+  return errors;
 }
 
 export function getDefaultNavigation(navigation) {
@@ -1071,6 +1138,10 @@ export function validateNavigation(config, options = {}) {
     errors.push(
       "docs.json: top-level API Reference tab must contain openapi.json; navigation must contain exactly one openapi reference",
     );
+  }
+
+  if (options.openapi) {
+    errors.push(...validateOpenApiNavigation(navigation, options.openapi));
   }
 
   return sortedErrors(errors);

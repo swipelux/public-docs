@@ -7,13 +7,13 @@ export const SOURCE_REPOSITORY = "swipelux/wallet-infrastructure";
 export const SOURCE_COMMIT = "f9deabda47b40011b7ba3ede93397c525682974f";
 export const SOURCE_ROUTE = "/openapi-v3.json";
 export const EXPECTED_OUTPUT_SHA256 =
-  "348bfd6e4b7bdd5b65852fb7eb5bd57feaca94af83c5782b7c2b0cb335e207b7";
+  "62d90e44776a7aba5237c3bcc222874df06580057c048e892462eadc89bf1a90";
 export const EXPECTED_COVERAGE_SHA256 =
-  "ded6dfd2f741938ea6c3da46951e54dbcc7c5645ba38f677eac14ffb09121820";
+  "bc3a4d3b122482a4442d5465c40f3e35ff99ac4dbbf70af77cf35dd6b3baabdf";
 export const EXPECTED_TRANSFORMATIONS_SHA256 =
-  "38bbe6a279897aab228ff2d8bf1ca0873f74d31081e51cef4faea7ef485f7411";
+  "3fe614eec2d3b510d0ebafe9ccff9cc98ca50f48f92686f8ec6404eb4b16b90c";
 // Public API label preparation timestamp, normalized to UTC whole seconds.
-export const APPROVED_GENERATED_AT = "2026-09-28T20:49:01.000Z";
+export const APPROVED_GENERATED_AT = "2026-09-29T01:50:52.000Z";
 export const HTTP_METHODS = new Set([
   "get",
   "post",
@@ -24,7 +24,7 @@ export const HTTP_METHODS = new Set([
   "options",
   "trace",
 ]);
-export const PREPARATION_VERSION = "1.3.0";
+export const PREPARATION_VERSION = "1.4.0";
 
 export const EXPECTED_OPENAPI_COUNTS = Object.freeze({
   paths: 52,
@@ -50,6 +50,161 @@ const LEGACY_REFERENCE_REWRITES = Object.freeze([
 ]);
 const PUBLIC_V3_COMPATIBILITY_PATHS = new Set([
   "/kyc/redirect/{customerId}/{taskId}/{verificationSessionId}",
+]);
+const SIDEBAR_TITLE_REASON =
+  "Use the operation summary as the Mintlify sidebar title.";
+const WEBHOOK_SECURITY_REASON =
+  "Publish webhook events without API key authentication.";
+const WEBHOOK_CONTENT_REASON =
+  "Explain webhook signature verification on each event page.";
+const WEBHOOK_EVENT_CONTENT =
+  "Verify the raw request body with your endpoint signing secret and the `svix-id`, `svix-timestamp`, and `svix-signature` headers before you trust this event. See [Verify before parsing](/integration/webhooks#verify-before-parsing).";
+const UNION_TITLE_REASON =
+  "Label each union option with its discriminator value.";
+const EXAMPLE_NAME_REASON = "Name each example with its summary.";
+const PLAIN_LANGUAGE_REASON =
+  "Describe the operation without internal implementation terms.";
+const UNION_KEYWORDS = ["oneOf", "anyOf"];
+const PLAIN_LANGUAGE_REWRITES = Object.freeze([
+  {
+    pointer: "/paths/~1v3~1customers/get/description",
+    from: "Lists CustomerSummary resources in deterministic createdAt DESC, id DESC order. Canonical contact and free-text filters are case-insensitive and compose with exact identity and strict timestamp filters. Pass include=capabilities to attach capability summaries to every customer.",
+    to: "Lists customer summaries, newest first (createdAt descending, then id descending). Contact and free-text filters are case-insensitive and combine with exact identity and strict timestamp filters. Pass include=capabilities to attach capability summaries to every customer.",
+  },
+  {
+    pointer: "/paths/~1v3~1customers/post/description",
+    from: "Creates the canonical customer union atomically. Individuals require only type; businesses require business.legalName. Email and phone values are not unique customer keys.",
+    to: "Creates an individual or business customer. The request succeeds or fails as a whole. Individuals require only type; businesses also require business.legalName. Email and phone values do not have to be unique across customers.",
+  },
+  {
+    pointer: "/paths/~1v3~1customers~1{customerId}/get/description",
+    from: "Returns the canonical customer detail union. Business details embed active related parties.",
+    to: "Returns the individual or business customer. Business customers include their active related parties.",
+  },
+  {
+    pointer: "/paths/~1v3~1customers~1{customerId}/patch/description",
+    from: "Deep-merges canonical customer facts. Arrays replace atomically, null clears nullable facts, metadata merges by key, and related-party ids upsert in place.",
+    to: "Deep-merges the supplied customer fields. Arrays are replaced whole, null clears nullable fields, metadata merges by key, and related parties are upserted by id.",
+  },
+  {
+    pointer: "/paths/~1v3~1customers~1{customerId}/delete/description",
+    from: "Archives the customer aggregate atomically. Active accounts and in-flight transfers must be resolved first; the externalId reservation and immutable history are retained.",
+    to: "Archives the customer in a single operation. Resolve active accounts and in-flight transfers first. The externalId stays reserved and the customer's history is retained.",
+  },
+  {
+    pointer:
+      "/paths/~1v3~1customers~1{customerId}~1capabilities~1{capabilityId}~1tasks-preview/get/description",
+    from: "Returns descriptor-only tasks from one pinned, side-effect-free evaluation snapshot. Repeating the optional `institutions` query parameter previews the same explicit institution selection accepted by capability creation; omission selects applicable registry defaults.",
+    to: "Previews the tasks that requesting this capability would open, without creating anything. Repeat the optional `institutions` query parameter to preview the same institution selection that capability creation accepts; omit it to preview the default institutions.",
+  },
+  {
+    pointer:
+      "/paths/~1v3~1customers~1{customerId}~1capabilities~1{capabilityId}/post/description",
+    from: "Requests a customer capability by permanent capability id. Requesting a canceled capability with a new idempotency key starts a fresh lifecycle after current eligibility and routing checks pass. For bank-backed capabilities, omitted or empty `institutions` lists select registry defaults; a non-empty list explicitly overrides defaults. When customer intake is incomplete, the capability is created in `restricted` with open tasks and durable planned application identities, while provider submission is deferred until those tasks are satisfied. Known ineligible variants fail instead of silently falling back. The response's `accountProvisioning` reports account issuance separately from entitlement status. Send `Idempotency-Key` for every POST; the same key and body replay the original response, except `accountProvisioning`, which is a read-time projection and is recomputed on every replay so it never reports stale issuance.",
+    to: "Requests a customer capability by its capability id. Requesting a canceled capability with a new idempotency key starts it again once current eligibility and routing checks pass. For bank-backed capabilities, an omitted or empty `institutions` list selects the default institutions; a non-empty list overrides them. When customer onboarding is incomplete, the capability is created as `restricted` with open tasks and its planned applications, and submission waits until those tasks are complete. Known ineligible variants fail instead of silently falling back. The response's `accountProvisioning` reports account issuance separately from the capability status. Send `Idempotency-Key` for every POST; the same key and body replay the original response, except `accountProvisioning`, which is recalculated on every replay so it never reports stale issuance.",
+  },
+  {
+    pointer:
+      "/paths/~1v3~1customers~1{customerId}~1capabilities~1{capabilityId}~1cancel/post/description",
+    from: "Cancels a `pending` or `restricted` capability that has no active linked accounts or transfers. On success, tasks owned exclusively by the capability or its applications and all non-archived applications are canceled. A customer-scoped intake task shared with another active capability remains open for that sibling until its final dependency ends. The canceled lifecycle remains readable until a new create request successfully replaces it, with `accountProvisioning` continuing to report account issuance separately. An idempotent replay returns the original response except `accountProvisioning`, which is recomputed at read time.",
+    to: "Cancels a `pending` or `restricted` capability that has no active linked accounts or transfers. On success, the capability's non-archived applications and the tasks that belong only to this capability or its applications are canceled. A customer onboarding task that another active capability also needs stays open until no active capability needs it. The canceled capability stays readable until a new create request replaces it, and `accountProvisioning` keeps reporting account issuance separately. Replaying the request returns the original response, except `accountProvisioning`, which is recalculated when read.",
+  },
+  {
+    pointer:
+      "/paths/~1v3~1customers~1{customerId}~1capabilities~1{capabilityId}~1applications~1{applicationId}~1history/get/description",
+    from: "Returns canonical task history grouped by task for this institution flow.",
+    to: "Returns the task history for this application, grouped by task.",
+  },
+  {
+    pointer: "/paths/~1v3~1tasks~1{taskId}/get/description",
+    from: "Returns a merchant-wide task detail projection without hosted-session URLs.",
+    to: "Returns one task from any customer in the current space, without hosted-session URLs.",
+  },
+  {
+    pointer: "/paths/~1v3~1customers~1{customerId}~1tasks~1{taskId}/get/description",
+    from: "Returns the authorized task action surface with its immutable allowed submission channels in canonical direct_submission then verification_session order. Process KYC sessions expose exact customer/task/session first-party action URLs only while action is required; in-review, completed or reused, rejected, and canceled process sessions omit action fields. Process, execution, completion, reuse, and provider-configuration identities remain internal.",
+    to: "Returns the task, the actions you can take, and its allowed submission channels, listed as direct_submission before verification_session. KYC verification sessions include action URLs only while action is required; sessions that are in review, completed or reused, rejected, or canceled omit action fields.",
+  },
+  {
+    pointer:
+      "/paths/~1v3~1customers~1{customerId}~1tasks~1{taskId}~1submissions/get/description",
+    from: "Lists redacted submission summaries without answer values, alternatives, or document ids.",
+    to: "Lists submission summaries. Answer values, alternatives, and document ids are omitted.",
+  },
+  {
+    pointer:
+      "/paths/~1v3~1customers~1{customerId}~1tasks~1{taskId}~1submissions/post/description",
+    from: "Creates one immutable direct-submission attempt for the task's current remediation round.",
+    to: "Creates one direct submission for the task's current round. A submission can't be changed after it is created.",
+  },
+  {
+    pointer:
+      "/paths/~1v3~1customers~1{customerId}~1tasks~1{taskId}~1submissions~1{submissionId}/get/description",
+    from: "Returns the authorized immutable answer snapshot and current public outcome.",
+    to: "Returns the submitted answers and the submission's current outcome.",
+  },
+  {
+    pointer: "/paths/~1v3~1transfers/get/description",
+    from: "Lists quoted transfers, reconciled inbound deposits, and rule-generated outbound transfers in deterministic createdAt/id descending order. Filters are customerId, public state, method, direction, origin, source-or-destination accountId, quoteId, exact externalId, createdAt range, and updatedAfter (the missed-webhook recovery path).",
+    to: "Lists quoted transfers, received inbound deposits, and rule-generated outbound transfers, newest first (createdAt, then id, descending). Filters are customerId, public state, method, direction, origin, source-or-destination accountId, quoteId, exact externalId, createdAt range, and updatedAfter (use it to recover missed webhooks).",
+  },
+  {
+    pointer: "/paths/~1v3~1transfers/post/description",
+    from: "Executes the selected quote without intentionally re-pricing it. Execution can still fail validation, balance, destination, rail, or provider checks. For card checkouts, optional checkoutMethod pre-selects a checkout method; availability and final fees are confirmed in checkout. Other routes reject this option.",
+    to: "Executes the selected quote without re-pricing it. Execution can still fail validation, balance, destination, or routing checks. For card checkouts, the optional checkoutMethod pre-selects a checkout method; availability and final fees are confirmed in checkout. Other routes reject this option.",
+  },
+  {
+    pointer: "/paths/~1v3~1transfers~1{transferId}/get/description",
+    from: "Returns a quoted, inbound-deposit, or rule-generated transfer with its amounts/fees snapshot, public state, source/destination, open tasks, rail references, and instructions. Sender evidence is included when available and is never part of webhook payloads.",
+    to: "Returns a quoted, inbound-deposit, or rule-generated transfer with its amounts and fees, state, source and destination, open tasks, payment references, and instructions. Sender evidence is included when available and is never part of webhook payloads.",
+  },
+  {
+    pointer: "/paths/~1v3~1quotes/post/description",
+    from: "Creates a priced movement that can be executed before `expiresAt` while the quote, capability, balance, destination, rail, and provider checks still pass.",
+    to: "Prices a money movement. Execute the quote before `expiresAt`; execution still requires the quote, capability, balance, destination, and routing checks to pass.",
+  },
+  {
+    pointer: "/paths/~1v3~1sandbox~1tasks/post/description",
+    from: "Creates a canonical sandbox task scoped to a customer, capability, or transfer.",
+    to: "Creates a sandbox task for a customer, capability, or transfer.",
+  },
+  {
+    pointer:
+      "/paths/~1kyc~1redirect~1{customerId}~1{taskId}~1{verificationSessionId}/get/summary",
+    from: "Open a lifecycle KYC verification session",
+    to: "Open a KYC verification session",
+  },
+  {
+    pointer:
+      "/paths/~1kyc~1redirect~1{customerId}~1{taskId}~1{verificationSessionId}/get/description",
+    from: "Opens one exact customer/task/session first-party link. The service validates lifecycle ownership and creates or refreshes a short-lived provider link without persisting or returning that provider URL in task JSON. Approved fake-host sandbox flows hand off to the first-party verification page. An exact session that already completed successfully returns 204 No Content.",
+    to: "Opens the verification session for one customer task. Swipelux checks that the session belongs to the customer and task, then redirects to a short-lived verification link that is never stored or returned in task JSON. In sandbox, approved test flows open a Swipelux-hosted verification page. A session that already completed successfully returns 204 No Content.",
+  },
+  {
+    pointer: "/webhooks/customer.created/post/description",
+    from: "Triggered after a v3 customer creation transaction and its redacted outbox event commit atomically.",
+    to: "Triggered after a customer is created.",
+  },
+  {
+    pointer: "/webhooks/customer.updated/post/description",
+    from: "Triggered after v3 customer facts, metadata, or related-party changes commit with a redacted change-category projection.",
+    to: "Triggered after a customer's details, metadata, or related parties change. The payload names the changed categories without their values.",
+  },
+  {
+    pointer: "/webhooks/customer.archived/post/description",
+    from: "Triggered after a v3 customer and its archive cascade commit atomically.",
+    to: "Triggered after a customer and its dependent resources are archived.",
+  },
+  {
+    pointer: "/webhooks/capability.created/post/description",
+    from: "Triggered when a canonical v3 capability is created with its task projection.",
+    to: "Triggered when a capability is created. The payload includes a summary of its tasks.",
+  },
+  {
+    pointer: "/webhooks/capability.status_changed/post/description",
+    from: "Triggered when a canonical v3 capability enters a new public state after creation.",
+    to: "Triggered when a capability's status changes after creation.",
+  },
 ]);
 
 function isPlainObject(value) {
@@ -425,6 +580,169 @@ function refsOutsideTransformations(spec, transformations) {
   );
 }
 
+function singleStringValue(schema) {
+  if (!isPlainObject(schema)) return undefined;
+  if (typeof schema.const === "string") return schema.const;
+  if (
+    Array.isArray(schema.enum) &&
+    schema.enum.length === 1 &&
+    typeof schema.enum[0] === "string"
+  ) {
+    return schema.enum[0];
+  }
+  return undefined;
+}
+
+function unionOptionLabels(union) {
+  const branches = union.options;
+  if (
+    branches.length < 2 ||
+    !branches.every(
+      (branch) =>
+        isPlainObject(branch) &&
+        !Object.hasOwn(branch, "$ref") &&
+        !Object.hasOwn(branch, "title") &&
+        isPlainObject(branch.properties),
+    )
+  ) {
+    return undefined;
+  }
+
+  const candidates = [
+    "code",
+    union.discriminator,
+    ...Object.keys(branches[0].properties).sort(),
+  ].filter((name) => typeof name === "string");
+  for (const name of [...new Set(candidates)]) {
+    const labels = branches.map((branch) =>
+      singleStringValue(branch.properties[name]),
+    );
+    if (
+      labels.every((label) => typeof label === "string" && label !== "") &&
+      new Set(labels).size === labels.length
+    ) {
+      return labels;
+    }
+  }
+  return undefined;
+}
+
+function collectUnions(value, pointer, unions) {
+  if (Array.isArray(value)) {
+    value.forEach((item, index) =>
+      collectUnions(item, `${pointer}/${index}`, unions),
+    );
+    return unions;
+  }
+  if (!isPlainObject(value)) return unions;
+
+  for (const key of Object.keys(value).sort()) {
+    const childPointer = `${pointer}/${escapePointerSegment(key)}`;
+    if (UNION_KEYWORDS.includes(key) && Array.isArray(value[key])) {
+      unions.push({
+        pointer: childPointer,
+        options: value[key],
+        discriminator: value.discriminator?.propertyName,
+      });
+    }
+    collectUnions(value[key], childPointer, unions);
+  }
+  return unions;
+}
+
+function unionTitleTransformations(spec) {
+  const transformations = [];
+  for (const [value, pointer] of [
+    [spec?.paths, "/paths"],
+    [spec?.webhooks, "/webhooks"],
+    [spec?.components?.schemas, "/components/schemas"],
+  ]) {
+    for (const union of collectUnions(value ?? {}, pointer, [])) {
+      const labels = unionOptionLabels(union);
+      if (!labels) continue;
+      labels.forEach((label, index) =>
+        transformations.push({ pointer: `${union.pointer}/${index}/title`, value: label }),
+      );
+    }
+  }
+  return transformations;
+}
+
+function collectExampleMaps(value, pointer, maps) {
+  if (Array.isArray(value)) {
+    value.forEach((item, index) =>
+      collectExampleMaps(item, `${pointer}/${index}`, maps),
+    );
+    return maps;
+  }
+  if (!isPlainObject(value)) return maps;
+
+  for (const key of Object.keys(value).sort()) {
+    const childPointer = `${pointer}/${escapePointerSegment(key)}`;
+    if (
+      key === "examples" &&
+      isPlainObject(value[key]) &&
+      /\/(?:requestBody|responses\/[^/]+)\/content\/[^/]+$/.test(pointer)
+    ) {
+      maps.push({ pointer: childPointer, examples: value[key] });
+      continue;
+    }
+    collectExampleMaps(value[key], childPointer, maps);
+  }
+  return maps;
+}
+
+function exampleNameTransformations(spec) {
+  const transformations = [];
+  for (const section of ["paths", "webhooks"]) {
+    for (const { pointer, examples } of collectExampleMaps(
+      spec?.[section] ?? {},
+      `/${section}`,
+      [],
+    )) {
+      const entries = Object.entries(examples).map(([name, example]) => [
+        isPlainObject(example) &&
+        typeof example.summary === "string" &&
+        example.summary.trim() !== ""
+          ? example.summary
+          : name,
+        example,
+      ]);
+      const names = entries.map(([name]) => name);
+      if (new Set(names).size !== names.length) continue;
+      if (names.every((name, index) => name === Object.keys(examples)[index])) {
+        continue;
+      }
+      transformations.push({ pointer, value: Object.fromEntries(entries) });
+    }
+  }
+  return transformations;
+}
+
+function optionalTransformationReason(pointer) {
+  if (LEGACY_REFERENCE_REWRITES.some((rewrite) => rewrite.pointer === pointer)) {
+    return LEGACY_REFERENCE_REASON;
+  }
+  if (PLAIN_LANGUAGE_REWRITES.some((rewrite) => rewrite.pointer === pointer)) {
+    return PLAIN_LANGUAGE_REASON;
+  }
+  if (
+    /^\/(?:paths|webhooks|components\/schemas)\/.+\/(?:oneOf|anyOf)\/\d+\/title$/.test(
+      pointer,
+    )
+  ) {
+    return UNION_TITLE_REASON;
+  }
+  if (
+    /^\/(?:paths|webhooks)\/.+\/(?:requestBody|responses\/[^/]+)\/content\/[^/]+\/examples$/.test(
+      pointer,
+    )
+  ) {
+    return EXAMPLE_NAME_REASON;
+  }
+  return undefined;
+}
+
 function expectedTransformationReasons(spec) {
   const expected = new Map([
     [
@@ -458,33 +776,35 @@ function expectedTransformationReasons(spec) {
   }
 
   for (const path of Object.keys(spec?.paths ?? {}).sort()) {
-    for (const { method } of httpOperations(spec.paths[path])) {
+    for (const { method, operation } of httpOperations(spec.paths[path])) {
+      const base = `/paths/${escapePointerSegment(path)}/${method}`;
       expected.set(
-        `/paths/${escapePointerSegment(path)}/${method}/x-mint/href`,
+        `${base}/x-mint/href`,
         "Assign a stable Mintlify URL to the HTTP operation.",
       );
+      if (hasSummary(operation)) {
+        expected.set(`${base}/x-mint/metadata/sidebarTitle`, SIDEBAR_TITLE_REASON);
+      }
     }
   }
 
   for (const name of Object.keys(spec?.webhooks ?? {}).sort()) {
     for (const { method } of httpOperations(spec.webhooks[name])) {
+      const base = `/webhooks/${escapePointerSegment(name)}/${method}`;
       expected.set(
-        `/webhooks/${escapePointerSegment(name)}/${method}/x-mint/href`,
+        `${base}/x-mint/href`,
         "Assign a stable Mintlify URL to the webhook operation.",
       );
+      expected.set(`${base}/security`, WEBHOOK_SECURITY_REASON);
+      expected.set(`${base}/x-mint/content`, WEBHOOK_CONTENT_REASON);
     }
   }
 
   return expected;
 }
 
-function optionalTransformationReasons() {
-  return new Map(
-    LEGACY_REFERENCE_REWRITES.map(({ pointer }) => [
-      pointer,
-      LEGACY_REFERENCE_REASON,
-    ]),
-  );
+function hasSummary(operation) {
+  return typeof operation?.summary === "string" && operation.summary.trim() !== "";
 }
 
 function validateTransformationSet(spec, transformations) {
@@ -492,14 +812,14 @@ function validateTransformationSet(spec, transformations) {
     throw new Error("Transformations must be an array");
   }
   const expected = expectedTransformationReasons(spec);
-  const optional = optionalTransformationReasons();
   const actual = new Map();
 
   for (const item of transformations) {
     if (!isPlainObject(item) || typeof item.pointer !== "string") {
       throw new Error("Invalid transformation record");
     }
-    const reason = expected.get(item.pointer) ?? optional.get(item.pointer);
+    const reason =
+      expected.get(item.pointer) ?? optionalTransformationReason(item.pointer);
     if (reason === undefined) {
       throw new Error(`Unexpected transformation pointer: ${item.pointer}`);
     }
@@ -569,6 +889,10 @@ export function compareSourceToPrepared(source, prepared, transformations) {
     Object.keys(preparedSchemas).sort(),
   );
   for (const name of Object.keys(sourceSchemas).sort()) {
+    const pointer = `/components/schemas/${escapePointerSegment(name)}`;
+    if (transformations.some((item) => isWithinPointer(item.pointer, pointer))) {
+      continue;
+    }
     if (canonicalHash(sourceSchemas[name]) !== canonicalHash(preparedSchemas[name])) {
       throw new Error(`Component schema changed: ${name}`);
     }
@@ -792,6 +1116,46 @@ function validatePreparedHrefs(spec) {
   }
 }
 
+function validatePreparedDisplay(spec) {
+  for (const path of Object.keys(spec.paths).sort()) {
+    for (const { method, operation } of httpOperations(spec.paths[path])) {
+      if (
+        hasSummary(operation) &&
+        operation["x-mint"]?.metadata?.sidebarTitle !== operation.summary
+      ) {
+        throw new Error(
+          `Sidebar title must match the summary for ${method.toUpperCase()} ${path}`,
+        );
+      }
+    }
+  }
+
+  for (const name of Object.keys(spec?.webhooks ?? {}).sort()) {
+    for (const { operation } of httpOperations(spec.webhooks[name])) {
+      if (canonicalHash(operation.security) !== canonicalHash([])) {
+        throw new Error(`Webhook ${name} must not require API key authentication`);
+      }
+      if (!String(operation["x-mint"]?.content).startsWith(WEBHOOK_EVENT_CONTENT)) {
+        throw new Error(`Webhook ${name} must explain signature verification`);
+      }
+    }
+  }
+
+  const untitled = unionTitleTransformations(spec);
+  if (untitled.length > 0) {
+    throw new Error(`Union option is missing a title at ${untitled[0].pointer}`);
+  }
+  const unnamed = exampleNameTransformations(spec);
+  if (unnamed.length > 0) {
+    throw new Error(`Examples are not named by summary at ${unnamed[0].pointer}`);
+  }
+  for (const { pointer, from } of PLAIN_LANGUAGE_REWRITES) {
+    if (pointerState(spec, pointer).value === from) {
+      throw new Error(`Internal implementation language remains at ${pointer}`);
+    }
+  }
+}
+
 export function validateOpenApi(spec, { prepared = false } = {}) {
   if (!isPlainObject(spec)) throw new Error("OpenAPI document must be an object");
   validateV3Paths(spec);
@@ -807,6 +1171,7 @@ export function validateOpenApi(spec, { prepared = false } = {}) {
       );
     }
     validatePreparedHrefs(spec);
+    validatePreparedDisplay(spec);
     assertUniqueHrefs(buildCoverage(spec));
   }
 }
@@ -947,9 +1312,23 @@ export function prepareOpenApi(
     );
   }
 
+  for (const { pointer, from, to } of PLAIN_LANGUAGE_REWRITES) {
+    if (pointerState(spec, pointer).value !== from) continue;
+    addReplacement(spec, transformations, pointer, to, PLAIN_LANGUAGE_REASON);
+  }
+
+  for (const { pointer, value } of exampleNameTransformations(spec)) {
+    addReplacement(spec, transformations, pointer, value, EXAMPLE_NAME_REASON);
+  }
+
+  for (const { pointer, value } of unionTitleTransformations(spec)) {
+    addValue(spec, transformations, pointer, value, UNION_TITLE_REASON);
+  }
+
   for (const path of Object.keys(spec.paths).sort()) {
     for (const { method, operation } of httpOperations(spec.paths[path])) {
       validateXMint(operation, `${method.toUpperCase()} ${path}`);
+      const base = `/paths/${escapePointerSegment(path)}/${method}`;
       const href = `/api-reference/${operationSlug(
         operationGroup(operation),
         operation.operationId,
@@ -957,22 +1336,43 @@ export function prepareOpenApi(
       addValue(
         spec,
         transformations,
-        `/paths/${escapePointerSegment(path)}/${method}/x-mint/href`,
+        `${base}/x-mint/href`,
         href,
         "Assign a stable Mintlify URL to the HTTP operation.",
       );
+      if (hasSummary(operation)) {
+        addValue(
+          spec,
+          transformations,
+          `${base}/x-mint/metadata/sidebarTitle`,
+          operation.summary,
+          SIDEBAR_TITLE_REASON,
+        );
+      }
     }
   }
 
   for (const name of Object.keys(spec.webhooks ?? {}).sort()) {
     for (const { method, operation } of httpOperations(spec.webhooks[name])) {
       validateXMint(operation, `webhook ${name}`);
+      const base = `/webhooks/${escapePointerSegment(name)}/${method}`;
       addValue(
         spec,
         transformations,
-        `/webhooks/${escapePointerSegment(name)}/${method}/x-mint/href`,
+        `${base}/x-mint/href`,
         stableWebhookHref(operation),
         "Assign a stable Mintlify URL to the webhook operation.",
+      );
+      addValue(spec, transformations, `${base}/security`, [], WEBHOOK_SECURITY_REASON);
+      const guidance = operation["x-mint"].content;
+      addValue(
+        spec,
+        transformations,
+        `${base}/x-mint/content`,
+        typeof guidance === "string" && guidance.trim() !== ""
+          ? `${WEBHOOK_EVENT_CONTENT}\n\n${guidance}`
+          : WEBHOOK_EVENT_CONTENT,
+        WEBHOOK_CONTENT_REASON,
       );
     }
   }
