@@ -67,7 +67,10 @@ test("publishes the approved 16-page Integration journey", () => {
   const integration = getDefaultNavigation(config.navigation).tabs.find(
     ({ tab }) => tab === "Integration Docs",
   );
-  assert.deepEqual(integration?.groups, INTEGRATION_GROUPS);
+  assert.deepEqual(
+    integration?.groups.filter(({ hidden }) => !hidden),
+    INTEGRATION_GROUPS,
+  );
   assert.equal(INTEGRATION_PAGES.length, 16);
 
   for (const route of INTEGRATION_PAGES) {

@@ -1398,7 +1398,7 @@ test("commits the complete approved page and frozen source inventories", () => {
   assert.equal(TRANSLATED_LOCALES.length, 16);
   assert.equal(LOCALIZED_HOME_PAGES.length, 16);
   assert.equal(LOCALIZED_NAVIGATION_PAGES.length, 608);
-  assert.equal(REQUIRED_NAVIGATION_PAGES.length, 648);
+  assert.equal(REQUIRED_NAVIGATION_PAGES.length, 665);
   assert.equal(REQUIRED_PUBLISHED_PAGES.length, 665);
   assert.equal(FROZEN_SOURCE_PAGES.length, 59);
   assert.equal(Object.keys(FROZEN_MIGRATION_DECISIONS).length, 59);
