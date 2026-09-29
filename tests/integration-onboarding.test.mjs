@@ -117,7 +117,7 @@ function assertHeadingOrder(text, headings) {
 }
 
 function bashBlocks(text) {
-  return [...text.matchAll(/```bash\n([\s\S]*?)```/g)].map((match) => match[1]);
+  return [...text.matchAll(/```bash(?:[ \t][^\n]*)?\n([\s\S]*?)```/g)].map((match) => match[1]);
 }
 
 function normalizePath(url) {
@@ -376,7 +376,7 @@ test("capability onboarding follows discovery, request, requirements, and readin
   )?.[1];
   assert.ok(hostedSection, "Missing Hosted actions section");
   const hostedExample = JSON.parse(
-    hostedSection.match(/```json\n([\s\S]*?)```/)?.[1] ?? "null",
+    hostedSection.match(/```json(?:[ \t][^\n]*)?\n([\s\S]*?)```/)?.[1] ?? "null",
   );
   assert.ok(hostedExample?.data, "Hosted-session example must include the data envelope");
   const availableSession = hostedExample.data.verificationSessions?.[0];

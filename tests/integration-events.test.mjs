@@ -81,7 +81,7 @@ function operationLinks(text) {
 }
 
 function bashBlocks(text) {
-  return [...text.matchAll(/```bash\n([\s\S]*?)```/g)].map((match) => match[1]);
+  return [...text.matchAll(/```bash(?:[ \t][^\n]*)?\n([\s\S]*?)```/g)].map((match) => match[1]);
 }
 
 function normalizePath(url) {
