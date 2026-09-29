@@ -788,7 +788,7 @@ test("anchors account ownership and pooled assignment in OpenAPI", () => {
     /`origin: "issued"` for platform-issued[\s\S]*`origin: "external"` for customer-owned/i,
   );
   const issuedBankExample = createAccount.responses?.["201"]?.content?.["application/json"]
-    ?.examples?.issuedAch?.description;
+    ?.examples?.["Issued ACH account"]?.description;
   assert.match(
     issuedBankExample,
     /pooled ACH[\s\S]*`awaiting_assignment`[\s\S]*first payin/i,

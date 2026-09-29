@@ -36,11 +36,11 @@ const fixtureExpectations = Object.freeze({
   sourceSha256:
     "54f644dd824b55a23c5628a5314ec4c6cd6402476405b63d1cc3c09b9fad20c9",
   outputSha256:
-    "3d2a3778058b18ce5f8a708f6ecaff81c630187893aee0bf4ee8afa768558d29",
+    "073eedcff602c9da91f068efb238b532be68b94c29cdebbfa6021da9e547d168",
   coverageSha256:
-    "1f9f3a44c9f2624113806f85fa34eaf099d663e4b5961bd4a895884801e4ffdb",
+    "0c54987a452088b39eb2f0450738a3cd738a0f0080efd3cfd7cd7c4bd1b00ec3",
   transformationsSha256:
-    "9f1084df6fcdfb6223a6773fe548a3f053e767ce428d38dc096b0d68d22b34da",
+    "121dd6c2828c17e039a52d6ddab42c9b214977ecd57ce9f5f5a00f0350e1c502",
   generatedAt: "2026-08-05T00:00:00.000Z",
   counts: Object.freeze({
     paths: 2,
@@ -490,11 +490,139 @@ test("preserves existing webhook x-mint fields while assigning hrefs", () => {
   };
 
   const { spec } = prepareOpenApi(source, SOURCE_SHA256);
-  assert.deepEqual(spec.webhooks["customer.created"].post["x-mint"], {
-    metadata: { title: "Customer created event" },
-    content: "Webhook-specific guidance",
-    href: "/api-reference/webhooks/customer-created",
+  const xMint = spec.webhooks["customer.created"].post["x-mint"];
+  assert.deepEqual(xMint.metadata, { title: "Customer created event" });
+  assert.equal(xMint.href, "/api-reference/webhooks/customer-created");
+  assert.match(
+    xMint.content,
+    /^Verify the raw request body[\s\S]*`svix-signature`[\s\S]*\n\nWebhook-specific guidance$/,
+  );
+});
+
+test("publishes webhook events without API key authentication", () => {
+  const { spec } = prepareOpenApi(makeFixture(), SOURCE_SHA256);
+  for (const name of ["customer.created", "customer.updated"]) {
+    assert.deepEqual(spec.webhooks[name].post.security, []);
+  }
+  assert.deepEqual(spec.paths["/v3/customers"].get.security, undefined);
+  assert.deepEqual(spec.security, [{ apiKey: [] }]);
+});
+
+test("rewrites internal descriptions only while the upstream text is unchanged", () => {
+  const reason = "Describe the operation without internal implementation terms.";
+  const withDescription = (description) => {
+    const source = makeFixture();
+    source.paths["/v3/sandbox/tasks"] = {
+      post: {
+        ...operation("createSandboxTask", "sandbox", {
+          "201": { description: "Created" },
+        }),
+        description,
+      },
+    };
+    return source;
+  };
+
+  const current = prepareOpenApi(
+    withDescription(
+      "Creates a canonical sandbox task scoped to a customer, capability, or transfer.",
+    ),
+    SOURCE_SHA256,
+  );
+  assert.equal(
+    current.spec.paths["/v3/sandbox/tasks"].post.description,
+    "Creates a sandbox task for a customer, capability, or transfer.",
+  );
+  assert.equal(
+    current.transformations.filter((item) => item.reason === reason).length,
+    1,
+  );
+
+  const changedUpstream = prepareOpenApi(
+    withDescription("Creates a sandbox task with a new upstream description."),
+    SOURCE_SHA256,
+  );
+  assert.equal(
+    changedUpstream.spec.paths["/v3/sandbox/tasks"].post.description,
+    "Creates a sandbox task with a new upstream description.",
+  );
+  assert.equal(
+    changedUpstream.transformations.some((item) => item.reason === reason),
+    false,
+  );
+});
+
+test("labels union options and names examples without reordering them", () => {
+  const source = makeFixture();
+  const errorBranch = (code) => ({
+    type: "object",
+    properties: {
+      type: {
+        type: "string",
+        enum: [`https://docs.swipelux.com/errors/${code.replaceAll("_", "-")}`],
+      },
+      code: { type: "string", enum: [code] },
+    },
   });
+  const createTask = source.paths["/v3/customers/{customerId}/tasks"].post;
+  createTask.requestBody = {
+    content: {
+      "application/json": {
+        schema: {
+          oneOf: [
+            { type: "object", properties: { type: { const: "individual" } } },
+            { type: "object", properties: { type: { const: "business" } } },
+          ],
+        },
+        examples: {
+          minimalIndividual: {
+            summary: "Minimal individual",
+            value: { type: "individual" },
+          },
+          minimalBusiness: {
+            summary: "Minimal business",
+            value: { type: "business" },
+          },
+          unnamed: { value: { type: "individual" } },
+        },
+      },
+    },
+  };
+  createTask.responses["409"] = {
+    description: "Conflict",
+    content: {
+      "application/problem+json": {
+        schema: {
+          oneOf: [
+            errorBranch("duplicate_external_id"),
+            errorBranch("idempotency_conflict"),
+          ],
+        },
+      },
+    },
+  };
+
+  const { spec, transformations } = prepareOpenApi(source, SOURCE_SHA256);
+  const prepared = spec.paths["/v3/customers/{customerId}/tasks"].post;
+  const media = prepared.requestBody.content["application/json"];
+  assert.deepEqual(
+    media.schema.oneOf.map(({ title }) => title),
+    ["individual", "business"],
+  );
+  assert.deepEqual(Object.keys(media.examples), [
+    "Minimal individual",
+    "Minimal business",
+    "unnamed",
+  ]);
+  assert.deepEqual(
+    prepared.responses["409"].content["application/problem+json"].schema.oneOf.map(
+      ({ title }) => title,
+    ),
+    ["duplicate_external_id", "idempotency_conflict"],
+  );
+  assert.doesNotThrow(() =>
+    compareSourceToPrepared(source, spec, transformations),
+  );
 });
 
 test("rejects non-object webhook x-mint containers", () => {
