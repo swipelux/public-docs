@@ -244,11 +244,18 @@ const EXPECTED_VERSIONING_PAGE_ROUTES = [
   "api-reference/versioning/changelog",
 ];
 
+const HOME_GROUP = {
+  group: "Home",
+  hidden: true,
+  searchable: true,
+  pages: ["index"],
+};
+
 const ENGLISH_NAVIGATION = {
   tabs: [
     {
       tab: "Integration Docs",
-      groups: INTEGRATION_GROUPS,
+      groups: [HOME_GROUP, ...INTEGRATION_GROUPS],
     },
     {
       tab: "API Reference",
@@ -274,7 +281,7 @@ const LOCALIZED_KNOWLEDGE_BASE_GROUPS = KNOWLEDGE_BASE_GROUPS.map((group) => ({
 }));
 
 const LOCALIZED_TAB_GROUPS = [
-  LOCALIZED_INTEGRATION_GROUPS,
+  [HOME_GROUP, ...LOCALIZED_INTEGRATION_GROUPS],
   API_REFERENCE_GROUPS.filter(({ openapi }) => openapi === undefined),
   LOCALIZED_KNOWLEDGE_BASE_GROUPS,
 ];
@@ -531,10 +538,12 @@ test("uses the approved language navigation and English tab skeleton", () => {
       assert.equal(tab.groups.length, expectedGroups.length);
       tab.groups.forEach((group, groupIndex) => {
         const expectedGroup = expectedGroups[groupIndex];
-        const expectedKeys = expectedGroup.icon
-          ? ["group", "icon", "pages"]
-          : ["group", "pages"];
-        assert.deepEqual(Object.keys(group).sort(), expectedKeys);
+        assert.deepEqual(
+          Object.keys(group).sort(),
+          Object.keys(expectedGroup).sort(),
+        );
+        assert.equal(group.hidden, expectedGroup.hidden);
+        assert.equal(group.searchable, expectedGroup.searchable);
         assert.equal(typeof group.group, "string");
         assert.notEqual(group.group.trim(), "");
         assert.deepEqual(
@@ -547,6 +556,7 @@ test("uses the approved language navigation and English tab skeleton", () => {
   }
 
   const canonicalPages = [
+    ...HOME_GROUP.pages,
     ...INTEGRATION_GROUPS.flatMap(({ pages }) => pages),
     ...API_REFERENCE_GROUPS.flatMap(({ pages }) => pages),
     ...KNOWLEDGE_BASE_GROUPS.flatMap(({ pages }) => pages),
@@ -554,8 +564,19 @@ test("uses the approved language navigation and English tab skeleton", () => {
   const localizedPages = localizedNavigation.flatMap(({ tabs }) =>
     tabs.flatMap(({ groups }) => groups.flatMap(({ pages }) => pages)),
   );
-  assert.deepEqual(canonicalPages, CANONICAL_NAVIGATION_PAGES);
-  assert.deepEqual(localizedPages, LOCALIZED_NAVIGATION_PAGES);
+  const isHome = (page) => page === "index" || page.endsWith("/index");
+  assert.deepEqual(
+    canonicalPages.filter((page) => !isHome(page)),
+    CANONICAL_NAVIGATION_PAGES,
+  );
+  assert.deepEqual(
+    localizedPages.filter((page) => !isHome(page)),
+    LOCALIZED_NAVIGATION_PAGES,
+  );
+  assert.deepEqual(
+    [...canonicalPages, ...localizedPages].filter(isHome),
+    ["index", ...EXPECTED_TRANSLATED_LOCALES.map((locale) => `${locale}/index`)],
+  );
   assert.deepEqual(
     [...canonicalPages, ...localizedPages],
     REQUIRED_NAVIGATION_PAGES,
@@ -716,7 +737,6 @@ test("removes starter configuration, links, profiles, and page names", () => {
     assert.doesNotMatch(searchable, pattern);
   }
 
-  assert.ok(!collectNavigationPages(config.navigation).includes("index"));
   assert.ok(!collectNavigationPages(config.navigation).includes("quickstart"));
   assert.deepEqual(validatePublishedJsonStrings("docs.json", config), []);
 });
