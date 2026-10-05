@@ -8,12 +8,35 @@ description: "Swipelux API 各バージョンの追加、破壊的変更、非�
 
 既存のインテグレーションを以前のバージョンからアップグレードする場合は、[v3 への移行](/jp/api-reference/versioning/migrate-to-v3) を参照してください。
 
-<Update label="2026-10-05" description="v3" tags={["変更"]}>
+<Update label="2026-10-05" description="v3" tags={["追加","変更","修正"]}>
+
+### 追加
+- `GET /v3/customers` は `include=documentRequirements` を受け付けるようになりました。指定すると、各顧客のサマリーに、ケイパビリティの準備状況とは関係なく、未提出の必須書類の件数が示されます。`include=capabilities,documentRequirements` のように組み合わせて指定できます。[顧客](/jp/integration/onboarding/customers)を参照してください。
+- マーチャントパネルの Webhooks ページで、エンドポイントのメニューに **Replay missed events** が追加されました。エンドポイントが受信しなかった過去 13 日間のイベントを再送信し、同じイベントを 2 回送信することはありません。[Webhook](/jp/integration/webhooks#recover-deliveries)を参照してください。
+- マーチャントパネルの **Settings** ページに **Compliance** セクションが追加されました。オーナーと管理者は、コンプライアンス用のメールアドレスを設定し、Swipelux が顧客に関する追加情報を求めた際にメールを受け取るかどうかを選択できます。
+- マーチャントは、マーチャントパネルの KYB ページで、自社の KYB コンプライアンス依頼にその場で回答できるようになりました。
 
 ### 変更
 - 銀行の受付が完了した後も、顧客および関係者の更新は `409 field_conflicts_with_completed_intake` を返さなくなりました。更新は保存され、新しい銀行申請はそれぞれ独自の要件に照らして最新のプロファイルを確認します。
 - ケイパビリティの既存の銀行ルーティングを安全に更新できない場合、ケイパビリティのリクエストは `409 capability_route_header_conflict` を返します。再試行する前に Swipelux サポートにお問い合わせください。
 - `institutions` にケイパビリティが提供していない銀行が指定された場合、`GET /v3/customers/{customerId}/capabilities/{capabilityId}/tasks-preview` はケイパビリティのリクエストと同様に `422 capability_institutions_unsupported` を返します。
+- サンドボックスでは、ACH、Wire、SWIFT のケイパビリティは JPMorgan Chase でのみ提供されます。`institutions` を省略したリクエストでは `jpmorgan` が選択され、他の銀行を指定すると `422 capability_institutions_unsupported` が返されます。本番環境のルーティングは変更されません。[サンドボックスでテストする](/jp/integration/sandbox)を参照してください。
+- サンドボックスのケイパビリティのステータスを強制変更する際、シミュレートされたケースが要求されたステータスに到達できない場合は、`statusReason` 付きで `409 capability_status_blocked` が返されます。すでに適用済みの強制変更を繰り返すと、変更なしで `200` が返されます。[サンドボックスでテストする](/jp/integration/sandbox#test-capability-readiness)を参照してください。
+- 銀行で口座のプロビジョニングがまだ進行中の間に決済設定を変更すると、`PATCH /v3/customers/{customerId}/accounts/{accountId}` は `409 account_provisioning_unresolved` を返します。プロビジョニングが確定した後に再試行してください。[エラーと再試行](/integration/errors#account-provisioning-unresolved)を参照してください。
+- `POST /v3/transfers` が `409 quote_execution_evidence_conflict` を返す場合があります。新しい見積もりを作成して実行してください。[エラーと再試行](/integration/errors)を参照してください。
+- マーチャントパネルの **Pay out** ドロワーでは、送金先の詳細がすべて表示され、口座番号とウォレットアドレスはトグルでマスクされ、支払い方法ごとに到着予定時間が表示されます。
+- マーチャントパネルでは、銀行口座が顧客の **Payment access** タブに統合され、各銀行名を示すタスクカードが表示されます。**Documents** タブは **Profile** に移動しました。
+- マーチャントパネルでの名前付き銀行口座の開設は 1 ステップになり、各銀行の通貨、方法、オンボーディング期間が一覧表示されます。[口座](/jp/integration/accounts)を参照してください。
+- 審査のために保留されている銀行口座は、マーチャントパネルで **On hold** と表示され、口座 ID と **Contact support** アクションが表示されます。
+
+### 修正
+- 銀行の承認前に同じ発行済み口座に対して送信された 2 回目の `allowPending` リクエストは、`500` ではなく、`holder.accountId` で待機中の口座を示す `409` を返すようになりました。[銀行口座を発行する](/jp/integration/issue-bank-account)を参照してください。
+- ケイパビリティをキャンセルすると、まだ銀行の承認待ちだった発行済み口座のリクエストが閉じられるようになったため、同じ銀行での後続のリクエストは新規に開始されます。
+- 銀行ケースがすべて却下されたキャンセル済みケイパビリティを再リクエストすると、`canceled` からの `capability.status_changed` イベントが 1 件だけ発行されます。
+- 以前の申請がアーカイブされた後に銀行を再リクエストすると、新しい申請が送信されるようになりました。
+- 受取人の送金先は、対応するケイパビリティが `ready` になった時点で、`409 rail_not_ready` を返さずに追加できるようになりました。[受取人](/jp/integration/recipients)を参照してください。
+- マーチャントパネルの Webhooks ページを初めて開く前に送信された Webhook イベントが保持されるようになったため、それらを新しいエンドポイントにリプレイできます。
+- マーチャントパネルのタスクの期日はご自身のタイムゾーンで表示され、銀行の審査ドロワーでは未対応の項目がなくなると **All requirements submitted** が表示されます。
 
 </Update>
 
