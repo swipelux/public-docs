@@ -24,6 +24,7 @@ import {
   compareSourceToPrepared,
   operationSlug,
   prepareOpenApi,
+  verifyPreparedTransformations,
 } from "../scripts/lib/openapi.mjs";
 
 const projectRoot = fileURLToPath(new URL("../", import.meta.url));
@@ -623,6 +624,180 @@ test("labels union options and names examples without reordering them", () => {
   assert.doesNotThrow(() =>
     compareSourceToPrepared(source, spec, transformations),
   );
+});
+
+test("holds back unreleased destination types from unions and type enums", () => {
+  const reason =
+    "Hold back a destination type that is not yet available to developers.";
+  const destination = (type) => ({
+    type: "object",
+    properties: { type: { type: "string", enum: [type] } },
+  });
+  const source = makeFixture();
+  const createTask = source.paths["/v3/customers/{customerId}/tasks"].post;
+  createTask.requestBody = {
+    content: {
+      "application/json": {
+        schema: {
+          oneOf: [
+            destination("pix_safe"),
+            // A title where wallet's label lands once ted is held back.
+            { ...destination("ted"), title: "TED" },
+            destination("wallet"),
+          ],
+        },
+      },
+    },
+  };
+  createTask.responses["201"] = {
+    description: "Created",
+    content: {
+      "application/json": {
+        schema: {
+          anyOf: [
+            { anyOf: [destination("pix_safe"), destination("wallet")] },
+            { anyOf: [destination("ted"), destination("ted")] },
+          ],
+        },
+      },
+    },
+  };
+  source.components.schemas.Destination = {
+    type: "object",
+    properties: {
+      type: { type: "string", enum: ["pix", "pix_safe", "ted", "wallet"] },
+    },
+  };
+
+  const { spec, transformations } = prepareOpenApi(source, SOURCE_SHA256);
+  const prepared = spec.paths["/v3/customers/{customerId}/tasks"].post;
+  assert.deepEqual(
+    prepared.requestBody.content["application/json"].schema.oneOf.map(
+      ({ properties }) => properties.type.enum[0],
+    ),
+    ["pix_safe", "wallet"],
+  );
+  assert.deepEqual(
+    prepared.responses["201"].content["application/json"].schema.anyOf.map(
+      ({ anyOf }) => anyOf.map(({ properties }) => properties.type.enum[0]),
+    ),
+    [["pix_safe", "wallet"]],
+  );
+  assert.deepEqual(spec.components.schemas.Destination.properties.type.enum, [
+    "pix",
+    "pix_safe",
+    "wallet",
+  ]);
+  assert.equal(JSON.stringify(spec).includes('"ted"'), false);
+  assert.equal(
+    transformations.filter((item) => item.reason === reason).length,
+    3,
+  );
+  assert.doesNotThrow(() =>
+    compareSourceToPrepared(source, spec, transformations),
+  );
+  assert.doesNotThrow(() => verifyPreparedTransformations(spec, transformations));
+
+  // A hold-back record may only remove unreleased options.
+  const unionPointer =
+    "/paths/~1v3~1customers~1{customerId}~1tasks/post/requestBody/content/application~1json/schema/oneOf";
+  const altered = structuredClone(spec);
+  const alteredUnion =
+    altered.paths["/v3/customers/{customerId}/tasks"].post.requestBody.content[
+      "application/json"
+    ].schema.oneOf;
+  alteredUnion[1].properties.label = { type: "string" };
+  const alteredRecords = transformations.map((item) =>
+    item.pointer === unionPointer
+      ? { ...item, afterHash: canonicalHash(alteredUnion) }
+      : item,
+  );
+  assert.throws(
+    () => compareSourceToPrepared(source, altered, alteredRecords),
+    /outside recorded transformation pointers/,
+  );
+  const unheld = structuredClone(source);
+  const unheldTask = unheld.paths["/v3/customers/{customerId}/tasks"].post;
+  unheldTask.requestBody.content["application/json"].schema.oneOf.splice(1, 1);
+  unheldTask.responses["201"].content["application/json"].schema.anyOf.pop();
+  unheld.components.schemas.Destination.properties.type.enum.splice(2, 1);
+  assert.throws(
+    () => compareSourceToPrepared(unheld, spec, transformations),
+    /unreleased destination pointers changed/i,
+  );
+
+  const leaked = structuredClone(spec);
+  leaked.components.schemas.Destination.properties.type.enum.push("ted");
+  assert.throws(
+    () => verifyPreparedTransformations(leaked, transformations),
+    /unreleased destination type ted/,
+  );
+
+  const released = prepareOpenApi(makeFixture(), SOURCE_SHA256);
+  assert.equal(
+    released.transformations.some((item) => item.reason === reason),
+    false,
+  );
+});
+
+test("fails closed on unreleased destination shapes it cannot hold back", () => {
+  const destination = (type) => ({
+    type: "object",
+    properties: { type: { type: "string", enum: [type] } },
+  });
+  const withRequestSchema = (schema) => {
+    const source = makeFixture();
+    source.paths["/v3/customers/{customerId}/tasks"].post.requestBody = {
+      content: { "application/json": { schema } },
+    };
+    return source;
+  };
+  const cases = [
+    {
+      message: /every union option is unreleased/i,
+      schema: { oneOf: [destination("ted"), destination("ted")] },
+    },
+    {
+      message: /every enum value is unreleased/i,
+      schema: {
+        type: "object",
+        properties: { type: { type: "string", enum: ["ted", "ted"] } },
+      },
+    },
+    {
+      message: /unsupported discriminator mapping/i,
+      schema: {
+        oneOf: [destination("pix"), destination("ted")],
+        discriminator: {
+          propertyName: "type",
+          mapping: { pix: "#/components/schemas/Customer", ted: "#/components/schemas/Error" },
+        },
+      },
+    },
+    {
+      message: /nested unreleased destination transformations/i,
+      schema: {
+        oneOf: [
+          destination("ted"),
+          {
+            type: "object",
+            properties: { type: { type: "string", enum: ["pix", "ted"] } },
+          },
+        ],
+      },
+    },
+    {
+      message: /unreleased destination type ted/i,
+      schema: { type: "string", examples: ["ted"] },
+    },
+  ];
+
+  for (const { message, schema } of cases) {
+    assert.throws(
+      () => prepareOpenApi(withRequestSchema(schema), SOURCE_SHA256),
+      message,
+    );
+  }
 });
 
 test("rejects non-object webhook x-mint containers", () => {
