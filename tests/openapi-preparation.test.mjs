@@ -24,6 +24,7 @@ import {
   compareSourceToPrepared,
   operationSlug,
   prepareOpenApi,
+  verifyPreparedTransformations,
 } from "../scripts/lib/openapi.mjs";
 
 const projectRoot = fileURLToPath(new URL("../", import.meta.url));
@@ -622,6 +623,85 @@ test("labels union options and names examples without reordering them", () => {
   );
   assert.doesNotThrow(() =>
     compareSourceToPrepared(source, spec, transformations),
+  );
+});
+
+test("holds back unreleased destination types from unions and type enums", () => {
+  const reason =
+    "Hold back a destination type that is not yet available to developers.";
+  const destination = (type) => ({
+    type: "object",
+    properties: { type: { type: "string", enum: [type] } },
+  });
+  const source = makeFixture();
+  const createTask = source.paths["/v3/customers/{customerId}/tasks"].post;
+  createTask.requestBody = {
+    content: {
+      "application/json": {
+        schema: {
+          oneOf: [destination("pix_safe"), destination("ted"), destination("wallet")],
+        },
+      },
+    },
+  };
+  createTask.responses["201"] = {
+    description: "Created",
+    content: {
+      "application/json": {
+        schema: {
+          anyOf: [
+            { anyOf: [destination("pix_safe"), destination("wallet")] },
+            { anyOf: [destination("ted"), destination("ted")] },
+          ],
+        },
+      },
+    },
+  };
+  source.components.schemas.Destination = {
+    type: "object",
+    properties: {
+      type: { type: "string", enum: ["pix", "pix_safe", "ted", "wallet"] },
+    },
+  };
+
+  const { spec, transformations } = prepareOpenApi(source, SOURCE_SHA256);
+  const prepared = spec.paths["/v3/customers/{customerId}/tasks"].post;
+  assert.deepEqual(
+    prepared.requestBody.content["application/json"].schema.oneOf.map(
+      ({ properties }) => properties.type.enum[0],
+    ),
+    ["pix_safe", "wallet"],
+  );
+  assert.equal(
+    prepared.responses["201"].content["application/json"].schema.anyOf.length,
+    1,
+  );
+  assert.deepEqual(spec.components.schemas.Destination.properties.type.enum, [
+    "pix",
+    "pix_safe",
+    "wallet",
+  ]);
+  assert.equal(JSON.stringify(spec).includes('"ted"'), false);
+  assert.equal(
+    transformations.filter((item) => item.reason === reason).length,
+    3,
+  );
+  assert.doesNotThrow(() =>
+    compareSourceToPrepared(source, spec, transformations),
+  );
+  assert.doesNotThrow(() => verifyPreparedTransformations(spec, transformations));
+
+  const leaked = structuredClone(spec);
+  leaked.components.schemas.Destination.properties.type.enum.push("ted");
+  assert.throws(
+    () => verifyPreparedTransformations(leaked, transformations),
+    /unreleased destination type ted/,
+  );
+
+  const released = prepareOpenApi(makeFixture(), SOURCE_SHA256);
+  assert.equal(
+    released.transformations.some((item) => item.reason === reason),
+    false,
   );
 });
 
