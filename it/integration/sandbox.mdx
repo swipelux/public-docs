@@ -16,6 +16,17 @@ export SWIPELUX_SANDBOX_API_KEY='replace-with-your-sandbox-key'
 
 ## Testa la readiness di una capability {#test-capability-readiness}
 
+Nella sandbox, le capability ACH, Wire e SWIFT, sia nominate sia in pool, sono servite solo presso JPMorgan Chase (`jpmorgan`). Ometti `institutions` quando richiedi una di queste capability e Swipelux seleziona `jpmorgan`. Indicare qualsiasi altra banca restituisce `422 capability_institutions_unsupported`. Nella sandbox, l'elenco delle capability supportate mostra solo `jpmorgan` per questi metodi. Il routing di produzione e gli altri metodi, come RTP, Pix e SPEI, restano invariati.
+
+```bash Request a sandbox bank capability
+curl --request POST \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/capabilities/${CAPABILITY_ID}" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: sandbox-capability-001" \
+  --header "Content-Type: application/json" \
+  --data '{"institutions":["jpmorgan"]}'
+```
+
 Dopo aver richiesto una capability, imposta il suo stato sandbox con [`POST /v3/sandbox/customers/{customerId}/capabilities/{capabilityId}/status`](/api-reference/sandbox/post-v3-sandbox-customers-by-customer-id-capabilities-by-capability-id-status):
 
 ```bash Set capability status
@@ -26,7 +37,11 @@ curl --request POST \
   --data '{"status":"ready"}'
 ```
 
-Rileggi la capability dopo aver usato l'helper. Considera il suo `status` corrente e gli `openTaskIds` come il risultato che il tuo prodotto deve gestire.
+Rileggi la capability dopo aver usato l'helper. Considera il suo `status` corrente e gli `openTaskIds` come il risultato che il tuo prodotto deve gestire. Una risposta `200` può comunque mostrare lavoro aperto, come task del cliente o una revisione `pending`.
+
+L'helper restituisce `409 capability_status_blocked` quando la capability non può raggiungere lo stato richiesto per un motivo che non puoi risolvere nella sandbox, come `approval_scope_review_required`, un blocco operativo o uno stato terminale. Il campo `statusReason` del problema riporta il codice e il messaggio del motivo della capability, con `retryable: false`. Leggi la capability per ottenere la `resolution` del motivo.
+
+Forzare una capability nominata a `rejected` una seconda volta restituisce la stessa capability invariata. Forzare una capability rifiutata a `restricted` o `ready` restituisce `422 invalid_capability`. Per testare questi stati, crea invece un nuovo cliente sandbox.
 
 ## Testa un task aperto
 
@@ -169,6 +184,8 @@ curl --request POST \
   --header "Content-Type: application/json" \
   --data '{"outcome":"accepted"}'
 ```
+
+Puoi revisionare i task creati da `POST /v3/sandbox/tasks` e i task di raccolta delle capability che Swipelux acquisisce. La revisione di un task di proprietà di Operations o di un altro workflow restituisce `409 task_not_sandbox_reviewable`. Quel task resta leggibile tramite gli endpoint dei task e attende la revisione da parte del suo proprietario. `404 task_not_found` indica che l'ID del task è sconosciuto o appartiene a un altro merchant.
 
 Usa [Capability e task](/it/integration/onboarding/capabilities-and-requirements) per il pattern di completamento dei task in produzione.
 
