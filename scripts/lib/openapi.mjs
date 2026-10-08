@@ -747,9 +747,8 @@ function unreleasedDestinationTransformations(spec) {
     // is skipped rather than filtered on its own.
     for (const union of collectUnions(value ?? {}, pointer, [])) {
       if (insideRemoved(union.pointer)) continue;
-      const kept = union.options.filter(
-        (option) => !isUnreleasedDestination(option),
-      );
+      const unreleased = union.options.map(isUnreleasedDestination);
+      const kept = union.options.filter((_, index) => !unreleased[index]);
       if (kept.length === union.options.length) continue;
       if (kept.length === 0) {
         throw new Error(`Every union option is unreleased at ${union.pointer}`);
@@ -769,10 +768,8 @@ function unreleasedDestinationTransformations(spec) {
           `Unsupported discriminator mapping for an unreleased destination at ${union.pointer}`,
         );
       }
-      union.options.forEach((option, index) => {
-        if (isUnreleasedDestination(option)) {
-          removed.push(`${union.pointer}/${index}`);
-        }
+      unreleased.forEach((isUnreleased, index) => {
+        if (isUnreleased) removed.push(`${union.pointer}/${index}`);
       });
       transformations.push({ pointer: union.pointer, value: kept });
     }
@@ -785,9 +782,11 @@ function unreleasedDestinationTransformations(spec) {
       const kept = typeEnum.values.filter(
         (type) => !UNRELEASED_DESTINATION_TYPES.includes(type),
       );
-      if (kept.length !== typeEnum.values.length) {
-        transformations.push({ pointer: typeEnum.pointer, value: kept });
+      if (kept.length === typeEnum.values.length) continue;
+      if (kept.length === 0) {
+        throw new Error(`Every enum value is unreleased at ${typeEnum.pointer}`);
       }
+      transformations.push({ pointer: typeEnum.pointer, value: kept });
     }
   }
 
@@ -803,6 +802,26 @@ function unreleasedDestinationTransformations(spec) {
     }
   }
   return transformations;
+}
+
+// Rebuilds the hold-back from the source rather than trusting its records, so
+// a hold-back record can only remove unreleased types where the source has
+// them. Every other transformation addresses the held-back document.
+function heldBackSource(source, transformations) {
+  const expected = unreleasedDestinationTransformations(source);
+  compareCanonical(
+    "Unreleased destination pointers",
+    expected.map(({ pointer }) => pointer).sort(compareStrings),
+    transformations
+      .filter(({ reason }) => reason === UNRELEASED_DESTINATION_REASON)
+      .map(({ pointer }) => pointer)
+      .sort(compareStrings),
+  );
+  const heldBack = structuredClone(source);
+  for (const { pointer, value } of expected) {
+    setPointer(heldBack, pointer, value);
+  }
+  return heldBack;
 }
 
 // Fails closed on any string equal to an unreleased type, so an example or a
@@ -1069,8 +1088,12 @@ export function compareSourceToPrepared(source, prepared, transformations) {
     refsOutsideTransformations(prepared, transformations),
   );
 
+  const heldBack = heldBackSource(source, transformations);
   for (const [pointer, item] of records) {
-    const before = pointerState(source, pointer);
+    const before = pointerState(
+      item.reason === UNRELEASED_DESTINATION_REASON ? source : heldBack,
+      pointer,
+    );
     const after = pointerState(prepared, pointer);
     if (item.beforeHash !== pointerHash(before)) {
       throw new Error(`beforeHash does not match source at ${pointer}`);
@@ -1084,12 +1107,14 @@ export function compareSourceToPrepared(source, prepared, transformations) {
     }
   }
 
-  const replayed = structuredClone(source);
-  for (const item of [...transformations].sort(
-    (left, right) =>
-      parsePointer(left.pointer).length - parsePointer(right.pointer).length ||
-      compareStrings(left.pointer, right.pointer),
-  )) {
+  const replayed = structuredClone(heldBack);
+  for (const item of transformations
+    .filter(({ reason }) => reason !== UNRELEASED_DESTINATION_REASON)
+    .sort(
+      (left, right) =>
+        parsePointer(left.pointer).length - parsePointer(right.pointer).length ||
+        compareStrings(left.pointer, right.pointer),
+    )) {
     const after = pointerState(prepared, item.pointer);
     if (after.exists) setPointer(replayed, item.pointer, after.value);
     else deletePointer(replayed, item.pointer);
@@ -1420,6 +1445,18 @@ export function prepareOpenApi(
   const spec = structuredClone(sourceSnapshot);
   const transformations = [];
 
+  // Runs first, so later pointers address the held-back document that
+  // compareSourceToPrepared rebuilds from the source.
+  for (const { pointer, value } of unreleasedDestinationTransformations(spec)) {
+    addReplacement(
+      spec,
+      transformations,
+      pointer,
+      value,
+      UNRELEASED_DESTINATION_REASON,
+    );
+  }
+
   addReplacement(
     spec,
     transformations,
@@ -1475,16 +1512,6 @@ export function prepareOpenApi(
       transformations,
       `${base}/examples/legacy`,
       `Remove the legacy ${name} webhook example.`,
-    );
-  }
-
-  for (const { pointer, value } of unreleasedDestinationTransformations(spec)) {
-    addReplacement(
-      spec,
-      transformations,
-      pointer,
-      value,
-      UNRELEASED_DESTINATION_REASON,
     );
   }
 
