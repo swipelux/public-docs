@@ -35,6 +35,8 @@ npm run prepare:openapi -- "/absolute/path/to/api-source.json"
 
 The preparation step verifies the approved source hash before writing `openapi.json` and its verification artifacts. Do not edit generated OpenAPI artifacts by hand.
 
+Destination types in `UNRELEASED_DESTINATION_TYPES` in `scripts/lib/openapi.mjs` are left out of the public contract until Swipelux announces them. When a type becomes available, remove it from that list, prepare the contract again, and add its changelog line.
+
 Generate the canonical API errors guide, derived index, and stable problem-type redirects from `openapi.json` plus the documentation-owned guidance catalog:
 
 ```bash

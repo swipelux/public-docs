@@ -1,19 +1,19 @@
 import { createHash } from "node:crypto";
 
 export const SOURCE_SHA256 =
-  "f19f21bfc4bba4d449f502538aa96d3c49d1a14945c893ecdf22adc2027d2129";
-export const SOURCE_BASENAME = "openapi-v3-f1f822e.json";
+  "beff5a73693c3384b5d028035332f4ef8c3eeb1277ef60b8b949926a6ed643da";
+export const SOURCE_BASENAME = "openapi-v3-44d4f59.json";
 export const SOURCE_REPOSITORY = "swipelux/wallet-infrastructure";
-export const SOURCE_COMMIT = "f1f822e48d75c6bc7a379aa555ac85dc98818d9f";
+export const SOURCE_COMMIT = "44d4f59eac9b1e3f9785724d1f4f5e2a52d5b64d";
 export const SOURCE_ROUTE = "/openapi-v3.json";
 export const EXPECTED_OUTPUT_SHA256 =
-  "383bc77dc13aa2fdbff7792d6b6a4788bf330682827c74e059f3dacfd061245c";
+  "ebc9804794ee32896562665ee08d8b3c827ac69e7d5ee73a455514d20e4245fb";
 export const EXPECTED_COVERAGE_SHA256 =
-  "109b1e09f0aec68cbf8a7fc00f110e7a172fd80b3c525673761fa749ed6a9e02";
+  "0b26eea0bef1e712edda81e9f9bfd92ae0e5ddd185786d1d44ecbda4b46c58f1";
 export const EXPECTED_TRANSFORMATIONS_SHA256 =
-  "e22b21e98248ee6dc775565368a2345ff0e77f76f4a80091ebf7b01d8cfa343e";
+  "de6fd2b276898c1f3d7a74c53bf95451a13b749d568b71aae5db2001446d80ad";
 // Public API label preparation timestamp, normalized to UTC whole seconds.
-export const APPROVED_GENERATED_AT = "2026-10-08T08:33:13.000Z";
+export const APPROVED_GENERATED_AT = "2026-10-08T17:06:12.000Z";
 export const HTTP_METHODS = new Set([
   "get",
   "post",
@@ -24,7 +24,7 @@ export const HTTP_METHODS = new Set([
   "options",
   "trace",
 ]);
-export const PREPARATION_VERSION = "1.4.0";
+export const PREPARATION_VERSION = "1.5.0";
 
 export const EXPECTED_OPENAPI_COUNTS = Object.freeze({
   paths: 52,
@@ -218,6 +218,11 @@ const PLAIN_LANGUAGE_REWRITES = Object.freeze([
     to: "Triggered when a capability's status changes after creation.",
   },
 ]);
+const UNRELEASED_DESTINATION_REASON =
+  "Hold back a destination type that is not yet available to developers.";
+// Destination types the API already serves but Swipelux has not announced.
+// Remove a type here, and add its changelog line, once it is available.
+const UNRELEASED_DESTINATION_TYPES = Object.freeze(["ted"]);
 
 function isPlainObject(value) {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
@@ -680,6 +685,166 @@ function unionTitleTransformations(spec) {
   return transformations;
 }
 
+// The destination types a union option stands for: its own `type` value, or
+// the types of all its options when it is itself a union. Undefined when the
+// option is not keyed by `type`.
+function destinationTypes(option) {
+  if (!isPlainObject(option)) return undefined;
+  const own = singleStringValue(option.properties?.type);
+  if (own !== undefined) return [own];
+  for (const keyword of UNION_KEYWORDS) {
+    const branches = option[keyword];
+    if (!Array.isArray(branches) || branches.length === 0) continue;
+    const types = branches.map(destinationTypes);
+    if (types.every(Array.isArray)) return types.flat();
+  }
+  return undefined;
+}
+
+function isUnreleasedDestination(option) {
+  const types = destinationTypes(option);
+  return (
+    types !== undefined &&
+    types.every((type) => UNRELEASED_DESTINATION_TYPES.includes(type))
+  );
+}
+
+function collectTypeEnums(value, pointer, enums) {
+  if (Array.isArray(value)) {
+    value.forEach((item, index) =>
+      collectTypeEnums(item, `${pointer}/${index}`, enums),
+    );
+    return enums;
+  }
+  if (!isPlainObject(value)) return enums;
+
+  for (const key of Object.keys(value).sort()) {
+    const childPointer = `${pointer}/${escapePointerSegment(key)}`;
+    if (
+      key === "enum" &&
+      Array.isArray(value[key]) &&
+      pointer.endsWith("/properties/type")
+    ) {
+      enums.push({ pointer: childPointer, values: value[key] });
+    }
+    collectTypeEnums(value[key], childPointer, enums);
+  }
+  return enums;
+}
+
+function unreleasedDestinationTransformations(spec) {
+  const transformations = [];
+  const removed = [];
+  const insideRemoved = (pointer) =>
+    removed.some((ancestor) => isWithinPointer(pointer, ancestor));
+
+  for (const [value, pointer] of [
+    [spec?.paths, "/paths"],
+    [spec?.webhooks, "/webhooks"],
+    [spec?.components?.schemas, "/components/schemas"],
+  ]) {
+    // Unions are collected parents first, so a union inside a removed option
+    // is skipped rather than filtered on its own.
+    for (const union of collectUnions(value ?? {}, pointer, [])) {
+      if (insideRemoved(union.pointer)) continue;
+      const unreleased = union.options.map(isUnreleasedDestination);
+      const kept = union.options.filter((_, index) => !unreleased[index]);
+      if (kept.length === union.options.length) continue;
+      if (kept.length === 0) {
+        throw new Error(`Every union option is unreleased at ${union.pointer}`);
+      }
+      const parent = pointerState(
+        spec,
+        union.pointer.slice(0, union.pointer.lastIndexOf("/")),
+      ).value;
+      const mapping = parent?.discriminator?.mapping;
+      if (
+        isPlainObject(mapping) &&
+        Object.keys(mapping).some((type) =>
+          UNRELEASED_DESTINATION_TYPES.includes(type),
+        )
+      ) {
+        throw new Error(
+          `Unsupported discriminator mapping for an unreleased destination at ${union.pointer}`,
+        );
+      }
+      unreleased.forEach((isUnreleased, index) => {
+        if (isUnreleased) removed.push(`${union.pointer}/${index}`);
+      });
+      transformations.push({ pointer: union.pointer, value: kept });
+    }
+
+    // A one-value enum is a union option's own type, handled above.
+    for (const typeEnum of collectTypeEnums(value ?? {}, pointer, [])) {
+      if (insideRemoved(typeEnum.pointer) || typeEnum.values.length < 2) {
+        continue;
+      }
+      const kept = typeEnum.values.filter(
+        (type) => !UNRELEASED_DESTINATION_TYPES.includes(type),
+      );
+      if (kept.length === typeEnum.values.length) continue;
+      if (kept.length === 0) {
+        throw new Error(`Every enum value is unreleased at ${typeEnum.pointer}`);
+      }
+      transformations.push({ pointer: typeEnum.pointer, value: kept });
+    }
+  }
+
+  for (const item of transformations) {
+    if (
+      transformations.some(
+        (other) => other !== item && isWithinPointer(item.pointer, other.pointer),
+      )
+    ) {
+      throw new Error(
+        `Nested unreleased destination transformations at ${item.pointer}`,
+      );
+    }
+  }
+  return transformations;
+}
+
+// Rebuilds the hold-back from the source rather than trusting its records, so
+// a hold-back record can only remove unreleased types where the source has
+// them. Every other transformation addresses the held-back document.
+function heldBackSource(source, transformations) {
+  const expected = unreleasedDestinationTransformations(source);
+  compareCanonical(
+    "Unreleased destination pointers",
+    expected.map(({ pointer }) => pointer).sort(compareStrings),
+    transformations
+      .filter(({ reason }) => reason === UNRELEASED_DESTINATION_REASON)
+      .map(({ pointer }) => pointer)
+      .sort(compareStrings),
+  );
+  const heldBack = structuredClone(source);
+  for (const { pointer, value } of expected) {
+    setPointer(heldBack, pointer, value);
+  }
+  return heldBack;
+}
+
+// Fails closed on any string equal to an unreleased type, so an example or a
+// shape the hold-back does not handle stops preparation instead of publishing.
+function validateNoUnreleasedDestinations(value, pointer = "") {
+  if (Array.isArray(value)) {
+    value.forEach((item, index) =>
+      validateNoUnreleasedDestinations(item, `${pointer}/${index}`),
+    );
+  } else if (isPlainObject(value)) {
+    for (const key of Object.keys(value)) {
+      validateNoUnreleasedDestinations(
+        value[key],
+        `${pointer}/${escapePointerSegment(key)}`,
+      );
+    }
+  } else if (UNRELEASED_DESTINATION_TYPES.includes(value)) {
+    throw new Error(
+      `Prepared OpenAPI lists the unreleased destination type ${value} at ${pointer}`,
+    );
+  }
+}
+
 function collectExampleMaps(value, pointer, maps) {
   if (Array.isArray(value)) {
     value.forEach((item, index) =>
@@ -744,6 +909,13 @@ function optionalTransformationReason(pointer) {
     )
   ) {
     return UNION_TITLE_REASON;
+  }
+  if (
+    /^\/(?:paths|webhooks|components\/schemas)\/.+\/(?:oneOf|anyOf|properties\/type\/enum)$/.test(
+      pointer,
+    )
+  ) {
+    return UNRELEASED_DESTINATION_REASON;
   }
   if (
     /^\/(?:paths|webhooks)\/.+\/(?:requestBody|responses\/[^/]+)\/content\/[^/]+\/examples$/.test(
@@ -916,8 +1088,12 @@ export function compareSourceToPrepared(source, prepared, transformations) {
     refsOutsideTransformations(prepared, transformations),
   );
 
+  const heldBack = heldBackSource(source, transformations);
   for (const [pointer, item] of records) {
-    const before = pointerState(source, pointer);
+    const before = pointerState(
+      item.reason === UNRELEASED_DESTINATION_REASON ? source : heldBack,
+      pointer,
+    );
     const after = pointerState(prepared, pointer);
     if (item.beforeHash !== pointerHash(before)) {
       throw new Error(`beforeHash does not match source at ${pointer}`);
@@ -931,12 +1107,14 @@ export function compareSourceToPrepared(source, prepared, transformations) {
     }
   }
 
-  const replayed = structuredClone(source);
-  for (const item of [...transformations].sort(
-    (left, right) =>
-      parsePointer(left.pointer).length - parsePointer(right.pointer).length ||
-      compareStrings(left.pointer, right.pointer),
-  )) {
+  const replayed = structuredClone(heldBack);
+  for (const item of transformations
+    .filter(({ reason }) => reason !== UNRELEASED_DESTINATION_REASON)
+    .sort(
+      (left, right) =>
+        parsePointer(left.pointer).length - parsePointer(right.pointer).length ||
+        compareStrings(left.pointer, right.pointer),
+    )) {
     const after = pointerState(prepared, item.pointer);
     if (after.exists) setPointer(replayed, item.pointer, after.value);
     else deletePointer(replayed, item.pointer);
@@ -1184,6 +1362,7 @@ export function validateOpenApi(spec, { prepared = false } = {}) {
     }
     validatePreparedHrefs(spec);
     validatePreparedDisplay(spec);
+    validateNoUnreleasedDestinations(spec);
     assertUniqueHrefs(buildCoverage(spec));
   }
 }
@@ -1265,6 +1444,18 @@ export function prepareOpenApi(
   const sourceCoverage = buildCoverage(sourceSnapshot);
   const spec = structuredClone(sourceSnapshot);
   const transformations = [];
+
+  // Runs first, so later pointers address the held-back document that
+  // compareSourceToPrepared rebuilds from the source.
+  for (const { pointer, value } of unreleasedDestinationTransformations(spec)) {
+    addReplacement(
+      spec,
+      transformations,
+      pointer,
+      value,
+      UNRELEASED_DESTINATION_REASON,
+    );
+  }
 
   addReplacement(
     spec,
@@ -1386,6 +1577,14 @@ export function prepareOpenApi(
           : WEBHOOK_EVENT_CONTENT,
         WEBHOOK_CONTENT_REASON,
       );
+    }
+  }
+
+  // Union labels can be added inside a filtered union after it is recorded, so
+  // its record ends with the final prepared value.
+  for (const item of transformations) {
+    if (item.reason === UNRELEASED_DESTINATION_REASON) {
+      item.afterHash = canonicalHash(pointerState(spec, item.pointer).value);
     }
   }
 
