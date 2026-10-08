@@ -1,19 +1,19 @@
 import { createHash } from "node:crypto";
 
 export const SOURCE_SHA256 =
-  "a0c9cd703f708c5763727c11f3dd9f7da18c1c48721e47d0a7fe035dd98fac11";
-export const SOURCE_BASENAME = "openapi-v3-c35c185.json";
+  "f19f21bfc4bba4d449f502538aa96d3c49d1a14945c893ecdf22adc2027d2129";
+export const SOURCE_BASENAME = "openapi-v3-f1f822e.json";
 export const SOURCE_REPOSITORY = "swipelux/wallet-infrastructure";
-export const SOURCE_COMMIT = "c35c185aa4494c80028971e0bc7f1c2ff4e69b26";
+export const SOURCE_COMMIT = "f1f822e48d75c6bc7a379aa555ac85dc98818d9f";
 export const SOURCE_ROUTE = "/openapi-v3.json";
 export const EXPECTED_OUTPUT_SHA256 =
-  "e0ef6bb50f5dc9e7f76862145434d45371f8d3279ddf46274f83f9724c4c3a9a";
+  "383bc77dc13aa2fdbff7792d6b6a4788bf330682827c74e059f3dacfd061245c";
 export const EXPECTED_COVERAGE_SHA256 =
-  "ef8015fc8e206496d0b838cc923cec4ac53dfaba015e4c3c61c4cce22660a2b4";
+  "109b1e09f0aec68cbf8a7fc00f110e7a172fd80b3c525673761fa749ed6a9e02";
 export const EXPECTED_TRANSFORMATIONS_SHA256 =
-  "609bb4e13f3b81238d37dbc13a13d421dbe4bba8eb74e71ad2e353aefd259e10";
+  "e22b21e98248ee6dc775565368a2345ff0e77f76f4a80091ebf7b01d8cfa343e";
 // Public API label preparation timestamp, normalized to UTC whole seconds.
-export const APPROVED_GENERATED_AT = "2026-09-29T23:08:17.000Z";
+export const APPROVED_GENERATED_AT = "2026-10-08T08:33:13.000Z";
 export const HTTP_METHODS = new Set([
   "get",
   "post",
@@ -68,8 +68,8 @@ const UNION_KEYWORDS = ["oneOf", "anyOf"];
 const PLAIN_LANGUAGE_REWRITES = Object.freeze([
   {
     pointer: "/paths/~1v3~1customers/get/description",
-    from: "Lists CustomerSummary resources in deterministic createdAt DESC, id DESC order. Canonical contact and free-text filters are case-insensitive and compose with exact identity and strict timestamp filters. Pass include=capabilities to attach capability summaries to every customer.",
-    to: "Lists customer summaries, newest first (createdAt descending, then id descending). Contact and free-text filters are case-insensitive and combine with exact identity and strict timestamp filters. Pass include=capabilities to attach capability summaries to every customer.",
+    from: "Lists CustomerSummary resources in deterministic createdAt DESC, id DESC order. Canonical contact and free-text filters are case-insensitive and compose with exact identity and strict timestamp filters. Pass include=capabilities,documentRequirements to attach independent capability and required-document summaries to every customer.",
+    to: "Lists customer summaries, newest first (createdAt descending, then id descending). Contact and free-text filters are case-insensitive and combine with exact identity and strict timestamp filters. Pass include=capabilities, include=documentRequirements, or include=capabilities,documentRequirements to attach capability summaries, required-document summaries, or both to every customer.",
   },
   {
     pointer: "/paths/~1v3~1customers/post/description",
@@ -94,20 +94,20 @@ const PLAIN_LANGUAGE_REWRITES = Object.freeze([
   {
     pointer:
       "/paths/~1v3~1customers~1{customerId}~1capabilities~1{capabilityId}~1tasks-preview/get/description",
-    from: "Returns descriptor-only tasks from one pinned, side-effect-free evaluation snapshot. Repeating the optional `institutions` query parameter previews the same explicit institution selection accepted by capability creation; omission selects applicable registry defaults.",
+    from: "Returns descriptor-only tasks from one pinned, side-effect-free evaluation snapshot. Repeating the optional `institutions` query parameter previews the same explicit institution selection accepted by capability creation; omission selects applicable defaults.",
     to: "Previews the tasks that requesting this capability would open, without creating anything. Repeat the optional `institutions` query parameter to preview the same institution selection that capability creation accepts; omit it to preview the default institutions.",
   },
   {
     pointer:
       "/paths/~1v3~1customers~1{customerId}~1capabilities~1{capabilityId}/post/description",
-    from: "Requests a customer capability by permanent capability id. Requesting a canceled capability with a new idempotency key starts a fresh lifecycle after current eligibility and routing checks pass. For bank-backed capabilities, omitted or empty `institutions` lists select registry defaults; a non-empty list explicitly overrides defaults. When customer intake is incomplete, the capability is created in `restricted` with open tasks and durable planned application identities, while provider submission is deferred until those tasks are satisfied. Known ineligible variants fail instead of silently falling back. The response's `accountProvisioning` reports account issuance separately from entitlement status. Send `Idempotency-Key` for every POST; the same key and body replay the original response, except `accountProvisioning`, which is a read-time projection and is recomputed on every replay so it never reports stale issuance.",
+    from: "Requests a customer capability by permanent capability id. Requesting a canceled capability with a new idempotency key starts a fresh lifecycle after current eligibility and routing checks pass. For bank-backed capabilities, omitted or empty `institutions` lists select applicable defaults; a non-empty list explicitly overrides defaults. When customer intake is incomplete, the capability is created in `restricted` with open tasks and durable planned application identities, while provider submission is deferred until those tasks are satisfied. Known ineligible variants fail instead of silently falling back. The response's `accountProvisioning` reports account issuance separately from entitlement status. Send `Idempotency-Key` for every POST; the same key and body replay the original response, except `accountProvisioning`, which is a read-time projection and is recomputed on every replay so it never reports stale issuance.",
     to: "Requests a customer capability by its capability id. Requesting a canceled capability with a new idempotency key starts it again once current eligibility and routing checks pass. For bank-backed capabilities, an omitted or empty `institutions` list selects the default institutions; a non-empty list overrides them. When customer onboarding is incomplete, the capability is created as `restricted` with open tasks and its planned applications, and submission waits until those tasks are complete. Known ineligible variants fail instead of silently falling back. The response's `accountProvisioning` reports account issuance separately from the capability status. Send `Idempotency-Key` for every POST; the same key and body replay the original response, except `accountProvisioning`, which is recalculated on every replay so it never reports stale issuance.",
   },
   {
     pointer:
       "/paths/~1v3~1customers~1{customerId}~1capabilities~1{capabilityId}~1cancel/post/description",
-    from: "Cancels a `pending` or `restricted` capability that has no active linked accounts or transfers. On success, tasks owned exclusively by the capability or its applications and all non-archived applications are canceled. A customer-scoped intake task shared with another active capability remains open for that sibling until its final dependency ends. The canceled lifecycle remains readable until a new create request successfully replaces it, with `accountProvisioning` continuing to report account issuance separately. An idempotent replay returns the original response except `accountProvisioning`, which is recomputed at read time.",
-    to: "Cancels a `pending` or `restricted` capability that has no active linked accounts or transfers. On success, the capability's non-archived applications and the tasks that belong only to this capability or its applications are canceled. A customer onboarding task that another active capability also needs stays open until no active capability needs it. The canceled capability stays readable until a new create request replaces it, and `accountProvisioning` keeps reporting account issuance separately. Replaying the request returns the original response, except `accountProvisioning`, which is recalculated when read.",
+    from: "Cancels a `pending`, `restricted` or `ready` capability that has no active linked accounts or transfers. The `stablecoin_transfers` capability granted when a customer is created cannot be canceled. Cancellation ends this capability only: its applications keep their status, tasks and approvals, and other capabilities that use the same applications are unaffected. Tasks that belong only to this capability are canceled. The canceled capability remains readable, listing its applications at their current status without open tasks, until a new create request reopens it; that request reuses an existing application at the institution it selects. `accountProvisioning` continues to report account issuance separately. An idempotent replay returns the original response except `accountProvisioning`, which is recomputed at read time.",
+    to: "Cancels a `pending`, `restricted`, or `ready` capability that has no active linked accounts or transfers. The `stablecoin_transfers` capability that every new customer receives cannot be canceled. Cancellation ends this capability only: its applications keep their status, tasks, and approvals, and other capabilities that use the same applications are unaffected. Tasks that belong only to this capability are canceled. The canceled capability stays readable, listing its applications at their current status without open tasks, until a new create request reopens it. That request reuses an existing application at the institution it selects. `accountProvisioning` keeps reporting account issuance separately. Replaying the request returns the original response, except `accountProvisioning`, which is recalculated when read.",
   },
   {
     pointer:
@@ -177,8 +177,20 @@ const PLAIN_LANGUAGE_REWRITES = Object.freeze([
   {
     pointer:
       "/paths/~1kyc~1redirect~1{customerId}~1{taskId}~1{verificationSessionId}/get/description",
-    from: "Opens one exact customer/task/session first-party link. The service validates lifecycle ownership and creates or refreshes a short-lived provider link without persisting or returning that provider URL in task JSON. Approved fake-host sandbox flows hand off to the first-party verification page. An exact session that already completed successfully returns 204 No Content.",
-    to: "Opens the verification session for one customer task. Swipelux checks that the session belongs to the customer and task, then redirects to a short-lived verification link that is never stored or returned in task JSON. In sandbox, approved test flows open a Swipelux-hosted verification page. A session that already completed successfully returns 204 No Content.",
+    from: "Opens one exact customer/task/session first-party link. The service validates lifecycle ownership and sends eligible documents-only sessions to the first-party RFI page. When that page is unavailable, or for a direct hosted fallback or retained questionnaire session, the service creates or refreshes a short-lived provider link without persisting or returning that provider URL in task JSON. An exact session that already completed successfully returns 204 No Content.",
+    to: "Opens the verification session for one customer task. Swipelux checks that the session belongs to the customer and task. An eligible session that only asks for documents opens a Swipelux-hosted upload page. Otherwise, or when that page is unavailable, Swipelux redirects to a short-lived verification link that is never stored or returned in task JSON. A session that already completed successfully returns 204 No Content.",
+  },
+  {
+    pointer:
+      "/paths/~1kyc~1redirect~1{customerId}~1{taskId}~1{verificationSessionId}/get/responses/302/description",
+    from: "Redirect to the first-party RFI resolver or to a short-lived provider-hosted verification URL.",
+    to: "Redirect to a Swipelux-hosted document upload page or to a short-lived verification URL.",
+  },
+  {
+    pointer:
+      "/paths/~1kyc~1redirect~1{customerId}~1{taskId}~1{verificationSessionId}/get/responses/302/headers/Location/description",
+    from: "First-party RFI resolver URL or short-lived HTTPS provider URL.",
+    to: "Swipelux-hosted document upload page URL or short-lived HTTPS verification URL.",
   },
   {
     pointer: "/webhooks/customer.created/post/description",
