@@ -8,12 +8,38 @@ description: "依日期記錄 Swipelux API 各版本的新增功能、重大變�
 
 若要將既有整合從較早版本升級，請參閱[遷移至 v3](/zh-Hant/api-reference/versioning/migrate-to-v3)。
 
-<Update label="2026-10-05" description="v3" tags={["變更"]}>
+<Update label="2026-10-05" description="v3" tags={["新增","變更","修正"]}>
+
+### 新增
+- `GET /v3/customers` 接受 `include=documentRequirements`。每筆客戶摘要隨後會回報仍待提交的必要文件數量，與功能就緒狀態無關。可合併使用 `include=capabilities,documentRequirements`。請參閱[客戶](/zh-Hant/integration/onboarding/customers)。
+- 商家面板的 Webhooks 頁面在端點選單中新增 **Replay missed events**。它會重新傳送過去 13 天內端點從未收到的事件，且絕不會重複傳送同一事件。請參閱[Webhook](/zh-Hant/integration/webhooks#recover-deliveries)。
+- 商家面板的 **Settings** 頁面新增 **Compliance** 區段。擁有者與管理員可以設定合規電子郵件地址，並選擇在 Swipelux 要求提供客戶的更多資訊時是否接收電子郵件。
+- 商家可以直接在商家面板的 KYB 頁面回覆自己的 KYB 合規要求。
 
 ### 變更
 - 銀行受理完成後，客戶與關聯方更新不再傳回 `409 field_conflicts_with_completed_intake`。更新會被儲存，每個新的銀行申請都會依其自身要求檢查最新的客戶檔案。
 - 當功能現有的銀行路由無法安全更新時，功能要求會傳回 `409 capability_route_header_conflict`。重試前請聯絡 Swipelux 支援團隊。
 - 當 `institutions` 指定了該功能不提供的銀行時，`GET /v3/customers/{customerId}/capabilities/{capabilityId}/tasks-preview` 會傳回 `422 capability_institutions_unsupported`，與功能要求的行為一致。
+- 在沙盒中，ACH、Wire 與 SWIFT 功能僅由 JPMorgan Chase 提供。省略 `institutions` 的要求會選擇 `jpmorgan`，指定其他銀行則會傳回 `422 capability_institutions_unsupported`。正式環境的路由不變。請參閱[在沙盒中測試](/zh-Hant/integration/sandbox)。
+- 當模擬案例無法達到所要求的狀態時，強制設定沙盒功能狀態會傳回 `409 capability_status_blocked` 並附上 `statusReason`。重複已套用的強制設定會傳回 `200`，且不做任何變更。請參閱[在沙盒中測試](/zh-Hant/integration/sandbox#test-capability-readiness)。
+- 若在帳戶仍於銀行端佈建時變更結算設定，`PATCH /v3/customers/{customerId}/accounts/{accountId}` 會傳回 `409 account_provisioning_unresolved`。請在佈建完成後重試。請參閱[錯誤與重試](/integration/errors#account-provisioning-unresolved)。
+- `POST /v3/transfers` 可能會傳回 `409 quote_execution_evidence_conflict`。請建立新的報價並執行。請參閱[錯誤與重試](/integration/errors)。
+- 商家面板的 **Pay out** 抽屜會顯示完整的目的地資料、以切換開關遮蔽帳號與錢包地址，並顯示每種付款方式的預估到帳時間。
+- 商家面板將銀行帳戶併入客戶的 **Payment access** 分頁，並提供列出每家銀行名稱的任務卡片。**Documents** 分頁已移至 **Profile**。
+- 在商家面板中開立具名銀行帳戶現在只需一個步驟，並會列出每家銀行的幣別、方式與入駐時間。請參閱[帳戶](/zh-Hant/integration/accounts)。
+- 因審查而被暫停的銀行帳戶會在商家面板中顯示為 **On hold**，並附上帳戶 ID 與 **Contact support** 操作。
+- 當 Swipelux 正在準備提交申請且尚未開始審查時，處於 `pending` 的能力現在會回報 `statusReason.code: preparing_submission`，而非 `review_in_progress`。兩個代碼都使用 `resolution: wait`。在兩者之間切換時狀態仍為 `pending`，因此不會傳送 `capability.status_changed` 事件。現有能力會在下一次重新評估時採用新代碼。請參閱[功能與要求](/zh-Hant/integration/onboarding/capabilities-and-requirements#continue-when-the-capability-is-ready)。
+- 商家面板中客戶 **Payment access** 分頁上的 **Shared methods** 表格，對於能力回報 `preparing_submission` 的共用方式，會顯示 **In preparation** 而非 **In review**。
+- 能力的 `applications` 列表現在僅顯示其目前的申請，適用於能力讀取（包括 `GET /v3/customers/{customerId}/capabilities/{capabilityId}/applications`）、能力申請回應以及 `capability.status_changed` 事件。被較新申請取代的申請仍會出現在 `GET /v3/customers/{customerId}/applications` 中，其中 `supersededByApplicationId` 指明其後繼申請。被取代申請的未完成任務仍計入能力的 `openTaskIds`。能力的狀態與 `openTaskIds` 不會改變，因此此變更本身不會傳送任何 webhook 事件。請參閱[功能與要求](/zh-Hant/integration/onboarding/capabilities-and-requirements#list-the-customers-applications)。
+
+### 修正
+- 在銀行核准前，針對同一已發行帳戶送出的第二個 `allowPending` 要求，現在會傳回 `409` 並在 `holder.accountId` 中指出等待中的帳戶，而不是傳回 `500`。請參閱[發行銀行帳戶](/zh-Hant/integration/issue-bank-account)。
+- 取消功能時，現在會關閉仍在等待銀行核准的已發行帳戶要求，讓之後在同一家銀行的要求重新開始。
+- 重新要求所有銀行案件皆遭拒絕的已取消功能時，會從 `canceled` 發布單一 `capability.status_changed` 事件。
+- 在銀行先前的申請已封存後重新要求該銀行，現在會提交新的申請。
+- 只要對應的功能顯示為 `ready`，即可新增收款人目的地，而不會傳回 `409 rail_not_ready`。請參閱[收款人](/zh-Hant/integration/recipients)。
+- 在您首次開啟商家面板的 Webhooks 頁面之前傳送的 Webhook 事件現在會被保留，因此您可以將其重新傳送至新的端點。
+- 商家面板中的任務到期日會以您自己的時區顯示，且當沒有任何待處理項目時，銀行審查抽屜會顯示 **All requirements submitted**。
 
 </Update>
 
