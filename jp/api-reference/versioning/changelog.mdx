@@ -8,6 +8,28 @@ description: "Swipelux API 各バージョンの追加、破壊的変更、非�
 
 既存のインテグレーションを以前のバージョンからアップグレードする場合は、[v3 への移行](/jp/api-reference/versioning/migrate-to-v3) を参照してください。
 
+<Update label="2026-10-08" description="v3" tags={["追加","変更","修正"]}>
+
+### 追加
+- 受取人の送金先で、ブラジルでの BRL 支払い向けに `pix` タイプと `pix_safe` タイプを使用できるようになりました。Pix 送金先は Pix キーに支払います。Pix Safe 送金先は、名義人の CPF または CNPJ、銀行の ISPB コード、支店、口座番号で特定される銀行口座に支払います。どちらも顧客の ready 状態の Pix ケイパビリティ（`pix_pooled`）が必要で、その支払いは USDC で資金拠出され、開発者手数料はかかりません。[受取人](/jp/integration/recipients)と[資金を送る](/jp/integration/send-funds#pix-payouts)を参照してください。
+- `GET /v3/customers/{customerId}/tasks/{taskId}` は、書類要件 ID を指定する `documentCandidatesFor` と、代替を持つ要件向けの `documentAlternativeKey` を受け付けるようになりました。指定すると、レスポンスの `data.documentCandidates` に、顧客がすでにアップロードした書類のうちその要件に回答できるものが、`missingMetadata` や `conflictingMetadata` とともに一覧表示されます。ファイルを再度アップロードする代わりに、候補の `documentId` を不足している `documentMetadata` とともに送信してください。このクエリには `accounts:read` と `customers:read` が必要で、無効な選択では `400 validation_error` が返されます。
+
+### 変更
+- `GET /v3/webhooks/portal` は、1 時間で有効期限が切れるポータル URL を `Cache-Control: no-store` とともに返します。`webhooks:write` を持つ API キーを使用すると、ポータルにはエンドポイントの署名シークレットが表示され、エンドポイントの管理、配信の再試行、リプレイが可能です。`webhooks:read` のみの場合、ポータルには配信のみが表示されます。[Webhook](/jp/integration/webhooks)を参照してください。
+- Citi（`citibank`）は法人顧客にのみ提供されます。すべての法人はプール型 Citi を引き続き利用でき、名義型 Citi は米国外で登録された法人にのみ提供されます。顧客に Citi が提供されない場合、サポート対象リストから Citi が除外され、Citi を指定すると `422 capability_institutions_unsupported` が返され、Citi のみが提供する方法は `disabled` として表示されます。`institutions` を指定しないリクエストでは、残りの銀行から選択されます。既存の申請と口座は変更されません。
+- 名義型 CFSB（`cfsb`）のケイパビリティは、米国の顧客、つまり米国で登録された法人と米国に居住する個人にのみ提供されます。その他の顧客の場合、サポート対象リストから名義型 CFSB が除外され、指定すると `422 capability_institutions_unsupported` が返されます。`institutions` を指定しないリクエストでは、残りの銀行から選択されます。プール型 CFSB、国が不明な顧客、既存の申請は変更されません。
+- Lead Bank（`lead_bank`）の名義型 ACH、Wire、SWIFT ケイパビリティは、法的形態と国に基づいて Lead Bank がオンボーディングできる顧客にのみ提供されます。その他の顧客の場合、サポート対象リストから `lead_bank` が除外され、指定すると `422 capability_institutions_unsupported` が返されます。Lead Bank がすでにオンボーディングした顧客と、未完了のリクエストですでに `lead_bank` を指定しているケイパビリティは、引き続き利用できます。既存の申請と口座は変更されません。
+- 個人および実質的支配者に対する新しい本人確認書類のリクエストでは `constraints.identityMetadataRequired: true` を設定できるようになり、各ファイルの `documentMetadata` に ID 番号と発行国が必要になります。法人の住所証明書類と所有者の居住証明書類に対する新しいリクエストでは `constraints.maxIssueAgeDays: 90` を設定できるようになり、各ファイルに発行日が必要になります。既存のタスクは要件を維持するため、各タスクのリクエストで制約を確認してください。
+- 受取人の送金先の `type` はオープンな列挙型になりました。このリファレンスの以前のバージョンではクローズドとして記載されていたため、未知のタイプを拒否または破棄するクライアントは更新してください。送金先のレスポンスと `destination.status_changed` イベントには `pix` と `pix_safe` が含まれる可能性があり、今後さらにタイプが追加されることがあります。
+- 書類のみを求める対象セッションの確認リンクは、Swipelux がホストする書類アップロードページを開くようになりました。リンク自体は変更されず、その他のセッションでは引き続きホスト型の確認フローが開きます。
+- 個人顧客と関係者である個人の `employment.occupation` は、最大 255 文字まで受け付けます。
+
+### 修正
+- 支払いの見積もりと送金のレスポンスでは、USDC または USDT の送金元金額が小数点以下 6 桁で保持されます（例: `4009.71` ではなく `4009.711365`）。フィアットの金額は小数点以下 2 桁のままです。ステーブルコインの送金元金額が小数点以下 2 桁を超える支払いを作成または読み取っても、`500` が返されなくなりました。
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}/cancel`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id-cancel) のリファレンスが、実際の動作どおりにキャンセルを説明するようになりました。`ready` 状態のケイパビリティはキャンセルでき、`stablecoin_transfers` ケイパビリティはキャンセルできません。また、キャンセルで終了するのはそのケイパビリティのみで、その申請のステータス、タスク、承認は維持されます。
+
+</Update>
+
 <Update label="2026-10-05" description="v3" tags={["追加","変更","修正"]}>
 
 ### 追加
