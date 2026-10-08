@@ -648,7 +648,7 @@ test("makes API Reference the sole owner of openapi.json", () => {
 });
 
 test("copies the exact approved redirect pairs without internal metadata", () => {
-  assert.equal(redirectInventory.length, 174);
+  assert.equal(redirectInventory.length, 177);
   assert.deepEqual(
     config.redirects,
     redirectInventory.map(({ source, destination }) => ({

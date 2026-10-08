@@ -183,6 +183,26 @@ const EXAMPLES = Object.freeze({
       country: "US",
     },
   },
+  pixDestination: {
+    type: "pix",
+    currency: "BRL",
+    details: {
+      pixKey: "jason@swipelux.com",
+      accountHolderName: "Jason Swipelux",
+    },
+  },
+  pixSafeDestination: {
+    type: "pix_safe",
+    currency: "BRL",
+    details: {
+      taxId: "52998224725",
+      bankCode: "00000208",
+      branchCode: "0001",
+      accountNumber: "123456-7",
+      accountType: "checking",
+      accountHolderName: "Jason Swipelux",
+    },
+  },
   walletDestination: {
     type: "wallet",
     currency: "USDC",
@@ -240,6 +260,8 @@ const BODY_CASES = [
   ["integration/issue-bank-account", "post", "/v3/customers/{customerId}/accounts", EXAMPLES.issuedBank],
   ["integration/recipients", "post", "/v3/customers/{customerId}/recipients", EXAMPLES.individualRecipient],
   ["integration/recipients", "post", "/v3/customers/{customerId}/recipients/{recipientId}/destinations", EXAMPLES.bankDestination],
+  ["integration/recipients", "post", "/v3/customers/{customerId}/recipients/{recipientId}/destinations", EXAMPLES.pixDestination],
+  ["integration/recipients", "post", "/v3/customers/{customerId}/recipients/{recipientId}/destinations", EXAMPLES.pixSafeDestination],
   ["integration/recipients", "post", "/v3/customers/{customerId}/recipients/{recipientId}/destinations", EXAMPLES.walletDestination],
   ["integration/receive-funds", "post", "/v3/quotes", EXAMPLES.payInQuote],
   ["integration/receive-funds", "post", "/v3/transfers", EXAMPLES.transfer],
