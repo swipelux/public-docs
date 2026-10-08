@@ -8,6 +8,28 @@ description: "Swipelux API के संस्करणों में पर�
 
 पहले के संस्करण से मौजूदा इंटीग्रेशन को अपग्रेड करने के लिए, [v3 पर माइग्रेट करें](/hi/api-reference/versioning/migrate-to-v3) देखें।
 
+<Update label="2026-10-08" description="v3" tags={["जोड़ा गया","बदला गया","ठीक किया गया"]}>
+
+### जोड़ा गया
+- Recipient destinations अब ब्राज़ील में BRL payouts के लिए `pix` और `pix_safe` types स्वीकार करते हैं। एक Pix destination किसी Pix key को भुगतान करता है। एक Pix Safe destination ऐसे bank account को भुगतान करता है जिसकी पहचान holder के CPF या CNPJ, bank के ISPB code, branch और account number से होती है। दोनों के लिए customer की Pix capability (`pix_pooled`) का ready होना ज़रूरी है, और इनके payouts USDC से funded होते हैं और इन पर कोई developer fee नहीं लगती। [Recipients](/hi/integration/recipients) और [Send funds](/hi/integration/send-funds#pix-payouts) देखें।
+- `GET /v3/customers/{customerId}/tasks/{taskId}` अब document requirement ID के साथ `documentCandidatesFor` स्वीकार करता है, साथ ही alternatives वाली requirement के लिए `documentAlternativeKey` भी। तब response `data.documentCandidates` में वे files सूचीबद्ध करता है जिन्हें customer पहले ही upload कर चुका है और जो उस requirement को पूरा कर सकती हैं, किसी भी `missingMetadata` या `conflictingMetadata` के साथ। File को दोबारा upload करने के बजाय candidate का `documentId` missing `documentMetadata` के साथ submit करें। इस query के लिए `accounts:read` और `customers:read` ज़रूरी हैं, और invalid selection पर `400 validation_error` लौटता है।
+
+### बदला गया
+- `GET /v3/webhooks/portal` एक portal URL लौटाता है जो एक घंटे बाद expire हो जाता है, `Cache-Control: no-store` के साथ। जिस API key के पास `webhooks:write` है, उसके साथ portal endpoint signing secret दिखाता है और endpoints manage करने, deliveries retry करने और उन्हें replay करने देता है। केवल `webhooks:read` के साथ portal सिर्फ़ deliveries दिखाता है। [Webhooks](/hi/integration/webhooks) देखें।
+- Citi (`citibank`) केवल business customers को offer किया जाता है। हर business के पास pooled Citi बना रहता है, और named Citi केवल US के बाहर registered businesses को offer किया जाता है। जब किसी customer को Citi offer नहीं किया जाता, तो supported list उसे छोड़ देती है, उसका नाम देने पर `422 capability_institutions_unsupported` लौटता है, और जो method केवल Citi offer करता है वह `disabled` के रूप में list होता है। `institutions` के बिना request बाकी banks में से चुनती है। मौजूदा applications और accounts में कोई बदलाव नहीं है।
+- Named CFSB (`cfsb`) capabilities केवल US customers को offer की जाती हैं: US में registered businesses और वहाँ रहने वाले individuals। अन्य customers के लिए supported list named CFSB को छोड़ देती है, और उसका नाम देने पर `422 capability_institutions_unsupported` लौटता है। `institutions` के बिना request बाकी banks में से चुनती है। Pooled CFSB, जिन customers का country unknown है, और मौजूदा applications में कोई बदलाव नहीं है।
+- Lead Bank (`lead_bank`) की named ACH, Wire और SWIFT capabilities केवल उन customers को offer की जाती हैं जिन्हें Lead Bank उनके legal form और countries के आधार पर onboard कर सकता है। अन्य customers के लिए supported list `lead_bank` को छोड़ देती है, और उसका नाम देने पर `422 capability_institutions_unsupported` लौटता है। जिन customers को Lead Bank पहले ही onboard कर चुका है, और जिन capabilities की open request में पहले से `lead_bank` का नाम है, उनके पास यह बना रहता है। मौजूदा applications और accounts में कोई बदलाव नहीं है।
+- Individuals और beneficial owners के लिए नई identity document requests `constraints.identityMetadataRequired: true` set कर सकती हैं, जिससे हर file के लिए `documentMetadata` में उसका ID number और issuing country ज़रूरी होता है। नई business proof-of-address और owner proof-of-residence requests `constraints.maxIssueAgeDays: 90` set कर सकती हैं, जिससे हर file के लिए उसकी issue date ज़रूरी होती है। मौजूदा tasks अपनी requirements बनाए रखते हैं, इसलिए हर task request पर constraints पढ़ें।
+- Recipient destination `type` अब एक open enum है। इस reference के पहले के versions में इसे closed बताया गया था, इसलिए ऐसे किसी भी client को update करें जो unknown types को reject या drop करता है। Destination responses और `destination.status_changed` events में अब `pix` और `pix_safe` आ सकते हैं, और आगे और types जोड़े जा सकते हैं।
+- किसी eligible session के लिए verification link, जो केवल documents माँगता है, अब Swipelux-hosted document upload page खोलता है। Link स्वयं नहीं बदलता, और अन्य sessions अब भी hosted verification flow खोलते हैं।
+- Individual customers और related-party persons पर `employment.occupation` अधिकतम 255 characters स्वीकार करता है।
+
+### ठीक किया गया
+- Payout quote और transfer responses USDC या USDT source amount को छह decimal places तक रखते हैं, उदाहरण के लिए `4009.71` के बजाय `4009.711365`। Fiat amounts दो decimals रखते हैं। जिस payout का stablecoin source amount दो से अधिक decimals वाला है, उसे बनाने या पढ़ने पर अब `500` नहीं लौटता।
+- [`POST /v3/customers/{customerId}/capabilities/{capabilityId}/cancel`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id-cancel) reference अब cancellation को वैसे ही describe करता है जैसे वह काम करता है। आप एक `ready` capability cancel कर सकते हैं, `stablecoin_transfers` capability cancel नहीं की जा सकती, और cancel करने से केवल वही capability समाप्त होती है, जबकि उसके applications अपना status, tasks और approvals बनाए रखते हैं।
+
+</Update>
+
 <Update label="2026-10-05" description="v3" tags={["जोड़ा गया","बदला गया","ठीक किया गया"]}>
 
 ### जोड़ा गया
