@@ -16,6 +16,17 @@ export SWIPELUX_SANDBOX_API_KEY='replace-with-your-sandbox-key'
 
 ## 测试能力的就绪状态 {#test-capability-readiness}
 
+在沙盒中,ACH、Wire 和 SWIFT 能力(包括指定银行的和池化的)仅由 JPMorgan Chase(`jpmorgan`)提供。请求这些能力时如果省略 `institutions`,Swipelux 会选择 `jpmorgan`。指定任何其他银行都会返回 `422 capability_institutions_unsupported`。沙盒中的支持能力列表对这些方式仅显示 `jpmorgan`。生产环境路由以及 RTP、Pix 和 SPEI 等其他方式保持不变。
+
+```bash Request a sandbox bank capability
+curl --request POST \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/capabilities/${CAPABILITY_ID}" \
+  --header "X-API-Key: ${SWIPELUX_SANDBOX_API_KEY}" \
+  --header "Idempotency-Key: sandbox-capability-001" \
+  --header "Content-Type: application/json" \
+  --data '{"institutions":["jpmorgan"]}'
+```
+
 申请某个能力后,使用 [`POST /v3/sandbox/customers/{customerId}/capabilities/{capabilityId}/status`](/api-reference/sandbox/post-v3-sandbox-customers-by-customer-id-capabilities-by-capability-id-status) 设置其沙盒状态:
 
 ```bash Set capability status
@@ -26,7 +37,11 @@ curl --request POST \
   --data '{"status":"ready"}'
 ```
 
-使用辅助接口后,请重新拉取该能力。将其当前的 `status` 与 `openTaskIds` 视为您的产品必须处理的结果。
+使用辅助接口后,请重新拉取该能力。将其当前的 `status` 与 `openTaskIds` 视为您的产品必须处理的结果。 `200` 响应仍可能显示未完成的工作,例如客户任务或 `pending` 审核。
+
+当能力因你无法在沙盒中解除的原因而无法达到所请求的状态时,辅助接口会返回 `409 capability_status_blocked`,例如 `approval_scope_review_required`、运营冻结或终态。问题响应中的 `statusReason` 包含该能力的原因代码和消息,并带有 `retryable: false`。请读取该能力以获取该原因的 `resolution`。
+
+第二次将指定能力强制设为 `rejected` 时,会返回未发生变化的同一能力。将已拒绝的能力强制设为 `restricted` 或 `ready` 会返回 `422 invalid_capability`。请改为创建一个新的沙盒客户来测试这些状态。
 
 ## 测试一个待办任务
 
@@ -169,6 +184,8 @@ curl --request POST \
   --header "Content-Type: application/json" \
   --data '{"outcome":"accepted"}'
 ```
+
+你可以审核由 `POST /v3/sandbox/tasks` 创建的任务,以及 Swipelux 收集的能力受理任务。审核由运营团队或其他工作流拥有的任务会返回 `409 task_not_sandbox_reviewable`。该任务仍可通过任务端点读取,并等待其所有者审核。`404 task_not_found` 表示该任务 ID 未知或属于其他商户。
 
 生产环境的任务完成模式请参阅[能力与任务](/cn/integration/onboarding/capabilities-and-requirements)。
 
