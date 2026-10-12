@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { syntheticExampleChanges } from "./synthetic-examples.mjs";
 
 export const SOURCE_SHA256 =
   "beff5a73693c3384b5d028035332f4ef8c3eeb1277ef60b8b949926a6ed643da";
@@ -7,13 +8,13 @@ export const SOURCE_REPOSITORY = "swipelux/wallet-infrastructure";
 export const SOURCE_COMMIT = "1841819fbb5a94b67f9596dc69f4f7aa14e272a2";
 export const SOURCE_ROUTE = "/openapi-v3.json";
 export const EXPECTED_OUTPUT_SHA256 =
-  "ebc9804794ee32896562665ee08d8b3c827ac69e7d5ee73a455514d20e4245fb";
+  "e40b5603c62285bfcfbd69556af726d5a889927fbf5880d35df755613b3e2189";
 export const EXPECTED_COVERAGE_SHA256 =
-  "0b26eea0bef1e712edda81e9f9bfd92ae0e5ddd185786d1d44ecbda4b46c58f1";
+  "304b35416fad03c6cec418f1e9134ae5f4879a49b23a941bea2982a446a77524";
 export const EXPECTED_TRANSFORMATIONS_SHA256 =
-  "de6fd2b276898c1f3d7a74c53bf95451a13b749d568b71aae5db2001446d80ad";
-// Public API label preparation timestamp, normalized to UTC whole seconds.
-export const APPROVED_GENERATED_AT = "2026-10-08T22:07:23.000Z";
+  "ad2de16edda060a73ebcee9c268778e85c7c343df0c66a06559c0881927f4fa0";
+// Public API preparation timestamp, normalized to UTC whole seconds.
+export const APPROVED_GENERATED_AT = "2026-10-12T19:08:30.000Z";
 export const HTTP_METHODS = new Set([
   "get",
   "post",
@@ -24,7 +25,7 @@ export const HTTP_METHODS = new Set([
   "options",
   "trace",
 ]);
-export const PREPARATION_VERSION = "1.5.0";
+export const PREPARATION_VERSION = "1.6.0";
 
 export const EXPECTED_OPENAPI_COUNTS = Object.freeze({
   paths: 52,
@@ -61,7 +62,7 @@ const WEBHOOK_EVENT_CONTENT =
   "Verify the raw request body with your endpoint signing secret and the `svix-id`, `svix-timestamp`, and `svix-signature` headers before you trust this event. See [Verify before parsing](/integration/webhooks#verify-before-parsing).";
 const UNION_TITLE_REASON =
   "Label each union option with its discriminator value.";
-const EXAMPLE_NAME_REASON = "Name each example with its summary.";
+const PUBLIC_EXAMPLE_REASON = "Prepare public example names and synthetic values.";
 const PLAIN_LANGUAGE_REASON =
   "Describe the operation without internal implementation terms.";
 const UNION_KEYWORDS = ["oneOf", "anyOf"];
@@ -897,6 +898,12 @@ function exampleNameTransformations(spec) {
 }
 
 function optionalTransformationReason(pointer) {
+  if (
+    /^\/(?:paths|webhooks|components)\/.+\/(?:example|examples)$/.test(pointer) ||
+    pointer === "/components/examples"
+  ) {
+    return PUBLIC_EXAMPLE_REASON;
+  }
   if (LEGACY_REFERENCE_REWRITES.some((rewrite) => rewrite.pointer === pointer)) {
     return LEGACY_REFERENCE_REASON;
   }
@@ -916,13 +923,6 @@ function optionalTransformationReason(pointer) {
     )
   ) {
     return UNRELEASED_DESTINATION_REASON;
-  }
-  if (
-    /^\/(?:paths|webhooks)\/.+\/(?:requestBody|responses\/[^/]+)\/content\/[^/]+\/examples$/.test(
-      pointer,
-    )
-  ) {
-    return EXAMPLE_NAME_REASON;
   }
   return undefined;
 }
@@ -1354,6 +1354,11 @@ export function validateOpenApi(spec, { prepared = false } = {}) {
   validateRefs(spec);
 
   if (prepared) {
+    if (syntheticExampleChanges(spec).length > 0) {
+      throw new Error(
+        "Public examples contain retired operational values or company email addresses",
+      );
+    }
     const schemes = Object.keys(spec?.components?.securitySchemes ?? {}).sort();
     if (canonicalHash(schemes) !== canonicalHash(["apiKey"])) {
       throw new Error(
@@ -1415,6 +1420,25 @@ export function assertOpenApiCounts(spec, expectedCounts) {
 
 export function assertExpectedOpenApiCounts(spec) {
   return assertOpenApiCounts(spec, EXPECTED_OPENAPI_COUNTS);
+}
+
+export function sanitizeRecordedPublicExamples(spec, transformations) {
+  const changes = syntheticExampleChanges(spec);
+  for (const { pointer, value } of changes) {
+    const record = transformations.find((item) => item.pointer === pointer);
+    if (record) {
+      setPointer(spec, pointer, value);
+      record.afterHash = canonicalHash(value);
+    } else {
+      addReplacement(spec, transformations, pointer, value, PUBLIC_EXAMPLE_REASON);
+    }
+  }
+  for (const item of transformations) {
+    if (changes.some((change) => isWithinPointer(change.pointer, item.pointer))) {
+      item.afterHash = canonicalHash(pointerState(spec, item.pointer).value);
+    }
+  }
+  transformations.sort(sortByFields(["pointer"]));
 }
 
 export function prepareOpenApi(
@@ -1521,7 +1545,7 @@ export function prepareOpenApi(
   }
 
   for (const { pointer, value } of exampleNameTransformations(spec)) {
-    addReplacement(spec, transformations, pointer, value, EXAMPLE_NAME_REASON);
+    addReplacement(spec, transformations, pointer, value, PUBLIC_EXAMPLE_REASON);
   }
 
   for (const { pointer, value } of unionTitleTransformations(spec)) {
@@ -1579,6 +1603,8 @@ export function prepareOpenApi(
       );
     }
   }
+
+  sanitizeRecordedPublicExamples(spec, transformations);
 
   // Union labels can be added inside a filtered union after it is recorded, so
   // its record ends with the final prepared value.

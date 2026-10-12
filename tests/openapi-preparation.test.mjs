@@ -227,6 +227,44 @@ function makeFixture() {
   };
 }
 
+test("replaces operational identifiers and company emails only inside public examples", () => {
+  const source = makeFixture();
+  source.info.description = "Contact support@swipelux.com";
+  source.components.schemas.Customer.properties.email = {
+    type: "string",
+    example: "developer@swipelux.com",
+  };
+  const content =
+    source.paths["/v3/customers"].get.responses["200"].content["application/json"];
+  content.examples = {
+    customer: {
+      summary: "Sample customer",
+      value: {
+        id: "cus_uPlL04SqhMf8QYHcJV",
+        email: "developer@swipelux.com",
+        nested: [{ email: "customer@example.com" }],
+      },
+    },
+  };
+
+  const { spec, transformations } = prepareOpenApi(source, SOURCE_SHA256);
+  const prepared =
+    spec.paths["/v3/customers"].get.responses["200"].content["application/json"];
+  assert.deepEqual(prepared.examples["Sample customer"].value, {
+    id: "cus_4mT8xN2pQ7rV6sL1dZ9y",
+    email: "developer@example.com",
+    nested: [{ email: "customer@example.com" }],
+  });
+  assert.equal(
+    spec.components.schemas.Customer.properties.email.example,
+    "developer@example.com",
+  );
+  assert.equal(spec.info.description, "Contact support@swipelux.com");
+  assert.equal(content.examples.customer.value.email, "developer@swipelux.com");
+  compareSourceToPrepared(source, spec, transformations);
+  verifyPreparedTransformations(spec, transformations);
+});
+
 test("canonicalHash sorts object keys recursively but preserves array order", () => {
   const left = {
     z: 1,
