@@ -160,7 +160,7 @@ const EXAMPLES = Object.freeze({
     relationship: "contractor",
     firstName: "Jason",
     lastName: "Swipelux",
-    email: "jason@swipelux.com",
+    email: "jason@example.com",
     phone: "+14155551234",
     address: {
       streetLine1: "1 Market Street",
@@ -187,7 +187,7 @@ const EXAMPLES = Object.freeze({
     type: "pix",
     currency: "BRL",
     details: {
-      pixKey: "jason@swipelux.com",
+      pixKey: "jason@example.com",
       accountHolderName: "Jason Swipelux",
     },
   },
