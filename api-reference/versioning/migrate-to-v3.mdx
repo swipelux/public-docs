@@ -113,6 +113,10 @@ sequenceDiagram
   else rejected
     SLX-->>You: task rejected, parent statusReason says what is next
   end
+  opt correct before review
+    You->>SLX: POST .../tasks/{taskId}/withdrawals
+    SLX-->>You: submission withdrawn, answers back to action_required
+  end
 ```
 
 Key properties:
@@ -121,6 +125,8 @@ Key properties:
 - Submitting is **review-gated**: it never mutates capability or account state directly, acceptance does. One exception: `profile` answers write through to the customer profile on submit (2.3). After submitting, poll the task or the parent resource.
 - `taskRevision` (echo of the task's `revision`) is a concurrency guard: if the task changed since you read it, re-read and rebuild your answers.
 - `absence` is a first-class answer ("I don't have this because ..."), use it instead of leaving requirements dangling.
+- `allowPartial: true` on a submission stores the valid answers and returns the invalid ones in `refusedAnswers` instead of failing the whole request (2.3).
+- A submission still `in_review` can be withdrawn and corrected before any review decision (2.3).
 - `rejected` usually ends the task. When a hosted verification rejected it and that decision is later reversed, the task can become `satisfied`, or `action_required` with the requirements the new decision does not answer reopened. Submit those again against the new `revision`.
 
 ### 1.5 Money movement
@@ -152,7 +158,7 @@ Every status-bearing resource has its own enum, and every non-happy status carri
 | Capability | `pending`, `restricted`, `ready`, `rejected`, `canceled` |
 | Application (per-request attempt under a capability, 2.2) | `requested`, `in_review`, `action_required`, `ready`, `rejected`, `disabled`, `canceled` |
 | Task | `action_required`, `in_review`, `satisfied`, `rejected`, `canceled` |
-| Submission | `in_review`, `accepted`, `changes_requested`, `rejected` |
+| Submission | `in_review`, `accepted`, `changes_requested`, `rejected`, `withdrawn` |
 | Account | `provisioning`, `in_review`, `ready`, `action_required`, `suspended`, `rejected`, `archived` |
 | Quote | `active`, `executed`, `expired`, `failed` |
 | Transfer | `awaiting_funds`, `processing`, `action_required`, `completed`, `failed`, `canceled` |
@@ -314,7 +320,7 @@ Every legacy document surface maps to the same replacement: read `GET /v3/custom
 
 Around that loop:
 
-- **Raw file storage**: `POST/GET/DELETE /v3/customers/{customerId}/documents` (plus `/{documentId}` and `GET .../{documentId}/download`), upload once with your API key, then reference document ids in submission answers. This replaces every upload-token and direct-upload intake. `POST .../documents` also accepts a JSON body (`storageKey`, `fileName`, `type`) that consumes a still-fresh customer-scoped reference from `POST /v2/documents/direct-upload`, so parked uploads migrate without re-sending bytes.
+- **Raw file storage**: `POST/GET/DELETE /v3/customers/{customerId}/documents` (plus `/{documentId}` and `GET .../{documentId}/download`), upload once with your API key, then reference document ids in submission answers. This replaces every upload-token and direct-upload intake. `POST .../documents` also accepts a JSON body (`storageKey`, `fileName`, `type`) that consumes a still-fresh customer-scoped reference from `POST /v2/documents/direct-upload`, so parked uploads migrate without re-sending bytes. Every v3 document resource carries `contentSha256` (`sha256:<hex>`, or `null` for documents stored before digests were recorded), so you can detect a re-upload of a byte-identical file.
 - **Net-new reads**: `GET /v3/tasks` (merchant-wide inbox), `GET /v3/transfers/{transferId}/tasks`, `GET .../tasks/{taskId}/history`, `GET .../tasks/{taskId}/submissions` (plus `/{submissionId}`).
 
 Submission (illustrative):
@@ -332,10 +338,12 @@ Submission (illustrative):
 ```
 
 - Answer types: `profile`, `text`, `date`, `single_select`, `multi_select`, `boolean`, `attestation`, `document`, `resource_reference`, `absence`. Each requirement's `request` object tells you which type it expects.
-- A submission must answer **every actionable requirement in the current round**, with the exact `taskRevision` you read. Partial submissions are rejected.
+- A submission must answer **every actionable requirement in the current round**, with the exact `taskRevision` you read. Leaving one out returns `422 task_submission_incomplete`.
+- By default, one invalid answer fails the whole request with `400` and nothing is stored. Send `"allowPartial": true` to keep the valid answers: the `201` response lists the others in `refusedAnswers` (`requirementId`, `code`, `pointer`, `message`), with `code` one of `invalid`, `absence_conflicts_with_profile`, `invalid_document_reference`, or `depends_on_refused_answer`. Treat an unknown code as `invalid`. When no answer can be kept, the response is `400 validation_error` and nothing is stored. See [API answers](/integration/onboarding/capabilities-and-requirements#keep-valid-answers-with-allowpartial).
 - `profile` answers **write through**: they update the customer profile via the normal validation path and immediately re-evaluate every capability referencing the same intake work. Sibling intake tasks whose requirements are all satisfied close automatically.
 - Requirements can form alternative groups (`alternativeKey`): submit exactly one of the group.
 - `changes_requested` bumps `remediationRound` and carries `reviewFeedback`. Re-read the task, submit again **with a fresh idempotency key**.
+- `POST /v3/customers/{customerId}/tasks/{taskId}/withdrawals` (with `Idempotency-Key`) takes back the one submission awaiting review so the customer can correct it. Its answers return to `action_required` without `reviewFeedback`, its outcome becomes `withdrawn`, and `remediationRound` is bumped. Requirements already accepted are untouched, and withdrawals are not limited in number. It returns `404 task_not_found` for an unknown task, `409 task_not_in_review` when nothing awaits review or the task is past its deadline, and `409 submission_already_forwarded` when a provider reviews the task or already holds the submission.
 - Hosted verification URLs appear **only** on customer-scoped task detail (`GET /v3/customers/{customerId}/tasks/{taskId}`) and only while the session is actionable; lists and `GET /v3/tasks/{taskId}` are deliberately URL-free.
 - Terms of service is a task too: `openTaskIds` can include a `category: "terms_of_service"` task whose hosted acceptance page is linked the same way (customer-scoped detail only). Generic submissions cannot accept terms, and KYC approval never implies terms acceptance.
 - Tasks are scoped per capability, so the "same" ask (for example proof of address) can appear once per capability. Deduplicate in your UI by requirement `key`.
@@ -525,6 +533,7 @@ Each step ships independently; v1 or v2 and v3 run side by side against the same
 - [ ] Submissions are review-gated (submitting is not the same as unblocked) and must answer **every** actionable requirement with the exact `taskRevision`. On mismatch, re-read and rebuild.
 - [ ] No `task.*` webhook exists, poll the task (or its parent) after every submit.
 - [ ] `changes_requested` retry equals re-read the task, fresh answers, **fresh idempotency key**.
+- [ ] Accept submission outcome `withdrawn` and any outcome or `refusedAnswers[].code` you have not seen before.
 - [ ] Posting to `/v1/documents` never unblocks a v3 capability, once a customer is on tasks, drive every ask through tasks.
 - [ ] New tasks can appear on an already-`ready` capability, keep the task loop wired after onboarding, not just during it.
 - [ ] Capability `cancel` works only from `pending` or `restricted` with no blocking resources (`409 capability_not_cancelable`); re-requesting after cancel is a fresh create with a fresh idempotency key.

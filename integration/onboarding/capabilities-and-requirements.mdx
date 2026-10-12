@@ -275,6 +275,8 @@ curl --request POST \
 
 Store the returned `data.id` as `DOCUMENT_ID` before submitting the answer that references it.
 
+Every v3 document resource includes `contentSha256`, the SHA-256 digest of the stored file as `sha256:<hex>`. Two documents with the same digest are byte-identical. To detect that the customer is uploading the same file Swipelux already rejected, hash the file before you upload it and compare the result with `contentSha256` on the rejected document. The field is `null` for documents stored before Swipelux recorded digests.
+
 To retrieve a stored file later, call [`GET /v3/customers/{customerId}/documents/{documentId}/download`](/api-reference/documents/get-v3-customers-by-customer-id-documents-by-document-id-download). Swipelux returns a `url` that downloads the file as an attachment and expires after one hour. Archived documents return `404`.
 
 ### API answers
@@ -304,6 +306,78 @@ JSON
 ```
 
 Take every requirement ID and answer type from the latest task. If the API reports that the task changed, refetch it and rebuild the submission from the new revision.
+
+#### Keep valid answers with `allowPartial`
+
+By default, one invalid answer fails the whole request with `400` and Swipelux stores nothing. Add `"allowPartial": true` when you want Swipelux to store the valid answers and refuse only the invalid ones:
+
+```json Partial submission request
+{
+  "taskRevision": 3,
+  "allowPartial": true,
+  "answers": [
+    { "requirementId": "req_a", "answer": { "type": "text", "value": "Salary" } },
+    { "requirementId": "req_b", "answer": { "type": "document", "documentIds": ["doc_unknown"] } }
+  ]
+}
+```
+
+Swipelux returns `201` with the stored submission in `data`, holding only the kept answers, and lists the others in `refusedAnswers`:
+
+```json Partial submission response
+{
+  "data": { "id": "sub_000000000000000001", "outcome": "in_review", "answers": [{ "requirementId": "req_a" }] },
+  "refusedAnswers": [
+    {
+      "requirementId": "req_b",
+      "code": "invalid_document_reference",
+      "pointer": "/answers/1/answer",
+      "message": "A referenced document is invalid."
+    }
+  ]
+}
+```
+
+Each refused answer has one of these codes:
+
+| `code` | Meaning |
+| --- | --- |
+| `invalid` | The answer does not meet the request's shape, format, or constraints, or the customer profile does not accept the value. |
+| `absence_conflicts_with_profile` | An absence was sent for a value the profile holds. |
+| `invalid_document_reference` | A referenced document cannot be used for this customer and request. |
+| `depends_on_refused_answer` | The answer is valid on its own but is judged together with a refused one. A conditional answer and the answer that controls it are kept or refused together. |
+
+More codes can be added. Treat an unknown code as `invalid`. `message` never repeats the submitted value.
+
+`allowPartial` does not relax the other rules:
+
+- The request must still answer every requirement it would have to answer without the field. Unanswered open requirements still return `422 task_submission_incomplete`.
+- A body that fails the request schema itself, such as an unknown field or a wrong type, still returns `400 validation_error`.
+- When no answer can be kept, Swipelux returns `400 validation_error`, stores nothing, and lists every refused answer in `errors[]`.
+- `refusedAnswers` is present, possibly empty, exactly when the request sent `"allowPartial": true`. A replay with the same `Idempotency-Key` returns the same `refusedAnswers`.
+
+Before you correct a refused answer, read the task again. A refused requirement is normally still `action_required`, but a document request can already be answered by a file on record. Submit the corrections with the new `taskRevision` and a fresh `Idempotency-Key`. Send a conditional answer together with its controlling answer.
+
+#### Withdraw a submission awaiting review
+
+To correct a submission that is still `in_review`, take it back with `POST /v3/customers/{customerId}/tasks/{taskId}/withdrawals`. The request has no body and needs an `Idempotency-Key`:
+
+```bash Withdraw task submission
+curl --request POST \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/tasks/${TASK_ID}/withdrawals" \
+  --header "X-API-Key: ${SWIPELUX_API_KEY}" \
+  --header "Idempotency-Key: task-withdrawal-001"
+```
+
+Swipelux returns `200` with the submission in `data`. Its `outcome` becomes `withdrawn`, its answers return to `action_required` without `reviewFeedback`, and the next submission starts a new `remediationRound`. Requirements already accepted and the customer profile stay unchanged. You can withdraw as many times as you need. Read the task again, then submit corrected answers.
+
+Swipelux refuses a withdrawal in these cases:
+
+- `404 task_not_found`: the task does not exist for this customer.
+- `409 task_not_in_review`: no submission awaits review, or the task is past its deadline.
+- `409 submission_already_forwarded`: a provider reviews the task or already holds the submission.
+
+Submission `outcome` can now be `withdrawn`. Accept it, and any other value your client does not recognize, when you read submissions.
 
 ### Beneficial-owner prerequisite for businesses
 
