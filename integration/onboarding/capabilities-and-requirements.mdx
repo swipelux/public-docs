@@ -259,6 +259,36 @@ These are task-scoped actions, not a separate customer-verification lifecycle.
 
 A hosted answer to a profile requirement for a structured value, such as an address or tax identifiers, must pass the same schema and constraint checks as a direct answer. When it does not, the requirement stays open. A requirement that Swipelux returns to `action_required` for this reason carries `reviewFeedback.code: hosted_profile_direct_submission_required`. Collect that value from the customer and submit it as an [API answer](#api-answers).
 
+### Reuse an existing Sumsub verification
+
+If you already verified an individual customer in your own Sumsub account, you can reuse that verification on their intake task. Import it before starting the task's hosted identity verification. This flow supports individual customers only.
+
+**One-time setup:** Request Swipelux's partner token and Sumsub client ID from Swipelux support. In your Sumsub dashboard, go to **Reusable identity → Partners → Recipients → Add recipient** and redeem the partner token within 30 days. Enable **Reusable KYC** on the verification level you used; Sumsub cannot mint a share token for that level otherwise.
+
+For each customer:
+
+1. Read [`GET /v3/customers/{customerId}/tasks/{taskId}`](/api-reference/tasks/get-customer-task) and select the `identity_verification` entry in `verificationSessions` with status `action_required`. Use its `id` as `verificationSessionId`.
+2. In your Sumsub account, mint a share token with `POST /resources/accessTokens/shareToken`. Supply the customer's `applicantId` and set `forClientId` to the Swipelux Sumsub client ID supplied with the partner token. The share token is single-use and expires in 20 minutes.
+3. Call [`POST /v3/customers/{customerId}/tasks/{taskId}/verification-sessions/{verificationSessionId}/share-token`](/api-reference/tasks/import-customer-task-share-token) with your Swipelux API key, an `Idempotency-Key` header, and this JSON body:
+
+```json Import verification
+{
+  "shareToken": "replace-with-your-share-token"
+}
+```
+
+Sumsub re-checks the imported data against Swipelux's requirements. The identity verification session moves to `in_review` when checks are pending or stays `action_required` when steps are missing. Importing does not immediately approve the verification. The session's `coveredRequirementIds` lists the requirements that the verification completes when approved.
+
+Refetch the customer task detail. If steps are missing, such as a fresh liveness selfie, send the customer to the session URL using the [hosted action](#hosted-actions). Submit every other requirement through the [normal submissions endpoint](#api-answers). Proof of funds always requires a [direct document upload](#upload-documents) and submission.
+
+For import errors:
+
+- `409 verification_already_started`: verification has already started or an import is in progress. Continue through the existing verification session.
+- `422 share_token_rejected`: generate a fresh token for Swipelux and retry with a new idempotency key.
+- `503`: inspect `retryable`. When `true`, follow the [retry guidance](/integration/errors). When `false`, continue through the normal verification session without resubmitting the share token.
+
+See the import operation above for the full error catalog. Next, [submit the remaining task answers](#api-answers).
+
 ### Upload documents
 
 When a requirement requests a document, upload it with [`POST /v3/customers/{customerId}/documents`](/api-reference/documents/post-v3-customers-by-customer-id-documents):
