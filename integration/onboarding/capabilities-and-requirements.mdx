@@ -233,6 +233,7 @@ In the task-detail response, each entry in `verificationSessions` and `tosSessio
         "key": "identity_verification",
         "type": "identity_verification",
         "status": "action_required",
+        "coveredRequirementIds": ["req_000000000000000011", "req_000000000000000012"],
         "action": {
           "kind": "available",
           "url": "https://platform.swipelux.com/kyc/redirect/cus_000000000000000001/tsk_000000000000000002/vfy_000000000000000003",
@@ -257,7 +258,53 @@ In the task-detail response, each entry in `verificationSessions` and `tosSessio
 
 These are task-scoped actions, not a separate customer-verification lifecycle.
 
+Every `verificationSessions[]` entry in task reads and customer task detail includes `coveredRequirementIds`. It lists the IDs of the task's live requirements that the session can fill. Use it to see which requirements a hosted session or an [imported verification](#import-an-existing-sumsub-verification) can settle. Fill every other requirement through [API answers](#api-answers).
+
+For new individual intake tasks, the hosted identity session covers only the ID document, selfie, and proof of address. Proof-of-funds requirements, such as `proof_of_funds`, `source_of_funds_document`, `named_source_of_funds_document`, and `sole_proprietor_document`, are not part of the hosted session. [Upload](#upload-documents) and submit those documents directly. Swipelux reviews them, and the task stays open until they are accepted.
+
 A hosted answer to a profile requirement for a structured value, such as an address or tax identifiers, must pass the same schema and constraint checks as a direct answer. When it does not, the requirement stays open. A requirement that Swipelux returns to `action_required` for this reason carries `reviewFeedback.code: hosted_profile_direct_submission_required`. Collect that value from the customer and submit it as an [API answer](#api-answers).
+
+### Import an existing Sumsub verification
+
+If you already verify individuals in your own Sumsub account, you can import that verification into the identity session of the customer's intake task instead of sending the customer through the hosted flow. This option is for API integrations with individual customers only. Businesses and related parties are not supported.
+
+Before you import, set up sharing in Sumsub:
+
+1. Ask Swipelux for its Sumsub partner token, then add Swipelux as a sharing partner in your Sumsub account.
+2. Generate a share token for Swipelux by setting `forClientId` to `swipelux.com_21030`.
+3. Send the token to Swipelux before it expires. Share tokens are opaque, single-use, at most 1,024 UTF-8 bytes, and expire after 20 minutes by default. Treat each token as a credential.
+
+The task must be an individual intake task, the session must have `type: "identity_verification"` and `status: "action_required"`, and the customer must not have opened the session's hosted link yet. Opening the hosted link starts verification, but reading the task does not. Then call `POST /v3/customers/{customerId}/tasks/{taskId}/verification-sessions/{verificationSessionId}/share-token`. The request needs the same `accounts:write`, `customers:read`, and `customers:write` permissions as task submissions, plus an `Idempotency-Key`:
+
+```bash Import a share token
+curl --request POST \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/tasks/${TASK_ID}/verification-sessions/${VERIFICATION_SESSION_ID}/share-token" \
+  --header "X-API-Key: ${SWIPELUX_API_KEY}" \
+  --header "Idempotency-Key: share-token-import-001" \
+  --header "Content-Type: application/json" \
+  --data '{ "shareToken": "'"${SUMSUB_SHARE_TOKEN}"'" }'
+```
+
+```json Response
+{
+  "verificationSessionId": "vfy_000000000000000003",
+  "status": "in_review"
+}
+```
+
+Sumsub copies the matching steps into Swipelux's account and runs fresh checks against the level the task requires. Swipelux never stores or logs the share token.
+
+- `status: "in_review"` means the checks are pending. Swipelux accepts the requirements the session covers, the ID document, selfie, and proof of address, through its normal review, and the task updates.
+- `status: "action_required"` means steps are missing. The customer can finish them through the session's existing hosted link, or you can submit the covered requirements directly.
+
+The import fills only the requirements listed in the session's `coveredRequirementIds`. Submit profile answers, proof of funds, and other requirements as [API answers](#api-answers). To replay a request, send it again with the same `Idempotency-Key`.
+
+| Status | Code | What to do |
+| --- | --- | --- |
+| `409` | `verification_already_started` | The session already has a verification bound to it or an import in progress, for example because the customer opened the hosted link. Do not retry. Continue through the existing session. |
+| `409` | `verification_session_not_allowed` | The task or session is not eligible for import. Do not retry. Read the task and use the methods it offers. |
+| `422` | `share_token_rejected` | Sumsub refused the token, for example because it expired, was already used, or was issued for another recipient. Generate a new token for Swipelux and retry with a new `Idempotency-Key`. |
+| `503` | `kyc_provider_unavailable` | With `retryable: true`, Swipelux had not sent the token yet. Retry after a delay. With `retryable: false`, the import may have happened but could not be confirmed. Do not resend the token. Continue through the session's hosted link. |
 
 ### Upload documents
 
