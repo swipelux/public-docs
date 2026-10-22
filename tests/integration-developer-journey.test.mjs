@@ -16,6 +16,7 @@ const INTEGRATION_GROUPS = [
       "integration/authentication",
       "integration/errors",
       "integration/sandbox",
+      "integration/ai-agents",
     ],
   },
   {
@@ -63,7 +64,7 @@ function page(route) {
   return read(`${route}.mdx`);
 }
 
-test("publishes the approved 16-page Integration journey", () => {
+test("publishes the approved 17-page Integration journey", () => {
   const integration = getDefaultNavigation(config.navigation).tabs.find(
     ({ tab }) => tab === "Integration Docs",
   );
@@ -71,7 +72,7 @@ test("publishes the approved 16-page Integration journey", () => {
     integration?.groups.filter(({ hidden }) => !hidden),
     INTEGRATION_GROUPS,
   );
-  assert.equal(INTEGRATION_PAGES.length, 16);
+  assert.equal(INTEGRATION_PAGES.length, 17);
 
   for (const route of INTEGRATION_PAGES) {
     assert.equal(existsSync(`${route}.mdx`), true, `${route}.mdx must exist`);
