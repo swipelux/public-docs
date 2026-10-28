@@ -25,32 +25,38 @@ const REPLACEMENTS = new Map([
   ],
 ]);
 
-function syntheticValue(value) {
+function syntheticValue(value, replacements) {
   if (typeof value === "string") {
     const fingerprint = createHash("sha256").update(value).digest("hex");
-    const replacement = REPLACEMENTS.get(fingerprint);
+    const replacement = replacements.get(fingerprint);
     if (replacement !== undefined) return replacement;
     return /^[A-Za-z0-9._%+-]+@swipelux\.com$/i.test(value)
       ? value.replace(/@swipelux\.com$/i, "@example.com")
       : value;
   }
-  if (Array.isArray(value)) return value.map(syntheticValue);
+  if (Array.isArray(value)) {
+    return value.map((item) => syntheticValue(item, replacements));
+  }
   if (value !== null && typeof value === "object") {
     return Object.fromEntries(
-      Object.entries(value).map(([key, item]) => [key, syntheticValue(item)]),
+      Object.entries(value).map(([key, item]) => [
+        key,
+        syntheticValue(item, replacements),
+      ]),
     );
   }
   return value;
 }
 
-export function syntheticExampleChanges(spec) {
+// Tests pass their own fingerprints so fixtures never need a retired value.
+export function syntheticExampleChanges(spec, replacements = REPLACEMENTS) {
   const changes = [];
   function visit(node, pointer) {
     if (node === null || typeof node !== "object") return;
     for (const [key, value] of Object.entries(node)) {
       const child = `${pointer}/${key.replace(/~/g, "~0").replace(/\//g, "~1")}`;
       if (key === "example" || key === "examples") {
-        const replacement = syntheticValue(value);
+        const replacement = syntheticValue(value, replacements);
         if (JSON.stringify(value) !== JSON.stringify(replacement)) {
           changes.push({ pointer: child, value: replacement });
         }
