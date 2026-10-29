@@ -225,8 +225,8 @@ function hasConcreteNextAction(text) {
 }
 
 test("derives every canonical Integration page from docs.json", () => {
-  assert.equal(PAGES.length, 16, "Integration navigation must contain 16 pages");
-  assert.equal(new Set(PAGES).size, 16, "Integration pages must be unique");
+  assert.equal(PAGES.length, 17, "Integration navigation must contain 17 pages");
+  assert.equal(new Set(PAGES).size, 17, "Integration pages must be unique");
   for (const page of PAGES) assert.doesNotThrow(() => readPage(page));
 });
 
