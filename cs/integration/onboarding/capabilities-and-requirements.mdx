@@ -233,6 +233,7 @@ V odpovědi s detailem úkolu obsahuje každá položka v `verificationSessions`
         "key": "identity_verification",
         "type": "identity_verification",
         "status": "action_required",
+        "coveredRequirementIds": ["req_000000000000000011", "req_000000000000000012"],
         "action": {
           "kind": "available",
           "url": "https://platform.swipelux.com/kyc/redirect/cus_000000000000000001/tsk_000000000000000002/vfy_000000000000000003",
@@ -257,7 +258,50 @@ V odpovědi s detailem úkolu obsahuje každá položka v `verificationSessions`
 
 Jde o akce v rozsahu úkolu, nikoli o samostatný životní cyklus ověření zákazníka.
 
+Každá položka `verificationSessions[]` ve čtení úkolů a v detailu úkolu zákazníka obsahuje `coveredRequirementIds`. Uvádí ID aktivních požadavků úkolu, které relace může splnit. Podle něj zjistíte, které požadavky může vyřídit hostovaná relace nebo [importované ověření](#import-an-existing-identity-verification). Všechny ostatní požadavky splňte prostřednictvím [odpovědí přes API](#api-answers).
+
+U nových úkolů příjmu fyzických osob pokrývá hostovaná relace ověření identity pouze doklad totožnosti, selfie a doklad o adrese. Požadavky na doklad o zdroji prostředků, například `proof_of_funds`, `source_of_funds_document`, `named_source_of_funds_document` a `sole_proprietor_document`, nejsou součástí hostované relace. Tyto dokumenty přímo [nahrajte](#upload-documents) a odešlete. Swipelux je posoudí a úkol zůstane otevřený, dokud nebudou přijaty.
+
 Hostovaná odpověď na profilový požadavek na strukturovanou hodnotu, například adresu nebo daňové identifikátory, musí projít stejnými kontrolami schématu a omezení jako přímá odpověď. Pokud neprojde, požadavek zůstane otevřený. Požadavek, který Swipelux z tohoto důvodu vrátí do stavu `action_required`, nese `reviewFeedback.code: hosted_profile_direct_submission_required`. Získejte tuto hodnotu od zákazníka a odešlete ji jako [API odpověď](#api-answers).
+
+### Import existujícího ověření identity {#import-an-existing-identity-verification}
+
+Pokud již ověřujete fyzické osoby ve vlastním účtu u poskytovatele ověření identity Swipelux, můžete toto ověření importovat do relace ověření identity v úkolu příjmu zákazníka, místo abyste zákazníka posílali hostovaným tokem. Tato možnost je určena pouze pro integrace přes API se zákazníky, kteří jsou fyzickými osobami. Firmy a propojené strany nejsou podporovány.
+
+Před importem nastavte sdílení se svým poskytovatelem ověření identity:
+
+1. Požádejte Swipelux o jeho partnerský token a poté přidejte Swipelux jako partnera pro sdílení ve svém účtu u poskytovatele ověření identity.
+2. Pro ostrá ověření vygenerujte pro Swipelux token pro sdílení s ID klienta příjemce (`forClientId`) `swipelux.com_21030`.
+3. Odešlete token společnosti Swipelux dříve, než vyprší. Tokeny pro sdílení jsou neprůhledné, jednorázové, mají nejvýše 1 024 bajtů UTF-8 a ve výchozím nastavení vyprší po 20 minutách. S každým tokenem zacházejte jako s přihlašovacím údajem.
+
+Úkol musí být úkolem příjmu fyzické osoby a musí nabízet hostovanou relaci ověření jako způsob odeslání. Relace musí mít `type: "identity_verification"` a `status: "action_required"`. Zákazník nesmí mít u Swipelux již probíhající ani dokončené ověření a nesmí již probíhat import. Otevření hostovaného odkazu ověření zahájí, čtení úkolu však ne. Poté zavolejte `POST /v3/customers/{customerId}/tasks/{taskId}/verification-sessions/{verificationSessionId}/share-token`. Požadavek vyžaduje stejná oprávnění `accounts:write`, `customers:read` a `customers:write` jako odesílání úkolů a navíc `Idempotency-Key`:
+
+```json Request body
+{
+  "shareToken": "<share token>"
+}
+```
+
+```json Response
+{
+  "verificationSessionId": "vfy_000000000000000003",
+  "status": "in_review"
+}
+```
+
+Váš poskytovatel zkopíruje odpovídající kroky do účtu Swipelux a kontroly se znovu spustí podle úrovně, kterou úkol vyžaduje. Swipelux token pro sdílení nikdy neukládá ani nezaznamenává.
+
+- `status: "in_review"` znamená, že kontroly probíhají. Po jejich dokončení Swipelux vyřídí pokryté požadavky stejným způsobem jako u hostované relace.
+- `status: "action_required"` znamená, že chybí kroky. Zákazník je může dokončit prostřednictvím existujícího hostovaného odkazu relace, nebo můžete pokryté požadavky odeslat přímo.
+
+Import splní pouze požadavky uvedené v `coveredRequirementIds`: doklad totožnosti, selfie a tam, kde to úkol vyžaduje, doklad o adrese. Odpovědi profilu, doklad o zdroji prostředků a další požadavky odešlete jako [odpovědi přes API](#api-answers). Chcete-li požadavek zopakovat, odešlete ho znovu se stejným `Idempotency-Key`.
+
+| Stav | Kód | Co dělat |
+| --- | --- | --- |
+| `409` | `verification_already_started` | Tento zákazník již má u Swipelux probíhající nebo dokončené ověření, nebo již probíhá import, například proto, že zákazník otevřel hostovaný odkaz. Neopakujte požadavek. Pokračujte prostřednictvím existující relace. |
+| `409` | `verification_session_not_allowed` | Úkol nebo relace nesplňuje podmínky pro import. Neopakujte požadavek. Přečtěte úkol a použijte způsoby, které nabízí. |
+| `422` | `share_token_rejected` | Poskytovatel ověření identity token odmítl, například proto, že vypršel, byl již použit nebo byl vydán pro jiného příjemce. Vygenerujte pro Swipelux nový token a zopakujte požadavek s novým `Idempotency-Key`. |
+| `503` | `kyc_provider_unavailable` | Při `retryable: true` Swipelux token ještě neodeslal. Zopakujte požadavek po určité prodlevě. Při `retryable: false` import mohl proběhnout, ale nepodařilo se ho potvrdit. Token znovu neodesílejte. Pokračujte prostřednictvím hostovaného odkazu relace. |
 
 ### Nahrání dokumentů {#upload-documents}
 

@@ -233,6 +233,7 @@ In het taakdetailantwoord bevat elke entry in `verificationSessions` en `tosSess
         "key": "identity_verification",
         "type": "identity_verification",
         "status": "action_required",
+        "coveredRequirementIds": ["req_000000000000000011", "req_000000000000000012"],
         "action": {
           "kind": "available",
           "url": "https://platform.swipelux.com/kyc/redirect/cus_000000000000000001/tsk_000000000000000002/vfy_000000000000000003",
@@ -257,7 +258,50 @@ In het taakdetailantwoord bevat elke entry in `verificationSessions` en `tosSess
 
 Dit zijn task-scoped acties, geen aparte lifecycle voor klantverificatie.
 
+Elke `verificationSessions[]`-entry in het lezen van taken en in de taakdetails van de klant bevat `coveredRequirementIds`. Dit veld vermeldt de ID's van de actieve vereisten van de taak die de sessie kan invullen. Gebruik het om te zien welke vereisten een hosted session of een [geïmporteerde verificatie](#import-an-existing-identity-verification) kan afhandelen. Vul elke andere vereiste in via [API-antwoorden](#api-answers).
+
+Voor nieuwe intaketaken voor personen dekt de gehoste identiteitssessie alleen het ID-document, de selfie en het adresbewijs. Vereisten voor bewijs van middelen, zoals `proof_of_funds`, `source_of_funds_document`, `named_source_of_funds_document` en `sole_proprietor_document`, maken geen deel uit van de hosted session. [Upload](#upload-documents) deze documenten en dien ze direct in. Swipelux beoordeelt ze, en de taak blijft open tot ze zijn geaccepteerd.
+
 Een gehost antwoord op een profielvereiste voor een gestructureerde waarde, zoals een adres of fiscale identificatienummers, moet dezelfde schema- en constraintcontroles doorstaan als een direct antwoord. Als dat niet zo is, blijft de vereiste open. Een vereiste die Swipelux om deze reden terugzet naar `action_required`, bevat `reviewFeedback.code: hosted_profile_direct_submission_required`. Verzamel die waarde bij de klant en dien deze in als [API-antwoord](#api-answers).
+
+### Een bestaande identiteitsverificatie importeren {#import-an-existing-identity-verification}
+
+Als je personen al verifieert in je eigen account bij de provider voor identiteitsverificatie van Swipelux, kun je die verificatie importeren in de identiteitssessie van de intaketaak van de klant in plaats van de klant door de gehoste flow te sturen. Deze optie is alleen bedoeld voor API-integraties met individuele klanten. Bedrijven en related parties worden niet ondersteund.
+
+Stel vóór het importeren delen in met je provider voor identiteitsverificatie:
+
+1. Vraag Swipelux om zijn partnertoken en voeg Swipelux daarna toe als deelpartner in je account bij de provider voor identiteitsverificatie.
+2. Genereer voor live verificaties een share token voor Swipelux met ontvanger-client-ID (`forClientId`) `swipelux.com_21030`.
+3. Stuur de token naar Swipelux voordat deze verloopt. Share tokens zijn ondoorzichtig, eenmalig te gebruiken, maximaal 1.024 UTF-8-bytes groot en verlopen standaard na 20 minuten. Behandel elke token als een credential.
+
+De taak moet een intaketaak voor een persoon zijn en de gehoste verificatiesessie als indieningsmethode aanbieden. De sessie moet `type: "identity_verification"` en `status: "action_required"` hebben. De klant mag bij Swipelux nog geen verificatie hebben die loopt of voltooid is, en er mag nog geen import lopen. Het openen van de gehoste link start de verificatie, maar het lezen van de taak niet. Roep daarna `POST /v3/customers/{customerId}/tasks/{taskId}/verification-sessions/{verificationSessionId}/share-token` aan. Het verzoek vereist dezelfde machtigingen `accounts:write`, `customers:read` en `customers:write` als taakindieningen, plus een `Idempotency-Key`:
+
+```json Request body
+{
+  "shareToken": "<share token>"
+}
+```
+
+```json Response
+{
+  "verificationSessionId": "vfy_000000000000000003",
+  "status": "in_review"
+}
+```
+
+Je provider kopieert de overeenkomende stappen naar het account van Swipelux, en de controles worden opnieuw uitgevoerd op het niveau dat de taak vereist. Swipelux slaat de share token nooit op en logt deze nooit.
+
+- `status: "in_review"` betekent dat de controles nog lopen. Wanneer de controles klaar zijn, handelt Swipelux de gedekte vereisten op dezelfde manier af als bij een hosted session.
+- `status: "action_required"` betekent dat er stappen ontbreken. De klant kan ze afronden via de bestaande gehoste link van de sessie, of je kunt de gedekte vereisten direct indienen.
+
+De import vult alleen de vereisten in `coveredRequirementIds` in: het ID-document, de selfie en, waar de taak dat vereist, het adresbewijs. Dien profielantwoorden, bewijs van middelen en andere vereisten in als [API-antwoorden](#api-answers). Stuur een verzoek opnieuw met dezelfde `Idempotency-Key` om het te replayen.
+
+| Status | Code | Wat te doen |
+| --- | --- | --- |
+| `409` | `verification_already_started` | Deze klant heeft al een verificatie die loopt of voltooid is bij Swipelux, of er loopt al een import, bijvoorbeeld omdat de klant een gehoste link heeft geopend. Probeer het niet opnieuw. Ga verder via de bestaande sessie. |
+| `409` | `verification_session_not_allowed` | De taak of sessie komt niet in aanmerking voor import. Probeer het niet opnieuw. Lees de taak en gebruik de methoden die deze aanbiedt. |
+| `422` | `share_token_rejected` | De provider voor identiteitsverificatie heeft de token geweigerd, bijvoorbeeld omdat deze is verlopen, al is gebruikt of voor een andere ontvanger is uitgegeven. Genereer een nieuwe token voor Swipelux en probeer het opnieuw met een nieuwe `Idempotency-Key`. |
+| `503` | `kyc_provider_unavailable` | Met `retryable: true` had Swipelux de token nog niet verzonden. Probeer het na enige tijd opnieuw. Met `retryable: false` heeft de import mogelijk plaatsgevonden, maar kon deze niet worden bevestigd. Verstuur de token niet opnieuw. Ga verder via de gehoste link van de sessie. |
 
 ### Documenten uploaden {#upload-documents}
 

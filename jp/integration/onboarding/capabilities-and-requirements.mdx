@@ -233,6 +233,7 @@ curl --request GET \
         "key": "identity_verification",
         "type": "identity_verification",
         "status": "action_required",
+        "coveredRequirementIds": ["req_000000000000000011", "req_000000000000000012"],
         "action": {
           "kind": "available",
           "url": "https://platform.swipelux.com/kyc/redirect/cus_000000000000000001/tsk_000000000000000002/vfy_000000000000000003",
@@ -257,7 +258,50 @@ curl --request GET \
 
 これらはタスクスコープのアクションであり、別個の顧客検証ライフサイクルではありません。
 
+タスクの読み取りおよび顧客のタスク詳細に含まれる各 `verificationSessions[]` エントリには `coveredRequirementIds` が含まれます。これには、そのセッションで満たすことができるタスクの有効な要件の ID が列挙されます。ホスト型セッションまたは[インポートされた本人確認](#import-an-existing-identity-verification)でどの要件を確定できるかを確認するために使用してください。それ以外の要件はすべて [API 回答](#api-answers)で満たしてください。
+
+新しい個人の受付タスクでは、ホスト型の本人確認セッションの対象は本人確認書類、セルフィー、住所証明のみです。`proof_of_funds`、`source_of_funds_document`、`named_source_of_funds_document`、`sole_proprietor_document` などの資金証明の要件は、ホスト型セッションには含まれません。これらのドキュメントは直接[アップロード](#upload-documents)して送信してください。Swipelux がそれらを審査し、承認されるまでタスクはオープンのままになります。
+
 住所や納税者番号などの構造化された値を求めるプロファイル要件へのホスト型の回答は、直接の回答と同じスキーマおよび制約のチェックに合格する必要があります。合格しない場合、その要件は未完了のままとなります。この理由で Swipelux が `action_required` に戻した要件には、`reviewFeedback.code: hosted_profile_direct_submission_required` が含まれます。その値を顧客から収集し、[API 回答](#api-answers)として送信してください。
+
+### 既存の本人確認をインポートする {#import-an-existing-identity-verification}
+
+Swipelux の本人確認プロバイダーにあるお客様自身のアカウントですでに個人の本人確認を行っている場合は、顧客にホスト型フローを経由させる代わりに、その本人確認を顧客の受付タスクの本人確認セッションにインポートできます。このオプションは、個人顧客を対象とする API 統合でのみ利用できます。法人および関連当事者はサポートされていません。
+
+インポートする前に、本人確認プロバイダーで共有を設定してください。
+
+1. Swipelux にパートナートークンを依頼し、本人確認プロバイダーのアカウントで Swipelux を共有パートナーとして追加します。
+2. 本番の本人確認では、受信者のクライアント ID（`forClientId`）を `swipelux.com_21030` として、Swipelux 向けの share token を生成します。
+3. 有効期限が切れる前に、トークンを Swipelux に送信します。share token は不透明な使い捨てのトークンで、最大 1,024 UTF-8 バイトであり、デフォルトでは 20 分後に期限切れになります。各トークンは認証情報として扱ってください。
+
+タスクは個人の受付タスクであり、送信方法としてホスト型の本人確認セッションを提供している必要があります。セッションは `type: "identity_verification"` かつ `status: "action_required"` である必要があります。顧客が Swipelux で進行中または完了済みの本人確認をすでに持っていてはならず、インポートがすでに実行中であってもいけません。ホスト型リンクを開くと本人確認が開始されますが、タスクを読み取っても開始されません。その後、`POST /v3/customers/{customerId}/tasks/{taskId}/verification-sessions/{verificationSessionId}/share-token` を呼び出します。このリクエストには、タスクの送信と同じ `accounts:write`、`customers:read`、`customers:write` の権限に加えて、`Idempotency-Key` が必要です。
+
+```json Request body
+{
+  "shareToken": "<share token>"
+}
+```
+
+```json Response
+{
+  "verificationSessionId": "vfy_000000000000000003",
+  "status": "in_review"
+}
+```
+
+プロバイダーが該当するステップを Swipelux のアカウントにコピーし、タスクが要求するレベルに対してチェックが再実行されます。Swipelux が share token を保存したりログに記録したりすることはありません。
+
+- `status: "in_review"` は、チェックが保留中であることを意味します。チェックが完了すると、Swipelux はホスト型セッションの場合と同じ方法で対象の要件を確定します。
+- `status: "action_required"` は、不足しているステップがあることを意味します。顧客はセッションの既存のホスト型リンクからそれらを完了できます。または、対象の要件を直接送信することもできます。
+
+インポートで満たされるのは `coveredRequirementIds` に記載された要件のみで、本人確認書類、セルフィー、およびタスクで必要な場合は住所証明です。プロファイルの回答、資金証明、その他の要件は [API 回答](#api-answers)として送信してください。リクエストを再実行するには、同じ `Idempotency-Key` で再度送信します。
+
+| ステータス | コード | 対応方法 |
+| --- | --- | --- |
+| `409` | `verification_already_started` | この顧客は Swipelux で進行中または完了済みの本人確認をすでに持っているか、インポートがすでに実行中です（たとえば顧客がホスト型リンクを開いた場合）。再試行しないでください。既存のセッションで続行してください。 |
+| `409` | `verification_session_not_allowed` | タスクまたはセッションがインポートの対象外です。再試行しないでください。タスクを読み取り、提供されている方法を使用してください。 |
+| `422` | `share_token_rejected` | 本人確認プロバイダーがトークンを拒否しました。たとえば、期限切れ、使用済み、または別の受信者向けに発行されたトークンである場合です。Swipelux 向けに新しいトークンを生成し、新しい `Idempotency-Key` で再試行してください。 |
+| `503` | `kyc_provider_unavailable` | `retryable: true` の場合、Swipelux はまだトークンを送信していません。時間をおいて再試行してください。`retryable: false` の場合、インポートが行われた可能性がありますが、確認できませんでした。トークンを再送信しないでください。セッションのホスト型リンクで続行してください。 |
 
 ### ドキュメントをアップロードする {#upload-documents}
 

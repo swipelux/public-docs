@@ -233,6 +233,7 @@ I svaret med oppgavedetaljer inneholder hver oppføring i `verificationSessions`
         "key": "identity_verification",
         "type": "identity_verification",
         "status": "action_required",
+        "coveredRequirementIds": ["req_000000000000000011", "req_000000000000000012"],
         "action": {
           "kind": "available",
           "url": "https://platform.swipelux.com/kyc/redirect/cus_000000000000000001/tsk_000000000000000002/vfy_000000000000000003",
@@ -257,7 +258,50 @@ I svaret med oppgavedetaljer inneholder hver oppføring i `verificationSessions`
 
 Dette er oppgaveavgrensede handlinger, ikke en separat livssyklus for kundeverifisering.
 
+Hver `verificationSessions[]`-oppføring i oppgavelesinger og kundens oppgavedetaljer inneholder `coveredRequirementIds`. Den viser ID-ene til oppgavens aktive krav som sesjonen kan fylle ut. Bruk den til å se hvilke krav en hosted sesjon eller en [importert verifisering](#import-an-existing-identity-verification) kan avgjøre. Fyll ut alle andre krav gjennom [API-svar](#api-answers).
+
+For nye intake-oppgaver for personer dekker den hostede identitetssesjonen bare ID-dokumentet, selfien og adressebevis. Krav om midlerbevis, som `proof_of_funds`, `source_of_funds_document`, `named_source_of_funds_document` og `sole_proprietor_document`, er ikke en del av den hostede sesjonen. [Last opp](#upload-documents) og send inn disse dokumentene direkte. Swipelux gjennomgår dem, og oppgaven forblir åpen til de er godtatt.
+
 Et hostet svar på et profilkrav for en strukturert verdi, for eksempel en adresse eller skatteidentifikatorer, må bestå de samme skjema- og begrensningskontrollene som et direkte svar. Hvis det ikke gjør det, forblir kravet åpent. Et krav som Swipelux returnerer til `action_required` av denne grunnen, har `reviewFeedback.code: hosted_profile_direct_submission_required`. Samle inn verdien fra kunden og send den inn som et [API-svar](#api-answers).
+
+### Importer en eksisterende identitetsverifisering {#import-an-existing-identity-verification}
+
+Hvis du allerede verifiserer personer i din egen konto hos Swipelux' leverandør av identitetsverifisering, kan du importere den verifiseringen inn i identitetssesjonen til kundens intake-oppgave i stedet for å sende kunden gjennom den hostede flyten. Dette alternativet gjelder bare API-integrasjoner med individuelle kunder. Virksomheter og nærstående parter støttes ikke.
+
+Før du importerer, må du sette opp deling med leverandøren av identitetsverifisering:
+
+1. Be Swipelux om partnertokenet, og legg deretter til Swipelux som delingspartner i kontoen din hos leverandøren av identitetsverifisering.
+2. For live-verifiseringer genererer du et share token for Swipelux med mottakerens klient-ID (`forClientId`) `swipelux.com_21030`.
+3. Send tokenet til Swipelux før det utløper. Share tokens er ugjennomsiktige, kan bare brukes én gang, er på maksimalt 1 024 UTF-8-byte og utløper som standard etter 20 minutter. Behandle hvert token som en legitimasjon.
+
+Oppgaven må være en intake-oppgave for en person og tilby den hostede verifiseringssesjonen som innsendingsmetode. Sesjonen må ha `type: "identity_verification"` og `status: "action_required"`. Kunden kan ikke allerede ha en verifisering som pågår eller er fullført hos Swipelux, og en import kan ikke allerede pågå. Å åpne den hostede lenken starter verifiseringen, men å lese oppgaven gjør det ikke. Kall deretter `POST /v3/customers/{customerId}/tasks/{taskId}/verification-sessions/{verificationSessionId}/share-token`. Forespørselen krever de samme tillatelsene `accounts:write`, `customers:read` og `customers:write` som oppgaveinnsendinger, pluss en `Idempotency-Key`:
+
+```json Request body
+{
+  "shareToken": "<share token>"
+}
+```
+
+```json Response
+{
+  "verificationSessionId": "vfy_000000000000000003",
+  "status": "in_review"
+}
+```
+
+Leverandøren kopierer de samsvarende trinnene til Swipelux' konto, og kontrollene kjøres på nytt mot nivået oppgaven krever. Swipelux lagrer eller logger aldri share tokenet.
+
+- `status: "in_review"` betyr at kontrollene pågår. Når kontrollene er ferdige, avgjør Swipelux de dekkede kravene på samme måte som for en hosted sesjon.
+- `status: "action_required"` betyr at trinn mangler. Kunden kan fullføre dem via sesjonens eksisterende hostede lenke, eller du kan sende inn de dekkede kravene direkte.
+
+Importen fyller bare ut kravene som er oppført i `coveredRequirementIds`: ID-dokumentet, selfien og, der oppgaven krever det, adressebevis. Send inn profilsvar, midlerbevis og andre krav som [API-svar](#api-answers). For å spille av en forespørsel på nytt sender du den igjen med samme `Idempotency-Key`.
+
+| Status | Kode | Hva du gjør |
+| --- | --- | --- |
+| `409` | `verification_already_started` | Denne kunden har allerede en verifisering som pågår eller er fullført hos Swipelux, eller en import pågår allerede, for eksempel fordi kunden åpnet en hostet lenke. Ikke prøv på nytt. Fortsett gjennom den eksisterende sesjonen. |
+| `409` | `verification_session_not_allowed` | Oppgaven eller sesjonen er ikke kvalifisert for import. Ikke prøv på nytt. Les oppgaven og bruk metodene den tilbyr. |
+| `422` | `share_token_rejected` | Leverandøren av identitetsverifisering avviste tokenet, for eksempel fordi det var utløpt, allerede brukt eller utstedt for en annen mottaker. Generer et nytt token for Swipelux og prøv på nytt med en ny `Idempotency-Key`. |
+| `503` | `kyc_provider_unavailable` | Med `retryable: true` hadde Swipelux ennå ikke sendt tokenet. Prøv på nytt etter en stund. Med `retryable: false` kan importen ha skjedd, men den kunne ikke bekreftes. Ikke send tokenet på nytt. Fortsett via sesjonens hostede lenke. |
 
 ### Last opp dokumenter {#upload-documents}
 

@@ -233,6 +233,7 @@ A feladat részletes válaszában a `verificationSessions` és `tosSessions` min
         "key": "identity_verification",
         "type": "identity_verification",
         "status": "action_required",
+        "coveredRequirementIds": ["req_000000000000000011", "req_000000000000000012"],
         "action": {
           "kind": "available",
           "url": "https://platform.swipelux.com/kyc/redirect/cus_000000000000000001/tsk_000000000000000002/vfy_000000000000000003",
@@ -257,7 +258,50 @@ A feladat részletes válaszában a `verificationSessions` és `tosSessions` min
 
 Ezek feladathoz kötött műveletek, nem egy külön ügyfél-ellenőrzési életciklus.
 
+A feladatlekérésekben és az ügyfél feladatrészleteiben minden `verificationSessions[]` bejegyzés tartalmazza a `coveredRequirementIds` mezőt. Ez felsorolja a feladat azon élő követelményeinek azonosítóit, amelyeket a munkamenet teljesíteni tud. Ebből láthatja, mely követelményeket rendezhet egy hosztolt munkamenet vagy egy [importált ellenőrzés](#import-an-existing-identity-verification). Minden más követelményt [API-válaszokkal](#api-answers) teljesítsen.
+
+Az új magánszemélyes adatfelvételi feladatoknál a hosztolt személyazonosság-ellenőrzési munkamenet csak a személyazonosító okmányt, a szelfit és a lakcímigazolást fedi le. A pénzeszköz-igazolási követelmények, például a `proof_of_funds`, `source_of_funds_document`, `named_source_of_funds_document` és `sole_proprietor_document`, nem részei a hosztolt munkamenetnek. Ezeket a dokumentumokat [töltse fel](#upload-documents), és küldje be közvetlenül. A Swipelux felülvizsgálja őket, és a feladat nyitva marad, amíg el nem fogadja őket.
+
 Egy strukturált értékre, például címre vagy adóazonosítókra vonatkozó profilkövetelményre adott hosztolt válasznak ugyanazokon a séma- és korlátozásellenőrzéseken kell átmennie, mint egy közvetlen válasznak. Ha ez nem teljesül, a követelmény nyitva marad. Az a követelmény, amelyet a Swipelux emiatt visszaállít `action_required` állapotba, `reviewFeedback.code: hosted_profile_direct_submission_required` értéket hordoz. Kérje be ezt az értéket az ügyféltől, és küldje be [API-válaszként](#api-answers).
+
+### Meglévő személyazonosság-ellenőrzés importálása {#import-an-existing-identity-verification}
+
+Ha már ellenőriz magánszemélyeket a Swipelux személyazonosság-ellenőrző szolgáltatójánál vezetett saját fiókjában, ezt az ellenőrzést importálhatja az ügyfél adatfelvételi feladatának személyazonosság-ellenőrzési munkamenetébe ahelyett, hogy az ügyfelet a hosztolt folyamaton vezetné végig. Ez a lehetőség csak magánszemély ügyfelekkel dolgozó API-integrációk számára érhető el. A vállalkozások és a kapcsolt felek nem támogatottak.
+
+Az importálás előtt állítsa be a megosztást a személyazonosság-ellenőrző szolgáltatójánál:
+
+1. Kérje el a Swipelux partnertokenjét, majd adja hozzá a Swipelux-ot megosztási partnerként a személyazonosság-ellenőrző szolgáltatónál vezetett fiókjában.
+2. Éles ellenőrzésekhez hozzon létre share tokent a Swipelux számára a `swipelux.com_21030` címzett-ügyfélazonosítóval (`forClientId`).
+3. Küldje el a tokent a Swipelux-nak, mielőtt lejár. A share tokenek átlátszatlanok, egyszer használatosak, legfeljebb 1024 UTF-8 bájt méretűek, és alapértelmezés szerint 20 perc után lejárnak. Minden tokent hitelesítő adatként kezeljen.
+
+A feladatnak magánszemélyes adatfelvételi feladatnak kell lennie, és beküldési módként fel kell kínálnia a hosztolt ellenőrzési munkamenetet. A munkamenetnek `type: "identity_verification"` és `status: "action_required"` értékkel kell rendelkeznie. Az ügyfélnek nem lehet már folyamatban lévő vagy befejezett ellenőrzése a Swipelux-nál, és nem futhat már importálás. A hosztolt link megnyitása elindítja az ellenőrzést, a feladat beolvasása viszont nem. Ezután hívja meg a `POST /v3/customers/{customerId}/tasks/{taskId}/verification-sessions/{verificationSessionId}/share-token` végpontot. A kéréshez ugyanazok az `accounts:write`, `customers:read` és `customers:write` jogosultságok szükségesek, mint a feladatbeküldésekhez, valamint egy `Idempotency-Key`:
+
+```json Request body
+{
+  "shareToken": "<share token>"
+}
+```
+
+```json Response
+{
+  "verificationSessionId": "vfy_000000000000000003",
+  "status": "in_review"
+}
+```
+
+A szolgáltató átmásolja a megfelelő lépéseket a Swipelux fiókjába, és az ellenőrzések újra lefutnak a feladat által megkövetelt szint alapján. A Swipelux soha nem tárolja és nem naplózza a share tokent.
+
+- A `status: "in_review"` azt jelenti, hogy az ellenőrzések függőben vannak. Amikor az ellenőrzések befejeződnek, a Swipelux ugyanúgy rendezi a lefedett követelményeket, mint egy hosztolt munkamenet esetén.
+- A `status: "action_required"` azt jelenti, hogy lépések hiányoznak. Az ügyfél a munkamenet meglévő hosztolt linkjén keresztül befejezheti őket, vagy Ön közvetlenül beküldheti a lefedett követelményeket.
+
+Az importálás csak a `coveredRequirementIds` mezőben felsorolt követelményeket teljesíti: a személyazonosító okmányt, a szelfit és, ahol a feladat megköveteli, a lakcímigazolást. A profilválaszokat, a pénzeszköz-igazolást és a többi követelményt [API-válaszként](#api-answers) küldje be. Egy kérés megismétléséhez küldje el újra ugyanazzal az `Idempotency-Key` értékkel.
+
+| Állapot | Kód | Teendő |
+| --- | --- | --- |
+| `409` | `verification_already_started` | Az ügyfélnek már van folyamatban lévő vagy befejezett ellenőrzése a Swipelux-nál, vagy már fut egy importálás, például mert az ügyfél megnyitott egy hosztolt linket. Ne próbálkozzon újra. Folytassa a meglévő munkamenettel. |
+| `409` | `verification_session_not_allowed` | A feladat vagy a munkamenet nem jogosult az importálásra. Ne próbálkozzon újra. Olvassa be a feladatot, és használja az általa felkínált módszereket. |
+| `422` | `share_token_rejected` | A személyazonosság-ellenőrző szolgáltató elutasította a tokent, például mert lejárt, már felhasználták, vagy más címzett számára állították ki. Hozzon létre új tokent a Swipelux számára, és próbálkozzon újra egy új `Idempotency-Key` értékkel. |
+| `503` | `kyc_provider_unavailable` | `retryable: true` esetén a Swipelux még nem küldte el a tokent. Várjon egy kicsit, majd próbálkozzon újra. `retryable: false` esetén az importálás megtörténhetett, de nem sikerült megerősíteni. Ne küldje el újra a tokent. Folytassa a munkamenet hosztolt linkjén keresztül. |
 
 ### Dokumentumok feltöltése {#upload-documents}
 

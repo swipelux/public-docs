@@ -233,6 +233,7 @@ En la respuesta de detalle de la tarea, cada entrada de `verificationSessions` y
         "key": "identity_verification",
         "type": "identity_verification",
         "status": "action_required",
+        "coveredRequirementIds": ["req_000000000000000011", "req_000000000000000012"],
         "action": {
           "kind": "available",
           "url": "https://platform.swipelux.com/kyc/redirect/cus_000000000000000001/tsk_000000000000000002/vfy_000000000000000003",
@@ -257,7 +258,50 @@ En la respuesta de detalle de la tarea, cada entrada de `verificationSessions` y
 
 Estas son acciones con ámbito de tarea, no un ciclo de vida independiente de verificación del cliente.
 
+Cada entrada de `verificationSessions[]` en las lecturas de tareas y en el detalle de tareas del cliente incluye `coveredRequirementIds`. Enumera los IDs de los requisitos vigentes de la tarea que la sesión puede cubrir. Úsalo para ver qué requisitos puede resolver una sesión alojada o una [verificación importada](#import-an-existing-identity-verification). Cubre todos los demás requisitos mediante [respuestas por API](#api-answers).
+
+En las nuevas tareas de intake de personas físicas, la sesión de identidad alojada cubre solo el documento de identidad, la selfie y el comprobante de domicilio. Los requisitos de comprobante de fondos, como `proof_of_funds`, `source_of_funds_document`, `named_source_of_funds_document` y `sole_proprietor_document`, no forman parte de la sesión alojada. [Sube](#upload-documents) y envía esos documentos directamente. Swipelux los revisa, y la tarea permanece abierta hasta que se aceptan.
+
 Una respuesta alojada a un requisito de perfil para un valor estructurado, como una dirección o identificadores fiscales, debe superar las mismas comprobaciones de esquema y restricciones que una respuesta directa. Si no las supera, el requisito sigue abierto. Un requisito que Swipelux devuelve a `action_required` por este motivo lleva `reviewFeedback.code: hosted_profile_direct_submission_required`. Recoge ese valor del cliente y envíalo como una [respuesta por API](#api-answers).
+
+### Importa una verificación de identidad existente {#import-an-existing-identity-verification}
+
+Si ya verificas a personas físicas en tu propia cuenta con el proveedor de verificación de identidad de Swipelux, puedes importar esa verificación a la sesión de identidad de la tarea de intake del cliente en lugar de enviar al cliente por el flujo alojado. Esta opción es solo para integraciones por API con clientes personas físicas. No se admiten empresas ni partes relacionadas.
+
+Antes de importar, configura el uso compartido con tu proveedor de verificación de identidad:
+
+1. Pide a Swipelux su token de partner y luego añade Swipelux como partner de uso compartido en tu cuenta del proveedor de verificación de identidad.
+2. Para las verificaciones en producción, genera un token para compartir destinado a Swipelux con el ID de cliente destinatario (`forClientId`) `swipelux.com_21030`.
+3. Envía el token a Swipelux antes de que caduque. Los tokens para compartir son opacos, de un solo uso, ocupan como máximo 1.024 bytes UTF-8 y caducan a los 20 minutos de forma predeterminada. Trata cada token como una credencial.
+
+La tarea debe ser una tarea de intake de persona física y ofrecer la sesión de verificación alojada como método de envío. La sesión debe tener `type: "identity_verification"` y `status: "action_required"`. El cliente no debe tener ya una verificación en curso o completada con Swipelux, y no debe haber ya una importación en curso. Abrir el enlace alojado inicia la verificación, pero leer la tarea no. Después llama a `POST /v3/customers/{customerId}/tasks/{taskId}/verification-sessions/{verificationSessionId}/share-token`. La solicitud necesita los mismos permisos `accounts:write`, `customers:read` y `customers:write` que los envíos de tareas, además de un `Idempotency-Key`:
+
+```json Request body
+{
+  "shareToken": "<share token>"
+}
+```
+
+```json Response
+{
+  "verificationSessionId": "vfy_000000000000000003",
+  "status": "in_review"
+}
+```
+
+Tu proveedor copia los pasos correspondientes a la cuenta de Swipelux, y las comprobaciones se vuelven a ejecutar con el nivel que requiere la tarea. Swipelux nunca almacena ni registra el token para compartir.
+
+- `status: "in_review"` significa que las comprobaciones están pendientes. Cuando terminan las comprobaciones, Swipelux resuelve los requisitos cubiertos del mismo modo que en una sesión alojada.
+- `status: "action_required"` significa que faltan pasos. El cliente puede completarlos mediante el enlace alojado existente de la sesión, o puedes enviar directamente los requisitos cubiertos.
+
+La importación cubre solo los requisitos indicados en `coveredRequirementIds`: el documento de identidad, la selfie y, cuando la tarea lo requiere, el comprobante de domicilio. Envía las respuestas de perfil, el comprobante de fondos y los demás requisitos como [respuestas por API](#api-answers). Para repetir una solicitud, vuelve a enviarla con el mismo `Idempotency-Key`.
+
+| Estado | Código | Qué hacer |
+| --- | --- | --- |
+| `409` | `verification_already_started` | Este cliente ya tiene una verificación en curso o completada con Swipelux, o ya hay una importación en curso, por ejemplo porque el cliente abrió un enlace alojado. No reintentes. Continúa mediante la sesión existente. |
+| `409` | `verification_session_not_allowed` | La tarea o la sesión no es apta para la importación. No reintentes. Lee la tarea y usa los métodos que ofrece. |
+| `422` | `share_token_rejected` | El proveedor de verificación de identidad rechazó el token, por ejemplo porque caducó, ya se había usado o se emitió para otro destinatario. Genera un nuevo token para Swipelux y reintenta con un nuevo `Idempotency-Key`. |
+| `503` | `kyc_provider_unavailable` | Con `retryable: true`, Swipelux aún no había enviado el token. Reintenta tras una espera. Con `retryable: false`, es posible que la importación se haya realizado, pero no se pudo confirmar. No vuelvas a enviar el token. Continúa mediante el enlace alojado de la sesión. |
 
 ### Sube documentos {#upload-documents}
 

@@ -233,6 +233,7 @@ Dans la réponse détaillée de la tâche, chaque entrée de `verificationSessio
         "key": "identity_verification",
         "type": "identity_verification",
         "status": "action_required",
+        "coveredRequirementIds": ["req_000000000000000011", "req_000000000000000012"],
         "action": {
           "kind": "available",
           "url": "https://platform.swipelux.com/kyc/redirect/cus_000000000000000001/tsk_000000000000000002/vfy_000000000000000003",
@@ -257,7 +258,50 @@ Dans la réponse détaillée de la tâche, chaque entrée de `verificationSessio
 
 Ce sont des actions liées à la tâche, pas un cycle de vie de vérification client distinct.
 
+Chaque entrée `verificationSessions[]` dans les lectures de tâches et le détail des tâches client inclut `coveredRequirementIds`. Ce champ liste les IDs des exigences actives de la tâche que la session peut satisfaire. Utilisez-le pour savoir quelles exigences une session hébergée ou une [vérification importée](#import-an-existing-identity-verification) peut régler. Satisfaites toutes les autres exigences via des [réponses API](#api-answers).
+
+Pour les nouvelles tâches d'intake de personnes physiques, la session d'identité hébergée couvre uniquement la pièce d'identité, le selfie et le justificatif de domicile. Les exigences de preuve de fonds, telles que `proof_of_funds`, `source_of_funds_document`, `named_source_of_funds_document` et `sole_proprietor_document`, ne font pas partie de la session hébergée. [Téléversez](#upload-documents) et soumettez ces documents directement. Swipelux les examine, et la tâche reste ouverte jusqu'à leur acceptation.
+
 Une réponse hébergée à une exigence de profil portant sur une valeur structurée, comme une adresse ou des identifiants fiscaux, doit passer les mêmes contrôles de schéma et de contraintes qu'une réponse directe. Dans le cas contraire, l'exigence reste ouverte. Une exigence que Swipelux remet en `action_required` pour cette raison porte `reviewFeedback.code: hosted_profile_direct_submission_required`. Recueillez cette valeur auprès du client et soumettez-la comme [réponse API](#api-answers).
+
+### Importer une vérification d'identité existante {#import-an-existing-identity-verification}
+
+Si vous vérifiez déjà des personnes physiques dans votre propre compte auprès du fournisseur de vérification d'identité de Swipelux, vous pouvez importer cette vérification dans la session d'identité de la tâche d'intake du client au lieu de faire passer le client par le parcours hébergé. Cette option est réservée aux intégrations API avec des clients personnes physiques. Les entreprises et les parties liées ne sont pas prises en charge.
+
+Avant l'import, configurez le partage avec votre fournisseur de vérification d'identité :
+
+1. Demandez à Swipelux son jeton partenaire, puis ajoutez Swipelux comme partenaire de partage dans votre compte auprès du fournisseur de vérification d'identité.
+2. Pour les vérifications en production, générez un jeton de partage pour Swipelux avec l'ID client destinataire (`forClientId`) `swipelux.com_21030`.
+3. Envoyez le jeton à Swipelux avant son expiration. Les jetons de partage sont opaques, à usage unique, d'au plus 1 024 octets UTF-8, et expirent par défaut au bout de 20 minutes. Traitez chaque jeton comme un identifiant confidentiel.
+
+La tâche doit être une tâche d'intake de personne physique et proposer la session de vérification hébergée comme méthode de soumission. La session doit avoir `type: "identity_verification"` et `status: "action_required"`. Le client ne doit pas déjà avoir une vérification en cours ou terminée auprès de Swipelux, et aucun import ne doit déjà être en cours. L'ouverture du lien hébergé démarre la vérification, mais la lecture de la tâche ne le fait pas. Appelez ensuite `POST /v3/customers/{customerId}/tasks/{taskId}/verification-sessions/{verificationSessionId}/share-token`. La requête nécessite les mêmes permissions `accounts:write`, `customers:read` et `customers:write` que les soumissions de tâches, ainsi qu'un `Idempotency-Key` :
+
+```json Request body
+{
+  "shareToken": "<share token>"
+}
+```
+
+```json Response
+{
+  "verificationSessionId": "vfy_000000000000000003",
+  "status": "in_review"
+}
+```
+
+Votre fournisseur copie les étapes correspondantes dans le compte de Swipelux, et les contrôles sont réexécutés selon le niveau exigé par la tâche. Swipelux ne stocke ni ne journalise jamais le jeton de partage.
+
+- `status: "in_review"` signifie que les contrôles sont en attente. Une fois les contrôles terminés, Swipelux traite les exigences couvertes de la même manière que pour une session hébergée.
+- `status: "action_required"` signifie que des étapes manquent. Le client peut les terminer via le lien hébergé existant de la session, ou vous pouvez soumettre directement les exigences couvertes.
+
+L'import ne satisfait que les exigences listées dans `coveredRequirementIds` : la pièce d'identité, le selfie et, lorsque la tâche l'exige, le justificatif de domicile. Soumettez les réponses de profil, la preuve de fonds et les autres exigences sous forme de [réponses API](#api-answers). Pour rejouer une requête, renvoyez-la avec le même `Idempotency-Key`.
+
+| Statut | Code | Que faire |
+| --- | --- | --- |
+| `409` | `verification_already_started` | Ce client a déjà une vérification en cours ou terminée auprès de Swipelux, ou un import est déjà en cours, par exemple parce que le client a ouvert un lien hébergé. Ne réessayez pas. Poursuivez via la session existante. |
+| `409` | `verification_session_not_allowed` | La tâche ou la session n'est pas éligible à l'import. Ne réessayez pas. Lisez la tâche et utilisez les méthodes qu'elle propose. |
+| `422` | `share_token_rejected` | Le fournisseur de vérification d'identité a refusé le jeton, par exemple parce qu'il avait expiré, avait déjà été utilisé ou avait été émis pour un autre destinataire. Générez un nouveau jeton pour Swipelux et réessayez avec un nouvel `Idempotency-Key`. |
+| `503` | `kyc_provider_unavailable` | Avec `retryable: true`, Swipelux n'avait pas encore envoyé le jeton. Réessayez après un délai. Avec `retryable: false`, l'import a peut-être eu lieu mais n'a pas pu être confirmé. Ne renvoyez pas le jeton. Poursuivez via le lien hébergé de la session. |
 
 ### Téléverser des documents {#upload-documents}
 

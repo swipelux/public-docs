@@ -233,6 +233,7 @@ In der Antwort mit den Aufgabendetails enthält jeder Eintrag in `verificationSe
         "key": "identity_verification",
         "type": "identity_verification",
         "status": "action_required",
+        "coveredRequirementIds": ["req_000000000000000011", "req_000000000000000012"],
         "action": {
           "kind": "available",
           "url": "https://platform.swipelux.com/kyc/redirect/cus_000000000000000001/tsk_000000000000000002/vfy_000000000000000003",
@@ -257,7 +258,50 @@ In der Antwort mit den Aufgabendetails enthält jeder Eintrag in `verificationSe
 
 Dies sind aufgabenbezogene Aktionen, kein separater Kundenverifizierungs-Lebenszyklus.
 
+Jeder `verificationSessions[]`-Eintrag in Aufgabenabfragen und in den Aufgabendetails des Kunden enthält `coveredRequirementIds`. Das Feld listet die IDs der aktiven Anforderungen der Aufgabe auf, die die Session erfüllen kann. Verwenden Sie es, um zu sehen, welche Anforderungen eine gehostete Session oder eine [importierte Verifizierung](#import-an-existing-identity-verification) erledigen kann. Erfüllen Sie alle anderen Anforderungen über [API-Antworten](#api-answers).
+
+Bei neuen Intake-Aufgaben für Privatpersonen deckt die gehostete Identitäts-Session nur das Ausweisdokument, das Selfie und den Adressnachweis ab. Anforderungen zum Herkunftsnachweis der Gelder, etwa `proof_of_funds`, `source_of_funds_document`, `named_source_of_funds_document` und `sole_proprietor_document`, sind nicht Teil der gehosteten Session. [Laden Sie diese Dokumente direkt hoch](#upload-documents) und reichen Sie sie ein. Swipelux prüft sie, und die Aufgabe bleibt offen, bis sie akzeptiert sind.
+
 Eine gehostete Antwort auf eine Profilanforderung für einen strukturierten Wert, etwa eine Adresse oder Steueridentifikationsnummern, muss dieselben Schema- und Einschränkungsprüfungen bestehen wie eine direkte Antwort. Besteht sie diese nicht, bleibt die Anforderung offen. Eine Anforderung, die Swipelux aus diesem Grund auf `action_required` zurücksetzt, trägt `reviewFeedback.code: hosted_profile_direct_submission_required`. Erfassen Sie diesen Wert beim Kunden und reichen Sie ihn als [API-Antwort](#api-answers) ein.
+
+### Eine bestehende Identitätsverifizierung importieren {#import-an-existing-identity-verification}
+
+Wenn Sie Privatpersonen bereits in Ihrem eigenen Konto beim Identitätsverifizierungsanbieter von Swipelux verifizieren, können Sie diese Verifizierung in die Identitäts-Session der Intake-Aufgabe des Kunden importieren, statt den Kunden durch den gehosteten Ablauf zu schicken. Diese Option gilt nur für API-Integrationen mit Privatkunden. Unternehmen und verbundene Parteien werden nicht unterstützt.
+
+Richten Sie vor dem Import die Freigabe bei Ihrem Identitätsverifizierungsanbieter ein:
+
+1. Fordern Sie bei Swipelux dessen Partner-Token an und fügen Sie Swipelux dann in Ihrem Konto beim Identitätsverifizierungsanbieter als Freigabepartner hinzu.
+2. Erzeugen Sie für Live-Verifizierungen ein Share-Token für Swipelux mit der Empfänger-Client-ID (`forClientId`) `swipelux.com_21030`.
+3. Senden Sie das Token an Swipelux, bevor es abläuft. Share-Tokens sind opak, nur einmal verwendbar, höchstens 1.024 UTF-8-Bytes groß und laufen standardmäßig nach 20 Minuten ab. Behandeln Sie jedes Token wie ein Zugangsdatum.
+
+Die Aufgabe muss eine Intake-Aufgabe für eine Privatperson sein und die gehostete Verifizierungs-Session als Einreichungsmethode anbieten. Die Session muss `type: "identity_verification"` und `status: "action_required"` haben. Der Kunde darf bei Swipelux noch keine laufende oder abgeschlossene Verifizierung haben, und es darf noch kein Import laufen. Das Öffnen des gehosteten Links startet die Verifizierung, das Lesen der Aufgabe dagegen nicht. Rufen Sie dann `POST /v3/customers/{customerId}/tasks/{taskId}/verification-sessions/{verificationSessionId}/share-token` auf. Die Anfrage benötigt dieselben Berechtigungen `accounts:write`, `customers:read` und `customers:write` wie Aufgabeneinreichungen sowie einen `Idempotency-Key`:
+
+```json Request body
+{
+  "shareToken": "<share token>"
+}
+```
+
+```json Response
+{
+  "verificationSessionId": "vfy_000000000000000003",
+  "status": "in_review"
+}
+```
+
+Ihr Anbieter kopiert die passenden Schritte in das Konto von Swipelux, und die Prüfungen laufen erneut gegen das Level, das die Aufgabe verlangt. Swipelux speichert oder protokolliert das Share-Token niemals.
+
+- `status: "in_review"` bedeutet, dass die Prüfungen ausstehen. Wenn die Prüfungen abgeschlossen sind, erledigt Swipelux die abgedeckten Anforderungen auf dieselbe Weise wie bei einer gehosteten Session.
+- `status: "action_required"` bedeutet, dass Schritte fehlen. Der Kunde kann sie über den bestehenden gehosteten Link der Session abschließen, oder Sie können die abgedeckten Anforderungen direkt einreichen.
+
+Der Import erfüllt nur die in `coveredRequirementIds` aufgeführten Anforderungen: das Ausweisdokument, das Selfie und, sofern die Aufgabe es verlangt, den Adressnachweis. Reichen Sie Profilantworten, den Herkunftsnachweis der Gelder und andere Anforderungen als [API-Antworten](#api-answers) ein. Um eine Anfrage zu wiederholen, senden Sie sie erneut mit demselben `Idempotency-Key`.
+
+| Status | Code | Was zu tun ist |
+| --- | --- | --- |
+| `409` | `verification_already_started` | Dieser Kunde hat bei Swipelux bereits eine laufende oder abgeschlossene Verifizierung, oder es läuft bereits ein Import, zum Beispiel weil der Kunde einen gehosteten Link geöffnet hat. Nicht wiederholen. Fahren Sie über die bestehende Session fort. |
+| `409` | `verification_session_not_allowed` | Die Aufgabe oder Session ist nicht für den Import berechtigt. Nicht wiederholen. Lesen Sie die Aufgabe und verwenden Sie die Methoden, die sie anbietet. |
+| `422` | `share_token_rejected` | Der Identitätsverifizierungsanbieter hat das Token abgelehnt, zum Beispiel weil es abgelaufen ist, bereits verwendet wurde oder für einen anderen Empfänger ausgestellt wurde. Erzeugen Sie ein neues Token für Swipelux und wiederholen Sie die Anfrage mit einem neuen `Idempotency-Key`. |
+| `503` | `kyc_provider_unavailable` | Bei `retryable: true` hatte Swipelux das Token noch nicht gesendet. Wiederholen Sie die Anfrage nach einer Wartezeit. Bei `retryable: false` hat der Import möglicherweise stattgefunden, konnte aber nicht bestätigt werden. Senden Sie das Token nicht erneut. Fahren Sie über den gehosteten Link der Session fort. |
 
 ### Dokumente hochladen {#upload-documents}
 
