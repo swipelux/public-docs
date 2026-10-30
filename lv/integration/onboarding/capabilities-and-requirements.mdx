@@ -233,6 +233,7 @@ Uzdevuma detaļu atbildē katrs `verificationSessions` un `tosSessions` ieraksts
         "key": "identity_verification",
         "type": "identity_verification",
         "status": "action_required",
+        "coveredRequirementIds": ["req_000000000000000011", "req_000000000000000012"],
         "action": {
           "kind": "available",
           "url": "https://platform.swipelux.com/kyc/redirect/cus_000000000000000001/tsk_000000000000000002/vfy_000000000000000003",
@@ -257,7 +258,50 @@ Uzdevuma detaļu atbildē katrs `verificationSessions` un `tosSessions` ieraksts
 
 Tās ir uzdevuma mērogā ierobežotas darbības, nevis atsevišķs klienta verifikācijas dzīves cikls.
 
+Katrs `verificationSessions[]` ieraksts uzdevumu nolasījumos un klienta uzdevuma detaļās ietver `coveredRequirementIds`. Tajā uzskaitīti to uzdevuma aktīvo prasību ID, kuras sesija var aizpildīt. Izmantojiet to, lai redzētu, kuras prasības var nokārtot mitinātā sesija vai [importēta verifikācija](#import-an-existing-identity-verification). Visas pārējās prasības aizpildiet ar [API atbildēm](#api-answers).
+
+Jaunajiem personu datu ievākšanas uzdevumiem mitinātā identitātes sesija aptver tikai ID dokumentu, pašbildi un adreses pierādījumu. Līdzekļu pierādījuma prasības, piemēram, `proof_of_funds`, `source_of_funds_document`, `named_source_of_funds_document` un `sole_proprietor_document`, nav mitinātās sesijas daļa. [Augšupielādējiet](#upload-documents) un iesniedziet šos dokumentus tieši. Swipelux tos pārskata, un uzdevums paliek atvērts, līdz tie tiek pieņemti.
+
 Mitinātai atbildei uz profila prasību strukturētai vērtībai, piemēram, adresei vai nodokļu identifikatoriem, jāiziet tās pašas shēmas un ierobežojumu pārbaudes kā tiešai atbildei. Ja tā tās neiziet, prasība paliek atvērta. Prasība, ko Swipelux šī iemesla dēļ atgriež statusā `action_required`, satur `reviewFeedback.code: hosted_profile_direct_submission_required`. Iegūstiet šo vērtību no klienta un iesniedziet to kā [API atbildi](#api-answers).
+
+### Importējiet esošu identitātes verifikāciju {#import-an-existing-identity-verification}
+
+Ja jūs jau verificējat personas savā kontā pie Swipelux identitātes verifikācijas pakalpojumu sniedzēja, varat importēt šo verifikāciju klienta datu ievākšanas uzdevuma identitātes sesijā, nevis sūtīt klientu caur mitināto plūsmu. Šī iespēja ir paredzēta tikai API integrācijām ar privātpersonām. Uzņēmumi un saistītās puses netiek atbalstīti.
+
+Pirms importēšanas iestatiet koplietošanu ar savu identitātes verifikācijas pakalpojumu sniedzēju:
+
+1. Pieprasiet Swipelux tā partnera marķieri, pēc tam pievienojiet Swipelux kā koplietošanas partneri savā identitātes verifikācijas pakalpojumu sniedzēja kontā.
+2. Aktīvām verifikācijām ģenerējiet Swipelux share token ar saņēmēja klienta ID (`forClientId`) `swipelux.com_21030`.
+3. Nosūtiet marķieri Swipelux pirms tā derīguma termiņa beigām. Share token ir necaurredzami, vienreizlietojami, ne garāki par 1024 UTF-8 baitiem, un pēc noklusējuma to derīgums beidzas pēc 20 minūtēm. Uztveriet katru marķieri kā akreditācijas datus.
+
+Uzdevumam jābūt personas datu ievākšanas uzdevumam, un tam jāpiedāvā mitinātā verifikācijas sesija kā iesniegšanas veids. Sesijai jābūt ar `type: "identity_verification"` un `status: "action_required"`. Klientam vēl nedrīkst būt verifikācija, kas notiek vai ir pabeigta pie Swipelux, un imports nedrīkst jau notikt. Mitinātās saites atvēršana sāk verifikāciju, bet uzdevuma nolasīšana to nedara. Pēc tam izsauciet `POST /v3/customers/{customerId}/tasks/{taskId}/verification-sessions/{verificationSessionId}/share-token`. Pieprasījumam nepieciešamas tās pašas `accounts:write`, `customers:read` un `customers:write` atļaujas kā uzdevumu iesniegšanai, kā arī `Idempotency-Key`:
+
+```json Request body
+{
+  "shareToken": "<share token>"
+}
+```
+
+```json Response
+{
+  "verificationSessionId": "vfy_000000000000000003",
+  "status": "in_review"
+}
+```
+
+Jūsu pakalpojumu sniedzējs nokopē atbilstošos soļus Swipelux kontā, un pārbaudes tiek veiktas atkārtoti atbilstoši uzdevumā pieprasītajam līmenim. Swipelux nekad neglabā un nereģistrē share token.
+
+- `status: "in_review"` nozīmē, ka pārbaudes vēl notiek. Kad pārbaudes ir pabeigtas, Swipelux nokārto aptvertās prasības tāpat kā mitinātās sesijas gadījumā.
+- `status: "action_required"` nozīmē, ka trūkst soļu. Klients var tos pabeigt, izmantojot sesijas esošo mitināto saiti, vai arī jūs varat iesniegt aptvertās prasības tieši.
+
+Imports aizpilda tikai prasības, kas norādītas `coveredRequirementIds`: ID dokumentu, pašbildi un, ja uzdevums to pieprasa, adreses pierādījumu. Profila atbildes, līdzekļu pierādījumu un citas prasības iesniedziet kā [API atbildes](#api-answers). Lai atkārtotu pieprasījumu, nosūtiet to vēlreiz ar to pašu `Idempotency-Key`.
+
+| Statuss | Kods | Kas jādara |
+| --- | --- | --- |
+| `409` | `verification_already_started` | Šim klientam jau ir verifikācija, kas notiek vai ir pabeigta pie Swipelux, vai arī imports jau notiek, piemēram, tāpēc, ka klients atvēra mitināto saiti. Neatkārtojiet. Turpiniet ar esošo sesiju. |
+| `409` | `verification_session_not_allowed` | Uzdevums vai sesija nav piemērota importam. Neatkārtojiet. Nolasiet uzdevumu un izmantojiet tā piedāvātos veidus. |
+| `422` | `share_token_rejected` | Identitātes verifikācijas pakalpojumu sniedzējs noraidīja marķieri, piemēram, tāpēc, ka tā derīgums beidzās, tas jau tika izmantots vai tika izsniegts citam saņēmējam. Ģenerējiet jaunu marķieri Swipelux un atkārtojiet ar jaunu `Idempotency-Key`. |
+| `503` | `kyc_provider_unavailable` | Ar `retryable: true` Swipelux vēl nebija nosūtījis marķieri. Atkārtojiet pēc brīža. Ar `retryable: false` imports, iespējams, notika, bet to nevarēja apstiprināt. Nesūtiet marķieri atkārtoti. Turpiniet, izmantojot sesijas mitināto saiti. |
 
 ### Augšupielādējiet dokumentus {#upload-documents}
 
@@ -343,6 +387,19 @@ curl --request GET \
 Aizstājiet saglabāto statusu, konta izsniegšanas statusu un uzdevumu ID ar jaunāko atbildi. Iespējas `status` ziņo, vai tiesības ir apstiprinātas. Iespējai, kas izsniedz kontu, `accountProvisioning` atsevišķi ziņo, vai šis konts ir `not_started`, `in_progress`, `issued` vai `failed`; iespēja, kas neizsniedz kontu, atgriež `not_applicable`.
 
 Kamēr iespēja ir `pending`, divas no `statusReason.code` vērtībām, ko tā var ziņot, parāda, vai notiek pārskatīšana. `preparing_submission` nozīmē, ka Swipelux joprojām sagatavo pieteikumu iesniegšanai un neviena pārskatīšana nenotiek, pat ja citas bankas pieteikums ir `rejected` vai prasa uzmanību. `review_in_progress` nozīmē, ka notiek pārskatīšana, piemēram, kamēr pieteikums ir `in_review` vai ir atvērta [uzņemtā verifikācija](#hosted-actions). Abi izmanto `resolution: wait`. Maiņa starp šiem kodiem saglabā statusu `pending`, tāpēc netiek nosūtīts notikums `capability.status_changed`. Nolasiet iespēju, lai redzētu pašreizējo kodu.
+
+Iespēja var būt arī `restricted` ar `statusReason.code: offer_unavailable` un `resolution: contact_support`. Swipelux atgriež šo kodu, ja apstiprināts pieteikums aptver iespēju, bet neviens pašreizējais piedāvājums to neatļauj. Pieteikums jau ir apstiprināts, tāpēc gaidīšana iespēju nemaina. Atkārtotas vaicāšanas vietā sazinieties ar Swipelux atbalstu. Šajā gadījumā šis kods aizstāj `related_application_action_required` un `resolution: wait`. Atvērtajiem klienta uzdevumiem joprojām ir prioritāte, tāpēc vispirms pabeidziet visus pašreizējos uzdevumus.
+
+```json Capability restricted by offer availability
+{
+  "status": "restricted",
+  "statusReason": {
+    "code": "offer_unavailable",
+    "resolution": "contact_support",
+    "message": "The approved Application covers this capability, but no current offer permits it. Contact support."
+  }
+}
+```
 
 Turpiniet tikai tad, kad pašreizējais iespējas statuss atļauj kontu, kotāciju vai pārvedumu, ko paredzat izveidot. Ja plūsmai nepieciešams izsniegts konts, gaidiet arī, līdz `accountProvisioning` kļūst `issued`.
 

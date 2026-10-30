@@ -233,6 +233,7 @@ curl --request GET \
         "key": "identity_verification",
         "type": "identity_verification",
         "status": "action_required",
+        "coveredRequirementIds": ["req_000000000000000011", "req_000000000000000012"],
         "action": {
           "kind": "available",
           "url": "https://platform.swipelux.com/kyc/redirect/cus_000000000000000001/tsk_000000000000000002/vfy_000000000000000003",
@@ -257,7 +258,50 @@ curl --request GET \
 
 这些是任务范围内的操作,而不是独立的客户验证生命周期。
 
+任务读取和客户任务详情中的每个 `verificationSessions[]` 条目都包含 `coveredRequirementIds`。它列出该会话可以满足的任务有效要求的 ID。可据此了解托管会话或[导入的核验](#import-an-existing-identity-verification)可以处理哪些要求。其他所有要求请通过 [API 答案](#api-answers)完成。
+
+对于新的个人信息采集任务，托管身份会话仅覆盖身份证件、自拍和地址证明。资金证明类要求，例如 `proof_of_funds`、`source_of_funds_document`、`named_source_of_funds_document` 和 `sole_proprietor_document`，不属于托管会话。请直接[上传](#upload-documents)并提交这些文件。Swipelux 会对其进行审核，在文件被接受之前任务会保持打开状态。
+
 对于结构化值（例如地址或税务标识符）的资料要求，托管答案必须通过与直接答案相同的 schema 和约束检查。如果未通过，该要求将保持未完成状态。因这一原因被 Swipelux 退回到 `action_required` 的要求会带有 `reviewFeedback.code: hosted_profile_direct_submission_required`。请向客户收集该值，并将其作为 [API 答案](#api-answers)提交。
+
+### 导入现有的身份核验 {#import-an-existing-identity-verification}
+
+如果您已经在 Swipelux 身份核验服务商处的自有账户中核验个人，可以将该核验导入客户信息采集任务的身份会话，而无需让客户走托管流程。此选项仅适用于面向个人客户的 API 集成。不支持企业和相关方。
+
+导入之前，请先与您的身份核验服务商设置共享：
+
+1. 向 Swipelux 索取其合作伙伴令牌，然后在您的身份核验服务商账户中将 Swipelux 添加为共享合作伙伴。
+2. 对于正式环境的核验，请为 Swipelux 生成共享令牌，接收方客户端 ID（`forClientId`）为 `swipelux.com_21030`。
+3. 请在令牌过期前将其发送给 Swipelux。共享令牌是不透明的一次性令牌，最多 1,024 个 UTF-8 字节，默认 20 分钟后过期。请将每个令牌视为凭据。
+
+该任务必须是个人信息采集任务，并且提供托管核验会话作为提交方式。会话必须为 `type: "identity_verification"` 和 `status: "action_required"`。客户在 Swipelux 不得已有进行中或已完成的核验，也不得已有导入正在进行。打开托管链接会启动核验，但读取任务不会。然后调用 `POST /v3/customers/{customerId}/tasks/{taskId}/verification-sessions/{verificationSessionId}/share-token`。该请求需要与任务提交相同的 `accounts:write`、`customers:read` 和 `customers:write` 权限，并附带 `Idempotency-Key`：
+
+```json Request body
+{
+  "shareToken": "<share token>"
+}
+```
+
+```json Response
+{
+  "verificationSessionId": "vfy_000000000000000003",
+  "status": "in_review"
+}
+```
+
+您的服务商会将相应步骤复制到 Swipelux 的账户中，并按照任务要求的级别重新执行检查。Swipelux 从不存储或记录共享令牌。
+
+- `status: "in_review"` 表示检查尚未完成。检查完成后，Swipelux 会按照与托管会话相同的方式处理所覆盖的要求。
+- `status: "action_required"` 表示缺少步骤。客户可以通过该会话现有的托管链接完成这些步骤，您也可以直接提交所覆盖的要求。
+
+导入只会满足 `coveredRequirementIds` 中列出的要求：身份证件、自拍，以及任务要求时的地址证明。资料答案、资金证明和其他要求请作为 [API 答案](#api-answers)提交。如需重放请求，请使用相同的 `Idempotency-Key` 再次发送。
+
+| 状态 | 代码 | 处理方式 |
+| --- | --- | --- |
+| `409` | `verification_already_started` | 该客户在 Swipelux 已有进行中或已完成的核验，或已有导入正在进行，例如客户打开了托管链接。请勿重试。请通过现有会话继续。 |
+| `409` | `verification_session_not_allowed` | 该任务或会话不符合导入条件。请勿重试。请读取任务并使用其提供的方式。 |
+| `422` | `share_token_rejected` | 身份核验服务商拒绝了该令牌，例如令牌已过期、已被使用或是为其他接收方签发的。请为 Swipelux 生成新令牌，并使用新的 `Idempotency-Key` 重试。 |
+| `503` | `kyc_provider_unavailable` | 当为 `retryable: true` 时，Swipelux 尚未发送令牌。请稍后重试。当为 `retryable: false` 时，导入可能已经发生但无法确认。请勿重新发送令牌。请通过该会话的托管链接继续。 |
 
 ### 上传文件 {#upload-documents}
 
@@ -343,6 +387,19 @@ curl --request GET \
 用最新响应替换已保存的状态、账户签发状态和任务 ID。能力的 `status` 表示权限是否已获批准。对于会签发账户的能力,`accountProvisioning` 会单独报告该账户是 `not_started`、`in_progress`、`issued` 还是 `failed`;不签发账户的能力返回 `not_applicable`。
 
 当能力处于 `pending` 时，它可能报告的 `statusReason.code` 值中有两个可以表明审核是否正在进行。`preparing_submission` 表示 Swipelux 仍在准备提交申请，尚未开始审核，即使另一家银行的申请为 `rejected` 或需要处理也是如此。`review_in_progress` 表示审核正在进行，例如申请处于 `in_review` 或[托管验证](#hosted-actions)处于打开状态时。两者都使用 `resolution: wait`。在这两个代码之间切换时状态仍为 `pending`，因此不会发送 `capability.status_changed` 事件。读取能力即可查看当前代码。
+
+能力也可能处于 `restricted` 状态，并带有 `statusReason.code: offer_unavailable` 和 `resolution: contact_support`。当已批准的申请涵盖该能力，但当前没有任何报价允许该能力时，Swipelux 会返回此代码。申请已获批准，因此等待不会改变该能力。请联系 Swipelux 支持团队，而不是轮询。在这种情况下，此代码取代 `related_application_action_required` 和 `resolution: wait`。未完成的客户任务仍然优先，因此请先完成所有当前任务。
+
+```json Capability restricted by offer availability
+{
+  "status": "restricted",
+  "statusReason": {
+    "code": "offer_unavailable",
+    "resolution": "contact_support",
+    "message": "The approved Application covers this capability, but no current offer permits it. Contact support."
+  }
+}
+```
 
 仅当能力的当前状态允许您计划创建的账户、报价或转账时才继续。当流程需要一个已签发的账户时,还需等待 `accountProvisioning` 变为 `issued`。
 

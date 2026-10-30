@@ -233,6 +233,7 @@ Task-detail response में `verificationSessions` और `tosSessions` क�
         "key": "identity_verification",
         "type": "identity_verification",
         "status": "action_required",
+        "coveredRequirementIds": ["req_000000000000000011", "req_000000000000000012"],
         "action": {
           "kind": "available",
           "url": "https://platform.swipelux.com/kyc/redirect/cus_000000000000000001/tsk_000000000000000002/vfy_000000000000000003",
@@ -257,7 +258,50 @@ Task-detail response में `verificationSessions` और `tosSessions` क�
 
 ये task-scoped actions हैं, अलग customer-verification lifecycle नहीं।
 
+Task reads और customer task detail में हर `verificationSessions[]` entry में `coveredRequirementIds` शामिल होता है। यह task की उन live requirements के IDs सूचीबद्ध करता है जिन्हें session भर सकता है। इसका उपयोग यह देखने के लिए करें कि कोई hosted session या [imported verification](#import-an-existing-identity-verification) किन requirements को settle कर सकता है। बाकी सभी requirements को [API answers](#api-answers) के ज़रिए भरें।
+
+नए individual intake tasks के लिए, hosted identity session केवल ID document, selfie, और proof of address को cover करता है। Proof-of-funds requirements, जैसे `proof_of_funds`, `source_of_funds_document`, `named_source_of_funds_document`, और `sole_proprietor_document`, hosted session का हिस्सा नहीं हैं। उन documents को सीधे [upload](#upload-documents) और submit करें। Swipelux उनकी review करता है, और जब तक वे accept नहीं हो जाते, task खुला रहता है।
+
 किसी structured value, जैसे address या tax identifiers, की profile requirement के hosted answer को direct answer वाले ही schema और constraint checks पास करने होंगे। ऐसा न होने पर requirement open रहती है। जिस requirement को Swipelux इस कारण `action_required` पर लौटाता है, उसमें `reviewFeedback.code: hosted_profile_direct_submission_required` होता है। Customer से वह value लें और उसे [API answer](#api-answers) के रूप में submit करें।
+
+### मौजूदा identity verification import करें {#import-an-existing-identity-verification}
+
+यदि आप पहले से Swipelux के identity verification provider के साथ अपने account में individuals को verify करते हैं, तो आप customer को hosted flow से भेजने के बजाय उस verification को customer के intake task के identity session में import कर सकते हैं। यह विकल्प केवल individual customers वाले API integrations के लिए है। Businesses और related parties समर्थित नहीं हैं।
+
+Import करने से पहले, अपने identity verification provider के साथ sharing सेट अप करें:
+
+1. Swipelux से उसका partner token माँगें, फिर अपने identity verification provider account में Swipelux को sharing partner के रूप में जोड़ें।
+2. Live verifications के लिए, recipient client ID (`forClientId`) `swipelux.com_21030` के साथ Swipelux के लिए एक share token generate करें।
+3. Token के expire होने से पहले उसे Swipelux को भेजें। Share tokens opaque और single-use होते हैं, अधिकतम 1,024 UTF-8 bytes के होते हैं, और डिफ़ॉल्ट रूप से 20 मिनट बाद expire हो जाते हैं। हर token को एक credential की तरह मानें।
+
+Task एक individual intake task होना चाहिए और उसमें submission method के रूप में hosted verification session उपलब्ध होना चाहिए। Session में `type: "identity_verification"` और `status: "action_required"` होना चाहिए। Customer के पास Swipelux के साथ पहले से कोई in-progress या completed verification नहीं होना चाहिए, और कोई import पहले से नहीं चल रहा होना चाहिए। Hosted link खोलने से verification शुरू हो जाता है, लेकिन task पढ़ने से नहीं। फिर `POST /v3/customers/{customerId}/tasks/{taskId}/verification-sessions/{verificationSessionId}/share-token` call करें। Request के लिए task submissions वाली ही `accounts:write`, `customers:read`, और `customers:write` permissions, और साथ में एक `Idempotency-Key` आवश्यक है:
+
+```json Request body
+{
+  "shareToken": "<share token>"
+}
+```
+
+```json Response
+{
+  "verificationSessionId": "vfy_000000000000000003",
+  "status": "in_review"
+}
+```
+
+आपका provider मेल खाने वाले steps को Swipelux के account में copy करता है, और checks task द्वारा आवश्यक level के अनुसार फिर से चलते हैं। Swipelux कभी भी share token को store या log नहीं करता।
+
+- `status: "in_review"` का अर्थ है कि checks pending हैं। Checks पूरे होने पर, Swipelux covered requirements को उसी तरह settle करता है जैसे hosted session के लिए करता है।
+- `status: "action_required"` का अर्थ है कि steps missing हैं। Customer उन्हें session के मौजूदा hosted link के ज़रिए पूरा कर सकता है, या आप covered requirements को सीधे submit कर सकते हैं।
+
+Import केवल `coveredRequirementIds` में सूचीबद्ध requirements को भरता है: ID document, selfie, और जहाँ task को इसकी आवश्यकता हो, proof of address। Profile answers, proof of funds, और अन्य requirements को [API answers](#api-answers) के रूप में submit करें। किसी request को replay करने के लिए, उसे उसी `Idempotency-Key` के साथ फिर से भेजें।
+
+| Status | Code | क्या करें |
+| --- | --- | --- |
+| `409` | `verification_already_started` | इस customer के पास Swipelux के साथ पहले से कोई in-progress या completed verification है, या कोई import पहले से चल रहा है, उदाहरण के लिए क्योंकि customer ने hosted link खोला था। Retry न करें। मौजूदा session के ज़रिए जारी रखें। |
+| `409` | `verification_session_not_allowed` | Task या session import के लिए eligible नहीं है। Retry न करें। Task पढ़ें और उसमें दिए गए methods का उपयोग करें। |
+| `422` | `share_token_rejected` | Identity verification provider ने token को अस्वीकार कर दिया, उदाहरण के लिए क्योंकि वह expire हो गया था, पहले ही उपयोग हो चुका था, या किसी अन्य recipient के लिए जारी किया गया था। Swipelux के लिए एक नया token generate करें और नई `Idempotency-Key` के साथ retry करें। |
+| `503` | `kyc_provider_unavailable` | `retryable: true` होने पर, Swipelux ने अभी तक token नहीं भेजा था। कुछ देर बाद retry करें। `retryable: false` होने पर, import हो चुका हो सकता है लेकिन उसकी पुष्टि नहीं हो सकी। Token दोबारा न भेजें। Session के hosted link के ज़रिए जारी रखें। |
 
 ### Documents upload करें {#upload-documents}
 
@@ -343,6 +387,19 @@ curl --request GET \
 संग्रहीत status, account-provisioning status, और task IDs को नवीनतम response से बदलें। Capability `status` रिपोर्ट करता है कि entitlement approve हुआ है या नहीं। Account जारी करने वाली capability के लिए, `accountProvisioning` अलग से रिपोर्ट करता है कि वह account `not_started`, `in_progress`, `issued`, या `failed` है; जो capability account जारी नहीं करती वह `not_applicable` लौटाती है।
 
 जब capability `pending` होती है, तो वह जो `statusReason.code` values report कर सकती है, उनमें से दो यह दिखाती हैं कि review चल रहा है या नहीं। `preparing_submission` का अर्थ है कि Swipelux अभी भी submission के लिए application तैयार कर रहा है और कोई review नहीं चल रहा, भले ही किसी दूसरे bank का application `rejected` हो या उस पर ध्यान देने की ज़रूरत हो। `review_in_progress` का अर्थ है कि review चल रहा है, उदाहरण के लिए जब कोई application `in_review` हो या कोई [hosted verification](#hosted-actions) खुला हो। दोनों `resolution: wait` का उपयोग करते हैं। इन codes के बीच बदलाव status को `pending` ही रखता है, इसलिए कोई `capability.status_changed` event नहीं भेजा जाता। मौजूदा code देखने के लिए capability पढ़ें।
+
+कोई capability `statusReason.code: offer_unavailable` और `resolution: contact_support` के साथ `restricted` भी हो सकती है। Swipelux यह code तब लौटाता है जब कोई approved application उस capability को cover करता है, लेकिन कोई मौजूदा offer उसकी अनुमति नहीं देता। Application पहले से approved है, इसलिए इंतज़ार करने से capability नहीं बदलती। Polling करने के बजाय Swipelux support से संपर्क करें। इस स्थिति में यह code `related_application_action_required` और `resolution: wait` की जगह लेता है। खुले customer tasks को अब भी प्राथमिकता मिलती है, इसलिए पहले सभी मौजूदा tasks पूरे करें।
+
+```json Capability restricted by offer availability
+{
+  "status": "restricted",
+  "statusReason": {
+    "code": "offer_unavailable",
+    "resolution": "contact_support",
+    "message": "The approved Application covers this capability, but no current offer permits it. Contact support."
+  }
+}
+```
 
 केवल तब जारी रखें जब वर्तमान capability status उस account, quote, या transfer की अनुमति देती है जिसे आप बनाने का इरादा रखते हैं। जब flow को issued account की आवश्यकता हो, तो `accountProvisioning` के `issued` होने की भी प्रतीक्षा करें।
 

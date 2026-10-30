@@ -233,6 +233,7 @@ Nella risposta di dettaglio del task, ogni voce di `verificationSessions` e `tos
         "key": "identity_verification",
         "type": "identity_verification",
         "status": "action_required",
+        "coveredRequirementIds": ["req_000000000000000011", "req_000000000000000012"],
         "action": {
           "kind": "available",
           "url": "https://platform.swipelux.com/kyc/redirect/cus_000000000000000001/tsk_000000000000000002/vfy_000000000000000003",
@@ -257,7 +258,50 @@ Nella risposta di dettaglio del task, ogni voce di `verificationSessions` e `tos
 
 Queste sono azioni con scope di task, non un ciclo di vita separato di verifica cliente.
 
+Ogni voce di `verificationSessions[]` nelle letture dei task e nel dettaglio dei task del cliente include `coveredRequirementIds`. Elenca gli ID dei requisiti attivi del task che la sessione può soddisfare. Usalo per vedere quali requisiti può risolvere una sessione hosted o una [verifica importata](#import-an-existing-identity-verification). Soddisfa tutti gli altri requisiti tramite [risposte via API](#api-answers).
+
+Per i nuovi task di intake individuali, la sessione hosted di verifica dell'identità copre solo il documento d'identità, il selfie e la prova di indirizzo. I requisiti di prova dei fondi, come `proof_of_funds`, `source_of_funds_document`, `named_source_of_funds_document` e `sole_proprietor_document`, non fanno parte della sessione hosted. [Carica](#upload-documents) e invia questi documenti direttamente. Swipelux li esamina e il task resta aperto finché non vengono accettati.
+
 Una risposta ospitata a un requisito del profilo per un valore strutturato, come un indirizzo o gli identificativi fiscali, deve superare gli stessi controlli di schema e di vincoli di una risposta diretta. In caso contrario, il requisito resta aperto. Un requisito che Swipelux riporta a `action_required` per questo motivo include `reviewFeedback.code: hosted_profile_direct_submission_required`. Raccogli quel valore dal cliente e invialo come [risposta via API](#api-answers).
+
+### Importa una verifica dell'identità esistente {#import-an-existing-identity-verification}
+
+Se verifichi già le persone fisiche nel tuo account presso il provider di verifica dell'identità di Swipelux, puoi importare quella verifica nella sessione di verifica dell'identità del task di intake del cliente invece di far passare il cliente dal flusso hosted. Questa opzione è riservata alle integrazioni API con clienti individuali. Business e related party non sono supportati.
+
+Prima di importare, configura la condivisione con il tuo provider di verifica dell'identità:
+
+1. Chiedi a Swipelux il suo partner token, quindi aggiungi Swipelux come partner di condivisione nel tuo account presso il provider di verifica dell'identità.
+2. Per le verifiche live, genera uno share token per Swipelux con client ID del destinatario (`forClientId`) `swipelux.com_21030`.
+3. Invia il token a Swipelux prima che scada. Gli share token sono opachi, monouso, al massimo di 1.024 byte UTF-8 e scadono per impostazione predefinita dopo 20 minuti. Tratta ogni token come una credenziale.
+
+Il task deve essere un task di intake individuale e offrire la sessione di verifica hosted come metodo di invio. La sessione deve avere `type: "identity_verification"` e `status: "action_required"`. Il cliente non deve avere già una verifica in corso o completata con Swipelux, e non deve esserci già un'importazione in corso. L'apertura del link hosted avvia la verifica, mentre la lettura del task no. Quindi chiama `POST /v3/customers/{customerId}/tasks/{taskId}/verification-sessions/{verificationSessionId}/share-token`. La richiesta richiede gli stessi permessi `accounts:write`, `customers:read` e `customers:write` degli invii dei task, più un `Idempotency-Key`:
+
+```json Request body
+{
+  "shareToken": "<share token>"
+}
+```
+
+```json Response
+{
+  "verificationSessionId": "vfy_000000000000000003",
+  "status": "in_review"
+}
+```
+
+Il tuo provider copia i passaggi corrispondenti nell'account di Swipelux, e i controlli vengono rieseguiti rispetto al livello richiesto dal task. Swipelux non memorizza né registra mai lo share token.
+
+- `status: "in_review"` significa che i controlli sono in attesa. Al termine dei controlli, Swipelux risolve i requisiti coperti nello stesso modo di una sessione hosted.
+- `status: "action_required"` significa che mancano dei passaggi. Il cliente può completarli tramite il link hosted esistente della sessione, oppure puoi inviare direttamente i requisiti coperti.
+
+L'importazione soddisfa solo i requisiti elencati in `coveredRequirementIds`: il documento d'identità, il selfie e, dove il task lo richiede, la prova di indirizzo. Invia le risposte del profilo, la prova dei fondi e gli altri requisiti come [risposte via API](#api-answers). Per ripetere una richiesta, inviala di nuovo con lo stesso `Idempotency-Key`.
+
+| Stato | Codice | Cosa fare |
+| --- | --- | --- |
+| `409` | `verification_already_started` | Questo cliente ha già una verifica in corso o completata con Swipelux, oppure un'importazione è già in corso, ad esempio perché il cliente ha aperto un link hosted. Non ritentare. Prosegui tramite la sessione esistente. |
+| `409` | `verification_session_not_allowed` | Il task o la sessione non è idoneo all'importazione. Non ritentare. Leggi il task e usa i metodi che offre. |
+| `422` | `share_token_rejected` | Il provider di verifica dell'identità ha rifiutato il token, ad esempio perché è scaduto, è già stato usato o è stato emesso per un altro destinatario. Genera un nuovo token per Swipelux e ritenta con un nuovo `Idempotency-Key`. |
+| `503` | `kyc_provider_unavailable` | Con `retryable: true`, Swipelux non aveva ancora inviato il token. Ritenta dopo un'attesa. Con `retryable: false`, l'importazione potrebbe essere avvenuta ma non è stato possibile confermarla. Non inviare di nuovo il token. Prosegui tramite il link hosted della sessione. |
 
 ### Carica documenti {#upload-documents}
 
@@ -343,6 +387,19 @@ curl --request GET \
 Sostituisci lo status, lo status di account provisioning e gli ID task memorizzati con l'ultima risposta. Lo `status` della capability indica se l'abilitazione è approvata. Per una capability che emette un conto, `accountProvisioning` indica separatamente se quel conto è `not_started`, `in_progress`, `issued` o `failed`; una capability che non emette un conto restituisce `not_applicable`.
 
 Mentre la capability è `pending`, due dei valori di `statusReason.code` che può riportare indicano se una revisione è in corso. `preparing_submission` significa che Swipelux sta ancora preparando una domanda per l'invio e nessuna revisione è in corso, anche se la domanda di un'altra banca è `rejected` o richiede attenzione. `review_in_progress` significa che una revisione è in corso, ad esempio mentre una domanda è `in_review` o una [verifica hosted](#hosted-actions) è aperta. Entrambi usano `resolution: wait`. Un passaggio tra questi codici mantiene lo status `pending`, quindi non invia alcun evento `capability.status_changed`. Leggi la capability per vedere il codice corrente.
+
+Una capability può anche essere `restricted` con `statusReason.code: offer_unavailable` e `resolution: contact_support`. Swipelux restituisce questo codice quando una domanda approvata copre la capability ma nessuna offerta corrente la consente. La domanda è già approvata, quindi attendere non modifica la capability. Contatta il supporto Swipelux invece di eseguire il polling. In questo caso, questo codice sostituisce `related_application_action_required` e `resolution: wait`. I task aperti del cliente hanno comunque la precedenza, quindi completa prima eventuali task correnti.
+
+```json Capability restricted by offer availability
+{
+  "status": "restricted",
+  "statusReason": {
+    "code": "offer_unavailable",
+    "resolution": "contact_support",
+    "message": "The approved Application covers this capability, but no current offer permits it. Contact support."
+  }
+}
+```
 
 Prosegui solo quando lo status corrente della capability consente il conto, la quote o il transfer che intendi creare. Quando il flusso richiede un conto emesso, attendi anche che `accountProvisioning` diventi `issued`.
 

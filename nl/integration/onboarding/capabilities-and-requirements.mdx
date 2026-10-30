@@ -233,6 +233,7 @@ In het taakdetailantwoord bevat elke entry in `verificationSessions` en `tosSess
         "key": "identity_verification",
         "type": "identity_verification",
         "status": "action_required",
+        "coveredRequirementIds": ["req_000000000000000011", "req_000000000000000012"],
         "action": {
           "kind": "available",
           "url": "https://platform.swipelux.com/kyc/redirect/cus_000000000000000001/tsk_000000000000000002/vfy_000000000000000003",
@@ -257,7 +258,50 @@ In het taakdetailantwoord bevat elke entry in `verificationSessions` en `tosSess
 
 Dit zijn task-scoped acties, geen aparte lifecycle voor klantverificatie.
 
+Elke `verificationSessions[]`-entry in het lezen van taken en in de taakdetails van de klant bevat `coveredRequirementIds`. Dit veld vermeldt de ID's van de actieve vereisten van de taak die de sessie kan invullen. Gebruik het om te zien welke vereisten een hosted session of een [geïmporteerde verificatie](#import-an-existing-identity-verification) kan afhandelen. Vul elke andere vereiste in via [API-antwoorden](#api-answers).
+
+Voor nieuwe intaketaken voor personen dekt de gehoste identiteitssessie alleen het ID-document, de selfie en het adresbewijs. Vereisten voor bewijs van middelen, zoals `proof_of_funds`, `source_of_funds_document`, `named_source_of_funds_document` en `sole_proprietor_document`, maken geen deel uit van de hosted session. [Upload](#upload-documents) deze documenten en dien ze direct in. Swipelux beoordeelt ze, en de taak blijft open tot ze zijn geaccepteerd.
+
 Een gehost antwoord op een profielvereiste voor een gestructureerde waarde, zoals een adres of fiscale identificatienummers, moet dezelfde schema- en constraintcontroles doorstaan als een direct antwoord. Als dat niet zo is, blijft de vereiste open. Een vereiste die Swipelux om deze reden terugzet naar `action_required`, bevat `reviewFeedback.code: hosted_profile_direct_submission_required`. Verzamel die waarde bij de klant en dien deze in als [API-antwoord](#api-answers).
+
+### Een bestaande identiteitsverificatie importeren {#import-an-existing-identity-verification}
+
+Als je personen al verifieert in je eigen account bij de provider voor identiteitsverificatie van Swipelux, kun je die verificatie importeren in de identiteitssessie van de intaketaak van de klant in plaats van de klant door de gehoste flow te sturen. Deze optie is alleen bedoeld voor API-integraties met individuele klanten. Bedrijven en related parties worden niet ondersteund.
+
+Stel vóór het importeren delen in met je provider voor identiteitsverificatie:
+
+1. Vraag Swipelux om zijn partnertoken en voeg Swipelux daarna toe als deelpartner in je account bij de provider voor identiteitsverificatie.
+2. Genereer voor live verificaties een share token voor Swipelux met ontvanger-client-ID (`forClientId`) `swipelux.com_21030`.
+3. Stuur de token naar Swipelux voordat deze verloopt. Share tokens zijn ondoorzichtig, eenmalig te gebruiken, maximaal 1.024 UTF-8-bytes groot en verlopen standaard na 20 minuten. Behandel elke token als een credential.
+
+De taak moet een intaketaak voor een persoon zijn en de gehoste verificatiesessie als indieningsmethode aanbieden. De sessie moet `type: "identity_verification"` en `status: "action_required"` hebben. De klant mag bij Swipelux nog geen verificatie hebben die loopt of voltooid is, en er mag nog geen import lopen. Het openen van de gehoste link start de verificatie, maar het lezen van de taak niet. Roep daarna `POST /v3/customers/{customerId}/tasks/{taskId}/verification-sessions/{verificationSessionId}/share-token` aan. Het verzoek vereist dezelfde machtigingen `accounts:write`, `customers:read` en `customers:write` als taakindieningen, plus een `Idempotency-Key`:
+
+```json Request body
+{
+  "shareToken": "<share token>"
+}
+```
+
+```json Response
+{
+  "verificationSessionId": "vfy_000000000000000003",
+  "status": "in_review"
+}
+```
+
+Je provider kopieert de overeenkomende stappen naar het account van Swipelux, en de controles worden opnieuw uitgevoerd op het niveau dat de taak vereist. Swipelux slaat de share token nooit op en logt deze nooit.
+
+- `status: "in_review"` betekent dat de controles nog lopen. Wanneer de controles klaar zijn, handelt Swipelux de gedekte vereisten op dezelfde manier af als bij een hosted session.
+- `status: "action_required"` betekent dat er stappen ontbreken. De klant kan ze afronden via de bestaande gehoste link van de sessie, of je kunt de gedekte vereisten direct indienen.
+
+De import vult alleen de vereisten in `coveredRequirementIds` in: het ID-document, de selfie en, waar de taak dat vereist, het adresbewijs. Dien profielantwoorden, bewijs van middelen en andere vereisten in als [API-antwoorden](#api-answers). Stuur een verzoek opnieuw met dezelfde `Idempotency-Key` om het te replayen.
+
+| Status | Code | Wat te doen |
+| --- | --- | --- |
+| `409` | `verification_already_started` | Deze klant heeft al een verificatie die loopt of voltooid is bij Swipelux, of er loopt al een import, bijvoorbeeld omdat de klant een gehoste link heeft geopend. Probeer het niet opnieuw. Ga verder via de bestaande sessie. |
+| `409` | `verification_session_not_allowed` | De taak of sessie komt niet in aanmerking voor import. Probeer het niet opnieuw. Lees de taak en gebruik de methoden die deze aanbiedt. |
+| `422` | `share_token_rejected` | De provider voor identiteitsverificatie heeft de token geweigerd, bijvoorbeeld omdat deze is verlopen, al is gebruikt of voor een andere ontvanger is uitgegeven. Genereer een nieuwe token voor Swipelux en probeer het opnieuw met een nieuwe `Idempotency-Key`. |
+| `503` | `kyc_provider_unavailable` | Met `retryable: true` had Swipelux de token nog niet verzonden. Probeer het na enige tijd opnieuw. Met `retryable: false` heeft de import mogelijk plaatsgevonden, maar kon deze niet worden bevestigd. Verstuur de token niet opnieuw. Ga verder via de gehoste link van de sessie. |
 
 ### Documenten uploaden {#upload-documents}
 
@@ -343,6 +387,19 @@ curl --request GET \
 Vervang de opgeslagen status, account-provisioning-status en task-ID's door de nieuwste respons. De capability-`status` geeft aan of de bevoegdheid is goedgekeurd. Voor een capability die een account uitgeeft, rapporteert `accountProvisioning` afzonderlijk of dat account `not_started`, `in_progress`, `issued` of `failed` is; een capability die geen account uitgeeft retourneert `not_applicable`.
 
 Zolang de capability `pending` is, laten twee van de `statusReason.code`-waarden die ze kan melden zien of er een beoordeling loopt. `preparing_submission` betekent dat Swipelux nog een aanvraag voorbereidt voor indiening en dat er geen beoordeling loopt, zelfs als de aanvraag bij een andere bank `rejected` is of aandacht nodig heeft. `review_in_progress` betekent dat er een beoordeling loopt, bijvoorbeeld terwijl een aanvraag `in_review` is of een [gehoste verificatie](#hosted-actions) open staat. Beide gebruiken `resolution: wait`. Een wisseling tussen deze codes houdt de status op `pending`, dus er wordt geen `capability.status_changed`-event verzonden. Lees de capability om de huidige code te zien.
+
+Een capability kan ook `restricted` zijn met `statusReason.code: offer_unavailable` en `resolution: contact_support`. Swipelux retourneert deze code wanneer een goedgekeurde aanvraag de capability dekt, maar geen huidig aanbod deze toestaat. De aanvraag is al goedgekeurd, dus wachten verandert de capability niet. Neem contact op met de support van Swipelux in plaats van te pollen. In dit geval vervangt deze code `related_application_action_required` en `resolution: wait`. Openstaande klanttaken hebben nog steeds voorrang, dus voltooi eerst alle huidige taken.
+
+```json Capability restricted by offer availability
+{
+  "status": "restricted",
+  "statusReason": {
+    "code": "offer_unavailable",
+    "resolution": "contact_support",
+    "message": "The approved Application covers this capability, but no current offer permits it. Contact support."
+  }
+}
+```
 
 Ga alleen verder wanneer de huidige capability-status het account, de quote of de transfer die je wilt aanmaken toestaat. Wanneer de flow een uitgegeven account nodig heeft, wacht je ook tot `accountProvisioning` de status `issued` bereikt.
 

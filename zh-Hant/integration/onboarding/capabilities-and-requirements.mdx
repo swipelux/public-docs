@@ -233,6 +233,7 @@ curl --request GET \
         "key": "identity_verification",
         "type": "identity_verification",
         "status": "action_required",
+        "coveredRequirementIds": ["req_000000000000000011", "req_000000000000000012"],
         "action": {
           "kind": "available",
           "url": "https://platform.swipelux.com/kyc/redirect/cus_000000000000000001/tsk_000000000000000002/vfy_000000000000000003",
@@ -257,7 +258,50 @@ curl --request GET \
 
 這些是與任務相關的操作,而不是獨立的客戶驗證生命週期。
 
+任務讀取與客戶任務詳細資料中的每一筆 `verificationSessions[]` 項目都包含 `coveredRequirementIds`。它列出該工作階段可填寫的任務有效要求 ID。請用它來查看託管工作階段或[匯入的驗證](#import-an-existing-identity-verification)可處理哪些要求。其他所有要求請透過 [API 答覆](#api-answers)填寫。
+
+對於新的個人 intake 任務，託管身分工作階段僅涵蓋身分證件、selfie 與地址證明。資金證明要求（例如 `proof_of_funds`、`source_of_funds_document`、`named_source_of_funds_document` 與 `sole_proprietor_document`）不屬於託管工作階段。請直接[上傳](#upload-documents)並提交這些文件。Swipelux 會審查它們，任務會維持開啟直到文件被接受。
+
 對於結構化值（例如地址或稅務識別碼）的個人資料要求，託管答覆必須通過與直接答覆相同的結構描述與限制檢查。若未通過，該要求會保持開啟。因這一原因被 Swipelux 退回 `action_required` 的要求會帶有 `reviewFeedback.code: hosted_profile_direct_submission_required`。請向客戶收集該值，並以 [API 答覆](#api-answers)提交。
+
+### 匯入既有的身分驗證 {#import-an-existing-identity-verification}
+
+如果您已在 Swipelux 身分驗證提供者處的自有帳戶中驗證個人，您可以將該驗證匯入客戶 intake 任務的身分工作階段，而不必讓客戶走完託管流程。此選項僅適用於個人客戶的 API 整合。不支援企業與關係人。
+
+匯入前，請先與您的身分驗證提供者設定共享：
+
+1. 向 Swipelux 索取其合作夥伴權杖，然後在您的身分驗證提供者帳戶中將 Swipelux 新增為共享合作夥伴。
+2. 針對正式環境驗證，為 Swipelux 產生 share token，收件方 client ID（`forClientId`）為 `swipelux.com_21030`。
+3. 請在權杖到期前將其傳送給 Swipelux。Share token 為不透明、僅能使用一次、最多 1,024 個 UTF-8 位元組，且預設在 20 分鐘後到期。請將每個權杖視為憑證。
+
+該任務必須是個人 intake 任務，且提供託管驗證工作階段作為提交方式。工作階段必須具有 `type: "identity_verification"` 與 `status: "action_required"`。客戶不得已在 Swipelux 有進行中或已完成的驗證，且不得已有匯入正在進行。開啟託管連結會開始驗證，但讀取任務不會。接著呼叫 `POST /v3/customers/{customerId}/tasks/{taskId}/verification-sessions/{verificationSessionId}/share-token`。此請求需要與任務提交相同的 `accounts:write`、`customers:read` 與 `customers:write` 權限，以及 `Idempotency-Key`：
+
+```json Request body
+{
+  "shareToken": "<share token>"
+}
+```
+
+```json Response
+{
+  "verificationSessionId": "vfy_000000000000000003",
+  "status": "in_review"
+}
+```
+
+您的提供者會將相符的步驟複製到 Swipelux 的帳戶，並依任務要求的等級重新執行檢查。Swipelux 絕不會儲存或記錄 share token。
+
+- `status: "in_review"` 表示檢查尚在進行中。檢查完成後，Swipelux 會以與託管工作階段相同的方式處理所涵蓋的要求。
+- `status: "action_required"` 表示缺少步驟。客戶可透過該工作階段既有的託管連結完成這些步驟，您也可以直接提交所涵蓋的要求。
+
+匯入僅會填寫 `coveredRequirementIds` 中列出的要求：身分證件、selfie，以及任務要求時的地址證明。請以 [API 答覆](#api-answers)提交個人資料答覆、資金證明與其他要求。若要重播請求，請以相同的 `Idempotency-Key` 再次傳送。
+
+| 狀態 | 代碼 | 處理方式 |
+| --- | --- | --- |
+| `409` | `verification_already_started` | 此客戶已在 Swipelux 有進行中或已完成的驗證，或已有匯入正在進行，例如因為客戶開啟了託管連結。請勿重試。請透過既有的工作階段繼續。 |
+| `409` | `verification_session_not_allowed` | 該任務或工作階段不符合匯入資格。請勿重試。請讀取任務並使用其提供的方式。 |
+| `422` | `share_token_rejected` | 身分驗證提供者拒絕了權杖，例如因為權杖已到期、已被使用，或是核發給其他收件方。請為 Swipelux 產生新權杖，並以新的 `Idempotency-Key` 重試。 |
+| `503` | `kyc_provider_unavailable` | 若為 `retryable: true`，表示 Swipelux 尚未送出權杖。請稍候再重試。若為 `retryable: false`，匯入可能已發生但無法確認。請勿重新傳送權杖。請透過該工作階段的託管連結繼續。 |
 
 ### 上傳文件 {#upload-documents}
 
@@ -343,6 +387,19 @@ curl --request GET \
 將儲存的狀態、帳戶核發狀態與任務 ID 替換為最新的回應。能力的 `status` 回報權限是否已獲核准。對於會核發帳戶的能力,`accountProvisioning` 會另外回報該帳戶為 `not_started`、`in_progress`、`issued` 或 `failed`;不核發帳戶的能力則會回傳 `not_applicable`。
 
 當能力處於 `pending` 時，它可能回報的 `statusReason.code` 值中有兩個可表明審查是否正在進行。`preparing_submission` 表示 Swipelux 仍在準備提交申請，尚未開始審查，即使另一家銀行的申請為 `rejected` 或需要處理也是如此。`review_in_progress` 表示審查正在進行，例如申請處於 `in_review` 或[託管驗證](#hosted-actions)處於開啟狀態時。兩者都使用 `resolution: wait`。在這兩個代碼之間切換時狀態仍為 `pending`，因此不會傳送 `capability.status_changed` 事件。讀取能力即可查看目前的代碼。
+
+能力也可能處於 `restricted` 狀態，並帶有 `statusReason.code: offer_unavailable` 和 `resolution: contact_support`。當已核准的申請涵蓋該能力，但目前沒有任何方案允許該能力時，Swipelux 會傳回此代碼。申請已獲核准，因此等待不會改變該能力。請聯絡 Swipelux 支援團隊，而不是輪詢。在這種情況下，此代碼取代 `related_application_action_required` 和 `resolution: wait`。未完成的客戶任務仍然優先，因此請先完成所有目前的任務。
+
+```json Capability restricted by offer availability
+{
+  "status": "restricted",
+  "statusReason": {
+    "code": "offer_unavailable",
+    "resolution": "contact_support",
+    "message": "The approved Application covers this capability, but no current offer permits it. Contact support."
+  }
+}
+```
 
 僅在當前能力狀態允許您預期建立的帳戶、報價或轉帳時才繼續。若流程需要已核發的帳戶,也請等待 `accountProvisioning` 變為 `issued`。
 

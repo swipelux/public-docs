@@ -233,6 +233,7 @@ curl --request GET \
         "key": "identity_verification",
         "type": "identity_verification",
         "status": "action_required",
+        "coveredRequirementIds": ["req_000000000000000011", "req_000000000000000012"],
         "action": {
           "kind": "available",
           "url": "https://platform.swipelux.com/kyc/redirect/cus_000000000000000001/tsk_000000000000000002/vfy_000000000000000003",
@@ -257,7 +258,50 @@ curl --request GET \
 
 이것들은 태스크 범위 작업이며, 별도의 고객 검증 라이프사이클이 아니에요.
 
+태스크 조회와 고객 태스크 상세의 모든 `verificationSessions[]` 항목에는 `coveredRequirementIds`가 포함돼요. 여기에는 세션이 채울 수 있는 태스크의 활성 요건 ID가 나열돼요. 이를 사용해 호스팅된 세션이나 [가져온 인증](#import-an-existing-identity-verification)으로 처리할 수 있는 요건을 확인하세요. 그 밖의 모든 요건은 [API 답변](#api-answers)으로 채우세요.
+
+새 개인 접수 태스크에서 호스팅된 신원 인증 세션은 신분증, 셀피, 주소 증명만 처리해요. `proof_of_funds`, `source_of_funds_document`, `named_source_of_funds_document`, `sole_proprietor_document`와 같은 자금 증명 요건은 호스팅된 세션에 포함되지 않아요. 이 문서들은 직접 [업로드](#upload-documents)하고 제출하세요. Swipelux가 이를 검토하며, 승인될 때까지 태스크는 열린 상태로 유지돼요.
+
 주소나 세금 식별자와 같은 구조화된 값에 대한 프로필 요건의 호스팅된 답변은 직접 답변과 동일한 스키마 및 제약 조건 검사를 통과해야 해요. 통과하지 못하면 요건은 열린 상태로 유지돼요. 이 이유로 Swipelux가 `action_required`로 되돌린 요건에는 `reviewFeedback.code: hosted_profile_direct_submission_required`가 포함돼요. 고객에게서 해당 값을 수집해 [API 답변](#api-answers)으로 제출하세요.
+
+### 기존 신원 인증 가져오기 {#import-an-existing-identity-verification}
+
+Swipelux의 신원 인증 제공업체에 있는 자체 계정에서 이미 개인을 인증하고 있다면, 고객이 호스팅된 흐름을 거치게 하는 대신 해당 인증을 고객의 접수 태스크 신원 인증 세션으로 가져올 수 있어요. 이 옵션은 개인 고객을 대상으로 하는 API 통합에서만 사용할 수 있어요. 기업과 관계자는 지원되지 않아요.
+
+가져오기 전에 신원 인증 제공업체에서 공유를 설정하세요:
+
+1. Swipelux에 파트너 토큰을 요청한 다음, 신원 인증 제공업체 계정에서 Swipelux를 공유 파트너로 추가하세요.
+2. 라이브 인증의 경우, 수신자 클라이언트 ID(`forClientId`)를 `swipelux.com_21030`으로 지정해 Swipelux용 share token을 생성하세요.
+3. 토큰이 만료되기 전에 Swipelux에 보내세요. share token은 불투명한 일회용 토큰으로, 최대 1,024 UTF-8 바이트이며 기본적으로 20분 후에 만료돼요. 각 토큰을 자격 증명으로 취급하세요.
+
+태스크는 개인 접수 태스크여야 하며, 제출 방법으로 호스팅된 인증 세션을 제공해야 해요. 세션은 `type: "identity_verification"`이고 `status: "action_required"`여야 해요. 고객에게 Swipelux에서 진행 중이거나 완료된 인증이 이미 있어서는 안 되며, 가져오기가 이미 실행 중이어서도 안 돼요. 호스팅된 링크를 열면 인증이 시작되지만, 태스크를 조회하는 것만으로는 시작되지 않아요. 그런 다음 `POST /v3/customers/{customerId}/tasks/{taskId}/verification-sessions/{verificationSessionId}/share-token`를 호출하세요. 이 요청에는 태스크 제출과 동일한 `accounts:write`, `customers:read`, `customers:write` 권한과 함께 `Idempotency-Key`가 필요해요:
+
+```json Request body
+{
+  "shareToken": "<share token>"
+}
+```
+
+```json Response
+{
+  "verificationSessionId": "vfy_000000000000000003",
+  "status": "in_review"
+}
+```
+
+제공업체가 일치하는 단계를 Swipelux 계정으로 복사하고, 태스크가 요구하는 레벨을 기준으로 검사가 다시 실행돼요. Swipelux는 share token을 저장하거나 기록하지 않아요.
+
+- `status: "in_review"`는 검사가 대기 중이라는 뜻이에요. 검사가 끝나면 Swipelux는 호스팅된 세션과 같은 방식으로 해당 요건을 처리해요.
+- `status: "action_required"`는 누락된 단계가 있다는 뜻이에요. 고객이 세션의 기존 호스팅된 링크를 통해 이를 완료하거나, 해당 요건을 직접 제출할 수 있어요.
+
+가져오기는 `coveredRequirementIds`에 나열된 요건만 채워요. 신분증, 셀피, 그리고 태스크에서 요구하는 경우 주소 증명이 포함돼요. 프로필 답변, 자금 증명 및 기타 요건은 [API 답변](#api-answers)으로 제출하세요. 요청을 재실행하려면 같은 `Idempotency-Key`로 다시 보내세요.
+
+| 상태 | 코드 | 조치 방법 |
+| --- | --- | --- |
+| `409` | `verification_already_started` | 이 고객에게 Swipelux에서 진행 중이거나 완료된 인증이 이미 있거나, 예를 들어 고객이 호스팅된 링크를 열어서 가져오기가 이미 실행 중이에요. 재시도하지 마세요. 기존 세션을 통해 계속 진행하세요. |
+| `409` | `verification_session_not_allowed` | 태스크 또는 세션이 가져오기 대상이 아니에요. 재시도하지 마세요. 태스크를 조회하고 제공되는 방법을 사용하세요. |
+| `422` | `share_token_rejected` | 신원 인증 제공업체가 토큰을 거부했어요. 예를 들어 토큰이 만료되었거나, 이미 사용되었거나, 다른 수신자에게 발급된 경우예요. Swipelux용 새 토큰을 생성하고 새 `Idempotency-Key`로 재시도하세요. |
+| `503` | `kyc_provider_unavailable` | `retryable: true`이면 Swipelux가 아직 토큰을 보내지 않은 상태예요. 잠시 후 재시도하세요. `retryable: false`이면 가져오기가 이루어졌을 수 있지만 확인할 수 없었어요. 토큰을 다시 보내지 마세요. 세션의 호스팅된 링크를 통해 계속 진행하세요. |
 
 ### 문서 업로드 {#upload-documents}
 
@@ -343,6 +387,19 @@ curl --request GET \
 저장된 상태, 계좌 발급 상태, 태스크 ID를 최신 응답으로 교체하세요. 케이퍼빌리티 `status`는 권한이 승인되었는지를 나타내요. 계좌를 발급하는 케이퍼빌리티의 경우 `accountProvisioning`이 그 계좌가 `not_started`, `in_progress`, `issued`, `failed` 중 어느 상태인지 별도로 보고해요. 계좌를 발급하지 않는 케이퍼빌리티는 `not_applicable`을 반환해요.
 
 케이퍼빌리티가 `pending`인 동안, 보고될 수 있는 `statusReason.code` 값 중 두 가지는 검토가 진행 중인지를 나타내요. `preparing_submission`은 Swipelux가 아직 제출할 신청서를 준비 중이며 진행 중인 검토가 없다는 뜻이에요. 다른 은행의 신청서가 `rejected`이거나 조치가 필요한 경우에도 마찬가지예요. `review_in_progress`는 검토가 진행 중이라는 뜻이에요. 예를 들어 신청서가 `in_review`이거나 [호스팅된 인증](#hosted-actions)이 열려 있는 경우예요. 두 코드 모두 `resolution: wait`를 사용해요. 이 코드 간에 변경되어도 상태는 `pending`으로 유지되므로 `capability.status_changed` 이벤트는 전송되지 않아요. 현재 코드를 확인하려면 케이퍼빌리티를 조회하세요.
+
+케이퍼빌리티는 `statusReason.code: offer_unavailable` 및 `resolution: contact_support`와 함께 `restricted`일 수도 있어요. Swipelux는 승인된 신청서가 케이퍼빌리티를 포함하지만 현재 어떤 오퍼도 이를 허용하지 않을 때 이 코드를 반환해요. 신청서가 이미 승인되었으므로 기다려도 케이퍼빌리티는 바뀌지 않아요. 폴링하지 말고 Swipelux 지원팀에 문의하세요. 이 경우 이 코드는 `related_application_action_required` 및 `resolution: wait`를 대신해요. 열려 있는 고객 작업이 여전히 우선하므로 현재 작업을 먼저 완료하세요.
+
+```json Capability restricted by offer availability
+{
+  "status": "restricted",
+  "statusReason": {
+    "code": "offer_unavailable",
+    "resolution": "contact_support",
+    "message": "The approved Application covers this capability, but no current offer permits it. Contact support."
+  }
+}
+```
 
 현재 케이퍼빌리티 상태가 생성하려는 계좌, 견적, 전송을 허용할 때만 계속 진행하세요. 흐름에 발급된 계좌가 필요하면 `accountProvisioning`이 `issued`가 될 때까지도 기다리세요.
 

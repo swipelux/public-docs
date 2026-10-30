@@ -233,6 +233,7 @@ A la resposta de detall de la tasca, cada entrada de `verificationSessions` i `t
         "key": "identity_verification",
         "type": "identity_verification",
         "status": "action_required",
+        "coveredRequirementIds": ["req_000000000000000011", "req_000000000000000012"],
         "action": {
           "kind": "available",
           "url": "https://platform.swipelux.com/kyc/redirect/cus_000000000000000001/tsk_000000000000000002/vfy_000000000000000003",
@@ -257,7 +258,50 @@ A la resposta de detall de la tasca, cada entrada de `verificationSessions` i `t
 
 Aquestes són accions amb àmbit de tasca, no un cicle de vida separat de verificació del client.
 
+Cada entrada de `verificationSessions[]` a les lectures de tasques i al detall de tasques del client inclou `coveredRequirementIds`. Enumera els IDs dels requisits actius de la tasca que la sessió pot completar. Utilitza'l per veure quins requisits pot resoldre una sessió allotjada o una [verificació importada](#import-an-existing-identity-verification). Completa la resta de requisits mitjançant [respostes per API](#api-answers).
+
+Per a les noves tasques de recollida de dades de persones físiques, la sessió d'identitat allotjada només cobreix el document d'identitat, la selfie i el justificant de domicili. Els requisits de prova de fons, com ara `proof_of_funds`, `source_of_funds_document`, `named_source_of_funds_document` i `sole_proprietor_document`, no formen part de la sessió allotjada. [Puja](#upload-documents) i envia aquests documents directament. Swipelux els revisa i la tasca continua oberta fins que s'accepten.
+
 Una resposta allotjada a un requisit de perfil per a un valor estructurat, com ara una adreça o identificadors fiscals, ha de superar les mateixes comprovacions d'esquema i de restriccions que una resposta directa. Si no les supera, el requisit continua obert. Un requisit que Swipelux torna a `action_required` per aquest motiu porta `reviewFeedback.code: hosted_profile_direct_submission_required`. Demana aquest valor al client i envia'l com a [resposta via API](#api-answers).
+
+### Importa una verificació d'identitat existent {#import-an-existing-identity-verification}
+
+Si ja verifiques persones físiques al teu propi compte amb el proveïdor de verificació d'identitat de Swipelux, pots importar aquesta verificació a la sessió d'identitat de la tasca de recollida de dades del client en lloc d'enviar el client pel flux allotjat. Aquesta opció és només per a integracions per API amb clients persones físiques. No s'admeten empreses ni parts relacionades.
+
+Abans d'importar, configura la compartició amb el teu proveïdor de verificació d'identitat:
+
+1. Demana a Swipelux el seu token de soci i, a continuació, afegeix Swipelux com a soci de compartició al teu compte del proveïdor de verificació d'identitat.
+2. Per a verificacions en producció, genera un token de compartició per a Swipelux amb l'ID de client destinatari (`forClientId`) `swipelux.com_21030`.
+3. Envia el token a Swipelux abans que caduqui. Els tokens de compartició són opacs, d'un sol ús, tenen com a màxim 1.024 bytes UTF-8 i caduquen al cap de 20 minuts per defecte. Tracta cada token com una credencial.
+
+La tasca ha de ser una tasca de recollida de dades d'una persona física i ha d'oferir la sessió de verificació allotjada com a mètode d'enviament. La sessió ha de tenir `type: "identity_verification"` i `status: "action_required"`. El client no ha de tenir cap verificació en curs o completada amb Swipelux, i no hi ha d'haver cap importació en curs. Obrir l'enllaç allotjat inicia la verificació, però llegir la tasca no. A continuació, crida `POST /v3/customers/{customerId}/tasks/{taskId}/verification-sessions/{verificationSessionId}/share-token`. La sol·licitud necessita els mateixos permisos `accounts:write`, `customers:read` i `customers:write` que els enviaments de tasques, a més d'una `Idempotency-Key`:
+
+```json Request body
+{
+  "shareToken": "<share token>"
+}
+```
+
+```json Response
+{
+  "verificationSessionId": "vfy_000000000000000003",
+  "status": "in_review"
+}
+```
+
+El teu proveïdor copia els passos corresponents al compte de Swipelux i les comprovacions es tornen a executar segons el nivell que requereix la tasca. Swipelux mai no desa ni registra el token de compartició.
+
+- `status: "in_review"` indica que les comprovacions estan pendents. Quan finalitzen, Swipelux resol els requisits coberts de la mateixa manera que en una sessió allotjada.
+- `status: "action_required"` indica que falten passos. El client els pot completar mitjançant l'enllaç allotjat existent de la sessió, o pots enviar directament els requisits coberts.
+
+La importació només completa els requisits indicats a `coveredRequirementIds`: el document d'identitat, la selfie i, quan la tasca ho requereix, el justificant de domicili. Envia les respostes del perfil, la prova de fons i la resta de requisits com a [respostes per API](#api-answers). Per repetir una sol·licitud, torna-la a enviar amb la mateixa `Idempotency-Key`.
+
+| Estat | Codi | Què cal fer |
+| --- | --- | --- |
+| `409` | `verification_already_started` | Aquest client ja té una verificació en curs o completada amb Swipelux, o ja hi ha una importació en curs, per exemple perquè el client ha obert un enllaç allotjat. No ho tornis a intentar. Continua mitjançant la sessió existent. |
+| `409` | `verification_session_not_allowed` | La tasca o la sessió no és apta per a la importació. No ho tornis a intentar. Llegeix la tasca i utilitza els mètodes que ofereix. |
+| `422` | `share_token_rejected` | El proveïdor de verificació d'identitat ha rebutjat el token, per exemple perquè ha caducat, ja s'ha utilitzat o s'ha emès per a un altre destinatari. Genera un token nou per a Swipelux i torna-ho a intentar amb una `Idempotency-Key` nova. |
+| `503` | `kyc_provider_unavailable` | Amb `retryable: true`, Swipelux encara no havia enviat el token. Torna-ho a intentar després d'una espera. Amb `retryable: false`, la importació pot haver-se produït però no s'ha pogut confirmar. No tornis a enviar el token. Continua mitjançant l'enllaç allotjat de la sessió. |
 
 ### Puja documents {#upload-documents}
 
@@ -343,6 +387,19 @@ curl --request GET \
 Reemplaça l'estat emmagatzemat, l'estat d'aprovisionament de compte i els IDs de tasques amb la resposta més recent. El `status` de la capacitat indica si el dret està aprovat. Per a una capacitat que emet un compte, `accountProvisioning` informa per separat si aquest compte és `not_started`, `in_progress`, `issued` o `failed`; una capacitat que no emet cap compte retorna `not_applicable`.
 
 Mentre la capacitat és `pending`, dos dels valors de `statusReason.code` que pot informar indiquen si hi ha una revisió en curs. `preparing_submission` significa que Swipelux encara està preparant una sol·licitud per enviar-la i que no hi ha cap revisió en curs, encara que la sol·licitud d'un altre banc sigui `rejected` o requereixi atenció. `review_in_progress` significa que hi ha una revisió en curs, per exemple mentre una sol·licitud és `in_review` o una [verificació allotjada](#hosted-actions) està oberta. Tots dos utilitzen `resolution: wait`. Un canvi entre aquests codis manté l'estat `pending`, de manera que no envia cap esdeveniment `capability.status_changed`. Llegeix la capacitat per veure el codi actual.
+
+Una capacitat també pot ser `restricted` amb `statusReason.code: offer_unavailable` i `resolution: contact_support`. Swipelux retorna aquest codi quan una sol·licitud aprovada cobreix la capacitat però cap oferta actual no la permet. La sol·licitud ja està aprovada, de manera que esperar no canvia la capacitat. Contacta amb el suport de Swipelux en lloc de fer sondeig. En aquest cas, aquest codi substitueix `related_application_action_required` i `resolution: wait`. Les tasques obertes del client continuen tenint prioritat, així que completa primer qualsevol tasca actual.
+
+```json Capability restricted by offer availability
+{
+  "status": "restricted",
+  "statusReason": {
+    "code": "offer_unavailable",
+    "resolution": "contact_support",
+    "message": "The approved Application covers this capability, but no current offer permits it. Contact support."
+  }
+}
+```
 
 Continua només quan l'estat actual de la capacitat permeti el compte, la cotització o la transferència que vulguis crear. Quan el flux necessiti un compte emès, espera també que `accountProvisioning` esdevingui `issued`.
 

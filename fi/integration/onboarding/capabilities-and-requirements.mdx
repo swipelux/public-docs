@@ -233,6 +233,7 @@ Tehtävän tietovastauksessa jokainen `verificationSessions`- ja `tosSessions`-m
         "key": "identity_verification",
         "type": "identity_verification",
         "status": "action_required",
+        "coveredRequirementIds": ["req_000000000000000011", "req_000000000000000012"],
         "action": {
           "kind": "available",
           "url": "https://platform.swipelux.com/kyc/redirect/cus_000000000000000001/tsk_000000000000000002/vfy_000000000000000003",
@@ -257,7 +258,50 @@ Tehtävän tietovastauksessa jokainen `verificationSessions`- ja `tosSessions`-m
 
 Nämä ovat tehtäväkohtaisia toimintoja, ei erillinen asiakkaan vahvistuselinkaari.
 
+Jokainen `verificationSessions[]`-merkintä tehtävien lukuvastauksissa ja asiakkaan tehtävätiedoissa sisältää `coveredRequirementIds`-kentän. Se luettelee niiden tehtävän voimassa olevien vaatimusten ID:t, jotka istunto voi täyttää. Sen avulla näet, mitkä vaatimukset isännöity istunto tai [tuotu vahvistus](#import-an-existing-identity-verification) voi ratkaista. Täytä kaikki muut vaatimukset [API-vastauksilla](#api-answers).
+
+Uusissa henkilöasiakkaiden intake-tehtävissä isännöity henkilöllisyysistunto kattaa vain henkilöllisyysasiakirjan, selfien ja osoitteen todisteen. Varojen todistetta koskevat vaatimukset, kuten `proof_of_funds`, `source_of_funds_document`, `named_source_of_funds_document` ja `sole_proprietor_document`, eivät kuulu isännöityyn istuntoon. [Lataa](#upload-documents) ja lähetä nämä asiakirjat suoraan. Swipelux tarkistaa ne, ja tehtävä pysyy avoimena, kunnes ne hyväksytään.
+
 Isännöidyn vastauksen rakenteista arvoa, kuten osoitetta tai verotunnisteita, koskevaan profiilivaatimukseen on läpäistävä samat skeema- ja rajoitustarkistukset kuin suoran vastauksen. Jos se ei läpäise niitä, vaatimus pysyy avoimena. Vaatimus, jonka Swipelux palauttaa tästä syystä tilaan `action_required`, sisältää arvon `reviewFeedback.code: hosted_profile_direct_submission_required`. Kerää arvo asiakkaalta ja lähetä se [API-vastauksena](#api-answers).
+
+### Tuo olemassa oleva henkilöllisyyden vahvistus {#import-an-existing-identity-verification}
+
+Jos vahvistat jo henkilöasiakkaita omalla tililläsi Swipeluxin henkilöllisyyden vahvistuspalvelun tarjoajalla, voit tuoda kyseisen vahvistuksen asiakkaan intake-tehtävän henkilöllisyysistuntoon sen sijaan, että ohjaisit asiakkaan isännöidyn prosessin läpi. Tämä vaihtoehto on tarkoitettu vain API-integraatioille, joissa asiakkaat ovat yksityishenkilöitä. Yrityksiä ja liittyviä osapuolia ei tueta.
+
+Ennen tuontia määritä jakaminen henkilöllisyyden vahvistuspalvelun tarjoajasi kanssa:
+
+1. Pyydä Swipeluxilta sen kumppanitunnus ja lisää sitten Swipelux jakamiskumppaniksi henkilöllisyyden vahvistuspalvelun tarjoajan tililläsi.
+2. Luo tuotantovahvistuksia varten Swipeluxille jakotunnus, jonka vastaanottajan asiakas-ID (`forClientId`) on `swipelux.com_21030`.
+3. Lähetä tunnus Swipeluxille ennen kuin se vanhenee. Jakotunnukset ovat läpinäkymättömiä ja kertakäyttöisiä, enintään 1 024 UTF-8-tavun pituisia, ja ne vanhenevat oletuksena 20 minuutin kuluttua. Käsittele jokaista tunnusta tunnistetietona.
+
+Tehtävän on oltava henkilöasiakkaan intake-tehtävä, ja sen on tarjottava isännöity vahvistusistunto lähetystapana. Istunnolla on oltava `type: "identity_verification"` ja `status: "action_required"`. Asiakkaalla ei saa olla jo käynnissä olevaa tai valmistunutta vahvistusta Swipeluxissa, eikä tuonti saa olla jo käynnissä. Isännöidyn linkin avaaminen käynnistää vahvistuksen, mutta tehtävän lukeminen ei. Kutsu sitten `POST /v3/customers/{customerId}/tasks/{taskId}/verification-sessions/{verificationSessionId}/share-token`. Pyyntö edellyttää samoja `accounts:write`-, `customers:read`- ja `customers:write`-oikeuksia kuin tehtävien lähetykset sekä `Idempotency-Key`-otsaketta:
+
+```json Request body
+{
+  "shareToken": "<share token>"
+}
+```
+
+```json Response
+{
+  "verificationSessionId": "vfy_000000000000000003",
+  "status": "in_review"
+}
+```
+
+Palveluntarjoajasi kopioi vastaavat vaiheet Swipeluxin tilille, ja tarkistukset suoritetaan uudelleen tehtävän vaatimalla tasolla. Swipelux ei koskaan tallenna jakotunnusta eikä kirjaa sitä lokiin.
+
+- `status: "in_review"` tarkoittaa, että tarkistukset ovat kesken. Kun tarkistukset valmistuvat, Swipelux käsittelee katetut vaatimukset samalla tavalla kuin isännöidyssä istunnossa.
+- `status: "action_required"` tarkoittaa, että vaiheita puuttuu. Asiakas voi suorittaa ne istunnon olemassa olevan isännöidyn linkin kautta, tai voit lähettää katetut vaatimukset suoraan.
+
+Tuonti täyttää vain `coveredRequirementIds`-kentässä luetellut vaatimukset: henkilöllisyysasiakirjan, selfien ja, jos tehtävä sitä vaatii, osoitteen todisteen. Lähetä profiilivastaukset, varojen todiste ja muut vaatimukset [API-vastauksina](#api-answers). Jos haluat toistaa pyynnön, lähetä se uudelleen samalla `Idempotency-Key`-arvolla.
+
+| Tila | Koodi | Mitä tehdä |
+| --- | --- | --- |
+| `409` | `verification_already_started` | Tällä asiakkaalla on jo käynnissä oleva tai valmistunut vahvistus Swipeluxissa, tai tuonti on jo käynnissä, esimerkiksi koska asiakas avasi isännöidyn linkin. Älä yritä uudelleen. Jatka olemassa olevan istunnon kautta. |
+| `409` | `verification_session_not_allowed` | Tehtävä tai istunto ei kelpaa tuontiin. Älä yritä uudelleen. Lue tehtävä ja käytä sen tarjoamia menetelmiä. |
+| `422` | `share_token_rejected` | Henkilöllisyyden vahvistuspalvelun tarjoaja hylkäsi tunnuksen, esimerkiksi koska se oli vanhentunut, jo käytetty tai myönnetty toiselle vastaanottajalle. Luo Swipeluxille uusi tunnus ja yritä uudelleen uudella `Idempotency-Key`-arvolla. |
+| `503` | `kyc_provider_unavailable` | Kun arvo on `retryable: true`, Swipelux ei ollut vielä lähettänyt tunnusta. Yritä uudelleen viiveen jälkeen. Kun arvo on `retryable: false`, tuonti on voinut tapahtua, mutta sitä ei voitu vahvistaa. Älä lähetä tunnusta uudelleen. Jatka istunnon isännöidyn linkin kautta. |
 
 ### Lataa dokumentteja {#upload-documents}
 
@@ -343,6 +387,19 @@ curl --request GET \
 Korvaa tallennettu tila, tilin provisiointitila ja tehtävän ID:t uusimmalla vastauksella. Kyvyn `status` kertoo, onko käyttöoikeus hyväksytty. Tilin myöntävällä kyvyllä `accountProvisioning` kertoo erikseen, onko kyseinen tili tilassa `not_started`, `in_progress`, `issued` vai `failed`; kyky, joka ei myönnä tiliä, palauttaa arvon `not_applicable`.
 
 Kun kyky on tilassa `pending`, kaksi sen mahdollisesti ilmoittamista `statusReason.code`-arvoista kertoo, onko tarkistus käynnissä. `preparing_submission` tarkoittaa, että Swipelux valmistelee yhä hakemusta lähetettäväksi eikä tarkistusta ole käynnissä, vaikka toisen pankin hakemus olisi `rejected` tai vaatisi huomiota. `review_in_progress` tarkoittaa, että tarkistus on käynnissä, esimerkiksi kun hakemus on tilassa `in_review` tai [isännöity vahvistus](#hosted-actions) on auki. Molemmat käyttävät arvoa `resolution: wait`. Vaihto näiden koodien välillä pitää tilan arvossa `pending`, joten `capability.status_changed`-tapahtumaa ei lähetetä. Lue kyky nähdäksesi nykyisen koodin.
+
+Kyky voi olla myös tilassa `restricted` arvoilla `statusReason.code: offer_unavailable` ja `resolution: contact_support`. Swipelux palauttaa tämän koodin, kun hyväksytty hakemus kattaa kyvyn, mutta mikään nykyinen tarjous ei salli sitä. Hakemus on jo hyväksytty, joten odottaminen ei muuta kykyä. Ota yhteyttä Swipeluxin tukeen kyselemisen sijaan. Tässä tapauksessa tämä koodi korvaa arvot `related_application_action_required` ja `resolution: wait`. Avoimet asiakastehtävät ovat edelleen etusijalla, joten suorita ensin kaikki nykyiset tehtävät.
+
+```json Capability restricted by offer availability
+{
+  "status": "restricted",
+  "statusReason": {
+    "code": "offer_unavailable",
+    "resolution": "contact_support",
+    "message": "The approved Application covers this capability, but no current offer permits it. Contact support."
+  }
+}
+```
 
 Jatka vain, kun nykyinen kyvyn tila sallii aiottujen tilin, tarjouksen tai siirron luomisen. Kun virta tarvitsee myönnetyn tilin, odota myös, että `accountProvisioning` muuttuu arvoon `issued`.
 
