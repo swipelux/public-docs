@@ -13,6 +13,7 @@ const PAGES = [
   "integration/authentication",
   "integration/errors",
   "integration/sandbox",
+  "integration/ai-agents",
 ];
 
 const PATH_VARIABLES = new Map([
@@ -340,7 +341,7 @@ function card(text, title, href) {
   ).test(text);
 }
 
-test("publishes the five Get started pages in the intended order", () => {
+test("publishes the six Get started pages in the intended order", () => {
   assertPages(PAGES);
   const integration = getDefaultNavigation(config.navigation).tabs.find(
     (tab) => tab.tab === "Integration Docs",

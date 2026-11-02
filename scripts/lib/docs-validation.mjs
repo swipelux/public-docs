@@ -11,6 +11,7 @@ export const SOURCE_COMMIT =
 
 export const ENGLISH_ONLY_NAVIGATION_PAGES = Object.freeze([
   "integration/errors",
+  "integration/ai-agents",
   "knowledge-base/compliance/settlement-slas",
 ]);
 
@@ -20,6 +21,7 @@ export const CANONICAL_NAVIGATION_PAGES = Object.freeze([
   "integration/authentication",
   "integration/errors",
   "integration/sandbox",
+  "integration/ai-agents",
   "integration/onboarding/customers",
   "integration/onboarding/capabilities-and-requirements",
   "integration/common-flows",
