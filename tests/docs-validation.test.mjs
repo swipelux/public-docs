@@ -46,7 +46,10 @@ const docsCli = fileURLToPath(
 );
 const committedOpenApi = JSON.parse(readFileSync("openapi.json", "utf8"));
 const PROBLEM_REDIRECT_DESTINATIONS = Object.fromEntries(
-  committedOpenApi["x-swipelux-problems"].map(({ slug }) => [
+  [
+    ...committedOpenApi["x-swipelux-problems"],
+    ...JSON.parse(readFileSync("scripts/data/error-supplements.json", "utf8")),
+  ].map(({ slug }) => [
     `/errors/${slug}`,
     `/integration/errors#${slug}`,
   ]),

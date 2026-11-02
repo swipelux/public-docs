@@ -99,6 +99,7 @@ Retry idempotent writes with the original `Idempotency-Key` and the unchanged me
 | [`kyc_provider_unavailable`](#kyc-provider-unavailable) | `502` | Yes | The verification service is temporarily unavailable. |
 | [`kyc_session_terminal`](#kyc-session-terminal) | `410` | No | The verification session is no longer actionable. |
 | [`merchant_kyb_not_approved`](#merchant-kyb-not-approved) | `422` | Not returned | Your integrating business's KYB is not approved, so Swipelux refuses write requests in this live space. |
+| [`merchant_suspended`](#merchant-suspended) | `403` | No | Swipelux has suspended your integrating business, so every credential acting for it is refused. |
 | [`not_found`](#not-found) | `404` | No | The requested resource could not be found for this API key and request path. |
 | [`ops_rail_handoff_conflict`](#ops-rail-handoff-conflict) | `409` | No | The task submission is blocked by conflicting bank-rail setup. |
 | [`payout_execution_unavailable`](#payout-execution-unavailable) | `409` | No | The payout cannot be created from this quote right now. |
@@ -120,6 +121,7 @@ Retry idempotent writes with the original `Idempotency-Key` and the unchanged me
 | [`quote_volume_limit_exceeded`](#quote-volume-limit-exceeded) | `400` | No | The customer's payout volume limit has been reached. |
 | [`rail_not_ready`](#rail-not-ready) | `409` | No | The selected payment rail is not ready for this customer. |
 | [`rail_temporarily_unavailable`](#rail-temporarily-unavailable) | `503` | Yes | The selected payment rail is temporarily unavailable. |
+| [`rate_limited`](#rate-limited) | `429` | Yes | Too many requests were sent from this API key, integrating business, or client IP address in a short period. |
 | [`rate_unavailable`](#rate-unavailable) | `502` | Yes | A required currency rate is temporarily unavailable. |
 | [`recipient_account_unsupported`](#recipient-account-unsupported) | `400` | Not returned | The recipient account details are not supported for the requested destination. |
 | [`recipient_address_required`](#recipient-address-required) | `422` | No | The recipient needs an address before this fiat destination can be created. |
@@ -202,6 +204,46 @@ Retry idempotent writes with the original `Idempotency-Key` and the unchanged me
 - [`POST /v3/customers/{customerId}/related-parties`](/api-reference/customers/post-v3-customers-by-customer-id-related-parties) (`postV3CustomersByCustomerIdRelated-parties`, status `400`)
 - [`PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}`](/api-reference/customers/patch-v3-customers-by-customer-id-related-parties-by-related-party-id) (`patchV3CustomersByCustomerIdRelated-partiesByRelatedPartyId`, status `400`)
 
+<a id="merchant-suspended" className="block scroll-mt-32">
+  <span className="sr-only">merchant_suspended error</span>
+</a>
+
+### `merchant_suspended`
+
+**HTTP status:** `403`<br />
+**Retryable:** No<br />
+**Problem type:** `https://docs.swipelux.com/errors/merchant-suspended`
+
+**Meaning:** Swipelux has suspended your integrating business, so every credential acting for it is refused.
+
+**When it occurs:** Swipelux suspended your integrating business. While the suspension is in place, every request made with any of its API keys returns this error, in every space. Swipelux also holds webhook deliveries and rule executions for the business until the suspension is lifted. Nothing is deleted or revoked, so your API keys, webhook endpoints, and rules work again once Swipelux lifts the suspension.
+
+**What to do:** Contact Swipelux support with the `correlationId`. Do not create or rotate API keys to work around the suspension, because every credential for the business is refused.
+
+**Retry guidance:** Do not retry the unchanged request. Apply the action above before sending another request.
+
+**Relevant API operations:** All authenticated API operations.
+
+<a id="rate-limited" className="block scroll-mt-32">
+  <span className="sr-only">rate_limited error</span>
+</a>
+
+### `rate_limited`
+
+**HTTP status:** `429`<br />
+**Retryable:** Yes<br />
+**Problem type:** `https://docs.swipelux.com/errors/rate-limited`
+
+**Meaning:** Too many requests were sent from this API key, integrating business, or client IP address in a short period.
+
+**When it occurs:** Swipelux rate-limits authenticated requests per API key, per integrating business, and per client IP address. A request over any of these limits returns `429` with a `Retry-After` header that gives the number of whole seconds to wait. Integrating businesses whose KYB is not yet approved have stricter limits. Repeated failed authentications from one IP address are limited separately: once over that limit, requests from the address with an invalid key also return `rate_limited`, while valid API keys sent from the same address keep working.
+
+**What to do:** Wait at least the number of seconds in the `Retry-After` header before sending the request again. Spread bursts of requests over time, and do not retry requests that failed with `unauthorized` without fixing the API key.
+
+**Retry guidance:** Retry after a delay. For an idempotent write, reuse the original idempotency key and unchanged request. Wait for the `Retry-After` interval rather than retrying immediately.
+
+**Relevant API operations:** All authenticated API operations.
+
 <a id="request-body-too-large" className="block scroll-mt-32">
   <span className="sr-only">request_body_too_large error</span>
 </a>
@@ -236,7 +278,7 @@ Retry idempotent writes with the original `Idempotency-Key` and the unchanged me
 
 **Meaning:** The request is missing a valid API key.
 
-**When it occurs:** The `X-API-Key` header is absent, invalid, expired, or not recognized by the API.
+**When it occurs:** The `X-API-Key` header is absent, invalid, expired, or not recognized by the API. Swipelux accepts only keys in the `sk.<env>.<public>.<secret>` format, where `<env>` is `live` or `sbx`, or the `merchant.<public>.<secret>` format. A key in any other shape returns `unauthorized`.
 
 **What to do:** Send the correct environment-specific key from a protected backend. Rotate the key if it may have been exposed.
 

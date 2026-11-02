@@ -47,7 +47,10 @@ const ledger = parseMigrationLedger(
 const CUSTOMER_CREATION_API_REFERENCE =
   "/api-reference/customers/post-v3-customers";
 const PROBLEM_REDIRECT_DESTINATIONS = Object.fromEntries(
-  openapi["x-swipelux-problems"].map(({ slug }) => [
+  [
+    ...openapi["x-swipelux-problems"],
+    ...JSON.parse(readFileSync("scripts/data/error-supplements.json", "utf8")),
+  ].map(({ slug }) => [
     `/errors/${slug}`,
     `/integration/errors#${slug}`,
   ]),
