@@ -126,6 +126,59 @@ In production, USD SWIFT payouts need a ready SWIFT capability that supports pay
 
 A SWIFT destination needs the bank's street address in `bankAddress`, `bankCity`, `bankState`, and `bankPostalCode`. The BIC country must match the bank country. Swipelux takes the beneficiary address from the customer or recipient profile.
 
+### Foreign-currency SWIFT payouts
+
+Customers with a Lead Bank (`lead_bank`) named SWIFT capability (`swift_named`) can receive SWIFT payouts in these currencies: EUR, GBP, CHF, CZK, DKK, HUF, NOK, PLN, SEK, AUD, CAD, HKD, JPY, MXN, NZD, SGD, and ZAR.
+
+The bank must enable foreign exchange for the customer. Each customer can only use the currencies the bank lists for them. When the bank does not offer `out.currency` for the customer, `POST /v3/quotes` returns `422` [`bank_not_supported_for_customer`](/integration/errors#bank-not-supported-for-customer) with the pointer `/out/currency` and the code `currency_unavailable`.
+
+Use a SWIFT-method bank account or SWIFT recipient destination in the payout currency. In addition to the SWIFT destination fields above, it must meet these rules:
+
+| Currencies | `accountNumber` |
+| --- | --- |
+| EUR, GBP, CHF, CZK, DKK, HUF, NOK, PLN, SEK | A valid IBAN. |
+| AUD, CAD, HKD, JPY, NZD, SGD, ZAR | The local account number, 5 to 34 digits. Swipelux strips spaces and hyphens. Letters are refused. |
+| MXN | A valid 18-digit CLABE. |
+
+The account holder's address must include a postal code. A destination that breaks a rule returns `422` [`recipient_destination_invalid`](/integration/errors#recipient-destination-invalid) with the pointer `/destinationId` and a code that names the field, such as `invalid_account_number` or `missing_holder_postal_code`.
+
+Quote the payout with an exact USDC `in.amount` and set `out.currency` to the payout currency:
+
+```json Request body
+{
+  "customerId": "${CUSTOMER_ID}",
+  "capabilityId": "${CAPABILITY_ID}",
+  "in": {
+    "amount": "150.00",
+    "currency": "USDC",
+    "accountId": "${SOURCE_WALLET_ID}"
+  },
+  "destinationId": "${PAYOUT_DESTINATION_ID}",
+  "out": {
+    "currency": "EUR"
+  }
+}
+```
+
+- Swipelux charges its fee in USD on the source side. The rest of the USDC is converted at the bank's indicative rate.
+- You cannot quote a destination amount. Sending `out.amount` returns `422` [`validation_error`](/integration/errors#validation-error) with the pointer `/out/amount` and the code `destination_amount_unsupported`.
+- The quote's `out.amount` is an estimate, marked by `out.amountEstimated: true`. Intermediary banks can also deduct fees from the wire.
+- Amounts use the currency's minor units. JPY has no decimals. The other currencies use 2.
+
+```json Quote response (excerpt)
+{
+  "out": {
+    "amount": "137.42",
+    "currency": "EUR",
+    "amountEstimated": true
+  }
+}
+```
+
+Execute the quote before it expires. The payout must still match the quote's destination, currency, and USDC amount. Otherwise, Swipelux refuses the transfer and you need a new quote. An expired quote returns `409` [`quote_expired`](/integration/errors#quote-expired).
+
+When the payout settles, Swipelux records the delivered amount in the transfer's `amounts.out` and `amounts.settled`. A returned payout goes to Swipelux review. Swipelux does not refund it automatically.
+
 ### Pix payouts
 
 Pix and Pix Safe [recipient destinations](/integration/recipients) receive BRL. Quote the payout with the customer's ready Pix capability (`pix_pooled`), fund it with USDC, and set `out.currency` to `BRL`. USDT cannot fund a BRL payout.
