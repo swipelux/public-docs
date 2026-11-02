@@ -163,7 +163,10 @@ const coverage = readJson("openapi-coverage.json");
 const generatedErrorRedirects = Array.isArray(
   openapi?.["x-swipelux-problems"],
 )
-  ? openapi["x-swipelux-problems"].map(({ slug }) => ({
+  ? [
+      ...openapi["x-swipelux-problems"],
+      ...(readJson("scripts/data/error-supplements.json") ?? []),
+    ].map(({ slug }) => ({
       source: `/errors/${slug}`,
       destination: `/integration/errors#${slug}`,
     }))

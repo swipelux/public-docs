@@ -21,11 +21,12 @@ const readJson = (path) => JSON.parse(read(path));
 const openapi = readJson("openapi.json");
 const provenance = readJson("openapi-provenance.json");
 const guidance = readJson("scripts/data/error-guidance.json");
+const supplements = readJson("scripts/data/error-supplements.json");
 const docsConfig = readJson("docs.json");
 const redirectInventory = readJson("docs/redirect-inventory.json");
 const generatedIndex = readJson("scripts/data/errors-index.json");
 const page = read("integration/errors.mdx");
-const { catalog } = buildErrorModels(openapi, guidance);
+const { catalog } = buildErrorModels(openapi, guidance, supplements);
 
 function count(text, pattern) {
   return [...text.matchAll(pattern)].length;
@@ -158,8 +159,8 @@ test("generated errors artifacts are current", () => {
 });
 
 test("errors generation is deterministic", () => {
-  const firstPage = renderErrorsPage(openapi, guidance);
-  const secondPage = renderErrorsPage(openapi, guidance);
+  const firstPage = renderErrorsPage(openapi, guidance, supplements);
+  const secondPage = renderErrorsPage(openapi, guidance, supplements);
   assert.equal(secondPage, firstPage);
 
   const redirects = buildErrorRedirects(catalog);

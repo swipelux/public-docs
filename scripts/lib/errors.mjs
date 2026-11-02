@@ -625,9 +625,71 @@ function representativeValidationResponse(catalog) {
   };
 }
 
-export function buildErrorModels(openapi, guidance) {
-  const catalog = readProblemCatalog(openapi);
-  const facts = validateCatalogAgainstOpenApi(openapi, catalog);
+const SUPPLEMENT_FIELDS = [
+  "code",
+  "extensions",
+  "retryableValues",
+  "scope",
+  "slug",
+  "statuses",
+  "title",
+  "type",
+];
+
+// Problems the API returns from every authenticated operation before the
+// pinned contract lists them. Each supplement takes the operation scope of
+// `unauthorized` and must be removed once the contract catalogs the code.
+export function mergeSupplementalProblems(catalog, supplements = []) {
+  if (!Array.isArray(supplements)) {
+    throw new TypeError("error supplements must be an array");
+  }
+  if (supplements.length === 0) return catalog;
+  const authenticated = catalog.find((entry) => entry.code === "unauthorized");
+  if (!authenticated) {
+    throw new Error("Supplemental problems need the unauthorized operation scope");
+  }
+  const merged = [...catalog];
+  for (const [index, supplement] of supplements.entries()) {
+    assertRecord(supplement, `error supplement ${index}`);
+    const keys = Object.keys(supplement).sort(compareStrings);
+    if (!deepEqual(keys, SUPPLEMENT_FIELDS)) {
+      throw new Error(
+        `${supplement.code ?? `error supplement ${index}`} has unexpected fields: ${keys.join(", ")}`,
+      );
+    }
+    if (supplement.scope !== "authenticated") {
+      throw new Error(`${supplement.code} scope must be authenticated`);
+    }
+    if (catalog.some((entry) => entry.code === supplement.code)) {
+      throw new Error(
+        `${supplement.code} is in x-swipelux-problems; remove its supplement`,
+      );
+    }
+    if (!Array.isArray(supplement.statuses) || supplement.statuses.length !== 1) {
+      throw new Error(`${supplement.code} supplement needs exactly one status`);
+    }
+    const { scope: _scope, ...fields } = supplement;
+    const entry = {
+      ...fields,
+      operations: authenticated.operations.map((operation) => ({
+        ...operation,
+        status: supplement.statuses[0],
+      })),
+    };
+    validateCatalogEntry(entry, catalog.length + index);
+    merged.push(entry);
+  }
+  merged.sort((left, right) => compareStrings(left.code, right.code));
+  if (new Set(merged.map((entry) => entry.code)).size !== merged.length) {
+    throw new Error("error supplements contain duplicate codes");
+  }
+  return merged;
+}
+
+export function buildErrorModels(openapi, guidance, supplements = []) {
+  const contractCatalog = readProblemCatalog(openapi);
+  const facts = validateCatalogAgainstOpenApi(openapi, contractCatalog);
+  const catalog = mergeSupplementalProblems(contractCatalog, supplements);
   validateGuidance(catalog, guidance);
   const models = catalog.map((entry) => ({
     entry,
@@ -637,8 +699,8 @@ export function buildErrorModels(openapi, guidance) {
   return { catalog, models };
 }
 
-export function renderErrorsPage(openapi, guidance) {
-  const { catalog, models } = buildErrorModels(openapi, guidance);
+export function renderErrorsPage(openapi, guidance, supplements = []) {
+  const { catalog, models } = buildErrorModels(openapi, guidance, supplements);
   const byCategory = new Map(
     ERROR_CATEGORIES.map((category) => [category, []]),
   );
