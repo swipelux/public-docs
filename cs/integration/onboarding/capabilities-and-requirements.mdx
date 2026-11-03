@@ -23,7 +23,7 @@ export API_BASE='https://platform.swipelux.com'
 export SWIPELUX_API_KEY='replace-with-your-api-key'
 ```
 
-## Objevte podporované capabilities
+## Objevte podporované capabilities {#discover-supported-capabilities}
 
 Přečtěte aktuální možnosti zákazníka pomocí [`GET /v3/customers/{customerId}/capabilities/supported`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-supported):
 
@@ -54,7 +54,40 @@ Každá položka instituce obsahuje `logoUrl` a příznak `isDefault`. Pomocí `
 
 Uložte vybrané `data[].id` jako `CAPABILITY_ID`. Nikdy nekopírujte ID capability od jiného zákazníka nebo z jiného prostředí.
 
-### Sdružené vs. pojmenované typy účtů
+### Zobrazte, proč banka není dostupná {#show-why-a-bank-is-unavailable}
+
+Každá položka obsahuje také `unavailableInstitutions`. Uvádí banky, které tuto variantu capability nabízejí, ale tohoto zákazníka nepřijímají. Každá položka má `id`, `name` a neprázdné pole `reasons`. Každý důvod má stejný tvar jako `statusReason`, s `actor: "provider"` a `retryable: false`. Pomocí `unavailableInstitutions` ukažte zákazníkům, proč banka ve vašem rozhraní pro výběr banky chybí, například tak, že banku vykreslíte jako neaktivní se `message` daného důvodu.
+
+```json Unavailable institution entry
+{
+  "unavailableInstitutions": [
+    {
+      "id": "lead_bank",
+      "name": "Lead Bank",
+      "reasons": [
+        {
+          "code": "jurisdiction_unsupported",
+          "message": "The bank does not accept customers from a country on this customer's profile.",
+          "actor": "provider",
+          "retryable": false
+        }
+      ]
+    }
+  ]
+}
+```
+
+Aktuální kódy důvodů:
+
+| Kód | Význam |
+| --- | --- |
+| `jurisdiction_unsupported` | Banka nepřijímá zemi uvedenou v profilu zákazníka. |
+| `legal_form_unsupported` | Banka nepřijímá právní formu zákazníka. |
+| `customer_type_unsupported` | Banka nepřijímá typ zákazníka. |
+
+Neznámé kódy zpracujte bez změn v kódu, protože Swipelux může přidávat nové kódy. Banka se nikdy neobjeví zároveň v `institutions` i v `unavailableInstitutions`. `unavailableInstitutions` je vždy přítomno a u sdružených a nebankovních položek je `[]`. Banka, která není v žádném ze seznamů, je vynechána z důvodu, který s tímto zákazníkem nesouvisí. Uvedení nedostupné banky v žádosti o capability stále vrací [`422 capability_institutions_unsupported`](/integration/errors#capability-institutions-unsupported).
+
+### Sdružené vs. pojmenované typy účtů {#pooled-vs-named-account-types}
 
 Bankovní capabilities přicházejí ve dvou variantách, kódovaných jako pole `accountType` a přípona ID capability (například `ach_pooled`, `wire_named`):
 
@@ -67,7 +100,7 @@ Chcete-li přijímat vklady SWIFT nebo vydávat bankovní údaje SWIFT, použijt
 
 U vydaných účtů ACH, Wire a SWIFT můžete pomocí `institution` vybrat konkrétní banku a uložit požadavek na účet ještě předtím, než banka zákazníka schválí. Viz [Vydat bankovní účet](/cs/integration/issue-bank-account#choose-the-bank).
 
-## Požádejte o capability
+## Požádejte o capability {#request-the-capability}
 
 Požádejte o vybranou možnost pomocí [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id):
 
@@ -233,6 +266,7 @@ V odpovědi s detailem úkolu obsahuje každá položka v `verificationSessions`
         "key": "identity_verification",
         "type": "identity_verification",
         "status": "action_required",
+        "coveredRequirementIds": ["req_000000000000000011", "req_000000000000000012"],
         "action": {
           "kind": "available",
           "url": "https://platform.swipelux.com/kyc/redirect/cus_000000000000000001/tsk_000000000000000002/vfy_000000000000000003",
@@ -257,7 +291,50 @@ V odpovědi s detailem úkolu obsahuje každá položka v `verificationSessions`
 
 Jde o akce v rozsahu úkolu, nikoli o samostatný životní cyklus ověření zákazníka.
 
+Každá položka `verificationSessions[]` ve čtení úkolů a v detailu úkolu zákazníka obsahuje `coveredRequirementIds`. Uvádí ID aktivních požadavků úkolu, které relace může splnit. Podle něj zjistíte, které požadavky může vyřídit hostovaná relace nebo [importované ověření](#import-an-existing-identity-verification). Všechny ostatní požadavky splňte prostřednictvím [odpovědí přes API](#api-answers).
+
+U nových úkolů příjmu fyzických osob pokrývá hostovaná relace ověření identity pouze doklad totožnosti, selfie a doklad o adrese. Požadavky na doklad o zdroji prostředků, například `proof_of_funds`, `source_of_funds_document`, `named_source_of_funds_document` a `sole_proprietor_document`, nejsou součástí hostované relace. Tyto dokumenty přímo [nahrajte](#upload-documents) a odešlete. Swipelux je posoudí a úkol zůstane otevřený, dokud nebudou přijaty.
+
 Hostovaná odpověď na profilový požadavek na strukturovanou hodnotu, například adresu nebo daňové identifikátory, musí projít stejnými kontrolami schématu a omezení jako přímá odpověď. Pokud neprojde, požadavek zůstane otevřený. Požadavek, který Swipelux z tohoto důvodu vrátí do stavu `action_required`, nese `reviewFeedback.code: hosted_profile_direct_submission_required`. Získejte tuto hodnotu od zákazníka a odešlete ji jako [API odpověď](#api-answers).
+
+### Import existujícího ověření identity {#import-an-existing-identity-verification}
+
+Pokud již ověřujete fyzické osoby ve vlastním účtu u poskytovatele ověření identity Swipelux, můžete toto ověření importovat do relace ověření identity v úkolu příjmu zákazníka, místo abyste zákazníka posílali hostovaným tokem. Tato možnost je určena pouze pro integrace přes API se zákazníky, kteří jsou fyzickými osobami. Firmy a propojené strany nejsou podporovány.
+
+Před importem nastavte sdílení se svým poskytovatelem ověření identity:
+
+1. Požádejte Swipelux o jeho partnerský token a poté přidejte Swipelux jako partnera pro sdílení ve svém účtu u poskytovatele ověření identity.
+2. Pro ostrá ověření vygenerujte pro Swipelux token pro sdílení s ID klienta příjemce (`forClientId`) `swipelux.com_21030`.
+3. Odešlete token společnosti Swipelux dříve, než vyprší. Tokeny pro sdílení jsou neprůhledné, jednorázové, mají nejvýše 1 024 bajtů UTF-8 a ve výchozím nastavení vyprší po 20 minutách. S každým tokenem zacházejte jako s přihlašovacím údajem.
+
+Úkol musí být úkolem příjmu fyzické osoby a musí nabízet hostovanou relaci ověření jako způsob odeslání. Relace musí mít `type: "identity_verification"` a `status: "action_required"`. Zákazník nesmí mít u Swipelux již probíhající ani dokončené ověření a nesmí již probíhat import. Otevření hostovaného odkazu ověření zahájí, čtení úkolu však ne. Poté zavolejte `POST /v3/customers/{customerId}/tasks/{taskId}/verification-sessions/{verificationSessionId}/share-token`. Požadavek vyžaduje stejná oprávnění `accounts:write`, `customers:read` a `customers:write` jako odesílání úkolů a navíc `Idempotency-Key`:
+
+```json Request body
+{
+  "shareToken": "<share token>"
+}
+```
+
+```json Response
+{
+  "verificationSessionId": "vfy_000000000000000003",
+  "status": "in_review"
+}
+```
+
+Váš poskytovatel zkopíruje odpovídající kroky do účtu Swipelux a kontroly se znovu spustí podle úrovně, kterou úkol vyžaduje. Swipelux token pro sdílení nikdy neukládá ani nezaznamenává.
+
+- `status: "in_review"` znamená, že kontroly probíhají. Po jejich dokončení Swipelux vyřídí pokryté požadavky stejným způsobem jako u hostované relace.
+- `status: "action_required"` znamená, že chybí kroky. Zákazník je může dokončit prostřednictvím existujícího hostovaného odkazu relace, nebo můžete pokryté požadavky odeslat přímo.
+
+Import splní pouze požadavky uvedené v `coveredRequirementIds`: doklad totožnosti, selfie a tam, kde to úkol vyžaduje, doklad o adrese. Odpovědi profilu, doklad o zdroji prostředků a další požadavky odešlete jako [odpovědi přes API](#api-answers). Chcete-li požadavek zopakovat, odešlete ho znovu se stejným `Idempotency-Key`.
+
+| Stav | Kód | Co dělat |
+| --- | --- | --- |
+| `409` | `verification_already_started` | Tento zákazník již má u Swipelux probíhající nebo dokončené ověření, nebo již probíhá import, například proto, že zákazník otevřel hostovaný odkaz. Neopakujte požadavek. Pokračujte prostřednictvím existující relace. |
+| `409` | `verification_session_not_allowed` | Úkol nebo relace nesplňuje podmínky pro import. Neopakujte požadavek. Přečtěte úkol a použijte způsoby, které nabízí. |
+| `422` | `share_token_rejected` | Poskytovatel ověření identity token odmítl, například proto, že vypršel, byl již použit nebo byl vydán pro jiného příjemce. Vygenerujte pro Swipelux nový token a zopakujte požadavek s novým `Idempotency-Key`. |
+| `503` | `kyc_provider_unavailable` | Při `retryable: true` Swipelux token ještě neodeslal. Zopakujte požadavek po určité prodlevě. Při `retryable: false` import mohl proběhnout, ale nepodařilo se ho potvrdit. Token znovu neodesílejte. Pokračujte prostřednictvím hostovaného odkazu relace. |
 
 ### Nahrání dokumentů {#upload-documents}
 
@@ -343,6 +420,19 @@ curl --request GET \
 Nahraďte uložený stav, stav vydávání účtu a ID úkolů nejnovější odpovědí. `status` capability oznamuje, zda je oprávnění schváleno. U capability, která vydává účet, `accountProvisioning` samostatně oznamuje, zda je daný účet `not_started`, `in_progress`, `issued` nebo `failed`; capability, která účet nevydává, vrací `not_applicable`.
 
 Dokud je capability ve stavu `pending`, dvě z hodnot `statusReason.code`, které může hlásit, ukazují, zda probíhá kontrola. `preparing_submission` znamená, že Swipelux stále připravuje žádost k odeslání a neprobíhá žádná kontrola, a to i v případě, že žádost u jiné banky je `rejected` nebo vyžaduje pozornost. `review_in_progress` znamená, že kontrola probíhá, například když je žádost ve stavu `in_review` nebo je otevřené [hostované ověření](#hosted-actions). Oba používají `resolution: wait`. Změna mezi těmito kódy ponechá stav `pending`, takže se neodešle žádná událost `capability.status_changed`. Aktuální kód zjistíte načtením capability.
+
+Capability může být také ve stavu `restricted` se `statusReason.code: offer_unavailable` a `resolution: contact_support`. Swipelux tento kód vrací, když schválená žádost pokrývá capability, ale žádná aktuální nabídka ji nepovoluje. Žádost je již schválená, takže čekání capability nezmění. Místo opakovaného dotazování kontaktujte podporu Swipelux. V tomto případě tento kód nahrazuje `related_application_action_required` a `resolution: wait`. Otevřené úkoly zákazníka mají stále přednost, proto nejprve dokončete všechny aktuální úkoly.
+
+```json Capability restricted by offer availability
+{
+  "status": "restricted",
+  "statusReason": {
+    "code": "offer_unavailable",
+    "resolution": "contact_support",
+    "message": "The approved Application covers this capability, but no current offer permits it. Contact support."
+  }
+}
+```
 
 Pokračujte jen tehdy, když aktuální stav capability umožňuje účet, quote nebo převod, který zamýšlíte vytvořit. Když tok potřebuje vydaný účet, počkejte také, až se `accountProvisioning` změní na `issued`.
 

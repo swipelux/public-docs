@@ -23,7 +23,7 @@ export API_BASE='https://platform.swipelux.com'
 export SWIPELUX_API_KEY='replace-with-your-api-key'
 ```
 
-## Támogatott képességek felfedezése
+## Támogatott képességek felfedezése {#discover-supported-capabilities}
 
 Olvassa be az ügyfél aktuális lehetőségeit a [`GET /v3/customers/{customerId}/capabilities/supported`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-supported) művelettel:
 
@@ -54,7 +54,40 @@ Minden intézménybejegyzés tartalmaz egy `logoUrl` mezőt és egy `isDefault` 
 
 Tárolja a kiválasztott `data[].id` értéket `CAPABILITY_ID`-ként. Soha ne másoljon képességazonosítót másik ügyféltől vagy környezetből.
 
-### Közös és dedikált számlatípusok
+### Annak megjelenítése, miért nem érhető el egy bank {#show-why-a-bank-is-unavailable}
+
+Minden bejegyzés tartalmazza az `unavailableInstitutions` mezőt is. Ez azokat a bankokat sorolja fel, amelyek kínálják ezt a képességváltozatot, de nem fogadják el ezt az ügyfelet. Minden bejegyzésnek van egy `id`, egy `name` és egy nem üres `reasons` tömbje. Minden ok ugyanolyan szerkezetű, mint a `statusReason`, `actor: "provider"` és `retryable: false` értékkel. Az `unavailableInstitutions` segítségével mutassa meg az ügyfeleknek, miért hiányzik egy bank a bankválasztó felületről, például úgy, hogy a bankot letiltottként jeleníti meg az ok `message` szövegével.
+
+```json Unavailable institution entry
+{
+  "unavailableInstitutions": [
+    {
+      "id": "lead_bank",
+      "name": "Lead Bank",
+      "reasons": [
+        {
+          "code": "jurisdiction_unsupported",
+          "message": "The bank does not accept customers from a country on this customer's profile.",
+          "actor": "provider",
+          "retryable": false
+        }
+      ]
+    }
+  ]
+}
+```
+
+Jelenlegi okkódok:
+
+| Kód | Jelentés |
+| --- | --- |
+| `jurisdiction_unsupported` | A bank nem fogad el egy, az ügyfél profiljában szereplő országot. |
+| `legal_form_unsupported` | A bank nem fogadja el az ügyfél jogi formáját. |
+| `customer_type_unsupported` | A bank nem fogadja el az ügyfél típusát. |
+
+Úgy kezelje az ismeretlen kódokat, hogy ne kelljen módosítania a kódját, mert a Swipelux új kódokat adhat hozzá. Egy bank soha nem szerepel egyszerre az `institutions` és az `unavailableInstitutions` listában. Az `unavailableInstitutions` mindig jelen van, és értéke `[]` a közös és a nem banki bejegyzéseknél. Az a bank, amely egyik listában sem szerepel, ettől az ügyféltől független okból maradt ki. Ha egy képességkérésben nem elérhető bankot nevez meg, a válasz továbbra is [`422 capability_institutions_unsupported`](/integration/errors#capability-institutions-unsupported).
+
+### Közös és dedikált számlatípusok {#pooled-vs-named-account-types}
 
 A banki képességek két változatban léteznek, amelyeket az `accountType` mező és a képességazonosító utótagja kódol (például `ach_pooled`, `wire_named`):
 
@@ -67,7 +100,7 @@ SWIFT betétek fogadásához vagy SWIFT banki adatok kibocsátásához használj
 
 Kibocsátott ACH, Wire és SWIFT számlák esetén az `institution` mezővel kiválaszthat egy pontos bankot, és elmentheti a számlakérést, mielőtt a bank jóváhagyja az ügyfelet. Lásd: [Bankszámla kibocsátása](/hu/integration/issue-bank-account#choose-the-bank).
 
-## A képesség kérése
+## A képesség kérése {#request-the-capability}
 
 Kérje a kiválasztott opciót a [`POST /v3/customers/{customerId}/capabilities/{capabilityId}`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id) művelettel:
 
@@ -233,6 +266,7 @@ A feladat részletes válaszában a `verificationSessions` és `tosSessions` min
         "key": "identity_verification",
         "type": "identity_verification",
         "status": "action_required",
+        "coveredRequirementIds": ["req_000000000000000011", "req_000000000000000012"],
         "action": {
           "kind": "available",
           "url": "https://platform.swipelux.com/kyc/redirect/cus_000000000000000001/tsk_000000000000000002/vfy_000000000000000003",
@@ -257,7 +291,50 @@ A feladat részletes válaszában a `verificationSessions` és `tosSessions` min
 
 Ezek feladathoz kötött műveletek, nem egy külön ügyfél-ellenőrzési életciklus.
 
+A feladatlekérésekben és az ügyfél feladatrészleteiben minden `verificationSessions[]` bejegyzés tartalmazza a `coveredRequirementIds` mezőt. Ez felsorolja a feladat azon élő követelményeinek azonosítóit, amelyeket a munkamenet teljesíteni tud. Ebből láthatja, mely követelményeket rendezhet egy hosztolt munkamenet vagy egy [importált ellenőrzés](#import-an-existing-identity-verification). Minden más követelményt [API-válaszokkal](#api-answers) teljesítsen.
+
+Az új magánszemélyes adatfelvételi feladatoknál a hosztolt személyazonosság-ellenőrzési munkamenet csak a személyazonosító okmányt, a szelfit és a lakcímigazolást fedi le. A pénzeszköz-igazolási követelmények, például a `proof_of_funds`, `source_of_funds_document`, `named_source_of_funds_document` és `sole_proprietor_document`, nem részei a hosztolt munkamenetnek. Ezeket a dokumentumokat [töltse fel](#upload-documents), és küldje be közvetlenül. A Swipelux felülvizsgálja őket, és a feladat nyitva marad, amíg el nem fogadja őket.
+
 Egy strukturált értékre, például címre vagy adóazonosítókra vonatkozó profilkövetelményre adott hosztolt válasznak ugyanazokon a séma- és korlátozásellenőrzéseken kell átmennie, mint egy közvetlen válasznak. Ha ez nem teljesül, a követelmény nyitva marad. Az a követelmény, amelyet a Swipelux emiatt visszaállít `action_required` állapotba, `reviewFeedback.code: hosted_profile_direct_submission_required` értéket hordoz. Kérje be ezt az értéket az ügyféltől, és küldje be [API-válaszként](#api-answers).
+
+### Meglévő személyazonosság-ellenőrzés importálása {#import-an-existing-identity-verification}
+
+Ha már ellenőriz magánszemélyeket a Swipelux személyazonosság-ellenőrző szolgáltatójánál vezetett saját fiókjában, ezt az ellenőrzést importálhatja az ügyfél adatfelvételi feladatának személyazonosság-ellenőrzési munkamenetébe ahelyett, hogy az ügyfelet a hosztolt folyamaton vezetné végig. Ez a lehetőség csak magánszemély ügyfelekkel dolgozó API-integrációk számára érhető el. A vállalkozások és a kapcsolt felek nem támogatottak.
+
+Az importálás előtt állítsa be a megosztást a személyazonosság-ellenőrző szolgáltatójánál:
+
+1. Kérje el a Swipelux partnertokenjét, majd adja hozzá a Swipelux-ot megosztási partnerként a személyazonosság-ellenőrző szolgáltatónál vezetett fiókjában.
+2. Éles ellenőrzésekhez hozzon létre share tokent a Swipelux számára a `swipelux.com_21030` címzett-ügyfélazonosítóval (`forClientId`).
+3. Küldje el a tokent a Swipelux-nak, mielőtt lejár. A share tokenek átlátszatlanok, egyszer használatosak, legfeljebb 1024 UTF-8 bájt méretűek, és alapértelmezés szerint 20 perc után lejárnak. Minden tokent hitelesítő adatként kezeljen.
+
+A feladatnak magánszemélyes adatfelvételi feladatnak kell lennie, és beküldési módként fel kell kínálnia a hosztolt ellenőrzési munkamenetet. A munkamenetnek `type: "identity_verification"` és `status: "action_required"` értékkel kell rendelkeznie. Az ügyfélnek nem lehet már folyamatban lévő vagy befejezett ellenőrzése a Swipelux-nál, és nem futhat már importálás. A hosztolt link megnyitása elindítja az ellenőrzést, a feladat beolvasása viszont nem. Ezután hívja meg a `POST /v3/customers/{customerId}/tasks/{taskId}/verification-sessions/{verificationSessionId}/share-token` végpontot. A kéréshez ugyanazok az `accounts:write`, `customers:read` és `customers:write` jogosultságok szükségesek, mint a feladatbeküldésekhez, valamint egy `Idempotency-Key`:
+
+```json Request body
+{
+  "shareToken": "<share token>"
+}
+```
+
+```json Response
+{
+  "verificationSessionId": "vfy_000000000000000003",
+  "status": "in_review"
+}
+```
+
+A szolgáltató átmásolja a megfelelő lépéseket a Swipelux fiókjába, és az ellenőrzések újra lefutnak a feladat által megkövetelt szint alapján. A Swipelux soha nem tárolja és nem naplózza a share tokent.
+
+- A `status: "in_review"` azt jelenti, hogy az ellenőrzések függőben vannak. Amikor az ellenőrzések befejeződnek, a Swipelux ugyanúgy rendezi a lefedett követelményeket, mint egy hosztolt munkamenet esetén.
+- A `status: "action_required"` azt jelenti, hogy lépések hiányoznak. Az ügyfél a munkamenet meglévő hosztolt linkjén keresztül befejezheti őket, vagy Ön közvetlenül beküldheti a lefedett követelményeket.
+
+Az importálás csak a `coveredRequirementIds` mezőben felsorolt követelményeket teljesíti: a személyazonosító okmányt, a szelfit és, ahol a feladat megköveteli, a lakcímigazolást. A profilválaszokat, a pénzeszköz-igazolást és a többi követelményt [API-válaszként](#api-answers) küldje be. Egy kérés megismétléséhez küldje el újra ugyanazzal az `Idempotency-Key` értékkel.
+
+| Állapot | Kód | Teendő |
+| --- | --- | --- |
+| `409` | `verification_already_started` | Az ügyfélnek már van folyamatban lévő vagy befejezett ellenőrzése a Swipelux-nál, vagy már fut egy importálás, például mert az ügyfél megnyitott egy hosztolt linket. Ne próbálkozzon újra. Folytassa a meglévő munkamenettel. |
+| `409` | `verification_session_not_allowed` | A feladat vagy a munkamenet nem jogosult az importálásra. Ne próbálkozzon újra. Olvassa be a feladatot, és használja az általa felkínált módszereket. |
+| `422` | `share_token_rejected` | A személyazonosság-ellenőrző szolgáltató elutasította a tokent, például mert lejárt, már felhasználták, vagy más címzett számára állították ki. Hozzon létre új tokent a Swipelux számára, és próbálkozzon újra egy új `Idempotency-Key` értékkel. |
+| `503` | `kyc_provider_unavailable` | `retryable: true` esetén a Swipelux még nem küldte el a tokent. Várjon egy kicsit, majd próbálkozzon újra. `retryable: false` esetén az importálás megtörténhetett, de nem sikerült megerősíteni. Ne küldje el újra a tokent. Folytassa a munkamenet hosztolt linkjén keresztül. |
 
 ### Dokumentumok feltöltése {#upload-documents}
 
@@ -343,6 +420,19 @@ curl --request GET \
 Cserélje ki a tárolt státuszt, a számlakiadási státuszt és a feladatazonosítókat a legfrissebb válasz értékeire. A képesség `status` értéke azt jelzi, hogy a jogosultságot jóváhagyták-e. Számlát kibocsátó képesség esetén az `accountProvisioning` külön jelzi, hogy a számla `not_started`, `in_progress`, `issued` vagy `failed` állapotú-e; a számlát nem kibocsátó képesség `not_applicable` értéket ad vissza.
 
 Amíg a képesség `pending` állapotú, az általa jelezhető `statusReason.code` értékek közül kettő azt mutatja, hogy folyamatban van-e felülvizsgálat. A `preparing_submission` azt jelenti, hogy a Swipelux még benyújtásra készít elő egy kérelmet, és nincs folyamatban felülvizsgálat, még akkor sem, ha egy másik bank kérelme `rejected` vagy beavatkozást igényel. A `review_in_progress` azt jelenti, hogy felülvizsgálat van folyamatban, például amíg egy kérelem `in_review` állapotú, vagy egy [hosted ellenőrzés](#hosted-actions) nyitva van. Mindkettő `resolution: wait` értéket használ. Az ezen kódok közötti váltás `pending` állapotban hagyja a státuszt, így nem küld `capability.status_changed` eseményt. Olvassa le a képességet az aktuális kód megtekintéséhez.
+
+Egy képesség `restricted` állapotú is lehet `statusReason.code: offer_unavailable` és `resolution: contact_support` értékkel. A Swipelux akkor adja vissza ezt a kódot, ha egy jóváhagyott kérelem lefedi a képességet, de egyetlen aktuális ajánlat sem engedélyezi. A kérelem már jóvá van hagyva, így a várakozás nem változtatja meg a képességet. Ismételt lekérdezés helyett forduljon a Swipelux ügyfélszolgálatához. Ebben az esetben ez a kód a `related_application_action_required` és a `resolution: wait` helyébe lép. A nyitott ügyfélfeladatok továbbra is elsőbbséget élveznek, ezért először végezze el az aktuális feladatokat.
+
+```json Capability restricted by offer availability
+{
+  "status": "restricted",
+  "statusReason": {
+    "code": "offer_unavailable",
+    "resolution": "contact_support",
+    "message": "The approved Application covers this capability, but no current offer permits it. Contact support."
+  }
+}
+```
 
 Csak akkor folytassa, ha az aktuális képességstátusz engedélyezi a létrehozni kívánt számlát, árajánlatot vagy átutalást. Ha a folyamathoz kibocsátott számla szükséges, várja meg azt is, hogy az `accountProvisioning` értéke `issued` legyen.
 
