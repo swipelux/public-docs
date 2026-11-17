@@ -8,6 +8,51 @@ Diese Seite listet datierte Änderungen an der Swipelux-API auf. Jeder Eintrag n
 
 Wie Sie eine bestehende Integration von einer früheren Version aktualisieren, lesen Sie unter [Migration zu v3](/de/api-reference/versioning/migrate-to-v3).
 
+<Update label="2026-11-16" description="v3" tags={["Hinzugefügt","Geändert","Behoben"]}>
+
+### Hinzugefügt
+- `GET /v3/customers` akzeptiert `pooledCapabilityIncludeWait`, `pooledCapabilityExcludeWait`, `namedCapabilityIncludeWait` und `namedCapabilityExcludeWait`. Verwenden Sie jeden davon mit dem passenden Filter `pooledCapabilityStatus` oder `namedCapabilityStatus`. `IncludeWait` fügt eingeschränkte Fähigkeiten hinzu, deren Auflösung `wait` ist, und `ExcludeWait` entfernt Fähigkeiten, deren Auflösung `wait` ist. Wenn beide `true` sind, hat `ExcludeWait` Vorrang. Die Filter benötigen `accounts:read` oder `rails:read`. Siehe [Kunden](/de/integration/onboarding/customers#filter-customers-by-capability-readiness).
+- Fähigkeitszusammenfassungen, die mit `include=capabilities` zurückgegeben werden, können `statusReason.resolution` enthalten: `wait`, `contact_support` oder `none`. Bei einem Grund, der von Aufgaben abhängt, lesen Sie die Fähigkeit.
+- Eine Dokumentanforderung kann `constraints.idNumber` mit einer Länge von 3 bis 50 Zeichen zurückgeben. Wenn dessen `required` `true` ist, geben Sie die Ausweisnummer in `documentMetadata` an. Das Dashboard fragt nach der Ausweisnummer und dem ausstellenden Land, wenn ein Dokument sie benötigt.
+- `PATCH /v3/customers/{customerId}/accounts/{accountId}` akzeptiert `bankAddress` (bis zu 105 Zeichen), `bankCity` und `bankPostalCode` bei einem externen Nicht-USD-SWIFT-Konto. Fremdwährungs-SWIFT-Payouts benötigen `bankAddress` und `bankCity`. Das Ändern dieser Felder bei einem USD-Konto gibt `409 conflict` zurück. Solange eine ausstehende Quote oder ein ausstehender Payout das Konto verwendet, gibt eine Änderung `409 account_has_active_transfers` zurück, was Sie wiederholen können.
+- Im Dashboard akzeptiert KYB Dokumente im Format WebP, HEIF und HEIC.
+
+### Geändert
+- Swipelux sendet [`account.details_changed`](/api-reference/webhooks/account-details-changed), wenn sich der SWIFT-Code, die Routing-Nummer oder die Kontonummer eines ausgegebenen Kontos ändert. `data.object` ist das aktuelle Konto, und `data.previous` enthält nur `routingVersion`. Siehe [Bankkonto ausgeben](/de/integration/issue-bank-account).
+- Das Archivieren eines Wallet-Kontos, das die Settlement-Wallet eines nicht archivierten Bankkontos ist, gibt `409 account_has_dependent_accounts` zurück. Verschieben Sie das Settlement des Bankkontos mit `PATCH` auf eine andere Wallet oder archivieren Sie zuerst das Bankkonto.
+- `PATCH /v3/customers/{customerId}/recipients/{recipientId}` lehnt Felder des anderen Empfängertyps mit `400 validation_error` und einem `invalid_field`-Fehler für jedes Feld ab: `companyName` und `businessIndustry` bei einer Privatperson, `firstName` und `lastName` bei einem Unternehmen.
+- `POST /v3/customers/{customerId}/tasks/{taskId}/withdrawals` gibt außerdem `409 idempotency_request_in_progress` mit `retryable: true` zurück, solange eine identische Anfrage noch läuft.
+- Im Dashboard listet eine abgelehnte Kundenlöschung die Ressourcen auf, die sie blockieren, das Empfängerland verwendet eine Länderauswahl, und Profiltextfelder sind auf 256 Zeichen begrenzt. Nachdem Sie einen Payout von einer Kundenseite oder aus Balances erstellt haben, öffnen sich seine Details.
+
+### Behoben
+- Swipelux sendet für eine Fähigkeit in einer einzigen Aktualisierung nicht mehr zwei `capability.status_changed`-Ereignisse und sendet keines, wenn der Status dort endet, wo er begonnen hat.
+- Wenn ein Konto abgelehnt wird, während es noch bereitgestellt wird, meldet `account.status_changed` `previous.state: "provisioning"` statt `"in_review"`.
+
+</Update>
+
+<Update label="2026-11-09" description="v3" tags={["Hinzugefügt","Geändert","Behoben"]}>
+
+### Hinzugefügt
+- Wenn die Bank bei einem USD-SWIFT-Payout an einen Dritten ein Belegdokument anfordert, eröffnet Swipelux am Transfer eine Aufgabe mit `category: "transaction_rfi"`. Sie fordert ein Dokument und dessen Referenz an. Beantworten Sie sie mit den bestehenden Endpunkten für Aufgabeneinreichungen, und Swipelux leitet die Antwort an die Bank weiter. Swipelux storniert die Aufgabe, wenn der Payout ohne die Genehmigung der Bank abgeschlossen wird, fehlschlägt oder erstattet wird. Siehe [Quotes und Transfers](/de/integration/quotes-and-transfers#supporting-documents-for-swift-payouts).
+- Ausgegebene SWIFT-Konten bei jeder Bank geben die Postanschrift des Begünstigten in `details.accountHolderAddress` zurück. Zuvor gaben nur Konten bei Lead Bank und BMO sie zurück. Sie unterscheidet sich von `details.bankAddress`, der Adresse der empfangenden Bank. Siehe [Bankkonto ausgeben](/de/integration/issue-bank-account).
+- Eine Einzahlung auf ein Nicht-USD-SWIFT-Konto in der Währung des Kontos wird als USDC auf die Settlement-Wallet abgewickelt. `amounts.in` des Transfers zeigt den in der Kontowährung empfangenen Betrag, und `amounts.out` zeigt die gelieferten USDC. Zuvor wurden diese Einzahlungen ohne Transfer oder Webhook zur Prüfung zurückgehalten.
+- Eine Dokumentanforderung kann `constraints.issuingCountryRequired: true` zurückgeben. Jedes dafür eingereichte Dokument muss `issuingCountry` in `documentMetadata` enthalten.
+
+### Geändert
+- Eine Wiederholung, die eintrifft, während die erste identische Anfrage noch läuft, gibt `409 idempotency_request_in_progress` mit `retryable: true` zurück, bei Fähigkeitsanfragen, Dokumenten, Empfängern und ihren Zielen, Regeln, Webhooks, Quotes, Transfers, Transferstornierungen und Share-Tokens von Verifizierungssitzungen. Zuvor gaben diese Routen `idempotency_conflict` zurück. Die Wiederverwendung eines Schlüssels mit einem anderen Body gibt weiterhin `idempotency_conflict` zurück. Siehe [Fehler und Wiederholungen](/integration/errors#idempotency-request-in-progress).
+- Bank-Pay-in-Quotes geben spezifische Fehler statt eines allgemeinen Fehlers zurück: `400 quote_amount_out_of_range`, `400 quote_volume_limit_exceeded`, `400 quote_destination_network_unsupported`, `503 quote_temporarily_unavailable` (wiederholbar) oder `502 quote_failed`.
+- `DELETE /v3/customers/{customerId}/documents/{documentId}` gibt `409 document_in_use` zurück, solange ein Antrag in Bankprüfung auf das Dokument angewiesen ist. Archivieren Sie es, nachdem die Prüfung abgeschlossen ist oder der Antrag storniert wurde.
+- Ein Nicht-USD-Bankkonto, dessen Settlement-Wallet USDT ist, gibt jetzt beim Erstellen und Aktualisieren `400 invalid_settlement_target` zurück, auch ohne explizite `settlement.currency`. Siehe [Settlement-Währung auswählen](/de/integration/issue-bank-account#choose-the-settlement-currency).
+- Im Dashboard kennzeichnet die Payout-Prüfung einen Empfangsbetrag in Fremdwährung als Schätzung.
+- Im Dashboard und auf der öffentlichen Tracking-Seite zeigt ein abgeschlossener Transfer, den die Bank zurückgegeben oder storniert hat, einen Hinweis an. Sein Status bleibt Completed.
+
+### Behoben
+- Ausgegebene Bankkonten senden `account.status_changed`, wenn sie bereit werden. Siehe [Webhooks](/de/integration/webhooks).
+- Das Wiederholen eines mehrteiligen Dokument-Uploads mit demselben Idempotenzschlüssel und derselben Datei gibt nicht mehr `409` zurück.
+- Die Transaktionsfilter im Dashboard ordnen Bank-Payouts ihrer Bank-Rail zu und decken jedes Krypto-Netzwerk ab. Die Suche nach einer exakten ID findet kleine Pay-ins.
+
+</Update>
+
 <Update label="2026-11-04" description="v3" tags={["Hinzugefügt"]}>
 
 ### Hinzugefügt

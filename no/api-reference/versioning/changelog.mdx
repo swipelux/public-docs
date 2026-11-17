@@ -8,6 +8,51 @@ Denne siden lister opp daterte endringer i Swipelux API-et. Hver oppføring nevn
 
 For å oppgradere en eksisterende integrasjon fra en tidligere versjon, se [Migrere til v3](/no/api-reference/versioning/migrate-to-v3).
 
+<Update label="2026-11-16" description="v3" tags={["Lagt til","Endret","Rettet"]}>
+
+### Lagt til
+- `GET /v3/customers` godtar `pooledCapabilityIncludeWait`, `pooledCapabilityExcludeWait`, `namedCapabilityIncludeWait` og `namedCapabilityExcludeWait`. Bruk hver av dem med det tilsvarende filteret `pooledCapabilityStatus` eller `namedCapabilityStatus`. `IncludeWait` legger til begrensede capabilities med løsningen `wait`, og `ExcludeWait` fjerner capabilities med løsningen `wait`. Når begge er `true`, vinner `ExcludeWait`. Filtrene krever `accounts:read` eller `rails:read`. Se [Kunder](/no/integration/onboarding/customers#filter-customers-by-capability-readiness).
+- Capability-sammendrag som returneres med `include=capabilities`, kan inneholde `statusReason.resolution`: `wait`, `contact_support` eller `none`. For en årsak som avhenger av oppgaver, les capability-en.
+- Et dokumentkrav kan returnere `constraints.idNumber` med en lengde på 3 til 50 tegn. Når `required` er `true`, tar du med ID-nummeret i `documentMetadata`. Dashbordet ber om ID-nummeret og utstedelseslandet når et dokument trenger dem.
+- `PATCH /v3/customers/{customerId}/accounts/{accountId}` godtar `bankAddress` (opptil 105 tegn), `bankCity` og `bankPostalCode` på en ekstern SWIFT-konto som ikke er i USD. SWIFT-utbetalinger i utenlandsk valuta krever `bankAddress` og `bankCity`. Å endre disse feltene på en USD-konto returnerer `409 conflict`. Mens et ventende tilbud eller en ventende utbetaling bruker kontoen, returnerer en endring `409 account_has_active_transfers`, som du kan prøve på nytt.
+- I dashbordet godtar KYB dokumenter i WebP, HEIF og HEIC.
+
+### Endret
+- Swipelux sender [`account.details_changed`](/api-reference/webhooks/account-details-changed) når SWIFT-koden, routingnummeret eller kontonummeret til en utstedt konto endres. `data.object` er den gjeldende kontoen, og `data.previous` inneholder bare `routingVersion`. Se [Utsted en bankkonto](/no/integration/issue-bank-account).
+- Å arkivere en lommebokkonto som er oppgjørslommeboken til en bankkonto som ikke er arkivert, returnerer `409 account_has_dependent_accounts`. Flytt bankkontoens oppgjør til en annen lommebok med `PATCH`, eller arkiver bankkontoen først.
+- `PATCH /v3/customers/{customerId}/recipients/{recipientId}` avviser felt for den andre mottakertypen med `400 validation_error` og en `invalid_field`-feil for hvert felt: `companyName` og `businessIndustry` på en privatperson, `firstName` og `lastName` på en bedrift.
+- `POST /v3/customers/{customerId}/tasks/{taskId}/withdrawals` returnerer også `409 idempotency_request_in_progress` med `retryable: true` mens en identisk forespørsel fortsatt kjører.
+- I dashbordet viser en avvist kundesletting ressursene som blokkerer den, mottakerlandet bruker en landvelger, og tekstfelt i profilen er begrenset til 256 tegn. Etter at du har opprettet en utbetaling fra en kundeside eller fra Balances, åpnes detaljene.
+
+### Rettet
+- Swipelux sender ikke lenger to `capability.status_changed`-hendelser for én capability i én oppdatering, og sender ingen når statusen ender der den startet.
+- Når en konto avvises mens den fortsatt klargjøres, rapporterer `account.status_changed` `previous.state: "provisioning"` i stedet for `"in_review"`.
+
+</Update>
+
+<Update label="2026-11-09" description="v3" tags={["Lagt til","Endret","Rettet"]}>
+
+### Lagt til
+- Når banken ber om et støttedokument for en USD SWIFT-utbetaling til en tredjepart, åpner Swipelux en oppgave med `category: "transaction_rfi"` på overføringen. Den ber om ett dokument og referansen til det. Besvar den med de eksisterende endepunktene for oppgaveinnsending, så videresender Swipelux svaret til banken. Swipelux kansellerer oppgaven hvis utbetalingen fullføres uten bankens godkjenning, feiler eller refunderes. Se [Tilbud og overføringer](/no/integration/quotes-and-transfers#supporting-documents-for-swift-payouts).
+- Utstedte SWIFT-kontoer i alle banker returnerer mottakerens postadresse i `details.accountHolderAddress`. Tidligere returnerte bare kontoer i Lead Bank og BMO den. Den skiller seg fra `details.bankAddress`, adressen til mottakerbanken. Se [Utsted en bankkonto](/no/integration/issue-bank-account).
+- Et innskudd på en SWIFT-konto som ikke er i USD, i kontoens valuta, gjøres opp til oppgjørslommeboken som USDC. Overføringens `amounts.in` viser beløpet som ble mottatt i kontoens valuta, og `amounts.out` viser USDC som ble levert. Tidligere ble disse innskuddene holdt tilbake for gjennomgang uten overføring eller webhook.
+- Et dokumentkrav kan returnere `constraints.issuingCountryRequired: true`. Hvert dokument som sendes inn for det, må inneholde `issuingCountry` i `documentMetadata`.
+
+### Endret
+- Et nytt forsøk som kommer mens den første identiske forespørselen fortsatt kjører, returnerer `409 idempotency_request_in_progress` med `retryable: true` for capability-forespørsler, dokumenter, mottakere og deres destinasjoner, regler, webhooks, tilbud, overføringer, kanselleringer av overføringer og delingstokener for verifiseringsøkter. Tidligere returnerte disse rutene `idempotency_conflict`. Å gjenbruke en nøkkel med en annen body returnerer fortsatt `idempotency_conflict`. Se [Feil og nye forsøk](/integration/errors#idempotency-request-in-progress).
+- Tilbud på bank-pay-ins returnerer spesifikke feil i stedet for en generell feil: `400 quote_amount_out_of_range`, `400 quote_volume_limit_exceeded`, `400 quote_destination_network_unsupported`, `503 quote_temporarily_unavailable` (kan prøves på nytt) eller `502 quote_failed`.
+- `DELETE /v3/customers/{customerId}/documents/{documentId}` returnerer `409 document_in_use` mens en søknad under bankgjennomgang er avhengig av dokumentet. Arkiver det etter at gjennomgangen er ferdig eller søknaden er kansellert.
+- En bankkonto som ikke er i USD, og som har USDT som oppgjørslommebok, returnerer nå `400 invalid_settlement_target` ved oppretting og oppdatering, selv uten en eksplisitt `settlement.currency`. Se [Velg oppgjørsvaluta](/no/integration/issue-bank-account#choose-the-settlement-currency).
+- I dashbordet markerer gjennomgangen av utbetalingen et mottaksbeløp i utenlandsk valuta som et estimat.
+- I dashbordet og på den offentlige sporingssiden viser en fullført overføring som banken returnerte eller reverserte, et varsel. Statusen forblir Completed.
+
+### Rettet
+- Utstedte bankkontoer sender `account.status_changed` når de blir klare. Se [Webhooks](/no/integration/webhooks).
+- Å prøve en flerdelt dokumentopplasting på nytt med samme idempotensnøkkel og samme fil returnerer ikke lenger `409`.
+- Transaksjonsfiltrene i dashbordet knytter bankutbetalinger til bankrailen deres og dekker alle kryptonettverk. Søk etter eksakt ID finner små pay-ins.
+
+</Update>
+
 <Update label="2026-11-04" description="v3" tags={["Lagt til"]}>
 
 ### Lagt til

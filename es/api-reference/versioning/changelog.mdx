@@ -8,6 +8,51 @@ Esta página muestra los cambios fechados de la API de Swipelux. Cada entrada in
 
 Para actualizar una integración existente desde una versión anterior, consulta [Migrar a v3](/es/api-reference/versioning/migrate-to-v3).
 
+<Update label="2026-11-16" description="v3" tags={["Añadido","Cambiado","Corregido"]}>
+
+### Añadido
+- `GET /v3/customers` acepta `pooledCapabilityIncludeWait`, `pooledCapabilityExcludeWait`, `namedCapabilityIncludeWait` y `namedCapabilityExcludeWait`. Usa cada uno con el filtro `pooledCapabilityStatus` o `namedCapabilityStatus` correspondiente. `IncludeWait` añade capacidades restringidas cuya resolución es `wait`, y `ExcludeWait` elimina las capacidades cuya resolución es `wait`. Cuando ambos son `true`, prevalece `ExcludeWait`. Los filtros necesitan `accounts:read` o `rails:read`. Consulta [Clientes](/es/integration/onboarding/customers#filter-customers-by-capability-readiness).
+- Los resúmenes de capacidades devueltos con `include=capabilities` pueden incluir `statusReason.resolution`: `wait`, `contact_support` o `none`. Para un motivo que depende de tareas, lee la capacidad.
+- Un requisito de documento puede devolver `constraints.idNumber` con una longitud de 3 a 50 caracteres. Cuando su `required` es `true`, incluye el número de identificación en `documentMetadata`. El panel pide el número de identificación y el país emisor cuando un documento los necesita.
+- `PATCH /v3/customers/{customerId}/accounts/{accountId}` acepta `bankAddress` (hasta 105 caracteres), `bankCity` y `bankPostalCode` en una cuenta SWIFT externa que no es en USD. Los pagos SWIFT en moneda extranjera necesitan `bankAddress` y `bankCity`. Cambiar estos campos en una cuenta en USD devuelve `409 conflict`. Mientras una cotización o un pago pendiente usa la cuenta, un cambio devuelve `409 account_has_active_transfers`, que puedes reintentar.
+- En el panel, KYB acepta documentos WebP, HEIF y HEIC.
+
+### Cambiado
+- Swipelux envía [`account.details_changed`](/api-reference/webhooks/account-details-changed) cuando cambian el código SWIFT, el número de ruta o el número de cuenta de una cuenta emitida. `data.object` es la cuenta actual, y `data.previous` solo contiene `routingVersion`. Consulta [Emitir una cuenta bancaria](/es/integration/issue-bank-account).
+- Archivar una cuenta de cartera que es la cartera de liquidación de una cuenta bancaria no archivada devuelve `409 account_has_dependent_accounts`. Traslada la liquidación de la cuenta bancaria a otra cartera con `PATCH`, o archiva primero la cuenta bancaria.
+- `PATCH /v3/customers/{customerId}/recipients/{recipientId}` rechaza los campos del otro tipo de destinatario con `400 validation_error` y un error `invalid_field` por cada uno: `companyName` y `businessIndustry` en una persona física, `firstName` y `lastName` en una empresa.
+- `POST /v3/customers/{customerId}/tasks/{taskId}/withdrawals` también devuelve `409 idempotency_request_in_progress` con `retryable: true` mientras una solicitud idéntica sigue en curso.
+- En el panel, una eliminación de cliente rechazada lista los recursos que la bloquean, el país del destinatario usa un selector de país y los campos de texto del perfil se limitan a 256 caracteres. Después de crear un pago desde la página de un cliente o desde Balances, se abren sus detalles.
+
+### Corregido
+- Swipelux ya no envía dos eventos `capability.status_changed` para una capacidad en una sola actualización, y no envía ninguno cuando el estado termina donde empezó.
+- Cuando una cuenta se rechaza mientras aún se está aprovisionando, `account.status_changed` informa `previous.state: "provisioning"` en lugar de `"in_review"`.
+
+</Update>
+
+<Update label="2026-11-09" description="v3" tags={["Añadido","Cambiado","Corregido"]}>
+
+### Añadido
+- Cuando el banco pide un documento de respaldo en un pago SWIFT en USD a un tercero, Swipelux abre una tarea con `category: "transaction_rfi"` en la transferencia. Pide un documento y su referencia. Respóndela con los endpoints de envío de tareas existentes, y Swipelux reenvía la respuesta al banco. Swipelux cancela la tarea si el pago se completa sin la aprobación del banco, falla o se reembolsa. Consulta [Cotizaciones y transferencias](/es/integration/quotes-and-transfers#supporting-documents-for-swift-payouts).
+- Las cuentas SWIFT emitidas en cualquier banco devuelven la dirección postal del beneficiario en `details.accountHolderAddress`. Antes, solo la devolvían las cuentas de Lead Bank y BMO. Es distinta de `details.bankAddress`, la dirección del banco receptor. Consulta [Emitir una cuenta bancaria](/es/integration/issue-bank-account).
+- Un depósito en una cuenta SWIFT que no es en USD, en la moneda de la cuenta, se liquida en la cartera de liquidación como USDC. `amounts.in` de la transferencia muestra el importe recibido en la moneda de la cuenta, y `amounts.out` muestra los USDC entregados. Antes, estos depósitos se retenían para revisión sin transferencia ni webhook.
+- Un requisito de documento puede devolver `constraints.issuingCountryRequired: true`. Cada documento enviado para él debe incluir `issuingCountry` en `documentMetadata`.
+
+### Cambiado
+- Un reintento que llega mientras la primera solicitud idéntica sigue en curso devuelve `409 idempotency_request_in_progress` con `retryable: true` en solicitudes de capacidades, documentos, destinatarios y sus destinos, reglas, webhooks, cotizaciones, transferencias, cancelaciones de transferencias y tokens compartidos de sesiones de verificación. Antes, estas rutas devolvían `idempotency_conflict`. Reutilizar una clave con un cuerpo distinto sigue devolviendo `idempotency_conflict`. Consulta [Errores y reintentos](/integration/errors#idempotency-request-in-progress).
+- Las cotizaciones de pay-in bancario devuelven errores específicos en lugar de un fallo genérico: `400 quote_amount_out_of_range`, `400 quote_volume_limit_exceeded`, `400 quote_destination_network_unsupported`, `503 quote_temporarily_unavailable` (reintentable) o `502 quote_failed`.
+- `DELETE /v3/customers/{customerId}/documents/{documentId}` devuelve `409 document_in_use` mientras una aplicación en revisión bancaria depende del documento. Archívalo cuando termine la revisión o se cancele la aplicación.
+- Una cuenta bancaria que no es en USD cuya cartera de liquidación es USDT ahora devuelve `400 invalid_settlement_target` al crearla y actualizarla, incluso sin un `settlement.currency` explícito. Consulta [Elige la moneda de liquidación](/es/integration/issue-bank-account#choose-the-settlement-currency).
+- En el panel, la revisión del pago marca como estimación un importe recibido en moneda extranjera.
+- En el panel y en la página pública de seguimiento, una transferencia completada que el banco devolvió o revirtió muestra un aviso. Su estado sigue siendo Completed.
+
+### Corregido
+- Las cuentas bancarias emitidas envían `account.status_changed` cuando pasan a estar listas. Consulta [Webhooks](/es/integration/webhooks).
+- Reintentar una subida de documento multiparte con la misma clave de idempotencia y el mismo archivo ya no devuelve `409`.
+- Los filtros de transacciones del panel asocian los pagos bancarios con su rail bancario y cubren todas las redes cripto. Buscar por ID exacto encuentra pay-ins pequeños.
+
+</Update>
+
 <Update label="2026-11-04" description="v3" tags={["Añadido"]}>
 
 ### Añadido

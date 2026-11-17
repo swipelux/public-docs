@@ -8,6 +8,51 @@ description: "Datēts žurnāls par papildinājumiem, nesaderīgām izmaiņām u
 
 Lai atjauninātu esošu integrāciju no agrākas versijas, skati [Migrācija uz v3](/lv/api-reference/versioning/migrate-to-v3).
 
+<Update label="2026-11-16" description="v3" tags={["Pievienots","Mainīts","Labots"]}>
+
+### Pievienots
+- `GET /v3/customers` pieņem `pooledCapabilityIncludeWait`, `pooledCapabilityExcludeWait`, `namedCapabilityIncludeWait` un `namedCapabilityExcludeWait`. Izmantojiet katru kopā ar atbilstošo filtru `pooledCapabilityStatus` vai `namedCapabilityStatus`. `IncludeWait` pievieno ierobežotas iespējas, kuru risinājums ir `wait`, un `ExcludeWait` noņem iespējas, kuru risinājums ir `wait`. Ja abi ir `true`, priekšroka ir `ExcludeWait`. Filtriem nepieciešams `accounts:read` vai `rails:read`. Skatiet [Klienti](/lv/integration/onboarding/customers#filter-customers-by-capability-readiness).
+- Iespēju kopsavilkumi, kas atgriezti ar `include=capabilities`, var ietvert `statusReason.resolution`: `wait`, `contact_support` vai `none`. Ja iemesls ir atkarīgs no uzdevumiem, nolasiet iespēju.
+- Dokumenta prasība var atgriezt `constraints.idNumber` ar garumu no 3 līdz 50 rakstzīmēm. Ja tās `required` ir `true`, iekļaujiet identifikācijas numuru `documentMetadata`. Vadības panelis prasa identifikācijas numuru un izdevējvalsti, ja dokumentam tie ir nepieciešami.
+- `PATCH /v3/customers/{customerId}/accounts/{accountId}` pieņem `bankAddress` (līdz 105 rakstzīmēm), `bankCity` un `bankPostalCode` ārējam SWIFT kontam, kas nav USD. SWIFT izmaksām ārvalstu valūtā nepieciešams `bankAddress` un `bankCity`. Šo lauku mainīšana USD kontā atgriež `409 conflict`. Kamēr gaidoša kotācija vai izmaksa izmanto kontu, izmaiņa atgriež `409 account_has_active_transfers`, ko var mēģināt atkārtoti.
+- Vadības panelī KYB pieņem WebP, HEIF un HEIC dokumentus.
+
+### Mainīts
+- Swipelux nosūta [`account.details_changed`](/api-reference/webhooks/account-details-changed), ja mainās izsniegta konta SWIFT kods, maršrutēšanas numurs vai konta numurs. `data.object` ir pašreizējais konts, un `data.previous` satur tikai `routingVersion`. Skatiet [Izsniegt bankas kontu](/lv/integration/issue-bank-account).
+- Tāda maka konta arhivēšana, kas ir nearhivēta bankas konta norēķinu maks, atgriež `409 account_has_dependent_accounts`. Pārvietojiet bankas konta norēķinus uz citu maku ar `PATCH` vai vispirms arhivējiet bankas kontu.
+- `PATCH /v3/customers/{customerId}/recipients/{recipientId}` noraida otra saņēmēja tipa laukus ar `400 validation_error` un `invalid_field` kļūdu katram laukam: `companyName` un `businessIndustry` fiziskai personai, `firstName` un `lastName` uzņēmumam.
+- `POST /v3/customers/{customerId}/tasks/{taskId}/withdrawals` arī atgriež `409 idempotency_request_in_progress` ar `retryable: true`, kamēr identisks pieprasījums vēl tiek izpildīts.
+- Vadības panelī noraidīta klienta dzēšana uzskaita resursus, kas to bloķē, saņēmēja valstij tiek izmantots valsts atlasītājs, un profila teksta lauki ir ierobežoti līdz 256 rakstzīmēm. Pēc izmaksas izveides no klienta lapas vai Balances atveras tās informācija.
+
+### Labots
+- Swipelux vairs nesūta divus `capability.status_changed` notikumus vienai iespējai vienā atjauninājumā un nesūta nevienu, ja statuss beidzas tur, kur sākās.
+- Ja konts tiek noraidīts, kamēr tas vēl tiek nodrošināts, `account.status_changed` ziņo `previous.state: "provisioning"`, nevis `"in_review"`.
+
+</Update>
+
+<Update label="2026-11-09" description="v3" tags={["Pievienots","Mainīts","Labots"]}>
+
+### Pievienots
+- Ja banka pieprasa pamatojošu dokumentu USD SWIFT izmaksai trešajai pusei, Swipelux pārvedumā atver uzdevumu ar `category: "transaction_rfi"`. Tas pieprasa vienu dokumentu un tā atsauci. Atbildiet uz to ar esošajiem uzdevumu iesniegšanas galapunktiem, un Swipelux pārsūta atbildi bankai. Swipelux atceļ uzdevumu, ja izmaksa tiek pabeigta bez bankas apstiprinājuma, neizdodas vai tiek atmaksāta. Skatiet [Kotācijas un pārvedumi](/lv/integration/quotes-and-transfers#supporting-documents-for-swift-payouts).
+- Izsniegtie SWIFT konti visās bankās atgriež saņēmēja pasta adresi laukā `details.accountHolderAddress`. Iepriekš to atgrieza tikai Lead Bank un BMO konti. Tā atšķiras no `details.bankAddress`, kas ir saņēmējbankas adrese. Skatiet [Izsniegt bankas kontu](/lv/integration/issue-bank-account).
+- Iemaksa SWIFT kontā, kas nav USD, konta valūtā tiek norēķināta uz norēķinu maku kā USDC. Pārveduma `amounts.in` rāda konta valūtā saņemto summu, un `amounts.out` rāda piegādātos USDC. Iepriekš šīs iemaksas tika aizturētas pārskatīšanai bez pārveduma vai webhook.
+- Dokumenta prasība var atgriezt `constraints.issuingCountryRequired: true`. Katram tai iesniegtajam dokumentam `documentMetadata` jāietver `issuingCountry`.
+
+### Mainīts
+- Atkārtots mēģinājums, kas pienāk, kamēr pirmais identiskais pieprasījums vēl tiek izpildīts, atgriež `409 idempotency_request_in_progress` ar `retryable: true` iespēju pieprasījumiem, dokumentiem, saņēmējiem un to galamērķiem, noteikumiem, webhook, kotācijām, pārvedumiem, pārvedumu atcelšanai un verifikācijas sesiju kopīgošanas marķieriem. Iepriekš šie maršruti atgrieza `idempotency_conflict`. Atslēgas atkārtota izmantošana ar citu pamattekstu joprojām atgriež `idempotency_conflict`. Skatiet [Kļūdas un atkārtoti mēģinājumi](/integration/errors#idempotency-request-in-progress).
+- Bankas pay-in kotācijas vispārīgas kļūmes vietā atgriež konkrētas kļūdas: `400 quote_amount_out_of_range`, `400 quote_volume_limit_exceeded`, `400 quote_destination_network_unsupported`, `503 quote_temporarily_unavailable` (var mēģināt atkārtoti) vai `502 quote_failed`.
+- `DELETE /v3/customers/{customerId}/documents/{documentId}` atgriež `409 document_in_use`, kamēr bankas pārskatīšanā esošs pieteikums ir atkarīgs no dokumenta. Arhivējiet to pēc pārskatīšanas beigām vai pieteikuma atcelšanas.
+- Bankas konts, kas nav USD un kura norēķinu maks ir USDT, tagad izveidošanas un atjaunināšanas laikā atgriež `400 invalid_settlement_target`, arī bez skaidri norādīta `settlement.currency`. Skatiet [Izvēlieties norēķinu valūtu](/lv/integration/issue-bank-account#choose-the-settlement-currency).
+- Vadības panelī izmaksas pārskatā saņemamā summa ārvalstu valūtā tiek atzīmēta kā aplēse.
+- Vadības panelī un publiskajā izsekošanas lapā pabeigts pārvedums, ko banka atgrieza vai stornēja, rāda paziņojumu. Tā statuss paliek Completed.
+
+### Labots
+- Izsniegtie bankas konti nosūta `account.status_changed`, kad kļūst gatavi. Skatiet [Webhook izsaukumi](/lv/integration/webhooks).
+- Daudzdaļīgas dokumenta augšupielādes atkārtošana ar to pašu idempotences atslēgu un failu vairs neatgriež `409`.
+- Vadības paneļa darījumu filtri saista bankas izmaksas ar to bankas railu un aptver visus kripto tīklus. Meklēšana pēc precīza ID atrod nelielas iemaksas.
+
+</Update>
+
 <Update label="2026-11-04" description="v3" tags={["Pievienots"]}>
 
 ### Pievienots

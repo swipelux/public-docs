@@ -8,6 +8,51 @@ description: "按日期记录 Swipelux API 各版本的新增功能、重大变�
 
 如需将现有集成从较早版本升级，请参阅 [迁移到 v3](/cn/api-reference/versioning/migrate-to-v3)。
 
+<Update label="2026-11-16" description="v3" tags={["新增","变更","修复"]}>
+
+### 新增
+- `GET /v3/customers` 接受 `pooledCapabilityIncludeWait`、`pooledCapabilityExcludeWait`、`namedCapabilityIncludeWait` 和 `namedCapabilityExcludeWait`。请将每个参数与对应的 `pooledCapabilityStatus` 或 `namedCapabilityStatus` 筛选条件一起使用。`IncludeWait` 会加入处理方式为 `wait` 的受限能力，`ExcludeWait` 会移除处理方式为 `wait` 的能力。两者都为 `true` 时以 `ExcludeWait` 为准。这些筛选条件需要 `accounts:read` 或 `rails:read`。请参阅[客户](/cn/integration/onboarding/customers#filter-customers-by-capability-readiness)。
+- 通过 `include=capabilities` 返回的能力摘要可能带有 `statusReason.resolution`：`wait`、`contact_support` 或 `none`。对于依赖任务的原因，请读取该能力。
+- 文件要求可能返回长度为 3 到 50 个字符的 `constraints.idNumber`。当其 `required` 为 `true` 时，请在 `documentMetadata` 中包含证件号码。当文件需要时，控制台会要求填写证件号码和签发国家。
+- `PATCH /v3/customers/{customerId}/accounts/{accountId}` 在非 USD 的外部 SWIFT 账户上接受 `bankAddress`（最多 105 个字符）、`bankCity` 和 `bankPostalCode`。外币 SWIFT 出金需要 `bankAddress` 和 `bankCity`。在 USD 账户上更改这些字段会返回 `409 conflict`。当有待处理的报价或出金正在使用该账户时，更改会返回 `409 account_has_active_transfers`，您可以重试。
+- 在控制台中，KYB 支持 WebP、HEIF 和 HEIC 文件。
+
+### 变更
+- 当发行账户的 SWIFT 代码、路由号码或账号发生变化时，Swipelux 会发送 [`account.details_changed`](/api-reference/webhooks/account-details-changed)。`data.object` 是当前账户，`data.previous` 仅包含 `routingVersion`。请参阅[发行银行账户](/cn/integration/issue-bank-account)。
+- 如果某个钱包账户是未归档银行账户的结算钱包，归档该钱包账户会返回 `409 account_has_dependent_accounts`。请先使用 `PATCH` 将该银行账户的结算移到另一个钱包，或先归档该银行账户。
+- `PATCH /v3/customers/{customerId}/recipients/{recipientId}` 会以 `400 validation_error` 拒绝另一种收款方类型的字段，并为每个字段返回一个 `invalid_field` 错误：个人上的 `companyName` 和 `businessIndustry`，企业上的 `firstName` 和 `lastName`。
+- 当相同请求仍在处理中时，`POST /v3/customers/{customerId}/tasks/{taskId}/withdrawals` 也会返回带有 `retryable: true` 的 `409 idempotency_request_in_progress`。
+- 在控制台中，被拒绝的客户删除会列出阻止删除的资源，收款方国家使用国家选择器，资料文本输入限制为 256 个字符。从客户页面或 Balances 创建出金后，会打开其详情。
+
+### 修复
+- Swipelux 不再在一次更新中为同一个能力发送两个 `capability.status_changed` 事件，并且在状态最终回到起始状态时不再发送任何事件。
+- 当账户在开通过程中被拒绝时，`account.status_changed` 会报告 `previous.state: "provisioning"`，而不是 `"in_review"`。
+
+</Update>
+
+<Update label="2026-11-09" description="v3" tags={["新增","变更","修复"]}>
+
+### 新增
+- 当银行要求为向第三方发起的 USD SWIFT 出金提供证明文件时，Swipelux 会在该转账上开启一个 `category: "transaction_rfi"` 的任务。该任务要求提供一份文件及其参考号。请使用现有的任务提交端点回答，Swipelux 会将回答转交给银行。如果出金在未获银行批准的情况下完成、失败或被退款，Swipelux 会取消该任务。请参阅[报价与转账](/cn/integration/quotes-and-transfers#supporting-documents-for-swift-payouts)。
+- 所有银行的发行 SWIFT 账户都会在 `details.accountHolderAddress` 中返回收款人的邮寄地址。此前只有 Lead Bank 和 BMO 的账户返回该地址。它不同于 `details.bankAddress`，后者是收款银行的地址。请参阅[发行银行账户](/cn/integration/issue-bank-account)。
+- 以账户币种存入非 USD SWIFT 账户的款项会以 USDC 结算到结算钱包。转账的 `amounts.in` 显示以账户币种收到的金额，`amounts.out` 显示交付的 USDC。此前，这些存款会被暂扣审核，且没有转账或 webhook。
+- 文件要求可能返回 `constraints.issuingCountryRequired: true`。为其提交的每份文件都必须在 `documentMetadata` 中包含 `issuingCountry`。
+
+### 变更
+- 在第一个相同请求仍在处理中时到达的重试，会在能力请求、文件、收款方及其目的地、规则、webhooks、报价、转账、转账取消和验证会话共享令牌上返回带有 `retryable: true` 的 `409 idempotency_request_in_progress`。此前这些路由返回 `idempotency_conflict`。以不同的请求体重用密钥仍会返回 `idempotency_conflict`。请参阅[错误与重试](/integration/errors#idempotency-request-in-progress)。
+- 银行入金报价现在返回具体错误，而不是通用失败：`400 quote_amount_out_of_range`、`400 quote_volume_limit_exceeded`、`400 quote_destination_network_unsupported`、`503 quote_temporarily_unavailable`（可重试）或 `502 quote_failed`。
+- 当银行审核中的申请依赖某份文件时，`DELETE /v3/customers/{customerId}/documents/{documentId}` 会返回 `409 document_in_use`。请在审核结束或申请取消后再归档该文件。
+- 结算钱包为 USDT 的非 USD 银行账户现在在创建和更新时会返回 `400 invalid_settlement_target`，即使没有显式的 `settlement.currency`。请参阅[选择结算币种](/cn/integration/issue-bank-account#choose-the-settlement-currency)。
+- 在控制台中，出金审核会将外币到账金额标记为估算值。
+- 在控制台和公开跟踪页面上，被银行退回或撤销的已完成转账会显示提示。其状态仍为 Completed。
+
+### 修复
+- 发行银行账户在变为就绪时会发送 `account.status_changed`。请参阅[Webhook](/cn/integration/webhooks)。
+- 使用相同的幂等密钥和文件重试分段文件上传时，不再返回 `409`。
+- 控制台的交易筛选条件会按银行通道匹配银行出金，并覆盖所有加密网络。按精确 ID 搜索可以找到小额入金。
+
+</Update>
+
 <Update label="2026-11-04" description="v3" tags={["新增"]}>
 
 ### 新增

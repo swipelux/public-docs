@@ -8,6 +8,51 @@ description: "Swipelux API의 날짜별 변경 사항을 나열하고, 항목마
 
 기존 통합을 이전 버전에서 업그레이드하려면 [v3로 마이그레이션](/ko/api-reference/versioning/migrate-to-v3)을 참조하십시오.
 
+<Update label="2026-11-16" description="v3" tags={["추가","변경","수정"]}>
+
+### 추가
+- `GET /v3/customers`는 `pooledCapabilityIncludeWait`, `pooledCapabilityExcludeWait`, `namedCapabilityIncludeWait`, `namedCapabilityExcludeWait`를 허용합니다. 각각 해당하는 `pooledCapabilityStatus` 또는 `namedCapabilityStatus` 필터와 함께 사용하세요. `IncludeWait`는 해결 방법이 `wait`인 제한된 케이퍼빌리티를 추가하고, `ExcludeWait`는 해결 방법이 `wait`인 케이퍼빌리티를 제거합니다. 둘 다 `true`이면 `ExcludeWait`가 우선합니다. 이 필터에는 `accounts:read` 또는 `rails:read`가 필요합니다. [고객](/ko/integration/onboarding/customers#filter-customers-by-capability-readiness)를 참고하세요.
+- `include=capabilities`로 반환되는 케이퍼빌리티 요약에 `statusReason.resolution`(`wait`, `contact_support`, `none`)이 포함될 수 있습니다. 태스크에 따라 달라지는 사유는 케이퍼빌리티를 조회하세요.
+- 문서 요구 사항이 길이 3~50자의 `constraints.idNumber`를 반환할 수 있습니다. 그 `required`가 `true`이면 `documentMetadata`에 신분증 번호를 포함하세요. 대시보드는 문서에 필요한 경우 신분증 번호와 발급 국가를 요청합니다.
+- `PATCH /v3/customers/{customerId}/accounts/{accountId}`는 USD가 아닌 외부 SWIFT 계좌에서 `bankAddress`(최대 105자), `bankCity`, `bankPostalCode`를 허용합니다. 외화 SWIFT 지급에는 `bankAddress`와 `bankCity`가 필요합니다. USD 계좌에서 이 필드를 변경하면 `409 conflict`가 반환됩니다. 대기 중인 견적이나 지급이 계좌를 사용하는 동안 변경하면 재시도할 수 있는 `409 account_has_active_transfers`가 반환됩니다.
+- 대시보드의 KYB에서 WebP, HEIF, HEIC 문서를 허용합니다.
+
+### 변경
+- 발급 계좌의 SWIFT 코드, 라우팅 번호 또는 계좌 번호가 변경되면 Swipelux가 [`account.details_changed`](/api-reference/webhooks/account-details-changed)를 보냅니다. `data.object`는 현재 계좌이며, `data.previous`에는 `routingVersion`만 포함됩니다. [은행 계좌 발급](/ko/integration/issue-bank-account)을 참고하세요.
+- 보관되지 않은 은행 계좌의 정산 지갑인 지갑 계좌를 보관하면 `409 account_has_dependent_accounts`가 반환됩니다. `PATCH`로 은행 계좌의 정산을 다른 지갑으로 옮기거나 은행 계좌를 먼저 보관하세요.
+- `PATCH /v3/customers/{customerId}/recipients/{recipientId}`는 다른 수취인 유형의 필드를 `400 validation_error`와 필드별 `invalid_field` 오류로 거부합니다. 개인의 경우 `companyName`과 `businessIndustry`, 법인의 경우 `firstName`과 `lastName`이 해당됩니다.
+- 동일한 요청이 아직 실행 중인 동안 `POST /v3/customers/{customerId}/tasks/{taskId}/withdrawals`도 `retryable: true`와 함께 `409 idempotency_request_in_progress`를 반환합니다.
+- 대시보드에서 거부된 고객 삭제는 이를 막는 리소스를 나열하고, 수취인 국가는 국가 선택기를 사용하며, 프로필 텍스트 입력은 256자로 제한됩니다. 고객 페이지나 Balances에서 지급을 생성하면 상세 정보가 열립니다.
+
+### 수정
+- Swipelux는 더 이상 한 번의 업데이트에서 하나의 케이퍼빌리티에 대해 `capability.status_changed` 이벤트를 두 번 보내지 않으며, 상태가 시작 상태로 끝나면 이벤트를 보내지 않습니다.
+- 계좌가 프로비저닝 중에 거부되면 `account.status_changed`는 `"in_review"` 대신 `previous.state: "provisioning"`을 보고합니다.
+
+</Update>
+
+<Update label="2026-11-09" description="v3" tags={["추가","변경","수정"]}>
+
+### 추가
+- 은행이 제3자에게 보내는 USD SWIFT 지급에 대해 증빙 서류를 요청하면 Swipelux는 전송에 `category: "transaction_rfi"` 태스크를 엽니다. 이 태스크는 서류 한 건과 참조 정보를 요청합니다. 기존 태스크 제출 엔드포인트로 답변하면 Swipelux가 답변을 은행에 전달합니다. 지급이 은행 승인 없이 완료되거나, 실패하거나, 환불되면 Swipelux가 태스크를 취소합니다. [견적과 전송](/ko/integration/quotes-and-transfers#supporting-documents-for-swift-payouts)을 참고하세요.
+- 모든 은행의 발급 SWIFT 계좌가 `details.accountHolderAddress`에 수취인의 우편 주소를 반환합니다. 이전에는 Lead Bank와 BMO 계좌만 반환했습니다. 이는 수취 은행 주소인 `details.bankAddress`와 다릅니다. [은행 계좌 발급](/ko/integration/issue-bank-account)을 참고하세요.
+- USD가 아닌 SWIFT 계좌에 계좌 통화로 입금되면 정산 지갑에 USDC로 정산됩니다. 전송의 `amounts.in`은 계좌 통화로 받은 금액을, `amounts.out`은 전달된 USDC를 표시합니다. 이전에는 이러한 입금이 전송이나 웹훅 없이 검토를 위해 보류되었습니다.
+- 문서 요구 사항이 `constraints.issuingCountryRequired: true`를 반환할 수 있습니다. 이 요구 사항에 제출하는 각 문서의 `documentMetadata`에는 `issuingCountry`가 포함되어야 합니다.
+
+### 변경
+- 첫 번째 동일 요청이 아직 실행 중일 때 도착한 재시도는 케이퍼빌리티 요청, 문서, 수취인 및 그 목적지, 규칙, 웹훅, 견적, 전송, 전송 취소, 확인 세션 공유 토큰에서 `retryable: true`와 함께 `409 idempotency_request_in_progress`를 반환합니다. 이전에는 이 경로들이 `idempotency_conflict`를 반환했습니다. 다른 본문으로 키를 재사용하면 여전히 `idempotency_conflict`가 반환됩니다. [오류와 재시도](/integration/errors#idempotency-request-in-progress)를 참고하세요.
+- 은행 입금 견적은 일반적인 실패 대신 구체적인 오류를 반환합니다: `400 quote_amount_out_of_range`, `400 quote_volume_limit_exceeded`, `400 quote_destination_network_unsupported`, `503 quote_temporarily_unavailable`(재시도 가능) 또는 `502 quote_failed`.
+- 은행 검토 중인 신청이 문서에 의존하는 동안 `DELETE /v3/customers/{customerId}/documents/{documentId}`는 `409 document_in_use`를 반환합니다. 검토가 끝나거나 신청이 취소된 후에 보관하세요.
+- 정산 지갑이 USDT인 USD 이외의 은행 계좌는 이제 명시적인 `settlement.currency`가 없어도 생성 및 업데이트 시 `400 invalid_settlement_target`을 반환합니다. [정산 통화 선택](/ko/integration/issue-bank-account#choose-the-settlement-currency)을 참고하세요.
+- 대시보드의 지급 검토에서 외화 수령 금액을 추정치로 표시합니다.
+- 대시보드와 공개 추적 페이지에서 은행이 반환하거나 취소한 완료된 전송에 알림이 표시됩니다. 상태는 Completed로 유지됩니다.
+
+### 수정
+- 발급 은행 계좌는 준비되면 `account.status_changed`를 보냅니다. [웹훅](/ko/integration/webhooks)을 참고하세요.
+- 같은 멱등 키와 파일로 멀티파트 문서 업로드를 재시도해도 더 이상 `409`가 반환되지 않습니다.
+- 대시보드 거래 필터는 은행 지급을 은행 레일별로 매칭하고 모든 암호화폐 네트워크를 지원합니다. 정확한 ID로 검색하면 소액 입금도 찾을 수 있습니다.
+
+</Update>
+
 <Update label="2026-11-04" description="v3" tags={["추가"]}>
 
 ### 추가

@@ -8,6 +8,51 @@ Ez az oldal a Swipelux API dátumozott változásait sorolja fel. Minden bejegyz
 
 Egy meglévő integráció korábbi verzióról történő frissítéséhez lásd: [Migrálás v3-ra](/hu/api-reference/versioning/migrate-to-v3).
 
+<Update label="2026-11-16" description="v3" tags={["Hozzáadva","Módosítva","Javítva"]}>
+
+### Hozzáadva
+- A `GET /v3/customers` elfogadja a `pooledCapabilityIncludeWait`, `pooledCapabilityExcludeWait`, `namedCapabilityIncludeWait` és `namedCapabilityExcludeWait` paramétereket. Mindegyiket a megfelelő `pooledCapabilityStatus` vagy `namedCapabilityStatus` szűrővel használja. Az `IncludeWait` hozzáadja azokat a korlátozott képességeket, amelyek megoldása `wait`, az `ExcludeWait` pedig eltávolítja azokat a képességeket, amelyek megoldása `wait`. Ha mindkettő `true`, az `ExcludeWait` érvényesül. A szűrőkhöz `accounts:read` vagy `rails:read` szükséges. Lásd: [Ügyfelek](/hu/integration/onboarding/customers#filter-customers-by-capability-readiness).
+- Az `include=capabilities` paraméterrel visszaadott képesség-összefoglalók tartalmazhatják a `statusReason.resolution` értéket: `wait`, `contact_support` vagy `none`. Feladatoktól függő ok esetén olvassa ki a képességet.
+- Egy dokumentumkövetelmény visszaadhat 3–50 karakter hosszú `constraints.idNumber` értéket. Ha annak `required` értéke `true`, adja meg az azonosítószámot a `documentMetadata` mezőben. Az irányítópult bekéri az azonosítószámot és a kiállító országot, ha egy dokumentumhoz szükségesek.
+- A `PATCH /v3/customers/{customerId}/accounts/{accountId}` elfogadja a `bankAddress` (legfeljebb 105 karakter), `bankCity` és `bankPostalCode` mezőket egy nem USD-alapú külső SWIFT-számlán. A devizás SWIFT-kifizetésekhez `bankAddress` és `bankCity` szükséges. Ezeknek a mezőknek a módosítása USD-számlán `409 conflict` választ ad. Amíg egy függő árajánlat vagy kifizetés használja a számlát, a módosítás `409 account_has_active_transfers` választ ad, amely újrapróbálható.
+- Az irányítópulton a KYB elfogad WebP, HEIF és HEIC dokumentumokat.
+
+### Módosítva
+- A Swipelux [`account.details_changed`](/api-reference/webhooks/account-details-changed) eseményt küld, ha egy kibocsátott számla SWIFT-kódja, routing száma vagy számlaszáma megváltozik. A `data.object` az aktuális számla, a `data.previous` pedig csak a `routingVersion` értéket tartalmazza. Lásd: [Bankszámla kibocsátása](/hu/integration/issue-bank-account).
+- Olyan tárcaszámla archiválása, amely egy nem archivált bankszámla rendezési tárcája, `409 account_has_dependent_accounts` választ ad. Helyezze át a bankszámla rendezését egy másik tárcára `PATCH` kéréssel, vagy előbb archiválja a bankszámlát.
+- A `PATCH /v3/customers/{customerId}/recipients/{recipientId}` `400 validation_error` hibával és mezőnként egy `invalid_field` hibával elutasítja a másik címzetttípus mezőit: magánszemélynél a `companyName` és a `businessIndustry`, vállalkozásnál a `firstName` és a `lastName` mezőt.
+- A `POST /v3/customers/{customerId}/tasks/{taskId}/withdrawals` is `409 idempotency_request_in_progress` választ ad `retryable: true` értékkel, amíg egy azonos kérés még fut.
+- Az irányítópulton egy elutasított ügyféltörlés felsorolja az azt akadályozó erőforrásokat, a címzett országához országválasztó tartozik, a profil szövegmezői pedig 256 karakterre korlátozottak. Miután létrehozott egy kifizetést egy ügyféloldalról vagy a Balances oldalról, megnyílnak a részletei.
+
+### Javítva
+- A Swipelux már nem küld két `capability.status_changed` eseményt egy képességre egyetlen frissítésben, és egyet sem küld, ha az állapot ott ér véget, ahol kezdődött.
+- Ha egy számlát még a kiépítése közben utasítanak el, az `account.status_changed` `"in_review"` helyett `previous.state: "provisioning"` értéket jelent.
+
+</Update>
+
+<Update label="2026-11-09" description="v3" tags={["Hozzáadva","Módosítva","Javítva"]}>
+
+### Hozzáadva
+- Ha a bank alátámasztó dokumentumot kér egy harmadik félnek szóló USD SWIFT-kifizetéshez, a Swipelux `category: "transaction_rfi"` feladatot nyit az átutaláson. A feladat egy dokumentumot és annak hivatkozását kéri. Válaszoljon rá a meglévő feladatbeküldési végpontokkal, és a Swipelux továbbítja a választ a banknak. A Swipelux törli a feladatot, ha a kifizetés a bank jóváhagyása nélkül teljesül, meghiúsul vagy visszatérítésre kerül. Lásd: [Árajánlatok és átutalások](/hu/integration/quotes-and-transfers#supporting-documents-for-swift-payouts).
+- Minden bank kibocsátott SWIFT-számlái visszaadják a kedvezményezett postai címét a `details.accountHolderAddress` mezőben. Korábban csak a Lead Bank és a BMO számlái adták vissza. Ez eltér a `details.bankAddress` mezőtől, amely a fogadó bank címe. Lásd: [Bankszámla kibocsátása](/hu/integration/issue-bank-account).
+- Egy nem USD-alapú SWIFT-számlára a számla devizájában érkező befizetés USDC-ként kerül a rendezési tárcába. Az átutalás `amounts.in` értéke a számla devizájában fogadott összeget, az `amounts.out` pedig a kézbesített USDC-t mutatja. Korábban ezeket a befizetéseket átutalás és webhook nélkül felülvizsgálatra visszatartották.
+- Egy dokumentumkövetelmény visszaadhatja a `constraints.issuingCountryRequired: true` értéket. Minden hozzá beküldött dokumentumnak tartalmaznia kell az `issuingCountry` értéket a `documentMetadata` mezőben.
+
+### Módosítva
+- Az olyan újrapróbálkozás, amely akkor érkezik, amikor az első azonos kérés még fut, `409 idempotency_request_in_progress` választ ad `retryable: true` értékkel a képességkéréseknél, dokumentumoknál, címzetteknél és célhelyeiknél, szabályoknál, webhookoknál, árajánlatoknál, átutalásoknál, átutalás-törléseknél és az ellenőrzési munkamenetek megosztási tokenjeinél. Korábban ezek az útvonalak `idempotency_conflict` választ adtak. Egy kulcs eltérő törzzsel történő újrafelhasználása továbbra is `idempotency_conflict` választ ad. Lásd: [Hibák és újrapróbálkozások](/integration/errors#idempotency-request-in-progress).
+- A banki befizetési árajánlatok általános hiba helyett konkrét hibákat adnak vissza: `400 quote_amount_out_of_range`, `400 quote_volume_limit_exceeded`, `400 quote_destination_network_unsupported`, `503 quote_temporarily_unavailable` (újrapróbálható) vagy `502 quote_failed`.
+- A `DELETE /v3/customers/{customerId}/documents/{documentId}` `409 document_in_use` választ ad, amíg egy banki felülvizsgálat alatt álló kérelem a dokumentumra támaszkodik. Archiválja, miután a felülvizsgálat befejeződött vagy a kérelmet törölték.
+- Az a nem USD-alapú bankszámla, amelynek rendezési tárcája USDT, mostantól létrehozáskor és frissítéskor `400 invalid_settlement_target` választ ad, explicit `settlement.currency` nélkül is. Lásd: [A rendezési deviza kiválasztása](/hu/integration/issue-bank-account#choose-the-settlement-currency).
+- Az irányítópulton a kifizetés áttekintése becslésként jelöli a devizában fogadott összeget.
+- Az irányítópulton és a nyilvános nyomkövetési oldalon egy teljesült átutalás, amelyet a bank visszaküldött vagy visszafordított, értesítést mutat. Az állapota Completed marad.
+
+### Javítva
+- A kibocsátott bankszámlák `account.status_changed` eseményt küldenek, amikor készenlétbe kerülnek. Lásd: [Webhookok](/hu/integration/webhooks).
+- Egy többrészes dokumentumfeltöltés újrapróbálása ugyanazzal az idempotenciakulccsal és fájllal már nem ad `409` választ.
+- Az irányítópult tranzakciószűrői a banki kifizetéseket a banki rail alapján egyeztetik, és minden kriptohálózatot lefednek. A pontos azonosítóra keresés megtalálja a kis összegű befizetéseket.
+
+</Update>
+
 <Update label="2026-11-04" description="v3" tags={["Hozzáadva"]}>
 
 ### Hozzáadva

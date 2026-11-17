@@ -8,6 +8,51 @@ Deze pagina somt gedateerde wijzigingen aan de Swipelux API op. Elk item noemt d
 
 Voor het upgraden van een bestaande integratie vanaf een eerdere versie, zie [Migreren naar v3](/nl/api-reference/versioning/migrate-to-v3).
 
+<Update label="2026-11-16" description="v3" tags={["Toegevoegd","Gewijzigd","Opgelost"]}>
+
+### Toegevoegd
+- `GET /v3/customers` accepteert `pooledCapabilityIncludeWait`, `pooledCapabilityExcludeWait`, `namedCapabilityIncludeWait` en `namedCapabilityExcludeWait`. Gebruik elk ervan met het bijbehorende filter `pooledCapabilityStatus` of `namedCapabilityStatus`. `IncludeWait` voegt beperkte capabilities toe waarvan de resolutie `wait` is, en `ExcludeWait` verwijdert capabilities waarvan de resolutie `wait` is. Als beide `true` zijn, wint `ExcludeWait`. De filters vereisen `accounts:read` of `rails:read`. Zie [Klanten](/nl/integration/onboarding/customers#filter-customers-by-capability-readiness).
+- Capability-samenvattingen die met `include=capabilities` worden geretourneerd, kunnen `statusReason.resolution` bevatten: `wait`, `contact_support` of `none`. Lees de capability voor een reden die van tasks afhangt.
+- Een documentvereiste kan `constraints.idNumber` retourneren met een lengte van 3 tot 50 tekens. Als de `required` ervan `true` is, neem dan het ID-nummer op in `documentMetadata`. Het dashboard vraagt om het ID-nummer en het land van uitgifte wanneer een document die nodig heeft.
+- `PATCH /v3/customers/{customerId}/accounts/{accountId}` accepteert `bankAddress` (maximaal 105 tekens), `bankCity` en `bankPostalCode` op een externe niet-USD SWIFT-rekening. SWIFT-uitbetalingen in vreemde valuta vereisen `bankAddress` en `bankCity`. Het wijzigen van deze velden op een USD-rekening retourneert `409 conflict`. Zolang een openstaande quote of uitbetaling de rekening gebruikt, retourneert een wijziging `409 account_has_active_transfers`, die je opnieuw kunt proberen.
+- In het dashboard accepteert KYB documenten in WebP, HEIF en HEIC.
+
+### Gewijzigd
+- Swipelux stuurt [`account.details_changed`](/api-reference/webhooks/account-details-changed) wanneer de SWIFT-code, het routingnummer of het rekeningnummer van een uitgegeven rekening verandert. `data.object` is de huidige rekening, en `data.previous` bevat alleen `routingVersion`. Zie [Een bankrekening uitgeven](/nl/integration/issue-bank-account).
+- Het archiveren van een walletrekening die de settlement-wallet is van een niet-gearchiveerde bankrekening, retourneert `409 account_has_dependent_accounts`. Verplaats de settlement van de bankrekening naar een andere wallet met `PATCH`, of archiveer eerst de bankrekening.
+- `PATCH /v3/customers/{customerId}/recipients/{recipientId}` weigert velden van het andere ontvangertype met `400 validation_error` en een `invalid_field`-fout voor elk veld: `companyName` en `businessIndustry` bij een particulier, `firstName` en `lastName` bij een bedrijf.
+- `POST /v3/customers/{customerId}/tasks/{taskId}/withdrawals` retourneert ook `409 idempotency_request_in_progress` met `retryable: true` zolang een identiek request nog loopt.
+- In het dashboard toont een geweigerde klantverwijdering de resources die deze blokkeren, gebruikt het land van de ontvanger een landkiezer en zijn tekstvelden in het profiel beperkt tot 256 tekens. Nadat je een uitbetaling hebt gemaakt vanaf een klantpagina of vanuit Balances, worden de details ervan geopend.
+
+### Opgelost
+- Swipelux stuurt niet langer twee `capability.status_changed`-events voor één capability in één update, en stuurt er geen wanneer de status eindigt waar die begon.
+- Wanneer een rekening wordt afgewezen terwijl die nog wordt ingericht, meldt `account.status_changed` `previous.state: "provisioning"` in plaats van `"in_review"`.
+
+</Update>
+
+<Update label="2026-11-09" description="v3" tags={["Toegevoegd","Gewijzigd","Opgelost"]}>
+
+### Toegevoegd
+- Wanneer de bank om een ondersteunend document vraagt bij een USD-SWIFT-uitbetaling aan een derde partij, opent Swipelux een task met `category: "transaction_rfi"` op de transfer. Deze vraagt om één document en de referentie ervan. Beantwoord de task met de bestaande endpoints voor task-submissions, en Swipelux stuurt het antwoord door naar de bank. Swipelux annuleert de task als de uitbetaling wordt voltooid zonder goedkeuring van de bank, mislukt of wordt terugbetaald. Zie [Quotes en transfers](/nl/integration/quotes-and-transfers#supporting-documents-for-swift-payouts).
+- Uitgegeven SWIFT-rekeningen bij elke bank retourneren het postadres van de begunstigde in `details.accountHolderAddress`. Eerder deden alleen rekeningen bij Lead Bank en BMO dat. Het verschilt van `details.bankAddress`, het adres van de ontvangende bank. Zie [Een bankrekening uitgeven](/nl/integration/issue-bank-account).
+- Een storting op een niet-USD SWIFT-rekening in de valuta van de rekening wordt als USDC afgewikkeld op de settlement-wallet. `amounts.in` van de transfer toont het bedrag dat in de rekeningvaluta is ontvangen, en `amounts.out` toont de geleverde USDC. Eerder werden deze stortingen zonder transfer of webhook vastgehouden voor beoordeling.
+- Een documentvereiste kan `constraints.issuingCountryRequired: true` retourneren. Elk document dat ervoor wordt ingediend, moet `issuingCountry` in `documentMetadata` bevatten.
+
+### Gewijzigd
+- Een nieuwe poging die binnenkomt terwijl het eerste identieke request nog loopt, retourneert `409 idempotency_request_in_progress` met `retryable: true` voor capabilityverzoeken, documenten, ontvangers en hun bestemmingen, regels, webhooks, quotes, transfers, transferannuleringen en share-tokens van verificatiesessies. Eerder retourneerden deze routes `idempotency_conflict`. Een sleutel hergebruiken met een andere body retourneert nog steeds `idempotency_conflict`. Zie [Fouten en nieuwe pogingen](/integration/errors#idempotency-request-in-progress).
+- Bank-pay-in-quotes retourneren specifieke fouten in plaats van een algemene fout: `400 quote_amount_out_of_range`, `400 quote_volume_limit_exceeded`, `400 quote_destination_network_unsupported`, `503 quote_temporarily_unavailable` (opnieuw te proberen) of `502 quote_failed`.
+- `DELETE /v3/customers/{customerId}/documents/{documentId}` retourneert `409 document_in_use` zolang een application in bankbeoordeling van het document afhankelijk is. Archiveer het nadat de beoordeling is afgerond of de application is geannuleerd.
+- Een niet-USD bankrekening waarvan de settlement-wallet USDT is, retourneert nu `400 invalid_settlement_target` bij aanmaken en bijwerken, ook zonder expliciete `settlement.currency`. Zie [Kies de settlement-valuta](/nl/integration/issue-bank-account#choose-the-settlement-currency).
+- In het dashboard markeert de uitbetalingsbeoordeling een ontvangstbedrag in vreemde valuta als schatting.
+- In het dashboard en op de openbare trackingpagina toont een voltooide transfer die de bank heeft teruggestuurd of teruggedraaid een melding. De status blijft Completed.
+
+### Opgelost
+- Uitgegeven bankrekeningen sturen `account.status_changed` wanneer ze ready worden. Zie [Webhooks](/nl/integration/webhooks).
+- Een multipart-upload van een document opnieuw proberen met dezelfde idempotentiesleutel en hetzelfde bestand retourneert niet langer `409`.
+- Transactiefilters in het dashboard koppelen bankuitbetalingen aan hun bankrail en dekken elk cryptonetwerk. Zoeken op exacte ID vindt kleine pay-ins.
+
+</Update>
+
 <Update label="2026-11-04" description="v3" tags={["Toegevoegd"]}>
 
 ### Toegevoegd

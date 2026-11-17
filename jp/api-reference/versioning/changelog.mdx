@@ -8,6 +8,51 @@ description: "Swipelux API 各バージョンの追加、破壊的変更、非�
 
 既存のインテグレーションを以前のバージョンからアップグレードする場合は、[v3 への移行](/jp/api-reference/versioning/migrate-to-v3) を参照してください。
 
+<Update label="2026-11-16" description="v3" tags={["追加","変更","修正"]}>
+
+### 追加
+- `GET /v3/customers` は `pooledCapabilityIncludeWait`、`pooledCapabilityExcludeWait`、`namedCapabilityIncludeWait`、`namedCapabilityExcludeWait` を受け付けます。それぞれ、対応する `pooledCapabilityStatus` または `namedCapabilityStatus` フィルターと組み合わせて使用します。`IncludeWait` は解決方法が `wait` の制限付きケイパビリティを追加し、`ExcludeWait` は解決方法が `wait` のケイパビリティを除外します。両方が `true` の場合は `ExcludeWait` が優先されます。これらのフィルターには `accounts:read` または `rails:read` が必要です。[顧客](/jp/integration/onboarding/customers#filter-customers-by-capability-readiness) を参照してください。
+- `include=capabilities` で返されるケイパビリティの概要に `statusReason.resolution`（`wait`、`contact_support`、`none`）が含まれる場合があります。タスクに依存する理由については、ケイパビリティを読み取ってください。
+- 書類要件が、長さ 3～50 文字の `constraints.idNumber` を返す場合があります。その `required` が `true` の場合は、`documentMetadata` に ID 番号を含めてください。書類で必要な場合、ダッシュボードは ID 番号と発行国の入力を求めます。
+- `PATCH /v3/customers/{customerId}/accounts/{accountId}` は、USD 以外の外部 SWIFT 口座で `bankAddress`（最大 105 文字）、`bankCity`、`bankPostalCode` を受け付けます。外貨建て SWIFT 支払いには `bankAddress` と `bankCity` が必要です。USD 口座でこれらのフィールドを変更すると `409 conflict` が返されます。保留中の見積もりや支払いが口座を使用している間、変更すると再試行可能な `409 account_has_active_transfers` が返されます。
+- ダッシュボードの KYB で WebP、HEIF、HEIC の書類を受け付けるようになりました。
+
+### 変更
+- 発行済み口座の SWIFT コード、ルーティング番号、または口座番号が変更されると、Swipelux は [`account.details_changed`](/api-reference/webhooks/account-details-changed) を送信します。`data.object` は現在の口座で、`data.previous` には `routingVersion` のみが含まれます。[銀行口座を発行する](/jp/integration/issue-bank-account) を参照してください。
+- アーカイブされていない銀行口座の決済ウォレットであるウォレット口座をアーカイブすると、`409 account_has_dependent_accounts` が返されます。`PATCH` で銀行口座の決済を別のウォレットに移すか、先に銀行口座をアーカイブしてください。
+- `PATCH /v3/customers/{customerId}/recipients/{recipientId}` は、もう一方の受取人タイプのフィールドを `400 validation_error` で拒否し、各フィールドに `invalid_field` エラーを返します。個人では `companyName` と `businessIndustry`、法人では `firstName` と `lastName` が対象です。
+- `POST /v3/customers/{customerId}/tasks/{taskId}/withdrawals` も、同一のリクエストがまだ実行中の間は `retryable: true` を伴う `409 idempotency_request_in_progress` を返します。
+- ダッシュボードでは、拒否された顧客の削除でブロックしているリソースが一覧表示され、受取人の国は国選択で入力し、プロファイルのテキスト入力は 256 文字までに制限されます。顧客ページまたは Balances から支払いを作成すると、その詳細が開きます。
+
+### 修正
+- Swipelux は、1 回の更新で 1 つのケイパビリティについて 2 つの `capability.status_changed` イベントを送信しなくなり、ステータスが開始時と同じ状態で終わる場合はイベントを送信しなくなりました。
+- 口座がプロビジョニング中に却下された場合、`account.status_changed` は `"in_review"` ではなく `previous.state: "provisioning"` を報告します。
+
+</Update>
+
+<Update label="2026-11-09" description="v3" tags={["追加","変更","修正"]}>
+
+### 追加
+- 第三者への USD SWIFT 支払いについて銀行が裏付け書類を求めた場合、Swipelux は送金に `category: "transaction_rfi"` のタスクを作成します。このタスクでは 1 つの書類とその参照情報が求められます。既存のタスク送信エンドポイントで回答すると、Swipelux がその回答を銀行に転送します。支払いが銀行の承認なしに完了した場合、失敗した場合、または返金された場合、Swipelux はタスクをキャンセルします。[見積もりと送金](/jp/integration/quotes-and-transfers#supporting-documents-for-swift-payouts) を参照してください。
+- すべての銀行の発行済み SWIFT 口座で、受益者の郵送先住所が `details.accountHolderAddress` に返されるようになりました。以前は Lead Bank と BMO の口座のみが返していました。これは受取銀行の住所である `details.bankAddress` とは異なります。[銀行口座を発行する](/jp/integration/issue-bank-account) を参照してください。
+- USD 以外の SWIFT 口座への口座通貨建ての入金は、決済ウォレットに USDC として決済されます。送金の `amounts.in` には口座通貨で受け取った金額が、`amounts.out` には着金した USDC が表示されます。以前は、これらの入金は送金や webhook なしで審査のために保留されていました。
+- 書類要件が `constraints.issuingCountryRequired: true` を返す場合があります。その要件に対して送信する各書類の `documentMetadata` には `issuingCountry` を含める必要があります。
+
+### 変更
+- 最初の同一リクエストがまだ実行中の間に届いた再試行は、ケイパビリティのリクエスト、書類、受取人とその送金先、ルール、webhook、見積もり、送金、送金のキャンセル、確認セッションの共有トークンで、`retryable: true` を伴う `409 idempotency_request_in_progress` を返します。以前、これらのルートは `idempotency_conflict` を返していました。異なる本文でキーを再利用した場合は、引き続き `idempotency_conflict` が返されます。[エラーと再試行](/integration/errors#idempotency-request-in-progress) を参照してください。
+- 銀行入金の見積もりは、一般的な失敗ではなく具体的なエラーを返すようになりました: `400 quote_amount_out_of_range`、`400 quote_volume_limit_exceeded`、`400 quote_destination_network_unsupported`、`503 quote_temporarily_unavailable`（再試行可能）、`502 quote_failed`。
+- 銀行審査中の申請が書類に依存している間、`DELETE /v3/customers/{customerId}/documents/{documentId}` は `409 document_in_use` を返します。審査の完了後または申請のキャンセル後にアーカイブしてください。
+- 決済ウォレットが USDT の USD 以外の銀行口座は、`settlement.currency` を明示しなくても、作成時と更新時に `400 invalid_settlement_target` を返すようになりました。[決済通貨を選択する](/jp/integration/issue-bank-account#choose-the-settlement-currency) を参照してください。
+- ダッシュボードの支払いレビューでは、外貨建ての受取額が推定値として表示されます。
+- ダッシュボードと公開トラッキングページでは、銀行が返却または取り消した完了済みの送金にお知らせが表示されます。ステータスは Completed のままです。
+
+### 修正
+- 発行済み銀行口座は、ready になったときに `account.status_changed` を送信します。[Webhook](/jp/integration/webhooks) を参照してください。
+- 同じ冪等キーとファイルでマルチパートの書類アップロードを再試行しても、`409` が返されなくなりました。
+- ダッシュボードの取引フィルターは、銀行支払いを銀行レールで照合し、すべての暗号資産ネットワークを対象とします。正確な ID で検索すると少額の入金も見つかります。
+
+</Update>
+
 <Update label="2026-11-04" description="v3" tags={["追加"]}>
 
 ### 追加

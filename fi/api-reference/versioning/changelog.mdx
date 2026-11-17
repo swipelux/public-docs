@@ -8,6 +8,51 @@ Tämä sivu listaa päivätyt muutokset Swipelux API:iin. Jokainen merkintä ker
 
 Olemassa olevan integraation päivittämiseksi aiemmasta versiosta katso [Siirtyminen v3:een](/fi/api-reference/versioning/migrate-to-v3).
 
+<Update label="2026-11-16" description="v3" tags={["Lisätty","Muutettu","Korjattu"]}>
+
+### Lisätty
+- `GET /v3/customers` hyväksyy parametrit `pooledCapabilityIncludeWait`, `pooledCapabilityExcludeWait`, `namedCapabilityIncludeWait` ja `namedCapabilityExcludeWait`. Käytä kutakin vastaavan `pooledCapabilityStatus`- tai `namedCapabilityStatus`-suodattimen kanssa. `IncludeWait` lisää rajoitetut kyvyt, joiden ratkaisu on `wait`, ja `ExcludeWait` poistaa kyvyt, joiden ratkaisu on `wait`. Kun molemmat ovat `true`, `ExcludeWait` voittaa. Suodattimet edellyttävät oikeutta `accounts:read` tai `rails:read`. Katso [Asiakkaat](/fi/integration/onboarding/customers#filter-customers-by-capability-readiness).
+- `include=capabilities`-parametrilla palautetut kykyjen yhteenvedot voivat sisältää `statusReason.resolution`-arvon: `wait`, `contact_support` tai `none`. Jos syy riippuu tehtävistä, lue kyky.
+- Asiakirjavaatimus voi palauttaa `constraints.idNumber`-arvon, jonka pituus on 3–50 merkkiä. Kun sen `required` on `true`, sisällytä henkilötodistuksen numero kenttään `documentMetadata`. Hallintapaneeli kysyy numeroa ja myöntäjämaata, kun asiakirja tarvitsee niitä.
+- `PATCH /v3/customers/{customerId}/accounts/{accountId}` hyväksyy `bankAddress`-kentän (enintään 105 merkkiä), `bankCity`- ja `bankPostalCode`-kentät ulkoisella muulla kuin USD-määräisellä SWIFT-tilillä. Ulkomaan valuutan SWIFT-maksut edellyttävät kenttiä `bankAddress` ja `bankCity`. Näiden kenttien muuttaminen USD-tilillä palauttaa `409 conflict`. Kun odottava tarjous tai maksu käyttää tiliä, muutos palauttaa `409 account_has_active_transfers`, jonka voit yrittää uudelleen.
+- Hallintapaneelissa KYB hyväksyy WebP-, HEIF- ja HEIC-asiakirjat.
+
+### Muutettu
+- Swipelux lähettää [`account.details_changed`](/api-reference/webhooks/account-details-changed) -tapahtuman, kun luodun tilin SWIFT-koodi, reititysnumero tai tilinumero muuttuu. `data.object` on nykyinen tili, ja `data.previous` sisältää vain `routingVersion`-arvon. Katso [Luo pankkitili](/fi/integration/issue-bank-account).
+- Sellaisen lompakkotilin arkistointi, joka on arkistoimattoman pankkitilin selvityslompakko, palauttaa `409 account_has_dependent_accounts`. Siirrä pankkitilin selvitys toiseen lompakkoon `PATCH`-kutsulla tai arkistoi pankkitili ensin.
+- `PATCH /v3/customers/{customerId}/recipients/{recipientId}` hylkää toisen vastaanottajatyypin kentät virheellä `400 validation_error` ja kullekin `invalid_field`-virheellä: `companyName` ja `businessIndustry` yksityishenkilöllä, `firstName` ja `lastName` yrityksellä.
+- `POST /v3/customers/{customerId}/tasks/{taskId}/withdrawals` palauttaa myös `409 idempotency_request_in_progress` arvolla `retryable: true`, kun identtinen pyyntö on vielä käynnissä.
+- Hallintapaneelissa hylätty asiakkaan poisto listaa sen estävät resurssit, vastaanottajan maa käyttää maavalitsinta ja profiilin tekstikentät on rajattu 256 merkkiin. Kun olet luonut maksun asiakassivulta tai Balancesista, sen tiedot avautuvat.
+
+### Korjattu
+- Swipelux ei enää lähetä kahta `capability.status_changed`-tapahtumaa yhdestä kyvystä yhdessä päivityksessä, eikä lähetä yhtään, kun tila päättyy siihen, mistä se alkoi.
+- Kun tili hylätään sen ollessa vielä käyttöönotossa, `account.status_changed` ilmoittaa `previous.state: "provisioning"` arvon `"in_review"` sijaan.
+
+</Update>
+
+<Update label="2026-11-09" description="v3" tags={["Lisätty","Muutettu","Korjattu"]}>
+
+### Lisätty
+- Kun pankki pyytää tukiasiakirjaa kolmannelle osapuolelle tehtävästä USD SWIFT -maksusta, Swipelux avaa siirtoon tehtävän, jonka `category: "transaction_rfi"`. Se pyytää yhtä asiakirjaa ja sen viitettä. Vastaa siihen nykyisillä tehtävälähetysten päätepisteillä, ja Swipelux välittää vastauksen pankille. Swipelux peruuttaa tehtävän, jos maksu valmistuu ilman pankin hyväksyntää, epäonnistuu tai palautetaan. Katso [Tarjoukset ja siirrot](/fi/integration/quotes-and-transfers#supporting-documents-for-swift-payouts).
+- Kaikkien pankkien luodut SWIFT-tilit palauttavat edunsaajan postiosoitteen kentässä `details.accountHolderAddress`. Aiemmin sen palauttivat vain Lead Bankin ja BMO:n tilit. Se eroaa kentästä `details.bankAddress`, joka on vastaanottavan pankin osoite. Katso [Luo pankkitili](/fi/integration/issue-bank-account).
+- Tilin valuutassa tehty talletus muulle kuin USD-määräiselle SWIFT-tilille selvitetään selvityslompakkoon USDC:nä. Siirron `amounts.in` näyttää tilin valuutassa vastaanotetun summan, ja `amounts.out` näyttää toimitetun USDC:n. Aiemmin nämä talletukset pidätettiin tarkistettaviksi ilman siirtoa tai webhookia.
+- Asiakirjavaatimus voi palauttaa `constraints.issuingCountryRequired: true`. Jokaisen sitä varten lähetetyn asiakirjan on sisällettävä `issuingCountry` kentässä `documentMetadata`.
+
+### Muutettu
+- Uudelleenyritys, joka saapuu ensimmäisen identtisen pyynnön ollessa vielä käynnissä, palauttaa `409 idempotency_request_in_progress` arvolla `retryable: true` kykypyynnöissä, asiakirjoissa, vastaanottajissa ja niiden kohteissa, säännöissä, webhookeissa, tarjouksissa, siirroissa, siirtojen peruutuksissa ja todentamisistuntojen jakotunnuksissa. Aiemmin nämä reitit palauttivat `idempotency_conflict`. Avaimen uudelleenkäyttö eri rungolla palauttaa edelleen `idempotency_conflict`. Katso [Virheet ja uudelleenyritykset](/integration/errors#idempotency-request-in-progress).
+- Pankkitalletusten tarjoukset palauttavat yleisen virheen sijaan tarkkoja virheitä: `400 quote_amount_out_of_range`, `400 quote_volume_limit_exceeded`, `400 quote_destination_network_unsupported`, `503 quote_temporarily_unavailable` (uudelleenyritettävä) tai `502 quote_failed`.
+- `DELETE /v3/customers/{customerId}/documents/{documentId}` palauttaa `409 document_in_use`, kun pankin tarkistettavana oleva hakemus perustuu asiakirjaan. Arkistoi se, kun tarkistus on valmis tai hakemus peruutettu.
+- Muu kuin USD-määräinen pankkitili, jonka selvityslompakko on USDT, palauttaa nyt `400 invalid_settlement_target` luonnissa ja päivityksessä, myös ilman erikseen annettua `settlement.currency`-arvoa. Katso [Valitse selvitysvaluutta](/fi/integration/issue-bank-account#choose-the-settlement-currency).
+- Hallintapaneelissa maksun tarkistus merkitsee ulkomaan valuutassa vastaanotettavan summan arvioksi.
+- Hallintapaneelissa ja julkisella seurantasivulla valmis siirto, jonka pankki palautti tai peruutti, näyttää ilmoituksen. Sen tila pysyy Completed-tilassa.
+
+### Korjattu
+- Luodut pankkitilit lähettävät `account.status_changed`-tapahtuman, kun ne valmistuvat. Katso [Webhookit](/fi/integration/webhooks).
+- Moniosaisen asiakirjalatauksen yrittäminen uudelleen samalla idempotenssiavaimella ja tiedostolla ei enää palauta `409`.
+- Hallintapaneelin tapahtumasuodattimet yhdistävät pankkimaksut niiden pankkirailiin ja kattavat jokaisen kryptoverkon. Haku tarkalla tunnisteella löytää pienet talletukset.
+
+</Update>
+
 <Update label="2026-11-04" description="v3" tags={["Lisätty"]}>
 
 ### Lisätty

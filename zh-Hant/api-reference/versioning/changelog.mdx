@@ -8,6 +8,51 @@ description: "依日期記錄 Swipelux API 各版本的新增功能、重大變�
 
 若要將既有整合從較早版本升級，請參閱[遷移至 v3](/zh-Hant/api-reference/versioning/migrate-to-v3)。
 
+<Update label="2026-11-16" description="v3" tags={["新增","變更","修正"]}>
+
+### 新增
+- `GET /v3/customers` 接受 `pooledCapabilityIncludeWait`、`pooledCapabilityExcludeWait`、`namedCapabilityIncludeWait` 與 `namedCapabilityExcludeWait`。請將每個參數搭配對應的 `pooledCapabilityStatus` 或 `namedCapabilityStatus` 篩選條件使用。`IncludeWait` 會加入處理方式為 `wait` 的受限能力，`ExcludeWait` 會移除處理方式為 `wait` 的能力。兩者皆為 `true` 時以 `ExcludeWait` 為準。這些篩選條件需要 `accounts:read` 或 `rails:read`。請參閱[客戶](/zh-Hant/integration/onboarding/customers#filter-customers-by-capability-readiness)。
+- 透過 `include=capabilities` 傳回的能力摘要可能附有 `statusReason.resolution`：`wait`、`contact_support` 或 `none`。若原因取決於任務，請讀取該能力。
+- 文件要求可能傳回長度為 3 到 50 個字元的 `constraints.idNumber`。當其 `required` 為 `true` 時，請在 `documentMetadata` 中附上證件號碼。當文件需要時，Dashboard 會要求填寫證件號碼與簽發國家。
+- `PATCH /v3/customers/{customerId}/accounts/{accountId}` 在非 USD 的外部 SWIFT 帳戶上接受 `bankAddress`（最多 105 個字元）、`bankCity` 與 `bankPostalCode`。外幣 SWIFT 出金需要 `bankAddress` 與 `bankCity`。在 USD 帳戶上變更這些欄位會傳回 `409 conflict`。當待處理的報價或出金正在使用該帳戶時，變更會傳回 `409 account_has_active_transfers`，您可以重試。
+- 在 Dashboard 中，KYB 接受 WebP、HEIF 與 HEIC 文件。
+
+### 變更
+- 當發行帳戶的 SWIFT 代碼、路由號碼或帳號變更時，Swipelux 會傳送 [`account.details_changed`](/api-reference/webhooks/account-details-changed)。`data.object` 是目前的帳戶，`data.previous` 只包含 `routingVersion`。請參閱[發行銀行帳戶](/zh-Hant/integration/issue-bank-account)。
+- 封存作為未封存銀行帳戶結算錢包的錢包帳戶，會傳回 `409 account_has_dependent_accounts`。請使用 `PATCH` 將銀行帳戶的結算移至其他錢包，或先封存該銀行帳戶。
+- `PATCH /v3/customers/{customerId}/recipients/{recipientId}` 會以 `400 validation_error` 拒絕另一種收款人類型的欄位，並為每個欄位傳回 `invalid_field` 錯誤：個人上的 `companyName` 與 `businessIndustry`，企業上的 `firstName` 與 `lastName`。
+- 當相同的請求仍在執行時，`POST /v3/customers/{customerId}/tasks/{taskId}/withdrawals` 也會傳回附有 `retryable: true` 的 `409 idempotency_request_in_progress`。
+- 在 Dashboard 中，遭拒絕的客戶刪除會列出阻擋刪除的資源，收款人國家使用國家選擇器，個人資料文字輸入上限為 256 個字元。從客戶頁面或 Balances 建立出金後，會開啟其詳細資料。
+
+### 修正
+- Swipelux 不再於單次更新中為同一能力傳送兩個 `capability.status_changed` 事件，且在狀態最終回到起始狀態時不傳送任何事件。
+- 當帳戶在佈建期間遭拒絕時，`account.status_changed` 會回報 `previous.state: "provisioning"`，而非 `"in_review"`。
+
+</Update>
+
+<Update label="2026-11-09" description="v3" tags={["新增","變更","修正"]}>
+
+### 新增
+- 當銀行要求為轉給第三方的 USD SWIFT 出金提供證明文件時，Swipelux 會在該轉帳上開啟 `category: "transaction_rfi"` 的任務。該任務會要求一份文件及其參考號。請使用既有的任務提交端點回答，Swipelux 會將回答轉送給銀行。若出金在未獲銀行核准的情況下完成、失敗或遭退款，Swipelux 會取消該任務。請參閱[報價與轉帳](/zh-Hant/integration/quotes-and-transfers#supporting-documents-for-swift-payouts)。
+- 所有銀行的發行 SWIFT 帳戶都會在 `details.accountHolderAddress` 中傳回受款人的郵寄地址。先前只有 Lead Bank 與 BMO 的帳戶會傳回。它不同於 `details.bankAddress`，後者是收款銀行的地址。請參閱[發行銀行帳戶](/zh-Hant/integration/issue-bank-account)。
+- 以帳戶幣別存入非 USD SWIFT 帳戶的款項會以 USDC 結算至結算錢包。轉帳的 `amounts.in` 顯示以帳戶幣別收到的金額，`amounts.out` 顯示送達的 USDC。先前這些存款會被暫扣審核，且沒有轉帳或 webhook。
+- 文件要求可能傳回 `constraints.issuingCountryRequired: true`。為其提交的每份文件都必須在 `documentMetadata` 中包含 `issuingCountry`。
+
+### 變更
+- 在第一個相同請求仍在執行時到達的重試，會在能力申請、文件、收款人及其目的地、規則、webhooks、報價、轉帳、轉帳取消與驗證工作階段共用權杖上傳回附有 `retryable: true` 的 `409 idempotency_request_in_progress`。先前這些路由傳回 `idempotency_conflict`。以不同本文重複使用金鑰仍會傳回 `idempotency_conflict`。請參閱[錯誤與重試](/integration/errors#idempotency-request-in-progress)。
+- 銀行入金報價現在會傳回具體錯誤，而非一般失敗：`400 quote_amount_out_of_range`、`400 quote_volume_limit_exceeded`、`400 quote_destination_network_unsupported`、`503 quote_temporarily_unavailable`（可重試）或 `502 quote_failed`。
+- 當銀行審核中的申請仰賴某份文件時，`DELETE /v3/customers/{customerId}/documents/{documentId}` 會傳回 `409 document_in_use`。請在審核結束或申請取消後再封存。
+- 結算錢包為 USDT 的非 USD 銀行帳戶，現在在建立與更新時會傳回 `400 invalid_settlement_target`，即使沒有明確的 `settlement.currency`。請參閱[選擇結算幣別](/zh-Hant/integration/issue-bank-account#choose-the-settlement-currency)。
+- 在 Dashboard 中，出金審核會將外幣收款金額標示為估計值。
+- 在 Dashboard 與公開追蹤頁面上，遭銀行退回或撤銷的已完成轉帳會顯示提示。其狀態仍為 Completed。
+
+### 修正
+- 發行銀行帳戶在變為就緒時會傳送 `account.status_changed`。請參閱[Webhook](/zh-Hant/integration/webhooks)。
+- 使用相同的冪等金鑰與檔案重試分段文件上傳，不再傳回 `409`。
+- Dashboard 的交易篩選條件會依銀行通道比對銀行出金，並涵蓋所有加密網路。以精確 ID 搜尋可找到小額入金。
+
+</Update>
+
 <Update label="2026-11-04" description="v3" tags={["新增"]}>
 
 ### 新增

@@ -8,6 +8,51 @@ Aquesta pàgina llista els canvis datats de l'API de Swipelux. Cada entrada indi
 
 Per actualitzar una integració existent des d'una versió anterior, consulta [Migrar a v3](/ca/api-reference/versioning/migrate-to-v3).
 
+<Update label="2026-11-16" description="v3" tags={["Afegit","Canviat","Corregit"]}>
+
+### Afegit
+- `GET /v3/customers` accepta `pooledCapabilityIncludeWait`, `pooledCapabilityExcludeWait`, `namedCapabilityIncludeWait` i `namedCapabilityExcludeWait`. Utilitza cadascun amb el filtre `pooledCapabilityStatus` o `namedCapabilityStatus` corresponent. `IncludeWait` afegeix capacitats restringides amb resolució `wait`, i `ExcludeWait` elimina les capacitats amb resolució `wait`. Quan tots dos són `true`, preval `ExcludeWait`. Els filtres necessiten `accounts:read` o `rails:read`. Consulta [Clients](/ca/integration/onboarding/customers#filter-customers-by-capability-readiness).
+- Els resums de capacitats retornats amb `include=capabilities` poden incloure `statusReason.resolution`: `wait`, `contact_support` o `none`. Per a un motiu que depèn de tasques, llegeix la capacitat.
+- Un requisit de document pot retornar `constraints.idNumber` amb una longitud de 3 a 50 caràcters. Quan el seu `required` és `true`, inclou el número d'identificació a `documentMetadata`. El tauler demana el número d'identificació i el país emissor quan un document els necessita.
+- `PATCH /v3/customers/{customerId}/accounts/{accountId}` accepta `bankAddress` (fins a 105 caràcters), `bankCity` i `bankPostalCode` en un compte SWIFT extern que no és en USD. Els pagaments SWIFT en moneda estrangera necessiten `bankAddress` i `bankCity`. Canviar aquests camps en un compte en USD retorna `409 conflict`. Mentre una cotització o un pagament pendent utilitza el compte, un canvi retorna `409 account_has_active_transfers`, que pots tornar a provar.
+- Al tauler, KYB accepta documents WebP, HEIF i HEIC.
+
+### Canviat
+- Swipelux envia [`account.details_changed`](/api-reference/webhooks/account-details-changed) quan canvien el codi SWIFT, el número de ruta o el número de compte d'un compte emès. `data.object` és el compte actual, i `data.previous` només conté `routingVersion`. Consulta [Emet un compte bancari](/ca/integration/issue-bank-account).
+- Arxivar un compte de cartera que és la cartera de liquidació d'un compte bancari no arxivat retorna `409 account_has_dependent_accounts`. Trasllada la liquidació del compte bancari a una altra cartera amb `PATCH`, o arxiva primer el compte bancari.
+- `PATCH /v3/customers/{customerId}/recipients/{recipientId}` rebutja els camps de l'altre tipus de destinatari amb `400 validation_error` i un error `invalid_field` per a cadascun: `companyName` i `businessIndustry` en una persona física, `firstName` i `lastName` en una empresa.
+- `POST /v3/customers/{customerId}/tasks/{taskId}/withdrawals` també retorna `409 idempotency_request_in_progress` amb `retryable: true` mentre una petició idèntica encara s'executa.
+- Al tauler, una eliminació de client rebutjada llista els recursos que la bloquegen, el país del destinatari utilitza un selector de país i els camps de text del perfil es limiten a 256 caràcters. Després de crear un pagament des de la pàgina d'un client o des de Balances, se n'obren els detalls.
+
+### Corregit
+- Swipelux ja no envia dos esdeveniments `capability.status_changed` per a una capacitat en una sola actualització, i no n'envia cap quan l'estat acaba on va començar.
+- Quan un compte es rebutja mentre encara s'està aprovisionant, `account.status_changed` informa `previous.state: "provisioning"` en lloc de `"in_review"`.
+
+</Update>
+
+<Update label="2026-11-09" description="v3" tags={["Afegit","Canviat","Corregit"]}>
+
+### Afegit
+- Quan el banc demana un document justificatiu en un pagament SWIFT en USD a un tercer, Swipelux obre una tasca amb `category: "transaction_rfi"` a la transferència. Demana un document i la seva referència. Respon-la amb els endpoints d'enviament de tasques existents, i Swipelux reenvia la resposta al banc. Swipelux cancel·la la tasca si el pagament es completa sense l'aprovació del banc, falla o es reemborsa. Consulta [Cotitzacions i transferències](/ca/integration/quotes-and-transfers#supporting-documents-for-swift-payouts).
+- Els comptes SWIFT emesos a qualsevol banc retornen l'adreça postal del beneficiari a `details.accountHolderAddress`. Abans, només la retornaven els comptes de Lead Bank i BMO. És diferent de `details.bankAddress`, l'adreça del banc receptor. Consulta [Emet un compte bancari](/ca/integration/issue-bank-account).
+- Un dipòsit en un compte SWIFT que no és en USD, en la moneda del compte, es liquida a la cartera de liquidació com a USDC. `amounts.in` de la transferència mostra l'import rebut en la moneda del compte, i `amounts.out` mostra els USDC lliurats. Abans, aquests dipòsits es retenien per a revisió sense transferència ni webhook.
+- Un requisit de document pot retornar `constraints.issuingCountryRequired: true`. Cada document enviat per a aquest requisit ha d'incloure `issuingCountry` a `documentMetadata`.
+
+### Canviat
+- Un reintent que arriba mentre la primera petició idèntica encara s'executa retorna `409 idempotency_request_in_progress` amb `retryable: true` en peticions de capacitats, documents, destinataris i les seves destinacions, regles, webhooks, cotitzacions, transferències, cancel·lacions de transferències i tokens compartits de sessions de verificació. Abans, aquestes rutes retornaven `idempotency_conflict`. Reutilitzar una clau amb un cos diferent continua retornant `idempotency_conflict`. Consulta [Errors i reintents](/integration/errors#idempotency-request-in-progress).
+- Les cotitzacions de pay-in bancari retornen errors específics en lloc d'una fallada genèrica: `400 quote_amount_out_of_range`, `400 quote_volume_limit_exceeded`, `400 quote_destination_network_unsupported`, `503 quote_temporarily_unavailable` (es pot reintentar) o `502 quote_failed`.
+- `DELETE /v3/customers/{customerId}/documents/{documentId}` retorna `409 document_in_use` mentre una sol·licitud en revisió bancària depèn del document. Arxiva'l quan acabi la revisió o es cancel·li la sol·licitud.
+- Un compte bancari que no és en USD amb una cartera de liquidació en USDT ara retorna `400 invalid_settlement_target` en crear-lo i actualitzar-lo, fins i tot sense un `settlement.currency` explícit. Consulta [Escull la moneda de liquidació](/ca/integration/issue-bank-account#choose-the-settlement-currency).
+- Al tauler, la revisió del pagament marca com a estimació un import rebut en moneda estrangera.
+- Al tauler i a la pàgina pública de seguiment, una transferència completada que el banc ha retornat o revertit mostra un avís. El seu estat continua sent Completed.
+
+### Corregit
+- Els comptes bancaris emesos envien `account.status_changed` quan passen a estar preparats. Consulta [Webhooks](/ca/integration/webhooks).
+- Tornar a provar una pujada de document multipart amb la mateixa clau d'idempotència i el mateix fitxer ja no retorna `409`.
+- Els filtres de transaccions del tauler associen els pagaments bancaris amb el seu rail bancari i cobreixen totes les xarxes cripto. Cercar per ID exacte troba pay-ins petits.
+
+</Update>
+
 <Update label="2026-11-04" description="v3" tags={["Afegit"]}>
 
 ### Afegit

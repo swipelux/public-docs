@@ -8,6 +8,51 @@ Tato stránka uvádí datované změny ve Swipelux API. Každá položka pozname
 
 Pro upgrade existující integrace z dřívější verze viz [Migrace na v3](/cs/api-reference/versioning/migrate-to-v3).
 
+<Update label="2026-11-16" description="v3" tags={["Přidáno","Změněno","Opraveno"]}>
+
+### Přidáno
+- `GET /v3/customers` přijímá `pooledCapabilityIncludeWait`, `pooledCapabilityExcludeWait`, `namedCapabilityIncludeWait` a `namedCapabilityExcludeWait`. Každý z nich používejte s odpovídajícím filtrem `pooledCapabilityStatus` nebo `namedCapabilityStatus`. `IncludeWait` přidává omezené capabilities, jejichž řešení je `wait`, a `ExcludeWait` odebírá capabilities, jejichž řešení je `wait`. Když jsou oba `true`, má přednost `ExcludeWait`. Filtry vyžadují `accounts:read` nebo `rails:read`. Viz [Zákazníci](/cs/integration/onboarding/customers#filter-customers-by-capability-readiness).
+- Souhrny capabilities vrácené s `include=capabilities` mohou obsahovat `statusReason.resolution`: `wait`, `contact_support` nebo `none`. U důvodu, který závisí na úkolech, načtěte capability.
+- Požadavek na dokument může vrátit `constraints.idNumber` s délkou 3 až 50 znaků. Když je jeho `required` `true`, uveďte číslo dokladu v `documentMetadata`. Dashboard se ptá na číslo dokladu a vydávající zemi, když je dokument potřebuje.
+- `PATCH /v3/customers/{customerId}/accounts/{accountId}` přijímá `bankAddress` (až 105 znaků), `bankCity` a `bankPostalCode` u externího účtu SWIFT, který není v USD. Výplaty SWIFT v cizí měně vyžadují `bankAddress` a `bankCity`. Změna těchto polí u účtu v USD vrátí `409 conflict`. Dokud účet používá čekající quote nebo výplata, změna vrátí `409 account_has_active_transfers`, kterou můžete zopakovat.
+- V dashboardu KYB přijímá dokumenty WebP, HEIF a HEIC.
+
+### Změněno
+- Swipelux odešle [`account.details_changed`](/api-reference/webhooks/account-details-changed), když se změní kód SWIFT, směrovací číslo nebo číslo účtu vydaného účtu. `data.object` je aktuální účet a `data.previous` obsahuje pouze `routingVersion`. Viz [Vydat bankovní účet](/cs/integration/issue-bank-account).
+- Archivace účtu peněženky, který je vypořádací peněženkou nearchivovaného bankovního účtu, vrátí `409 account_has_dependent_accounts`. Přesuňte vypořádání bankovního účtu na jinou peněženku pomocí `PATCH`, nebo nejprve archivujte bankovní účet.
+- `PATCH /v3/customers/{customerId}/recipients/{recipientId}` odmítá pole druhého typu příjemce s `400 validation_error` a chybou `invalid_field` pro každé z nich: `companyName` a `businessIndustry` u fyzické osoby, `firstName` a `lastName` u firmy.
+- `POST /v3/customers/{customerId}/tasks/{taskId}/withdrawals` také vrací `409 idempotency_request_in_progress` s `retryable: true`, dokud stále běží totožný požadavek.
+- V dashboardu odmítnuté smazání zákazníka uvádí prostředky, které jej blokují, země příjemce používá výběr země a textová pole profilu jsou omezena na 256 znaků. Po vytvoření výplaty ze stránky zákazníka nebo z Balances se otevřou její podrobnosti.
+
+### Opraveno
+- Swipelux již neposílá dvě události `capability.status_changed` pro jednu capability v jedné aktualizaci a neposílá žádnou, když stav skončí tam, kde začal.
+- Když je účet zamítnut, zatímco se ještě zřizuje, `account.status_changed` hlásí `previous.state: "provisioning"` místo `"in_review"`.
+
+</Update>
+
+<Update label="2026-11-09" description="v3" tags={["Přidáno","Změněno","Opraveno"]}>
+
+### Přidáno
+- Když banka u výplaty SWIFT v USD třetí straně požádá o podpůrný dokument, Swipelux u převodu otevře úkol s `category: "transaction_rfi"`. Požaduje jeden dokument a jeho referenci. Odpovězte na něj pomocí stávajících endpointů pro odeslání úkolů a Swipelux odpověď předá bance. Swipelux úkol zruší, pokud se výplata dokončí bez schválení banky, selže nebo je vrácena. Viz [Quotes a převody](/cs/integration/quotes-and-transfers#supporting-documents-for-swift-payouts).
+- Vydané účty SWIFT u všech bank vracejí poštovní adresu příjemce v `details.accountHolderAddress`. Dříve ji vracely jen účty u Lead Bank a BMO. Liší se od `details.bankAddress`, adresy přijímající banky. Viz [Vydat bankovní účet](/cs/integration/issue-bank-account).
+- Vklad na účet SWIFT, který není v USD, v měně účtu se vypořádá do vypořádací peněženky jako USDC. `amounts.in` převodu zobrazuje částku přijatou v měně účtu a `amounts.out` zobrazuje doručené USDC. Dříve byly tyto vklady zadrženy k posouzení bez převodu nebo webhooku.
+- Požadavek na dokument může vrátit `constraints.issuingCountryRequired: true`. Každý dokument odeslaný k tomuto požadavku musí obsahovat `issuingCountry` v `documentMetadata`.
+
+### Změněno
+- Opakování, které dorazí, zatímco první totožný požadavek stále běží, vrací `409 idempotency_request_in_progress` s `retryable: true` u požadavků na capabilities, dokumentů, příjemců a jejich cílů, pravidel, webhooků, quotes, převodů, zrušení převodů a sdílecích tokenů ověřovacích relací. Dříve tyto trasy vracely `idempotency_conflict`. Opětovné použití klíče s jiným tělem stále vrací `idempotency_conflict`. Viz [Chyby a opakování](/integration/errors#idempotency-request-in-progress).
+- Quotes bankovních pay-inů vracejí místo obecného selhání konkrétní chyby: `400 quote_amount_out_of_range`, `400 quote_volume_limit_exceeded`, `400 quote_destination_network_unsupported`, `503 quote_temporarily_unavailable` (opakovatelná) nebo `502 quote_failed`.
+- `DELETE /v3/customers/{customerId}/documents/{documentId}` vrací `409 document_in_use`, dokud na dokumentu závisí aplikace v bankovním posuzování. Archivujte jej po dokončení posuzování nebo po zrušení aplikace.
+- Bankovní účet, který není v USD a jehož vypořádací peněženka je USDT, nyní při vytvoření i aktualizaci vrací `400 invalid_settlement_target`, a to i bez explicitního `settlement.currency`. Viz [Zvolte měnu vypořádání](/cs/integration/issue-bank-account#choose-the-settlement-currency).
+- V dashboardu kontrola výplaty označuje přijímanou částku v cizí měně jako odhad.
+- V dashboardu a na veřejné sledovací stránce zobrazuje dokončený převod, který banka vrátila nebo stornovala, upozornění. Jeho stav zůstává Completed.
+
+### Opraveno
+- Vydané bankovní účty odesílají `account.status_changed`, když se stanou připravenými. Viz [Webhooky](/cs/integration/webhooks).
+- Opakování vícedílného nahrání dokumentu se stejným idempotentním klíčem a souborem již nevrací `409`.
+- Filtry transakcí v dashboardu přiřazují bankovní výplaty k jejich bankovnímu railu a pokrývají všechny kryptoměnové sítě. Vyhledávání podle přesného ID najde malé pay-iny.
+
+</Update>
+
 <Update label="2026-11-04" description="v3" tags={["Přidáno"]}>
 
 ### Přidáno
