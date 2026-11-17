@@ -36,15 +36,31 @@ description: "Swipelux API के संस्करणों में पर�
 
 </Update>
 
-<Update label="2026-10-12" description="v3" tags={["जोड़ा गया","बदला गया"]}>
+<Update label="2026-10-12" description="v3" tags={["जोड़ा गया","बदला गया","ठीक किया गया"]}>
 
 ### जोड़ा गया {#added}
 - `POST /v3/customers/{customerId}/tasks/{taskId}/submissions` एक वैकल्पिक `allowPartial: true` स्वीकार करता है। तब Swipelux valid answers store करता है और `refusedAnswers` के साथ `201` लौटाता है, जहाँ हर entry में `requirementId`, `code`, `pointer` और `message` होते हैं। `code` `invalid`, `absence_conflicts_with_profile`, `invalid_document_reference` या `depends_on_refused_answer` होता है, और आगे और codes जोड़े जा सकते हैं। जब कोई भी answer रखा नहीं जा सकता, तो response `400 validation_error` होता है और कुछ भी store नहीं होता। `allowPartial` यह नहीं बदलता कि submission को किन requirements का उत्तर देना है, और इसके बिना behavior अपरिवर्तित रहता है। [`allowPartial` के साथ valid answers रखें](/hi/integration/onboarding/capabilities-and-requirements#keep-valid-answers-with-allowpartial) देखें।
 - `POST /v3/customers/{customerId}/tasks/{taskId}/withdrawals` review की प्रतीक्षा कर रहे submission को वापस लेता है ताकि customer उसे सुधार सके। इसके लिए `Idempotency-Key` आवश्यक है। Submission के answers `action_required` पर लौट आते हैं, और अगला submission एक नया `remediationRound` शुरू करता है। Withdrawal `409 task_not_in_review` लौटाता है जब ठीक एक submission review की प्रतीक्षा में न हो या task की deadline निकल चुकी हो, और `409 submission_already_forwarded` लौटाता है जब bank task को सीधे review करता है या Swipelux submission को पहले ही review के लिए आगे भेज चुका हो। [Review की प्रतीक्षा कर रहे submission को withdraw करें](/hi/integration/onboarding/capabilities-and-requirements#withdraw-a-submission-awaiting-review) देखें।
 - Document resources में `contentSha256` शामिल है, जो stored file का SHA-256 digest है, `sha256:` के बाद lowercase hex digest के रूप में, या digests record होने से पहले stored documents के लिए `null`। पहले से stored file के re-upload का पता लगाने के लिए इसे किसी file के digest से compare करें। [Documents upload करें](/hi/integration/onboarding/capabilities-and-requirements#upload-documents) देखें।
+- Merchant panel का recipient form अब customer की matching access ready होते ही SPEI (Mexico, MXN), Pix और Pix Safe accounts जोड़ता है, और **Pay out** drawer SPEI accounts को भुगतान कर सकता है। [Recipients और destinations](/hi/integration/recipients) देखें।
+- Public task form में, review में मौजूद व्यक्ति के लिए **Edit details** उपलब्ध है। यह व्यक्ति को review से वापस लाता है ताकि उनकी details को फिर से जोड़ने के बजाय सुधारा जा सके। उनके answers और documents फिर से दर्ज करने होंगे।
 
 ### बदला गया {#changed}
 - Submission `outcome` में अब `withdrawn` जुड़ गया है, उस submission के लिए जिसे customer ने किसी भी review decision से पहले वापस ले लिया। ऐसे किसी भी client को update करें जो unknown outcomes को reject करता है।
+- Accepted या in-review document अब किसी अन्य bank के application पर matching document request का उत्तर देता है, भले ही banks request को अलग शब्दों में लिखें। Customers एक ही file कम बार upload करते हैं। Request के `maxIssueAgeDays` से पुरानी file, जैसे 90 दिनों से पुराना proof of address, दोबारा उपयोग नहीं होती।
+- Fiat recipient destinations को अब अपने method के लिए `ready` capability चाहिए, उन customers के लिए भी जिनका bank access capabilities से पहले set up हुआ था। अन्यथा `POST /v3/customers/{customerId}/recipients/{recipientId}/destinations` `409 rail_not_ready` लौटाता है। Wallet destinations अपरिवर्तित हैं। [Recipients और destinations](/hi/integration/recipients) देखें।
+- ऐसे method के लिए bank account issue करना जिसकी customer के पास capability नहीं है, `409 capability_not_ready` लौटाता है, reason `route_selection_required` के साथ जब request `institution` छोड़ देता है और `no_ready_route` के साथ जब वह कोई institution बताता है। दोनों `capabilities` में वे capabilities सूचीबद्ध करते हैं जो account issue कर सकती हैं। `ambiguous_route_scope` और `rail_not_ready` reasons अब नहीं लौटाए जाते। [Bank account जारी करें](/hi/integration/issue-bank-account) देखें।
+- ऐसे `Idempotency-Key` के साथ retry किया गया quote या account request, जिसका पहले वाला route अब आगे नहीं बढ़ सकता, `retryable: true` के साथ `409 capability_not_ready` लौटाता है। इसे नए `Idempotency-Key` के साथ फिर से भेजें।
+- Public task forms कुछ answers refuse होने पर भी valid answers रखते हैं, और हर refused answer के पास reason दिखाते हैं। Review में मौजूद लोग अपने status के साथ सूचीबद्ध रहते हैं।
+- Public task forms individuals के लिए identity verification form के अंदर ही चलाते हैं। Merchant panel में, hosted verification देने वाला individual का task केवल उसी verification से link करता है, और **Documents** section अब individual customers के लिए upload नहीं देता।
+- Merchant panel का customer **Profile** tab एक बार में एक section save करता है, और किसी field को खाली करने पर अब वह सच में clear होता है।
+
+### ठीक किया गया {#fixed}
+- Lead Bank payout quote जिसे bank refuse करता है, `500` के बजाय `400 quote_failed` लौटाता है, और जिसका bank उत्तर नहीं दे सकता, वह `503 quote_temporarily_unavailable` लौटाता है, जिसे आप retry कर सकते हैं। [Quotes और transfers](/hi/integration/quotes-and-transfers) देखें।
+- Lead Bank owner task submission अब `500` नहीं लौटाता जब कोई अन्य bank उसी address को review कर रहा हो।
+- Individuals के लिए, identity verification पूरा होने के बाद माँगे गए documents एक नया hosted verification session खोलते हैं।
+- Browser के page translate करने पर भी merchant panel forms काम करते रहते हैं, और Swipelux release के बाद customer tabs recover हो जाते हैं।
+- KYB form fields केवल तब errors दिखाते हैं जब आप किसी field से बाहर निकलते हैं।
 
 </Update>
 
