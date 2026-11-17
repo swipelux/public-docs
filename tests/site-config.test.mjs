@@ -42,6 +42,7 @@ const INTEGRATION_GROUPS = [
       "integration/authentication",
       "integration/errors",
       "integration/sandbox",
+      "integration/ai-agents",
     ],
   },
   {
@@ -270,7 +271,9 @@ const ENGLISH_NAVIGATION = {
 
 const LOCALIZED_INTEGRATION_GROUPS = INTEGRATION_GROUPS.map((group) => ({
   ...group,
-  pages: group.pages.filter((page) => page !== "integration/errors"),
+  pages: group.pages.filter(
+    (page) => page !== "integration/errors" && page !== "integration/ai-agents",
+  ),
 }));
 
 const LOCALIZED_KNOWLEDGE_BASE_GROUPS = KNOWLEDGE_BASE_GROUPS.map((group) => ({
@@ -648,7 +651,7 @@ test("makes API Reference the sole owner of openapi.json", () => {
 });
 
 test("copies the exact approved redirect pairs without internal metadata", () => {
-  assert.equal(redirectInventory.length, 177);
+  assert.equal(redirectInventory.length, 190);
   assert.deepEqual(
     config.redirects,
     redirectInventory.map(({ source, destination }) => ({

@@ -8,17 +8,35 @@ This page lists dated changes to the Swipelux API. Each entry notes the affected
 
 For upgrading an existing integration from an earlier version, see [Migrate to v3](/api-reference/versioning/migrate-to-v3).
 
+<Update label="2026-11-02" description="v3" tags={["Changed"]}>
+
+### Changed
+- Swipelux re-checks saved webhook destinations daily. If an endpoint's hostname is now refused or resolves to a refused address, Swipelux pauses the endpoint and sets `disabled: true`. A paused endpoint stays paused when you change only its `url`; send a passing `url` with `disabled: false` to resume it. See [Webhooks](/integration/webhooks#use-a-public-destination-url).
+
+</Update>
+
 <Update label="2026-11-01" description="v3" tags={["Added"]}>
 
 ### Added
 - Every entry from [`GET /v3/customers/{customerId}/capabilities/supported`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-supported) includes `unavailableInstitutions`. It lists the banks that offer the capability variant but do not accept this customer, each with an `id`, a `name`, and `reasons` in `statusReason` shape. Current reason codes are `jurisdiction_unsupported`, `legal_form_unsupported`, and `customer_type_unsupported`. The field is `[]` on pooled and non-bank entries, and a bank never appears in both `institutions` and `unavailableInstitutions`. Naming an unavailable bank in a capability request still returns `422 capability_institutions_unsupported`. See [Capabilities and requirements](/integration/onboarding/capabilities-and-requirements#show-why-a-bank-is-unavailable).
+- Customers with a ready Lead Bank (`lead_bank`) `swift_named` capability can open issued SWIFT accounts in AUD, CAD, CHF, CZK, DKK, EUR, GBP, HKD, HUF, JPY, MXN, NOK, NZD, PLN, SEK, SGD, and ZAR, one account per currency. The supported-capability response lists them on the `lead_bank` entry of `swift_named` with `institution: "bmo"`. Send that `institution` with the currency. BMO Bank N.A. (`bmo`, BIC `HATRUS44`) is the bank reported on these accounts, and `GET /v3/institutions` lists it. The bank decides which currencies each customer can open, and an account in a currency it doesn't offer ends `rejected` with `statusReason.code: currency_unavailable`. Naming `lead_bank` with one of these currencies returns `400 validation_error` that names `bmo`. Naming `bmo` with USD or a method other than `swift` returns `400 validation_error`. A capability request or task preview that names `bmo` returns `422 capability_institutions_unsupported`. See [Issue a bank account](/integration/issue-bank-account#choose-the-bank).
 
 </Update>
 
-<Update label="2026-10-30" description="v3" tags={["Added"]}>
+<Update label="2026-10-30" description="v3" tags={["Added","Changed"]}>
 
 ### Added
-- Authenticated requests are rate-limited per API key, per integrating business and per client IP address. A request over a limit returns `429 rate_limited` with `retryable: true` and a `Retry-After` header that gives the seconds to wait before retrying. Integrating businesses that are not yet approved have lower limits. Every authenticated operation in the API reference lists the `429` response. Repeated failed authentications from one IP address also return `429` once over their limit, while valid API keys sent from that address keep working.
+- Authenticated requests are rate-limited per API key, per integrating business and per client IP address. A request over a limit returns `429 rate_limited` with `retryable: true` and a `Retry-After` header that gives the seconds to wait before retrying. Integrating businesses that are not yet approved have lower limits. Every authenticated operation in the API reference lists the `429` response. Repeated failed authentications from one IP address also return `429` once over their limit, and a valid API key sent from that address can get the same response until the limit recovers, so retry it after the `Retry-After` delay. See [Errors and retries](/integration/errors#rate-limited).
+
+### Changed
+- Swipelux deactivated legacy API keys that have no public part, such as keys without dots. Requests with them return `401 unauthorized`.
+
+</Update>
+
+<Update label="2026-10-29" description="v3" tags={["Changed"]}>
+
+### Changed
+- Until your integrating business KYB is approved, Swipelux limits creations in any rolling 24 hours across all your spaces: 10 API keys, 10 webhook endpoints, 10 rules, 250 customers, 20 `sumsub_share_token` exports, and 10 identity verification imports. This replaces the limit of 10 active API keys per live space; revoking a key does not free a slot. A creation over a limit returns `422 merchant_kyb_not_approved`; the dashboard returns a plain `422`. Failed creations and idempotent replays do not count. These limits, and the limit of 20 webhook URL changes per hour, also apply in sandbox spaces unless you have a live space that is approved or does not require KYB. See [Daily creation limits](/integration/go-live#daily-creation-limits).
 
 </Update>
 
@@ -26,17 +44,45 @@ For upgrading an existing integration from an earlier version, see [Migrate to v
 
 ### Added
 - Webhook endpoints include `disabled`, which is `true` while deliveries to the endpoint are paused. Swipelux also pauses an endpoint after repeated delivery failures. Send `disabled: true` in [`PATCH /v3/webhooks/{webhookId}`](/api-reference/webhooks/patch-v3-webhooks-by-webhook-id) to pause deliveries and `disabled: false` to resume them. Resuming checks the destination URL again and returns `400` if it no longer passes, so the endpoint stays paused.
+- Swipelux can suspend an integrating business. While it is suspended, every request made with any of its API keys returns `403 merchant_suspended` with `retryable: false`, and Swipelux holds its webhook deliveries, rule executions, and applications to banks. Nothing is deleted or revoked, so API keys, webhook endpoints, and rules work again once Swipelux lifts the suspension. Contact Swipelux support to resolve a suspension. See [Errors and retries](/integration/errors#merchant-suspended).
 
 ### Changed
 - `POST /v3/customers/{customerId}/export` with `format: sumsub_share_token` returns `422 kyc_provider_rejected` with `retryable: false` when the identity verification provider refuses to create the share token, for example for an unknown `forClientId`, instead of `502 request_failed`. The response carries a fixed Swipelux message and never repeats the provider's error text, so check the request before retrying. Other provider failures still return `502 request_failed`, which is retryable.
 - The portal from `GET /v3/webhooks/portal` no longer creates, edits, pauses, or deletes endpoints. With an API key that has `webhooks:write`, it still shows and rotates the endpoint signing secret, retries deliveries, and replays them. Create endpoints with `POST /v3/webhooks`, change or pause them with `PATCH /v3/webhooks/{webhookId}`, and delete them with `DELETE /v3/webhooks/{webhookId}`. See [Webhooks](/integration/webhooks).
+- `POST /v3/webhooks` and `PATCH /v3/webhooks/{webhookId}` accept only destinations whose every resolved address is globally routable unicast. They return `400 validation_error` for addresses in IANA special-purpose ranges, multicast addresses, IPv6 transition forms that carry a refused IPv4 address, hostnames that do not resolve, `localhost`, single-label hostnames, and hostnames ending in `.localhost`, `.local`, `.localdomain`, `.internal`, or `.home.arpa`.
 
 </Update>
 
-<Update label="2026-10-25" description="v3" tags={["Changed"]}>
+<Update label="2026-10-26" description="v3" tags={["Added","Changed","Fixed"]}>
+
+### Added
+- In the merchant panel, **Settings** > **Customer pages** lets owners and admins upload a company logo (PNG, JPG, or WebP, up to 512 KB) and set an `https://` return URL for each space. The logo replaces the Swipelux wordmark on your customers' hosted terms pages in live spaces. When the space has a return URL, the completed terms page offers **Return to the app**.
+
+### Changed
+- The hosted terms page has a new design. Every page of a sandbox journey shows a **Sandbox** badge.
+- In a live space that requires KYB, the merchant panel keeps **Customers**, **Balances**, and **Transactions** locked until your KYB is approved. Home shows the steps to go live, and a customer's **Bank accounts** section lists one row per bank with its currencies and shows the bank details once the bank approves.
+- `POST /v3/quotes` for a pay-in returns `422 capability_direction_unsupported` with `retryable: false`, instead of a retryable `503 rail_temporarily_unavailable`, when no bank serving the capability offers pay-in quotes, as with `ach_named` and `wire_named` at Lead Bank (`lead_bank`). A retry with the same `Idempotency-Key` replays the `422`.
+- `DELETE /v3/customers/{customerId}` returns `409 merchant_kyb_subject_archive_refused` with `retryable: false` for your business's KYB customer. Ask Swipelux support to move your KYB to another customer first.
+
+### Fixed
+- When a hosted verification goes into review and it was the task's last open item, the capability becomes `pending` with `statusReason.code: information_in_review`, and an application that was `action_required` becomes `in_review`. Swipelux sends `capability.status_changed` and `application.status_changed` for these changes. Before, both kept their earlier status and Swipelux sent no webhook.
+- In a task submission, an object answer such as an address, a business registration, or ownership replaces the stored value instead of merging with it, so fields left out of the new answer, such as `state` or `streetLine2`, are removed. `PATCH` requests on customers and related parties still merge.
+- `GET /v3/webhooks` returns `200` with an empty `data` array, instead of `502 request_failed`, before your first webhook endpoint, portal session, or event exists.
+- A retry with the same `Idempotency-Key` that replays a stored error response now includes `X-Request-Id`, set to the retry's own request ID. The body keeps the first request's `correlationId`.
+- Requesting a `card` capability again after you canceled it returns `409 capability_not_reopenable` with `retryable: false` instead of `500`.
+
+</Update>
+
+<Update label="2026-10-25" description="v3" tags={["Added","Changed"]}>
+
+### Added
+- Issued SWIFT accounts can be opened at Lead Bank (`lead_bank`) under the customer's `swift_named` capability.
+- `GET /v3/customers/{customerId}/capabilities/supported` returns `institutions[].currencies` for named capabilities. Each item is a currency `code` and the `institution` to send when you open the account: USD for `ach_named`, `wire_named`, `rtp_named`, and `swift_named`, EUR for `sepa_named`, GBP for `faster_payments_named`, and AED for `ipp_named`. Pooled capabilities omit `currencies`. See [Capabilities and requirements](/integration/onboarding/capabilities-and-requirements#discover-supported-capabilities).
 
 ### Changed
 - Until your integrating business KYB is approved, you can make 20 webhook URL changes per hour in total, across all endpoints in your live spaces that require KYB. Changes in sandbox spaces do not count. Exceeding the webhook URL limit returns `422 merchant_kyb_not_approved`. Changing only an endpoint's `events` or saving its current URL does not count as a URL change. In the dashboard, Swipelux refuses more than 10 active API keys per live space that requires KYB with a plain `422` response. Swipelux also refuses more than 5 spaces per merchant with a plain `422` response while you have at least one live space, all your live spaces require KYB, and none is approved. The space limit counts sandbox and live spaces; it does not apply if any live space does not require KYB. Sandbox spaces are exempt from the write block, webhook URL limit, and key limit. See [Go live](/integration/go-live#activate-your-production-space).
+- Issued ACH and wire accounts accept only USD, and so do SWIFT accounts at `lead_bank`. A request in another currency returns `400 validation_error`. Before, it was accepted and then issued in USD or never provisioned.
+- When none of the customer's ready banks issues the requested currency, `POST /v3/customers/{customerId}/accounts` returns `409 capability_not_ready` with `reason: "no_issuable_route"`. Choose another currency or institution instead of retrying.
 
 </Update>
 
@@ -68,6 +114,34 @@ For upgrading an existing integration from an earlier version, see [Migrate to v
 
 </Update>
 
+<Update label="2026-10-19" description="v3" tags={["Added","Changed","Fixed"]}>
+
+### Added
+- Document requests that Swipelux forwards to a bank can carry the bank's per-file limit in `request.constraints.maxSizeBytes`. The merchant panel and the hosted information request page shrink JPEG, PNG, and WebP photos to fit the limit and refuse files that still exceed it. See [Upload documents](/integration/onboarding/capabilities-and-requirements#upload-documents).
+- When Swipelux has an open request on your business verification (KYB) in a live space that requires KYB, the merchant panel opens the KYB page the first time you load it in a browser tab. The **Action needed** button in the header leads there too.
+
+### Changed
+- Requesting a canceled bank capability again returns `201` when the request opens a new application, and `200` when it joins an application the customer already has. See [Capabilities and requirements](/integration/onboarding/capabilities-and-requirements#shared-applications-per-bank).
+- New pooled intake tasks that ask for `/financialProfile/accountPurposes` also ask for `/financialProfile/accountPurposeDescription`. The description is required only when the purposes include `other`; without it, the submission returns `400 validation_error` on that pointer. The merchant panel shows the description field only while **Something else** is selected.
+- Named JPMorgan Chase (`jpmorgan`) capabilities for individual customers require `employment.occupation`. An employment answer without an occupation returns `400 validation_error`. Applications not yet sent to the bank pick up the requirement: open intake tasks gain it, and completed intake gets a follow-up task. Pooled capabilities and other banks are unchanged.
+- `GET /v3/customers` reports an individual's residence country as `country` when the residential address has no country. The `country` filter matches the same value. See [Customers](/integration/onboarding/customers).
+- `POST /v3/sandbox/tasks/{taskId}/review` decides every undecided answer on the task, across all open submission rounds and reused evidence awaiting review. See [Test in the sandbox](/integration/sandbox#test-an-open-task).
+- The hosted information request page shows one status summary, with each requested correction beside its item.
+- The merchant panel lists declarations with the requested items instead of under **Terms of Service**, labels a payout's bank destination **Destination Account**, and shows pending payouts as **Processing**.
+
+### Fixed
+- A capability whose remaining task answers are all accepted or in review, including answers Swipelux filled from the customer's existing profile and documents, now reports `pending` with `statusReason.code: information_in_review` instead of staying `restricted` with `tasks_due`. See [Capabilities and requirements](/integration/onboarding/capabilities-and-requirements#continue-when-the-capability-is-ready).
+- An `allowPending` account request at a bank whose approved application covers the capability but did not request it returns `409 capability_not_ready` with `reason: no_ready_route` instead of `500`. The same request succeeds once the capability is `ready`. See [Issue a bank account](/integration/issue-bank-account#save-the-request-before-bank-approval).
+- A Lead Bank (`lead_bank`) application that the bank declines becomes `rejected` instead of staying `in_review`.
+- Swipelux now reviews answers on follow-up intake tasks, such as a source-of-funds document requested after the first intake task, so their applications are submitted to the bank instead of staying `requested`.
+- When Swipelux accepts every answer on an intake task while its terms session is still open, or you do so with `POST /v3/sandbox/tasks/{taskId}/review`, the review no longer fails with `409 kyc_process_conflict`. The task becomes `satisfied` and the capability `ready` once the customer accepts the terms. Re-requesting a canceled `ach_named` or `wire_named` capability after such a review also succeeds.
+- In task submissions, `documentMetadata[].issuedOn` accepts a date up to one day after the submission's UTC date, so a document issued today in a timezone ahead of UTC is accepted. `maxIssueAgeDays` still counts from the UTC date.
+- When adding a new recipient in the merchant panel, the account form offers only payment methods that are ready.
+- The merchant panel keeps the status of form sections already sent while the rest of a form submits, accepts a document issue date of today in the customer's timezone, no longer shows an empty request for a moment after you send a KYB response, and keeps uploaded files when you switch between a website and a document answer.
+- The transaction details panel in the merchant panel no longer opens clipped.
+
+</Update>
+
 <Update label="2026-10-15" description="v3" tags={["Changed"]}>
 
 ### Changed
@@ -86,6 +160,34 @@ For upgrading an existing integration from an earlier version, see [Migrate to v
 
 </Update>
 
+<Update label="2026-10-12" description="v3" tags={["Added","Changed","Fixed"]}>
+
+### Added
+- `POST /v3/customers/{customerId}/tasks/{taskId}/submissions` accepts an optional `allowPartial: true`. Swipelux then stores the valid answers and returns `201` with `refusedAnswers`, where each entry has `requirementId`, `code`, `pointer`, and `message`. `code` is `invalid`, `absence_conflicts_with_profile`, `invalid_document_reference`, or `depends_on_refused_answer`, and more codes can be added. When no answer can be kept, the response is `400 validation_error` and nothing is stored. `allowPartial` does not change which requirements a submission must answer, and without it behavior is unchanged. See [Keep valid answers with `allowPartial`](/integration/onboarding/capabilities-and-requirements#keep-valid-answers-with-allowpartial).
+- `POST /v3/customers/{customerId}/tasks/{taskId}/withdrawals` takes back a submission that is awaiting review so the customer can correct it. It needs an `Idempotency-Key`. The submission's answers return to `action_required`, and the next submission starts a new `remediationRound`. A withdrawal returns `409 task_not_in_review` when no single submission awaits review or the task is past its deadline, and `409 submission_already_forwarded` when the bank reviews the task directly or Swipelux already sent the submission on for review. See [Withdraw a submission awaiting review](/integration/onboarding/capabilities-and-requirements#withdraw-a-submission-awaiting-review).
+- Document resources include `contentSha256`, the SHA-256 digest of the stored file as `sha256:` followed by the lowercase hex digest, or `null` for documents stored before digests were recorded. Compare it with a file's digest to detect a re-upload of a file already stored. See [Upload documents](/integration/onboarding/capabilities-and-requirements#upload-documents).
+- The merchant panel's recipient form adds SPEI (Mexico, MXN), Pix, and Pix Safe accounts once the customer's matching access is ready, and the **Pay out** drawer can pay SPEI accounts. See [Recipients](/integration/recipients).
+- In a public task form, a person in review has **Edit details**. It takes the person back from review so their details can be corrected instead of added again. Their answers and documents must be entered again.
+
+### Changed
+- Submission `outcome` adds `withdrawn` for a submission the customer took back before any review decision. Update any client that rejects unknown outcomes.
+- An accepted or in-review document now answers a matching document request on another bank's application, even when the banks word the request differently. Customers upload the same file fewer times. A file older than the request's `maxIssueAgeDays`, such as a proof of address older than 90 days, is not reused.
+- Fiat recipient destinations now need a `ready` capability for their method, including for customers whose bank access was set up before capabilities. Otherwise `POST /v3/customers/{customerId}/recipients/{recipientId}/destinations` returns `409 rail_not_ready`. Wallet destinations are unchanged. See [Recipients](/integration/recipients).
+- Issuing a bank account for a method the customer has no capability for returns `409 capability_not_ready`, with reason `route_selection_required` when the request omits `institution` and `no_ready_route` when it names one. Both list in `capabilities` the capabilities that can issue the account. The `ambiguous_route_scope` and `rail_not_ready` reasons are no longer returned. See [Issue a bank account](/integration/issue-bank-account).
+- A quote or account request retried with an `Idempotency-Key` whose earlier route can no longer continue returns `409 capability_not_ready` with `retryable: true`. Send it again with a new `Idempotency-Key`.
+- Public task forms keep valid answers when some are refused, and show the reason beside each refused answer. People in review stay listed with their status.
+- Public task forms run identity verification for individuals inside the form. In the merchant panel, an individual's task that offers hosted verification links only to that verification, and the **Documents** section no longer offers upload for individual customers.
+- The merchant panel's customer **Profile** tab saves one section at a time, and clearing a field now clears it.
+
+### Fixed
+- A Lead Bank payout quote that the bank refuses returns `400 quote_failed` instead of `500`, and one the bank cannot answer returns `503 quote_temporarily_unavailable`, which you can retry. See [Quotes and transfers](/integration/quotes-and-transfers).
+- A Lead Bank owner task submission no longer returns `500` while another bank reviews the same address.
+- For individuals, documents requested after identity verification is complete open a new hosted verification session.
+- Merchant panel forms keep working when the browser translates the page, and customer tabs recover after a Swipelux release.
+- KYB form fields show errors only after you leave a field.
+
+</Update>
+
 <Update label="2026-10-08" description="v3" tags={["Added","Changed","Fixed"]}>
 
 ### Added
@@ -97,6 +199,8 @@ For upgrading an existing integration from an earlier version, see [Migrate to v
 - Citi (`citibank`) is offered only to business customers. Every business keeps pooled Citi, and named Citi is offered only to businesses registered outside the US. When a customer is not offered Citi, the supported list omits it, naming it returns `422 capability_institutions_unsupported`, and a method that only Citi offers is listed as `disabled`. A request without `institutions` selects among the remaining banks. Existing applications and accounts are unchanged.
 - Named CFSB (`cfsb`) capabilities are offered only to US customers: businesses registered in the US and individuals who reside there. For other customers, the supported list omits named CFSB, and naming it returns `422 capability_institutions_unsupported`. A request without `institutions` selects among the remaining banks. Pooled CFSB, customers whose country is unknown, and existing applications are unchanged.
 - Lead Bank (`lead_bank`) named ACH, Wire, and SWIFT capabilities are offered only to customers that Lead Bank can onboard, based on their legal form and countries. For other customers, the supported list omits `lead_bank`, and naming it returns `422 capability_institutions_unsupported`. Customers that Lead Bank already onboarded, and capabilities whose open request already names `lead_bank`, keep it. Existing applications and accounts are unchanged.
+- In live mode, an `ach_named` or `wire_named` capability request that omits `institutions` now defaults to Lead Bank (`lead_bank`) when Lead Bank accepts new customers and can onboard the customer: the profile names at least one country and Lead Bank accepts every country on it, a business's profile names a legal form that Lead Bank accepts, and the customer has no `ready` application at another bank, named or pooled. Other customers default to JPMorgan Chase (`jpmorgan`), as `ach_named` already did. `wire_named` had no default bank before. A current application the customer already has still takes precedence. `isDefault` in `GET /v3/customers/{customerId}/capabilities/supported` applies the Lead Bank rule for each customer, so the marked bank can differ between customers and change over time. See [Capabilities and requirements](/integration/onboarding/capabilities-and-requirements#discover-supported-capabilities).
+- `wire_pooled` requests that omit `institutions` now default to JPMorgan Chase (`jpmorgan`), which the supported list marks with `isDefault`. They previously selected CFSB (`cfsb`).
 - RTP is pooled only. No bank offers `rtp_named` to new requests, so the supported list shows it as `disabled`. For a customer that does not hold `rtp_named`, a capability request or task preview for it that names a bank returns `422 capability_institutions_unsupported`, and one without `institutions` returns `422 capability_variant_unavailable`. Pooled RTP (`rtp_pooled`) is offered at Citi, so only business customers can request it.
 - New identity document requests for individuals and beneficial owners can set `constraints.identityMetadataRequired: true`, so each file needs its ID number and issuing country in `documentMetadata`. New business proof-of-address and owner proof-of-residence requests can set `constraints.maxIssueAgeDays: 90`, so each file needs its issue date. Existing tasks keep their requirements, so read the constraints on each task request.
 - A task answer to a business registration request, whose `profilePointer` is `/business/registration`, needs the jurisdiction country, the registration number, and a formation date before the submission date, all together. The request's `valueSchema` publishes this rule, and a partial answer returns `400 validation_error`.
@@ -109,6 +213,7 @@ For upgrading an existing integration from an earlier version, see [Migrate to v
 - `POST /v3/customers`, `PATCH /v3/customers/{customerId}`, `POST /v3/customers/{customerId}/related-parties`, `PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}`, and `POST /v3/customers/{customerId}/tasks/{taskId}/submissions` return `400 validation_error` when a profile value or task answer contains a Swipelux form link, such as an RFI, customer request, or transfer tracking link. This does not apply to `externalId` or `metadata`. Each rejected value appears in `errors[]` with `code: public_form_link` and its JSON Pointer, and the response never repeats the link. Send the information itself instead. See [Errors and retries](/integration/errors#validation-error).
 
 ### Fixed
+- `ach_pooled` requests that omit `institutions` now select JPMorgan Chase (`jpmorgan`), the bank that the supported list marks with `isDefault`. Previously they could select Citi (`citibank`). Existing applications and accounts are unchanged.
 - Payout quote and transfer responses keep a USDC or USDT source amount to six decimal places, for example `4009.711365` instead of `4009.71`. Fiat amounts keep two decimals. Creating or reading a payout whose stablecoin source amount has more than two decimals no longer returns `500`.
 - The [`POST /v3/customers/{customerId}/capabilities/{capabilityId}/cancel`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id-cancel) reference now describes cancellation as it works. You can cancel a `ready` capability, the `stablecoin_transfers` capability cannot be canceled, and canceling ends only that capability while its applications keep their status, tasks, and approvals.
 - A capability request or task preview that lists a bank code in `institutions` instead of a public institution ID, such as `citi` for `citibank`, returns `422 capability_institutions_unsupported` naming the available IDs instead of `503 kyc_configuration_unavailable`.
