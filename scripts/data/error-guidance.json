@@ -3,13 +3,19 @@
     "category": "Capabilities, KYC, and tasks",
     "summary": "A task answer that declares a value absent conflicts with data already present on the customer profile.",
     "when": "A submission marks a profile-backed requirement as absent while the canonical profile field identified by `profilePointer` still has a value.",
-    "resolution": "Review `profilePointer`, update the customer profile or submit an answer consistent with it, refetch the task, and submit the current revision."
+    "resolution": "Review `profilePointer`, update the customer profile or submit an answer consistent with it, refetch the task, and submit the current revision. With `allowPartial: true`, Swipelux reports this answer in `refusedAnswers` with the same code and stores the other valid answers."
   },
   "account_has_active_transfers": {
     "category": "Accounts and payment rails",
     "summary": "The account cannot be archived while one or more transfers are still active.",
     "when": "You try to archive an account that is referenced by an in-flight transfer.",
     "resolution": "Wait for the active transfers to reach a terminal state, or cancel or resolve transfers that can still change, then archive the account."
+  },
+  "account_has_dependent_accounts": {
+    "category": "Accounts and payment rails",
+    "summary": "The wallet cannot be archived while a bank account settles to it.",
+    "when": "You archive a wallet that is the settlement target of a bank account that is not archived, including a bank account that is still being issued.",
+    "resolution": "Change the bank account's settlement to another active wallet with `PATCH /v3/customers/{customerId}/accounts/{accountId}`, or archive the bank account first. Then archive the wallet."
   },
   "account_method_not_supported": {
     "category": "Accounts and payment rails",
@@ -86,7 +92,7 @@
   "capability_institutions_unsupported": {
     "category": "Capabilities, KYC, and tasks",
     "summary": "One or more selected institutions are not supported for the requested capability.",
-    "when": "The request includes an institution outside the capability options available to the customer, or a value that is not a public institution ID, such as a bank code.",
+    "when": "The request includes an institution outside the capability options available to the customer, or a value that is not a public institution ID, such as a bank code. A capability request that names `bmo` also returns this error, because `bmo` accounts are opened under the `swift_named` capability at `lead_bank`.",
     "resolution": "Replace the unsupported selection with institutions returned by the supported-capabilities flow, then submit a new request."
   },
   "capability_intent_unsupported": {
@@ -110,8 +116,14 @@
   "capability_not_ready": {
     "category": "Capabilities, KYC, and tasks",
     "summary": "A capability required by the requested account or money movement is not ready.",
-    "when": "The operation depends on one or more customer capabilities that have not reached a usable state.",
+    "when": "The operation depends on one or more customer capabilities that have not reached a usable state. For an issued bank account, `reason: \"no_issuable_route\"` means every ready bank is ruled out from issuing the account, for example because none issues the requested currency.",
     "resolution": "Read the capability identifiers in `capabilities`, complete any open tasks or wait for their state to advance, refetch them, and send a new request after they are ready."
+  },
+  "capability_not_reopenable": {
+    "category": "Capabilities, KYC, and tasks",
+    "summary": "This canceled capability cannot be requested again for the customer.",
+    "when": "You request a canceled capability that Swipelux does not reopen, such as a canceled `card` capability. Canceled bank capabilities, such as ACH, Wire, or SWIFT, can be requested again.",
+    "resolution": "Do not retry. Contact Swipelux support if the customer needs this capability again."
   },
   "capability_not_supported_for_customer_type": {
     "category": "Capabilities, KYC, and tasks",
@@ -198,6 +210,12 @@
     "summary": "The developer-fee configuration is invalid for the selected account or money movement.",
     "when": "The fee value is invalid or the selected account does not provide a compatible settlement target for the fee.",
     "resolution": "Correct the fee value and use an eligible account and settlement configuration, then create a new account, quote, or transfer request as applicable."
+  },
+  "document_in_use": {
+    "category": "Customers and profiles",
+    "summary": "The document cannot be archived while a bank reviews an application that relies on it.",
+    "when": "You archive a document that an application under bank review still relies on.",
+    "resolution": "Keep the document. Archive it after the bank finishes its review or the application is canceled."
   },
   "document_not_found": {
     "category": "Customers and profiles",
@@ -297,7 +315,7 @@
     "category": "Capabilities, KYC, and tasks",
     "summary": "A task submission contains a document reference that cannot satisfy the selected requirement.",
     "when": "The referenced document is missing, inaccessible for the customer, or does not match the task requirement being answered.",
-    "resolution": "List or upload the customer's documents, use the correct document identifier for the requirement, refetch the task, and submit its current revision."
+    "resolution": "List or upload the customer's documents, use the correct document identifier for the requirement, refetch the task, and submit its current revision. With `allowPartial: true`, Swipelux reports this answer in `refusedAnswers` with the same code and stores the other valid answers."
   },
   "invalid_field_for_type": {
     "category": "Request and authentication",
@@ -329,6 +347,12 @@
     "when": "Another action advances or replaces the task or verification session while your request is in progress.",
     "resolution": "Reload the task and its available verification methods, then retry against the current process state."
   },
+  "kyc_provider_rejected": {
+    "category": "Capabilities, KYC, and tasks",
+    "summary": "The identity verification provider refused to create the share token.",
+    "when": "A share-token export from `POST /v3/customers/{customerId}/export` is refused by the identity verification provider, for example for an unknown `forClientId`. The response carries a fixed Swipelux message and never repeats the provider's error text.",
+    "resolution": "Check the request, such as `forClientId`, before you send a new export. Do not retry the unchanged request."
+  },
   "kyc_provider_unavailable": {
     "category": "Capabilities, KYC, and tasks",
     "summary": "The verification service is temporarily unavailable.",
@@ -343,9 +367,21 @@
   },
   "merchant_kyb_not_approved": {
     "category": "Customers and profiles",
-    "summary": "Your integrating business's KYB is not approved, so Swipelux refuses write requests in this live space.",
-    "when": "A request other than `GET` or `HEAD` is made with a live API key for a space that requires business KYB, and your integrating business's KYB is not approved. This covers customer creation and writes, capability, application, and account requests, recipients and destinations, rules, quotes, and transfers. Reads, webhook management through the API, and your business verification (profile, related parties, documents, and task submissions for your business's KYB customer) remain available. Until approval, the webhook URL limit is 20 changes per hour in total across all endpoints in your live spaces that require KYB; exceeding it on `POST /v3/webhooks` or `PATCH /v3/webhooks/{webhookId}` also returns this error. The dashboard separately enforces limits of 10 active API keys per live space that requires KYB and 5 spaces per merchant, with plain `422` responses without this error code. The space limit counts sandbox and live spaces while you have at least one live space, all your live spaces require KYB, and none is approved; it does not apply if any live space does not require KYB. Sandbox spaces and live spaces that do not require KYB are exempt from the write block, webhook URL limit, and key limit.",
-    "resolution": "Complete your integrating business verification and wait for approval before sending live write requests. See [Go live](/integration/go-live#activate-your-production-space)."
+    "summary": "Your integrating business's KYB is not approved, so Swipelux refuses this write or creation.",
+    "when": "A request other than `GET` or `HEAD` is made with a live API key for a space that requires business KYB, and your integrating business's KYB is not approved. This covers customer creation and writes, capability, application, and account requests, recipients and destinations, rules, quotes, and transfers. Reads, webhook management through the API, and your business verification (profile, related parties, documents, and task submissions for your business's KYB customer) remain available. Until approval, this error also refuses a creation over a daily limit and a webhook URL change over the hourly limit. These limits apply in sandbox spaces too, unless you have a live space that is approved or does not require KYB.",
+    "resolution": "Complete your integrating business verification and wait for approval before sending live write requests. If you reached a daily creation limit or the hourly webhook URL limit, retry after earlier requests leave that window. See [Go live](/integration/go-live#daily-creation-limits)."
+  },
+  "merchant_kyb_subject_archive_refused": {
+    "category": "Customers and profiles",
+    "summary": "The customer that holds your business verification for this space cannot be archived.",
+    "when": "You archive or delete the customer that is the space's subject for your integrating business KYB.",
+    "resolution": "Keep the customer. Ask Swipelux support to move your business verification to another customer first."
+  },
+  "merchant_suspended": {
+    "category": "Request and authentication",
+    "summary": "Swipelux has suspended your integrating business, so it refuses every request made with its credentials.",
+    "when": "Swipelux suspended your integrating business. While the suspension lasts, every API key of the business is refused, in every space. Swipelux also holds the business's webhook deliveries, rule executions, and applications to banks. Nothing is deleted or revoked, so API keys, webhook endpoints, and rules work again once Swipelux lifts the suspension.",
+    "resolution": "Contact Swipelux support with the `correlationId`. Do not create or rotate API keys to work around the suspension, because every credential of the business is refused."
   },
   "not_found": {
     "category": "Idempotency and platform errors",
@@ -402,6 +438,12 @@
     "summary": "The quote or transfer does not contain the destination required by the operation.",
     "when": "A new quote omits a required destination, or an existing quote-backed resource cannot resolve its recorded destination.",
     "resolution": "For a new request, supply a valid account or recipient destination and request a new quote. For an existing resource, retain `correlationId` and contact support if refetching does not resolve it."
+  },
+  "quote_destination_network_unsupported": {
+    "category": "Quotes and transfers",
+    "summary": "The selected destination network is not supported for this pay-in.",
+    "when": "A pay-in quote names a destination wallet on a network that the pay-in route does not support.",
+    "resolution": "Choose a destination wallet on a supported network, then request a new quote."
   },
   "quote_direction_invalid": {
     "category": "Quotes and transfers",
@@ -476,6 +518,13 @@
     "when": "Quote creation cannot use a normally supported rail because the rail is experiencing a temporary availability issue.",
     "resolution": "Retry the quote request after a delay, or select another supported rail when the movement cannot wait."
   },
+  "rate_limited": {
+    "category": "Request and authentication",
+    "summary": "Too many requests were sent in a short period.",
+    "when": "Swipelux limits authenticated requests per API key, per integrating business, and per client IP address, with lower limits until your integrating business KYB is approved. Repeated failed authentications from one IP address have their own limit. Once that limit is reached, a valid API key sent from the address can also get this error until the limit recovers. The response includes a `Retry-After` header with the number of seconds to wait.",
+    "resolution": "Wait at least the number of seconds in the `Retry-After` header, then send the request again. Spread bursts of requests over time.",
+    "retry": "Wait for the `Retry-After` interval rather than retrying immediately."
+  },
   "rate_unavailable": {
     "category": "Quotes and transfers",
     "summary": "A required currency rate is temporarily unavailable.",
@@ -530,6 +579,12 @@
     "when": "Customer export, webhook management, or sandbox verification reaches an external service failure or unavailable configuration.",
     "resolution": "Inspect `retryable`. Retry later when it is `true`; otherwise retain `correlationId`, verify the request prerequisites, and contact support if the failure persists."
   },
+  "route_not_allowed_for_token": {
+    "category": "Request and authentication",
+    "summary": "The credential is not permitted to call this operation.",
+    "when": "A credential that Swipelux limits to specific operations calls an operation outside that set. Secret API keys that you create do not return this error.",
+    "resolution": "Use a secret API key for the space. If you receive this error with your own API key, contact Swipelux support with the `correlationId`."
+  },
   "rule_already_exists": {
     "category": "Rules",
     "summary": "The trigger account already has a live rule.",
@@ -559,6 +614,18 @@
     "summary": "The account selected as the rule trigger is invalid.",
     "when": "Rule creation uses an account that is missing, archived, inaccessible, or not eligible to act as a trigger.",
     "resolution": "Choose an active eligible account returned for the customer, then create a new rule request."
+  },
+  "share_token_rejected": {
+    "category": "Capabilities, KYC, and tasks",
+    "summary": "The identity verification provider refused the share token.",
+    "when": "An identity verification import sends a share token that the provider refuses, for example because it expired, was already used, or was issued for another recipient.",
+    "resolution": "Generate a new share token for Swipelux and send it with a new `Idempotency-Key`."
+  },
+  "submission_already_forwarded": {
+    "category": "Capabilities, KYC, and tasks",
+    "summary": "The submission can no longer be withdrawn because a bank already holds it.",
+    "when": "You withdraw a task submission on a task that the bank reviews directly, or after Swipelux sent the submission on for review. Tasks created with `POST /v3/sandbox/tasks` also return this error.",
+    "resolution": "Do not retry. Wait for the review outcome, then answer any follow-up the task asks for."
   },
   "submission_channel_not_allowed": {
     "category": "Capabilities, KYC, and tasks",
@@ -590,6 +657,12 @@
     "summary": "The task could not be found for the specified customer or API key.",
     "when": "The task identifier is missing, belongs to another customer or scope, or is not accessible in the current environment.",
     "resolution": "Verify the customer and task identifiers, list current tasks, and continue with an accessible task."
+  },
+  "task_not_in_review": {
+    "category": "Capabilities, KYC, and tasks",
+    "summary": "The task has no single submission awaiting review that can be withdrawn.",
+    "when": "You withdraw a task submission when no single submission awaits review, because none does or more than one does, for example a partial submission and its correction, or when the task is past its deadline.",
+    "resolution": "Read the task again. Submit answers for any open requirements, or wait for the review decision."
   },
   "task_not_sandbox_reviewable": {
     "category": "Capabilities, KYC, and tasks",
@@ -654,8 +727,14 @@
   "validation_error": {
     "category": "Request and authentication",
     "summary": "The request does not satisfy the operation's input schema.",
-    "when": "Required values are missing, fields have invalid types or formats, or request parameters fail validation.",
+    "when": "Required values are missing, fields have invalid types or formats, or request parameters fail validation. A task submission sent with `allowPartial: true` also returns this error when none of its answers can be kept.",
     "resolution": "Use `errors[]` and each JSON Pointer to correct the request, compare it with the operation schema, and send a new request."
+  },
+  "verification_already_started": {
+    "category": "Capabilities, KYC, and tasks",
+    "summary": "Identity verification already started for this customer.",
+    "when": "An identity verification import is sent after the customer started or completed verification with Swipelux, or while another import runs, for example after the customer opened the hosted link.",
+    "resolution": "Do not retry. Continue through the existing verification session."
   },
   "verification_collection_mapping_invalid": {
     "category": "Capabilities, KYC, and tasks",
