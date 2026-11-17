@@ -8,6 +8,34 @@ description: "Swipelux API 各バージョンの追加、破壊的変更、非�
 
 既存のインテグレーションを以前のバージョンからアップグレードする場合は、[v3 への移行](/jp/api-reference/versioning/migrate-to-v3) を参照してください。
 
+<Update label="2026-10-19" description="v3" tags={["追加","変更","修正"]}>
+
+### 追加 {#added}
+- Swipelux が銀行に転送する書類リクエストには、銀行のファイルごとの上限が `request.constraints.maxSizeBytes` に含まれる場合があります。マーチャントパネルとホスト型情報リクエストページは、JPEG、PNG、WebP の写真を上限内に収まるよう縮小し、それでも上限を超えるファイルを拒否します。[ドキュメントをアップロードする](/jp/integration/onboarding/capabilities-and-requirements#upload-documents) を参照してください。
+- KYB が必要なライブスペースで、Swipelux がお客様の事業者確認（KYB）に関するオープン中のリクエストを持っている場合、マーチャントパネルはブラウザタブで初めて読み込んだときに KYB ページを開きます。ヘッダーの **Action needed** ボタンからも移動できます。
+
+### 変更 {#changed}
+- キャンセルされた銀行ケイパビリティを再度リクエストすると、リクエストが新しい申請を開いた場合は `201`、顧客がすでに持つ申請に参加した場合は `200` を返します。[ケイパビリティとタスク](/jp/integration/onboarding/capabilities-and-requirements#shared-applications-per-bank) を参照してください。
+- `/financialProfile/accountPurposes` を求める新しいプール型 intake タスクは、`/financialProfile/accountPurposeDescription` も求めます。説明が必要なのは目的に `other` が含まれる場合のみで、説明がない場合、送信はそのポインターに対して `400 validation_error` を返します。マーチャントパネルは、**Something else** が選択されている間のみ説明フィールドを表示します。
+- 個人顧客向けの名義型 JPMorgan Chase（`jpmorgan`）ケイパビリティには `employment.occupation` が必要です。職業のない雇用に関する回答は `400 validation_error` を返します。まだ銀行に送信されていない申請にはこの要件が適用されます。オープン中の intake タスクには要件が追加され、完了済みの intake にはフォローアップタスクが作成されます。プール型ケイパビリティと他の銀行は変更されません。
+- `GET /v3/customers` は、居住地住所に国がない場合、個人の居住国を `country` として返します。`country` フィルターは同じ値に一致します。[顧客](/jp/integration/onboarding/customers) を参照してください。
+- `POST /v3/sandbox/tasks/{taskId}/review` は、オープン中のすべての送信ラウンドと、審査待ちの再利用された証拠にわたって、タスク上の未決定の回答をすべて判定します。[サンドボックステスト](/jp/integration/sandbox#test-an-open-task) を参照してください。
+- ホスト型情報リクエストページには、ステータスの概要が 1 つだけ表示され、リクエストされた各修正は対応する項目の横に表示されます。
+- マーチャントパネルは、宣言を **Terms of Service** の下ではなくリクエストされた項目とともに一覧表示し、支払いの銀行送金先を **Destination Account** と表示し、保留中の支払いを **Processing** として表示します。
+
+### 修正 {#fixed}
+- 残りのタスク回答がすべて承認済みまたは審査中であるケイパビリティ（Swipelux が顧客の既存のプロファイルと書類から入力した回答を含む）は、`tasks_due` を伴う `restricted` のままではなく、`statusReason.code: information_in_review` を伴う `pending` を返すようになりました。[ケイパビリティとタスク](/jp/integration/onboarding/capabilities-and-requirements#continue-when-the-capability-is-ready) を参照してください。
+- 承認済みの申請がケイパビリティをカバーしているもののリクエストはしていない銀行での `allowPending` 口座リクエストは、`500` ではなく `reason: no_ready_route` を伴う `409 capability_not_ready` を返します。ケイパビリティが `ready` になると、同じリクエストは成功します。[銀行口座を発行する](/jp/integration/issue-bank-account#save-the-request-before-bank-approval) を参照してください。
+- 銀行が却下した Lead Bank（`lead_bank`）の申請は、`in_review` のままではなく `rejected` になります。
+- Swipelux は、最初の intake タスクの後にリクエストされた資金源の書類など、フォローアップ intake タスクの回答を審査するようになりました。これにより、その申請は `requested` のままではなく銀行に送信されます。
+- 利用規約セッションがまだ開いている間に Swipelux が intake タスクのすべての回答を承認した場合、またはお客様が `POST /v3/sandbox/tasks/{taskId}/review` で承認した場合でも、審査が `409 kyc_process_conflict` で失敗しなくなりました。顧客が利用規約に同意すると、タスクは `satisfied`、ケイパビリティは `ready` になります。このような審査の後にキャンセルされた `ach_named` または `wire_named` ケイパビリティを再度リクエストしても成功します。
+- タスクの送信で、`documentMetadata[].issuedOn` は送信の UTC 日付の 1 日後までの日付を受け付けるため、UTC より進んだタイムゾーンで本日発行された書類が受け付けられます。`maxIssueAgeDays` は引き続き UTC 日付から数えます。
+- マーチャントパネルで新しい受取人を追加するとき、口座フォームには ready 状態の支払い方法のみが表示されます。
+- マーチャントパネルは、フォームの残りを送信している間も送信済みのフォームセクションのステータスを保持し、顧客のタイムゾーンでの本日を書類の発行日として受け付け、KYB の回答を送信した後に空のリクエストが一瞬表示されることがなくなり、ウェブサイトと書類の回答を切り替えてもアップロード済みのファイルを保持します。
+- マーチャントパネルの取引詳細パネルが切れた状態で開かなくなりました。
+
+</Update>
+
 <Update label="2026-10-08" description="v3" tags={["追加","変更","修正"]}>
 
 ### 追加
