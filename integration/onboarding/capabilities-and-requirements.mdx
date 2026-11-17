@@ -55,11 +55,53 @@ Each institution entry includes a `logoUrl` and an `isDefault` flag. Use `logoUr
 }
 ```
 
-For every named capability, each institution entry also lists `currencies`. Each item gives a currency `code` that an issued account can receive and the `institution` to send when you [open that account](/integration/issue-bank-account#choose-the-currency-and-bank). `ach_named`, `wire_named`, and `rtp_named` list USD. `sepa_named` lists EUR, `faster_payments_named` lists GBP, and `ipp_named` lists AED. `swift_named` lists every currency the bank issues SWIFT accounts in. A currency can name a different institution than the entry itself. For example, non-USD SWIFT currencies at `lead_bank` name `bmo`. Pooled capabilities omit `currencies`.
+For every named capability, each institution entry also lists `currencies`. Each item gives a currency `code` that an issued account can receive and the `institution` to send when you [open that account](/integration/issue-bank-account#choose-the-bank). `ach_named`, `wire_named`, and `rtp_named` list USD. `sepa_named` lists EUR, `faster_payments_named` lists GBP, and `ipp_named` lists AED. `swift_named` lists every currency the bank issues SWIFT accounts in. A currency can name a different institution than the entry itself. For example, non-USD SWIFT currencies at `lead_bank` name `bmo`. Pooled capabilities omit `currencies`.
+
+For `swift_named`, the bank decides which of these currencies each customer can open. An account in a currency the bank doesn't offer this customer ends `rejected` with `statusReason.code: currency_unavailable`.
 
 Send `bmo` only when you open the account. A capability request or task preview that names `bmo` in `institutions` returns `422 capability_institutions_unsupported`. Request `swift_named` at `lead_bank` instead.
 
+When you omit `institutions`, Swipelux selects the applicable default bank for this customer. The default is decided per customer and can change over time, for example when the customer's profile changes or a bank's onboarding opens or closes. Read `isDefault` from the supported-capability response each time instead of storing it. In live mode:
+
+- `ach_named` and `wire_named` default to Lead Bank (`lead_bank`) when Lead Bank accepts new customers and can onboard this customer: the profile names at least one country and Lead Bank accepts every country on it, a business's profile names a legal form that Lead Bank accepts, and the customer has no `ready` application at another bank, named or pooled. Otherwise they default to JPMorgan Chase (`jpmorgan`).
+- `ach_pooled` and `wire_pooled` default to JPMorgan Chase (`jpmorgan`).
+
+The default applies only to a new selection. An approved (`ready`) application the customer already has, or a current application at another bank, still takes precedence over the default and over the bank marked `isDefault`. To pin a bank, send its ID in `institutions`. In the sandbox, ACH, Wire, and SWIFT capabilities are served at JPMorgan Chase (`jpmorgan`) only. See [Test in the sandbox](/integration/sandbox).
+
 Store the selected `data[].id` as `CAPABILITY_ID`. Never copy a capability ID from another customer or environment.
+
+### Show why a bank is unavailable
+
+Every entry also includes `unavailableInstitutions`. It lists the banks that offer this capability variant but do not accept this customer. Each entry has an `id`, a `name`, and a non-empty `reasons` array. Each reason uses the same shape as `statusReason`, with `actor: "provider"` and `retryable: false`. Use `unavailableInstitutions` to show customers why a bank is missing from your bank selection UI, for example by rendering the bank as disabled with the reason's `message`.
+
+```json Unavailable institution entry
+{
+  "unavailableInstitutions": [
+    {
+      "id": "lead_bank",
+      "name": "Lead Bank",
+      "reasons": [
+        {
+          "code": "jurisdiction_unsupported",
+          "message": "The bank does not accept customers from a country on this customer's profile.",
+          "actor": "provider",
+          "retryable": false
+        }
+      ]
+    }
+  ]
+}
+```
+
+Current reason codes:
+
+| Code | Meaning |
+| --- | --- |
+| `jurisdiction_unsupported` | The bank does not accept a country on the customer's profile. |
+| `legal_form_unsupported` | The bank does not accept the customer's legal form. |
+| `customer_type_unsupported` | The bank does not accept the customer's type. |
+
+Handle unknown codes without code changes, because Swipelux can add new codes. A bank never appears in both `institutions` and `unavailableInstitutions`. `unavailableInstitutions` is always present and is `[]` on pooled and non-bank entries. A bank that is in neither list is left out for a reason unrelated to this customer. Naming an unavailable bank in a capability request still returns [`422 capability_institutions_unsupported`](/integration/errors#capability-institutions-unsupported).
 
 ### Pooled vs named account types
 
@@ -102,7 +144,7 @@ For named bank capabilities, each customer has one application case per bank. Po
 The request response tells you which case Swipelux used:
 
 - `201` means the request opened a new application case.
-- `200` means the request resolved to an application case the customer already had, for example a repeated request for a bank capability the customer already holds, or a request for a canceled capability. A repeated request for `card` or `stablecoin_transfers` still returns [`409 capability_already_exists`](/integration/errors#capability-already-exists).
+- `200` means the request resolved to an application case the customer already had, for example a repeated request for a bank capability the customer already holds, or a request for a canceled bank capability that joins its existing application. A repeated request for `card` or `stablecoin_transfers` still returns [`409 capability_already_exists`](/integration/errors#capability-already-exists), and a request for a canceled `card` capability returns [`409 capability_not_reopenable`](/integration/errors#capability-not-reopenable).
 - `selectedApplicationId` is a top-level field next to `data` with the ID of the case the request selected or opened. Swipelux omits it when the request did not select a case. An idempotent replay returns the same value.
 
 Abbreviated response:
@@ -123,7 +165,7 @@ For named capabilities, send the same `institutions` list again to select the sa
 
 A capability's status reflects all of the customer's related cases. For a named capability, one `ready` case whose approval covers it is enough to make it `ready`, whatever other banks report. A pooled capability also waits for its method check, reported in `probes` on the customer applications list.
 
-#### List the customer's applications
+#### List the customer's applications {#list-the-customers-applications}
 
 List every application case for the customer with [`GET /v3/customers/{customerId}/applications`](/api-reference/capabilities/get-v3-customers-by-customer-id-applications). Results are paginated with `nextCursor` and `hasMore`, and accept `updatedAfter`:
 
@@ -240,6 +282,7 @@ In the task-detail response, each entry in `verificationSessions` and `tosSessio
         "key": "identity_verification",
         "type": "identity_verification",
         "status": "action_required",
+        "coveredRequirementIds": ["req_000000000000000011", "req_000000000000000012"],
         "action": {
           "kind": "available",
           "url": "https://platform.swipelux.com/kyc/redirect/cus_000000000000000001/tsk_000000000000000002/vfy_000000000000000003",
@@ -264,7 +307,50 @@ In the task-detail response, each entry in `verificationSessions` and `tosSessio
 
 These are task-scoped actions, not a separate customer-verification lifecycle.
 
+Every `verificationSessions[]` entry in task reads and customer task detail includes `coveredRequirementIds`. It lists the IDs of the task's live requirements that the session can fill. Use it to see which requirements a hosted session or an [imported verification](#import-an-existing-identity-verification) can settle. Fill every other requirement through [API answers](#api-answers).
+
+For new individual intake tasks, the hosted identity session covers only the ID document, selfie, and proof of address. Proof-of-funds requirements, such as `proof_of_funds`, `source_of_funds_document`, `named_source_of_funds_document`, and `sole_proprietor_document`, are not part of the hosted session. [Upload](#upload-documents) and submit those documents directly. Swipelux reviews them, and the task stays open until they are accepted.
+
 A hosted answer to a profile requirement for a structured value, such as an address or tax identifiers, must pass the same schema and constraint checks as a direct answer. When it does not, the requirement stays open. A requirement that Swipelux returns to `action_required` for this reason carries `reviewFeedback.code: hosted_profile_direct_submission_required`. Collect that value from the customer and submit it as an [API answer](#api-answers).
+
+### Import an existing identity verification
+
+If you already verify individuals in your own account with Swipelux's identity verification provider, you can import that verification into the identity session of the customer's intake task instead of sending the customer through the hosted flow. This option is for API integrations with individual customers only. Businesses and related parties are not supported.
+
+Before you import, set up sharing with your identity verification provider:
+
+1. Ask Swipelux for its partner token, then add Swipelux as a sharing partner in your identity verification provider account.
+2. For live verifications, generate a share token for Swipelux with recipient client ID (`forClientId`) `swipelux.com_21030`.
+3. Send the token to Swipelux before it expires. Share tokens are opaque, single-use, at most 1,024 UTF-8 bytes, and expire after 20 minutes by default. Treat each token as a credential.
+
+The task must be an individual intake task and offer the hosted verification session as a submission method. The session must have `type: "identity_verification"` and `status: "action_required"`. The customer must not already have a verification in progress or completed with Swipelux, and an import must not already be running. Opening the hosted link starts verification, but reading the task does not. Then call `POST /v3/customers/{customerId}/tasks/{taskId}/verification-sessions/{verificationSessionId}/share-token`. The request needs the same `accounts:write`, `customers:read`, and `customers:write` permissions as task submissions, plus an `Idempotency-Key`:
+
+```json Request body
+{
+  "shareToken": "<share token>"
+}
+```
+
+```json Response
+{
+  "verificationSessionId": "vfy_000000000000000003",
+  "status": "in_review"
+}
+```
+
+Your provider copies the matching steps into Swipelux's account, and the checks run again against the level the task requires. Swipelux never stores or logs the share token.
+
+- `status: "in_review"` means the checks are pending. When the checks finish, Swipelux settles the covered requirements the same way as for a hosted session.
+- `status: "action_required"` means steps are missing. The customer can finish them through the session's existing hosted link, or you can submit the covered requirements directly.
+
+The import fills only the requirements listed in `coveredRequirementIds`: the ID document, selfie, and, where the task requires it, proof of address. Submit profile answers, proof of funds, and other requirements as [API answers](#api-answers). To replay a request, send it again with the same `Idempotency-Key`.
+
+| Status | Code | What to do |
+| --- | --- | --- |
+| `409` | `verification_already_started` | This customer already has a verification in progress or completed with Swipelux, or an import is already running, for example because the customer opened a hosted link. Do not retry. Continue through the existing session. |
+| `409` | `verification_session_not_allowed` | The task or session is not eligible for import. Do not retry. Read the task and use the methods it offers. |
+| `422` | `share_token_rejected` | The identity verification provider refused the token, for example because it expired, was already used, or was issued for another recipient. Generate a new token for Swipelux and retry with a new `Idempotency-Key`. |
+| `503` | `kyc_provider_unavailable` | With `retryable: true`, Swipelux had not sent the token yet. Retry after a delay. With `retryable: false`, the import may have happened but could not be confirmed. Do not resend the token. Continue through the session's hosted link. |
 
 ### Upload documents
 
@@ -281,6 +367,8 @@ curl --request POST \
 ```
 
 Store the returned `data.id` as `DOCUMENT_ID` before submitting the answer that references it.
+
+Every v3 document resource includes `contentSha256`, the SHA-256 digest of the stored file as `sha256:` followed by the lowercase hex digest. Two documents with the same digest are byte-identical. To check whether a file is one the customer already uploaded, for example a file a reviewer asked to replace, compute its SHA-256 before you upload it and compare it with `contentSha256` on the documents that the earlier submission's answers reference in `documentIds`. The field is `null` for documents stored before Swipelux recorded digests.
 
 To retrieve a stored file later, call [`GET /v3/customers/{customerId}/documents/{documentId}/download`](/api-reference/documents/get-v3-customers-by-customer-id-documents-by-document-id-download). Swipelux returns a `url` that downloads the file as an attachment and expires after one hour. Archived documents return `404`.
 
@@ -311,6 +399,78 @@ JSON
 ```
 
 Take every requirement ID and answer type from the latest task. If the API reports that the task changed, refetch it and rebuild the submission from the new revision.
+
+#### Keep valid answers with `allowPartial`
+
+By default, one refused answer fails the whole request and Swipelux stores nothing. The response is `400 validation_error`, `400 invalid_document_reference`, or `409 absence_conflicts_with_profile`. Add `"allowPartial": true` when you want Swipelux to store the valid answers and refuse only the invalid ones:
+
+```json Partial submission request
+{
+  "taskRevision": 3,
+  "allowPartial": true,
+  "answers": [
+    { "requirementId": "req_a", "answer": { "type": "text", "value": "Salary" } },
+    { "requirementId": "req_b", "answer": { "type": "document", "documentIds": ["doc_unknown"] } }
+  ]
+}
+```
+
+Swipelux returns `201` with the stored submission in `data`, holding only the kept answers, and lists the others in `refusedAnswers`:
+
+```json Partial submission response
+{
+  "data": { "id": "sub_000000000000000001", "outcome": "in_review", "answers": [{ "requirementId": "req_a" }] },
+  "refusedAnswers": [
+    {
+      "requirementId": "req_b",
+      "code": "invalid_document_reference",
+      "pointer": "/answers/1/answer",
+      "message": "A referenced document is invalid."
+    }
+  ]
+}
+```
+
+Each refused answer has one of these codes:
+
+| `code` | Meaning |
+| --- | --- |
+| `invalid` | The answer does not meet the request's shape, format, or constraints, or the customer profile does not accept the value. |
+| `absence_conflicts_with_profile` | An absence was sent for a value the profile holds. |
+| `invalid_document_reference` | A referenced document cannot be used for this customer and request. |
+| `depends_on_refused_answer` | The answer is valid on its own but is judged together with a refused one. A conditional answer and the answer that controls it are kept or refused together. |
+
+More codes can be added. Treat an unknown code as `invalid`. `message` never repeats the submitted value.
+
+`allowPartial` does not relax the other rules:
+
+- The request must still answer every requirement it would have to answer without the field. Unanswered open requirements still return `422 task_submission_incomplete`.
+- A body that fails the request schema itself, such as an unknown field or a wrong type, still returns `400 validation_error`.
+- When no answer can be kept, Swipelux returns `400 validation_error`, stores nothing, and lists every refused answer in `errors[]`.
+- `refusedAnswers` is present, possibly empty, exactly when the request sent `"allowPartial": true`. A replay with the same `Idempotency-Key` returns the same `refusedAnswers`.
+
+Before you correct a refused answer, read the task again. A refused requirement is normally still `action_required`, but a document request can already be answered by a file on record. Submit the corrections with the new `taskRevision` and a fresh `Idempotency-Key`. Send a conditional answer together with its controlling answer.
+
+#### Withdraw a submission awaiting review
+
+To correct a submission that is still `in_review`, take it back with `POST /v3/customers/{customerId}/tasks/{taskId}/withdrawals`. The request has no body and needs an `Idempotency-Key`. API keys need `accounts:write`, `customers:read`, and `customers:write`, as for submissions:
+
+```bash Withdraw task submission
+curl --request POST \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/tasks/${TASK_ID}/withdrawals" \
+  --header "X-API-Key: ${SWIPELUX_API_KEY}" \
+  --header "Idempotency-Key: task-withdrawal-001"
+```
+
+Swipelux returns `200` with the submission in `data`. Its `outcome` becomes `withdrawn`, its answers return to `action_required` without `reviewFeedback`, and the next submission starts a new `remediationRound`. Requirements already accepted and the customer profile stay unchanged. Answers that Swipelux filled from the profile or from files on record stay in review. You can withdraw as many times as you need. Read the task again, then submit corrected answers.
+
+Swipelux refuses a withdrawal in these cases:
+
+- `404 task_not_found`: the task does not exist for this customer.
+- `409 task_not_in_review`: no single submission awaits review (none does, or more than one does, for example a partial submission and its correction), or the task is past its deadline.
+- `409 submission_already_forwarded`: the bank reviews this task directly, or Swipelux already sent the submission on for review. Tasks created with `POST /v3/sandbox/tasks` also return it.
+
+Submission `outcome` can now be `withdrawn`. Update any client that checks `outcome` against a fixed list.
 
 ### Beneficial-owner prerequisite for businesses
 
@@ -350,6 +510,19 @@ curl --request GET \
 Replace the stored status, account-provisioning status, and task IDs with the latest response. Capability `status` reports whether the entitlement is approved. For a capability that issues an account, `accountProvisioning` separately reports whether that account is `not_started`, `in_progress`, `issued`, or `failed`; a capability that does not issue an account returns `not_applicable`.
 
 While the capability is `pending`, two of the `statusReason.code` values it can report show whether a review is underway. `preparing_submission` means Swipelux is still preparing an application for submission and no review is underway, even if another bank's application is `rejected` or needs attention. `review_in_progress` means a review is underway, for example while an application is `in_review` or a [hosted verification](#hosted-actions) is open. Both use `resolution: wait`. A change between these codes keeps the status `pending`, so it sends no `capability.status_changed` event. Read the capability to see the current code.
+
+A capability can also be `restricted` with `statusReason.code: offer_unavailable` and `resolution: contact_support`. Swipelux returns this code when an approved application covers the capability but no current offer permits it. The application is already approved, so waiting does not change the capability. Contact Swipelux support instead of polling. This code replaces `related_application_action_required` and `resolution: wait` in this case. Open customer tasks still take precedence, so complete any current tasks first.
+
+```json Capability restricted by offer availability
+{
+  "status": "restricted",
+  "statusReason": {
+    "code": "offer_unavailable",
+    "resolution": "contact_support",
+    "message": "The approved Application covers this capability, but no current offer permits it. Contact support."
+  }
+}
+```
 
 Continue only when the current capability status permits the account, quote, or transfer you intend to create. When the flow needs an issued account, also wait for `accountProvisioning` to become `issued`.
 
