@@ -282,6 +282,8 @@ curl --request POST \
 
 Uložte vrácené `data.id` jako `DOCUMENT_ID` předtím, než odešlete odpověď, která na něj odkazuje.
 
+Každý prostředek dokumentu v3 obsahuje `contentSha256`, otisk SHA-256 uloženého souboru ve tvaru `sha256:` následovaném hexadecimálním otiskem malými písmeny. Dva dokumenty se stejným otiskem jsou bajtově identické. Chcete-li ověřit, zda zákazník soubor již nahrál, například soubor, jehož náhradu si vyžádal posuzovatel, vypočítejte před nahráním jeho SHA-256 a porovnejte ho s `contentSha256` u dokumentů, na které odkazují odpovědi předchozího odeslání v `documentIds`. Pole je `null` u dokumentů uložených předtím, než Swipelux začal otisky zaznamenávat.
+
 Pro pozdější načtení uloženého souboru zavolejte [`GET /v3/customers/{customerId}/documents/{documentId}/download`](/api-reference/documents/get-v3-customers-by-customer-id-documents-by-document-id-download). Swipelux vrátí `url`, která stáhne soubor jako přílohu a vyprší po jedné hodině. Archivované dokumenty vracejí `404`.
 
 ### API odpovědi {#api-answers}
@@ -311,6 +313,78 @@ JSON
 ```
 
 Každé ID požadavku a typ odpovědi vezměte z nejnovějšího úkolu. Pokud API oznámí, že se úkol změnil, znovu jej načtěte a rebuildujte odeslání z nové revize.
+
+#### Ponechání platných odpovědí pomocí `allowPartial` {#keep-valid-answers-with-allowpartial}
+
+Ve výchozím nastavení jedna odmítnutá odpověď způsobí selhání celého požadavku a Swipelux nic neuloží. Odpovědí je `400 validation_error`, `400 invalid_document_reference` nebo `409 absence_conflicts_with_profile`. Přidejte `"allowPartial": true`, pokud chcete, aby Swipelux uložil platné odpovědi a odmítl jen ty neplatné:
+
+```json Partial submission request
+{
+  "taskRevision": 3,
+  "allowPartial": true,
+  "answers": [
+    { "requirementId": "req_a", "answer": { "type": "text", "value": "Salary" } },
+    { "requirementId": "req_b", "answer": { "type": "document", "documentIds": ["doc_unknown"] } }
+  ]
+}
+```
+
+Swipelux vrátí `201` s uloženým odesláním v `data`, které obsahuje jen ponechané odpovědi, a ostatní uvede v `refusedAnswers`:
+
+```json Partial submission response
+{
+  "data": { "id": "sub_000000000000000001", "outcome": "in_review", "answers": [{ "requirementId": "req_a" }] },
+  "refusedAnswers": [
+    {
+      "requirementId": "req_b",
+      "code": "invalid_document_reference",
+      "pointer": "/answers/1/answer",
+      "message": "A referenced document is invalid."
+    }
+  ]
+}
+```
+
+Každá odmítnutá odpověď má jeden z těchto kódů:
+
+| `code` | Význam |
+| --- | --- |
+| `invalid` | Odpověď nesplňuje tvar, formát nebo omezení požadavku, nebo profil zákazníka hodnotu nepřijímá. |
+| `absence_conflicts_with_profile` | Byla odeslána absence pro hodnotu, kterou profil obsahuje. |
+| `invalid_document_reference` | Odkazovaný dokument nelze použít pro tohoto zákazníka a tento požadavek. |
+| `depends_on_refused_answer` | Odpověď je sama o sobě platná, ale posuzuje se společně s odmítnutou odpovědí. Podmíněná odpověď a odpověď, která ji řídí, se ponechávají nebo odmítají společně. |
+
+Mohou přibýt další kódy. Neznámý kód považujte za `invalid`. `message` nikdy neopakuje odeslanou hodnotu.
+
+`allowPartial` nezmírňuje ostatní pravidla:
+
+- Požadavek musí stále odpovědět na každý požadavek, na který by musel odpovědět i bez tohoto pole. Nezodpovězené otevřené požadavky stále vrací `422 task_submission_incomplete`.
+- Tělo, které nesplňuje samotné schéma požadavku, například kvůli neznámému poli nebo nesprávnému typu, stále vrací `400 validation_error`.
+- Pokud nelze ponechat žádnou odpověď, Swipelux vrátí `400 validation_error`, nic neuloží a každou odmítnutou odpověď uvede v `errors[]`.
+- `refusedAnswers` je přítomno, případně prázdné, právě tehdy, když požadavek odeslal `"allowPartial": true`. Opakování se stejným `Idempotency-Key` vrátí stejné `refusedAnswers`.
+
+Než opravíte odmítnutou odpověď, znovu načtěte úkol. Odmítnutý požadavek je obvykle stále `action_required`, ale požadavek na dokument už může být zodpovězen evidovaným souborem. Opravy odešlete s novým `taskRevision` a novým `Idempotency-Key`. Podmíněnou odpověď odešlete společně s odpovědí, která ji řídí.
+
+#### Stažení odeslání čekajícího na posouzení {#withdraw-a-submission-awaiting-review}
+
+Chcete-li opravit odeslání, které je stále `in_review`, stáhněte ho pomocí `POST /v3/customers/{customerId}/tasks/{taskId}/withdrawals`. Požadavek nemá tělo a vyžaduje `Idempotency-Key`. Klíče API potřebují `accounts:write`, `customers:read` a `customers:write`, stejně jako pro odeslání:
+
+```bash Withdraw task submission
+curl --request POST \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/tasks/${TASK_ID}/withdrawals" \
+  --header "X-API-Key: ${SWIPELUX_API_KEY}" \
+  --header "Idempotency-Key: task-withdrawal-001"
+```
+
+Swipelux vrátí `200` s odesláním v `data`. Jeho `outcome` se změní na `withdrawn`, jeho odpovědi se vrátí do `action_required` bez `reviewFeedback` a další odeslání zahájí nové `remediationRound`. Již přijaté požadavky a profil zákazníka zůstanou beze změny. Odpovědi, které Swipelux vyplnil z profilu nebo z evidovaných souborů, zůstávají v posuzování. Stáhnout můžete tolikrát, kolikrát potřebujete. Znovu načtěte úkol a poté odešlete opravené odpovědi.
+
+Swipelux stažení odmítne v těchto případech:
+
+- `404 task_not_found`: úkol pro tohoto zákazníka neexistuje.
+- `409 task_not_in_review`: na posouzení nečeká právě jedno odeslání (žádné, nebo více než jedno, například částečné odeslání a jeho oprava), nebo úkol překročil termín.
+- `409 submission_already_forwarded`: tento úkol posuzuje přímo banka, nebo Swipelux již odeslání předal k posouzení. Vracejí ho také úkoly vytvořené pomocí `POST /v3/sandbox/tasks`.
+
+`outcome` odeslání nyní může být `withdrawn`. Aktualizujte každého klienta, který porovnává `outcome` s pevným seznamem.
 
 ### Předpoklad skutečného majitele pro firmy {#beneficial-owner-prerequisite-for-businesses}
 

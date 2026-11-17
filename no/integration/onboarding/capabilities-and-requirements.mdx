@@ -282,6 +282,8 @@ curl --request POST \
 
 Lagre den returnerte `data.id` som `DOCUMENT_ID` før du sender inn svaret som refererer til den.
 
+Hver v3-dokumentressurs inkluderer `contentSha256`, SHA-256-sjekksummen for den lagrede filen som `sha256:` etterfulgt av den heksadesimale sjekksummen med små bokstaver. To dokumenter med samme sjekksum er byte-identiske. For å sjekke om en fil allerede er lastet opp av kunden, for eksempel en fil en saksbehandler ba om å erstatte, beregner du SHA-256 for filen før du laster den opp og sammenligner den med `contentSha256` på dokumentene som svarene i den tidligere innsendingen refererer til i `documentIds`. Feltet er `null` for dokumenter som ble lagret før Swipelux registrerte sjekksummer.
+
 For å hente en lagret fil senere, kall [`GET /v3/customers/{customerId}/documents/{documentId}/download`](/api-reference/documents/get-v3-customers-by-customer-id-documents-by-document-id-download). Swipelux returnerer en `url` som laster ned filen som et vedlegg og utløper etter én time. Arkiverte dokumenter returnerer `404`.
 
 ### API-svar {#api-answers}
@@ -311,6 +313,78 @@ JSON
 ```
 
 Hent hver krav-ID og svar-type fra siste oppgave. Hvis API-et melder at oppgaven har endret seg, hent den på nytt og bygg innsendingen på nytt fra den nye revisjonen.
+
+#### Behold gyldige svar med `allowPartial` {#keep-valid-answers-with-allowpartial}
+
+Som standard får ett avvist svar hele forespørselen til å feile, og Swipelux lagrer ingenting. Svaret er `400 validation_error`, `400 invalid_document_reference` eller `409 absence_conflicts_with_profile`. Legg til `"allowPartial": true` når du vil at Swipelux skal lagre de gyldige svarene og bare avvise de ugyldige:
+
+```json Partial submission request
+{
+  "taskRevision": 3,
+  "allowPartial": true,
+  "answers": [
+    { "requirementId": "req_a", "answer": { "type": "text", "value": "Salary" } },
+    { "requirementId": "req_b", "answer": { "type": "document", "documentIds": ["doc_unknown"] } }
+  ]
+}
+```
+
+Swipelux returnerer `201` med den lagrede innsendingen i `data`, som bare inneholder svarene som ble beholdt, og lister de andre i `refusedAnswers`:
+
+```json Partial submission response
+{
+  "data": { "id": "sub_000000000000000001", "outcome": "in_review", "answers": [{ "requirementId": "req_a" }] },
+  "refusedAnswers": [
+    {
+      "requirementId": "req_b",
+      "code": "invalid_document_reference",
+      "pointer": "/answers/1/answer",
+      "message": "A referenced document is invalid."
+    }
+  ]
+}
+```
+
+Hvert avvist svar har én av disse kodene:
+
+| `code` | Betydning |
+| --- | --- |
+| `invalid` | Svaret oppfyller ikke forespørselens form, format eller begrensninger, eller kundeprofilen godtar ikke verdien. |
+| `absence_conflicts_with_profile` | Et fravær ble sendt for en verdi som profilen inneholder. |
+| `invalid_document_reference` | Et referert dokument kan ikke brukes for denne kunden og denne forespørselen. |
+| `depends_on_refused_answer` | Svaret er gyldig i seg selv, men vurderes sammen med et avvist svar. Et betinget svar og svaret som styrer det, beholdes eller avvises sammen. |
+
+Flere koder kan bli lagt til. Behandle en ukjent kode som `invalid`. `message` gjentar aldri den innsendte verdien.
+
+`allowPartial` lemper ikke på de andre reglene:
+
+- Forespørselen må fortsatt besvare hvert krav den måtte besvare uten feltet. Ubesvarte åpne krav returnerer fortsatt `422 task_submission_incomplete`.
+- En body som ikke oppfyller selve forespørselsskjemaet, for eksempel et ukjent felt eller feil type, returnerer fortsatt `400 validation_error`.
+- Når ingen svar kan beholdes, returnerer Swipelux `400 validation_error`, lagrer ingenting og lister hvert avviste svar i `errors[]`.
+- `refusedAnswers` er til stede, eventuelt tom, nøyaktig når forespørselen sendte `"allowPartial": true`. En gjentakelse med samme `Idempotency-Key` returnerer de samme `refusedAnswers`.
+
+Les oppgaven på nytt før du retter et avvist svar. Et avvist krav er vanligvis fortsatt `action_required`, men en dokumentforespørsel kan allerede være besvart av en fil som er registrert. Send inn rettelsene med ny `taskRevision` og en ny `Idempotency-Key`. Send et betinget svar sammen med svaret som styrer det.
+
+#### Trekk tilbake en innsending som venter på gjennomgang {#withdraw-a-submission-awaiting-review}
+
+For å rette en innsending som fortsatt er `in_review`, trekker du den tilbake med `POST /v3/customers/{customerId}/tasks/{taskId}/withdrawals`. Forespørselen har ingen body og krever en `Idempotency-Key`. API-nøkler trenger `accounts:write`, `customers:read` og `customers:write`, som for innsendinger:
+
+```bash Withdraw task submission
+curl --request POST \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/tasks/${TASK_ID}/withdrawals" \
+  --header "X-API-Key: ${SWIPELUX_API_KEY}" \
+  --header "Idempotency-Key: task-withdrawal-001"
+```
+
+Swipelux returnerer `200` med innsendingen i `data`. `outcome` blir `withdrawn`, svarene går tilbake til `action_required` uten `reviewFeedback`, og neste innsending starter en ny `remediationRound`. Krav som allerede er akseptert, og kundeprofilen forblir uendret. Svar som Swipelux fylte ut fra profilen eller fra registrerte filer, forblir under gjennomgang. Du kan trekke tilbake så mange ganger du trenger. Les oppgaven på nytt, og send deretter inn rettede svar.
+
+Swipelux avviser en tilbaketrekking i disse tilfellene:
+
+- `404 task_not_found`: oppgaven finnes ikke for denne kunden.
+- `409 task_not_in_review`: ikke nøyaktig én innsending venter på gjennomgang (ingen, eller flere enn én, for eksempel en delvis innsending og rettelsen av den), eller oppgavens frist har passert.
+- `409 submission_already_forwarded`: banken gjennomgår denne oppgaven direkte, eller Swipelux har allerede sendt innsendingen videre til gjennomgang. Oppgaver opprettet med `POST /v3/sandbox/tasks` returnerer det også.
+
+`outcome` for en innsending kan nå være `withdrawn`. Oppdater alle klienter som sjekker `outcome` mot en fast liste.
 
 ### UBO-forutsetning for virksomheter {#beneficial-owner-prerequisite-for-businesses}
 

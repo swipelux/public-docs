@@ -282,6 +282,8 @@ curl --request POST \
 
 Tallenna palautettu `data.id` muuttujaan `DOCUMENT_ID` ennen kuin lähetät siihen viittaavan vastauksen.
 
+Jokainen v3-asiakirjaresurssi sisältää kentän `contentSha256`, tallennetun tiedoston SHA-256-tiivisteen muodossa `sha256:` ja sen perässä heksadesimaalinen tiiviste pienillä kirjaimilla. Kaksi asiakirjaa, joilla on sama tiiviste, ovat tavu tavulta identtisiä. Jos haluat tarkistaa, onko asiakas jo ladannut tiedoston, esimerkiksi tiedoston, jonka tarkistaja pyysi korvaamaan, laske sen SHA-256 ennen lataamista ja vertaa sitä niiden asiakirjojen `contentSha256`-arvoon, joihin aiemman lähetyksen vastaukset viittaavat kentässä `documentIds`. Kenttä on `null` asiakirjoille, jotka tallennettiin ennen kuin Swipelux alkoi tallentaa tiivisteitä.
+
 Noutaaksesi tallennetun tiedoston myöhemmin kutsu [`GET /v3/customers/{customerId}/documents/{documentId}/download`](/api-reference/documents/get-v3-customers-by-customer-id-documents-by-document-id-download) -päätepistettä. Swipelux palauttaa `url`-arvon, joka lataa tiedoston liitteenä ja vanhenee tunnin kuluttua. Arkistoidut dokumentit palauttavat `404`-virheen.
 
 ### API-vastaukset {#api-answers}
@@ -311,6 +313,78 @@ JSON
 ```
 
 Ota jokainen vaatimuksen ID ja vastaustyyppi uusimmasta tehtävästä. Jos API ilmoittaa, että tehtävä on muuttunut, hae se uudelleen ja rakenna lähetys uuden version pohjalta.
+
+#### Säilytä kelvolliset vastaukset `allowPartial`-kentällä {#keep-valid-answers-with-allowpartial}
+
+Oletuksena yksi hylätty vastaus saa koko pyynnön epäonnistumaan, eikä Swipelux tallenna mitään. Vastaus on `400 validation_error`, `400 invalid_document_reference` tai `409 absence_conflicts_with_profile`. Lisää `"allowPartial": true`, kun haluat Swipeluxin tallentavan kelvolliset vastaukset ja hylkäävän vain virheelliset:
+
+```json Partial submission request
+{
+  "taskRevision": 3,
+  "allowPartial": true,
+  "answers": [
+    { "requirementId": "req_a", "answer": { "type": "text", "value": "Salary" } },
+    { "requirementId": "req_b", "answer": { "type": "document", "documentIds": ["doc_unknown"] } }
+  ]
+}
+```
+
+Swipelux palauttaa `201` ja tallennetun lähetyksen kentässä `data`, joka sisältää vain säilytetyt vastaukset, ja listaa muut kentässä `refusedAnswers`:
+
+```json Partial submission response
+{
+  "data": { "id": "sub_000000000000000001", "outcome": "in_review", "answers": [{ "requirementId": "req_a" }] },
+  "refusedAnswers": [
+    {
+      "requirementId": "req_b",
+      "code": "invalid_document_reference",
+      "pointer": "/answers/1/answer",
+      "message": "A referenced document is invalid."
+    }
+  ]
+}
+```
+
+Jokaisella hylätyllä vastauksella on yksi näistä koodeista:
+
+| `code` | Merkitys |
+| --- | --- |
+| `invalid` | Vastaus ei vastaa pyynnön muotoa, formaattia tai rajoituksia, tai asiakasprofiili ei hyväksy arvoa. |
+| `absence_conflicts_with_profile` | Puuttumisvastaus lähetettiin arvolle, joka profiilissa on. |
+| `invalid_document_reference` | Viitattua asiakirjaa ei voi käyttää tälle asiakkaalle ja tälle pyynnölle. |
+| `depends_on_refused_answer` | Vastaus on itsessään kelvollinen, mutta se arvioidaan yhdessä hylätyn vastauksen kanssa. Ehdollinen vastaus ja sitä ohjaava vastaus säilytetään tai hylätään yhdessä. |
+
+Koodeja voidaan lisätä. Käsittele tuntematon koodi arvona `invalid`. `message` ei koskaan toista lähetettyä arvoa.
+
+`allowPartial` ei lievennä muita sääntöjä:
+
+- Pyynnön on edelleen vastattava jokaiseen vaatimukseen, johon sen pitäisi vastata ilman kenttää. Vastaamattomat avoimet vaatimukset palauttavat edelleen `422 task_submission_incomplete`.
+- Runko, joka ei täytä itse pyyntöskeemaa, esimerkiksi tuntemattoman kentän tai väärän tyypin vuoksi, palauttaa edelleen `400 validation_error`.
+- Kun yhtään vastausta ei voida säilyttää, Swipelux palauttaa `400 validation_error`, ei tallenna mitään ja listaa jokaisen hylätyn vastauksen kentässä `errors[]`.
+- `refusedAnswers` on mukana, mahdollisesti tyhjänä, täsmälleen silloin, kun pyyntö lähetti `"allowPartial": true`. Toisto samalla `Idempotency-Key`-arvolla palauttaa samat `refusedAnswers`.
+
+Lue tehtävä uudelleen ennen kuin korjaat hylätyn vastauksen. Hylätty vaatimus on yleensä edelleen `action_required`, mutta asiakirjapyyntöön voi jo vastata tallennettu tiedosto. Lähetä korjaukset uudella `taskRevision`-arvolla ja uudella `Idempotency-Key`-arvolla. Lähetä ehdollinen vastaus yhdessä sitä ohjaavan vastauksen kanssa.
+
+#### Peruuta tarkistusta odottava lähetys {#withdraw-a-submission-awaiting-review}
+
+Jos haluat korjata lähetyksen, joka on yhä `in_review`, peruuta se kutsulla `POST /v3/customers/{customerId}/tasks/{taskId}/withdrawals`. Pyynnöllä ei ole runkoa, ja se edellyttää `Idempotency-Key`-otsaketta. API-avaimet tarvitsevat oikeudet `accounts:write`, `customers:read` ja `customers:write`, kuten lähetyksissä:
+
+```bash Withdraw task submission
+curl --request POST \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/tasks/${TASK_ID}/withdrawals" \
+  --header "X-API-Key: ${SWIPELUX_API_KEY}" \
+  --header "Idempotency-Key: task-withdrawal-001"
+```
+
+Swipelux palauttaa `200` ja lähetyksen kentässä `data`. Sen `outcome` muuttuu arvoon `withdrawn`, sen vastaukset palaavat tilaan `action_required` ilman `reviewFeedback`-kenttää, ja seuraava lähetys aloittaa uuden `remediationRound`-kierroksen. Jo hyväksytyt vaatimukset ja asiakasprofiili pysyvät ennallaan. Vastaukset, jotka Swipelux täytti profiilista tai tallennetuista tiedostoista, pysyvät tarkistettavina. Voit peruuttaa niin monta kertaa kuin tarvitset. Lue tehtävä uudelleen ja lähetä sitten korjatut vastaukset.
+
+Swipelux hylkää peruutuksen näissä tapauksissa:
+
+- `404 task_not_found`: tehtävää ei ole tälle asiakkaalle.
+- `409 task_not_in_review`: tarkistusta ei odota täsmälleen yksi lähetys (ei yhtään, tai useampi kuin yksi, esimerkiksi osittainen lähetys ja sen korjaus), tai tehtävän määräaika on umpeutunut.
+- `409 submission_already_forwarded`: pankki tarkistaa tämän tehtävän suoraan, tai Swipelux on jo välittänyt lähetyksen tarkistettavaksi. Myös kutsulla `POST /v3/sandbox/tasks` luodut tehtävät palauttavat sen.
+
+Lähetyksen `outcome` voi nyt olla `withdrawn`. Päivitä kaikki asiakasohjelmat, jotka vertaavat `outcome`-arvoa kiinteään luetteloon.
 
 ### Edunsaajaa koskeva ennakkoedellytys yrityksille {#beneficial-owner-prerequisite-for-businesses}
 

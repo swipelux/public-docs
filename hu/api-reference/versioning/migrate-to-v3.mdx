@@ -113,6 +113,10 @@ sequenceDiagram
   else rejected
     SLX-->>You: task rejected, parent statusReason says what is next
   end
+  opt correct before review
+    You->>SLX: POST .../tasks/{taskId}/withdrawals
+    SLX-->>You: submission withdrawn, answers back to action_required
+  end
 ```
 
 Kulcstulajdonságok:
@@ -121,6 +125,8 @@ Kulcstulajdonságok:
 - A beküldés **felülvizsgálatköteles**: soha nem módosítja közvetlenül a képesség vagy a számla állapotát, csak az elfogadás. Egy kivétel: a `profile` válaszok beküldéskor átírják az ügyfélprofilt (2.3). Beküldés után pollozd a feladatot vagy a szülő erőforrást.
 - A `taskRevision` (a feladat `revision`-jének visszaküldése) egyidejűségi őr: ha a feladat megváltozott, mióta beolvastad, olvasd újra és építsd újra a válaszokat.
 - Az `absence` egy elsőrangú válasz („nem rendelkezem ezzel, mert...”), használd ezt ahelyett, hogy a követelményeket megválaszolatlanul hagynád.
+- Egy beküldésen az `allowPartial: true` eltárolja az érvényes válaszokat, az érvényteleneket pedig a `refusedAnswers` mezőben adja vissza, ahelyett hogy a teljes kérés meghiúsulna (2.3).
+- Egy még `in_review` állapotú beküldés bármilyen felülvizsgálati döntés előtt visszavonható és javítható (2.3).
 - A `rejected` általában lezárja a feladatot. Ha egy hosztolt verifikáció utasította el, és ezt a döntést később visszavonják, a feladat `satisfied` állapotba kerülhet, vagy `action_required` állapotba, újra megnyitva azokat a követelményeket, amelyeket az új döntés nem válaszol meg. Ezeket küldd be újra az új `revision` alapján.
 
 ### 1.5 Pénzmozgás
@@ -314,7 +320,7 @@ Minden örökölt dokumentumfelület ugyanarra a cserére képeződik le: olvasd
 
 A hurok körül:
 
-- **Nyers fájltárolás**: `POST/GET/DELETE /v3/customers/{customerId}/documents` (plusz `/{documentId}` és `GET .../{documentId}/download`), tölts fel egyszer az API-kulcsoddal, majd hivatkozz a dokumentum-azonosítókra a beküldési válaszokban. Ez felváltja az összes upload-token és direct-upload bevételt. A `POST .../documents` JSON-törzset is elfogad (`storageKey`, `fileName`, `type`), amely egy még friss, ügyfél-hatókörű hivatkozást használ fel a `POST /v2/documents/direct-upload` végpontról, így a parkolt feltöltések a bájtok újraküldése nélkül migrálhatók.
+- **Nyers fájltárolás**: `POST/GET/DELETE /v3/customers/{customerId}/documents` (plusz `/{documentId}` és `GET .../{documentId}/download`), tölts fel egyszer az API-kulcsoddal, majd hivatkozz a dokumentum-azonosítókra a beküldési válaszokban. Ez felváltja az összes upload-token és direct-upload bevételt. A `POST .../documents` JSON-törzset is elfogad (`storageKey`, `fileName`, `type`), amely egy még friss, ügyfél-hatókörű hivatkozást használ fel a `POST /v2/documents/direct-upload` végpontról, így a parkolt feltöltések a bájtok újraküldése nélkül migrálhatók. Minden v3 dokumentumerőforrás tartalmazza a `contentSha256` mezőt (`sha256:<hex>`, vagy `null` a kivonatok rögzítése előtt tárolt dokumentumoknál), így észlelheted egy bájtra azonos fájl újrafeltöltését.
 - **Új olvasások**: `GET /v3/tasks` (kereskedő-szintű bejövő láda), `GET /v3/transfers/{transferId}/tasks`, `GET .../tasks/{taskId}/history`, `GET .../tasks/{taskId}/submissions` (plusz `/{submissionId}`).
 
 Beküldés (illusztratív):
@@ -332,10 +338,12 @@ Beküldés (illusztratív):
 ```
 
 - Válasz-típusok: `profile`, `text`, `date`, `single_select`, `multi_select`, `boolean`, `attestation`, `document`, `resource_reference`, `absence`. Minden követelmény `request` objektuma megmondja, milyen típust vár.
-- Egy beküldésnek meg kell válaszolnia **az aktuális kör minden cselekvésre váró követelményét**, azzal a pontos `taskRevision`-nel, amit beolvastál. A részleges beküldéseket elutasítjuk.
+- Egy beküldésnek meg kell válaszolnia **az aktuális kör minden cselekvésre váró követelményét**, azzal a pontos `taskRevision`-nel, amit beolvastál. Ha egyet kihagysz, a válasz `422 task_submission_incomplete`. Egyes magánszemélyekre vonatkozó személyazonosság-ellenőrzési feladatok egy részhalmazt is elfogadnak.
+- Alapértelmezés szerint egyetlen elutasított válasz a teljes kérést meghiúsítja, és semmi sem kerül tárolásra. A válasz `400 validation_error`, `400 invalid_document_reference` vagy `409 absence_conflicts_with_profile`. Küldj `"allowPartial": true` értéket az érvényes válaszok megtartásához: a `201` válasz a többit a `refusedAnswers` mezőben sorolja fel (`requirementId`, `code`, `pointer`, `message`), ahol a `code` értéke `invalid`, `absence_conflicts_with_profile`, `invalid_document_reference` vagy `depends_on_refused_answer`. Az ismeretlen kódot kezeld `invalid` értékként. Ha egyetlen válasz sem tartható meg, a válasz `400 validation_error`, és semmi sem kerül tárolásra. Lásd: [API válaszok](/hu/integration/onboarding/capabilities-and-requirements#keep-valid-answers-with-allowpartial).
 - A `profile` válaszok **átírnak**: frissítik az ügyfélprofilt a normál validációs úton, és azonnal újraértékelnek minden képességet, amely ugyanarra a bevételi munkára hivatkozik. Azok a testvér-bevételi feladatok, amelyek követelményei mind teljesülnek, automatikusan lezárulnak.
 - A követelmények alternatív csoportokat alkothatnak (`alternativeKey`): pontosan egyet küldj be a csoportból.
 - A `changes_requested` növeli a `remediationRound`-ot és `reviewFeedback`-et hordoz. Olvasd újra a feladatot, küldj be újra **friss idempotenciakulccsal**.
+- A `POST /v3/customers/{customerId}/tasks/{taskId}/withdrawals` (`Idempotency-Key` fejléccel) visszavonja azt az egy beküldést, amely felülvizsgálatra vár, hogy az ügyfél javíthassa. A válaszai `reviewFeedback` nélkül visszakerülnek `action_required` állapotba, az eredménye `withdrawn` lesz, és a `remediationRound` értéke nő. A már elfogadott követelmények érintetlenek maradnak, és a visszavonások száma nincs korlátozva. `404 task_not_found` választ ad ismeretlen feladatnál, `409 task_not_in_review` választ, ha nem pontosan egy beküldés vár felülvizsgálatra (egy sem, vagy több is, például egy részleges beküldés és annak javítása), vagy a feladat határideje lejárt, és `409 submission_already_forwarded` választ, ha a bank közvetlenül vizsgálja ezt a feladatot, vagy a Swipelux már továbbította a beküldést felülvizsgálatra. A `POST /v3/sandbox/tasks` segítségével létrehozott feladatok is ezt adják vissza.
 - A hosztolt verifikációs URL-ek **csak** az ügyfél-hatókörű feladatrészletben (`GET /v3/customers/{customerId}/tasks/{taskId}`) jelennek meg, és csak amíg a munkamenet cselekvésre kész; a listák és a `GET /v3/tasks/{taskId}` szándékosan URL-mentesek.
 - A felhasználási feltételek is feladat: az `openTaskIds` tartalmazhat egy `category: "terms_of_service"` feladatot, amelynek hosztolt elfogadási oldala ugyanígy van linkelve (csak ügyfél-hatókörű részlet). Az általános beküldések nem fogadhatnak el feltételeket, és a KYC-jóváhagyás soha nem implikálja a feltételek elfogadását.
 - A feladatok képességenkénti hatókörűek, így „ugyanaz” a kérés (például lakcímigazolás) képességenként egyszer jelenhet meg. Deduplikálj az UI-ban a követelmény `key` mezője alapján.
@@ -525,6 +533,7 @@ Minden lépés függetlenül szállítható; a v1 vagy v2 és a v3 párhuzamosan
 - [ ] A beküldések felülvizsgálatkötelesek (a beküldés nem ugyanaz, mint a feloldás), és meg kell válaszolniuk **minden** cselekvésre váró követelményt a pontos `taskRevision`-nel. Nem egyezés esetén olvasd újra és építsd újra.
 - [ ] Nincs `task.*` webhook, pollozd a feladatot (vagy szülőjét) minden beküldés után.
 - [ ] A `changes_requested` újrapróbálkozás egyenlő: olvasd újra a feladatot, friss válaszok, **friss idempotenciakulcs**.
+- [ ] Fogadd el a `withdrawn` beküldési eredményt, és az ismeretlen `refusedAnswers[].code` értéket kezeld `invalid` értékként.
 - [ ] A `/v1/documents`-re való posztolás soha nem old fel v3 képességet, amint egy ügyfél feladatokon van, minden kérést feladatokon keresztül vezess.
 - [ ] Új feladatok jelenhetnek meg egy már `ready` képességen, tartsd bekötve a feladathurkot az onboarding után is, ne csak közben.
 - [ ] A képesség `cancel` csak `pending` vagy `restricted` állapotból működik blokkoló erőforrások nélkül (`409 capability_not_cancelable`); a törlés utáni újraigénylés friss létrehozás friss idempotenciakulccsal.

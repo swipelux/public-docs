@@ -113,6 +113,10 @@ sequenceDiagram
   else rejected
     SLX-->>You: task rejected, parent statusReason says what is next
   end
+  opt correct before review
+    You->>SLX: POST .../tasks/{taskId}/withdrawals
+    SLX-->>You: submission withdrawn, answers back to action_required
+  end
 ```
 
 Propietats clau:
@@ -121,6 +125,8 @@ Propietats clau:
 - Enviar està **subjecte a revisió**: mai muta directament l'estat de la capability o l'account, l'acceptació sí. Una excepció: les respostes `profile` es propaguen al perfil del customer en enviar-se (2.3). Després d'enviar, consulta la task o el recurs pare.
 - `taskRevision` (eco del `revision` de la task) és un mecanisme de concurrència: si la task ha canviat des que la vas llegir, rellegeix-la i reconstrueix les teves respostes.
 - `absence` és una resposta de primer nivell ("no tinc això perquè..."), fes-la servir en lloc de deixar requirements sense resposta.
+- `allowPartial: true` en una submission desa les respostes vàlides i retorna les no vàlides a `refusedAnswers` en lloc de fer fallar tota la petició (2.3).
+- Una submission que encara és `in_review` es pot retirar i corregir abans de cap decisió de revisió (2.3).
 - `rejected` normalment posa fi a la task. Quan una verificació allotjada l'ha rebutjada i aquesta decisió es revoca més endavant, la task pot passar a `satisfied`, o a `action_required` amb els requirements que la nova decisió no respon reoberts. Torna a enviar-los contra la nova `revision`.
 
 ### 1.5 Moviment de diners
@@ -314,7 +320,7 @@ Cada superfície de documents heretada es mapa al mateix reemplaçament: llegeix
 
 Al voltant d'aquest bucle:
 
-- **Emmagatzematge d'arxius en brut**: `POST/GET/DELETE /v3/customers/{customerId}/documents` (més `/{documentId}` i `GET .../{documentId}/download`), puja una vegada amb la teva clau API i després referencia els ids de document a les respostes de submission. Això reemplaça tots els intakes d'upload-token i direct-upload. `POST .../documents` també accepta un cos JSON (`storageKey`, `fileName`, `type`) que consumeix una referència amb àmbit de client encara recent de `POST /v2/documents/direct-upload`, de manera que les càrregues aparcades es migren sense reenviar bytes.
+- **Emmagatzematge d'arxius en brut**: `POST/GET/DELETE /v3/customers/{customerId}/documents` (més `/{documentId}` i `GET .../{documentId}/download`), puja una vegada amb la teva clau API i després referencia els ids de document a les respostes de submission. Això reemplaça tots els intakes d'upload-token i direct-upload. `POST .../documents` també accepta un cos JSON (`storageKey`, `fileName`, `type`) que consumeix una referència amb àmbit de client encara recent de `POST /v2/documents/direct-upload`, de manera que les càrregues aparcades es migren sense reenviar bytes. Cada recurs de document v3 inclou `contentSha256` (`sha256:<hex>`, o `null` per als documents desats abans que es registressin els resums), de manera que pots detectar una nova pujada d'un fitxer idèntic byte a byte.
 - **Lectures totalment noves**: `GET /v3/tasks` (safata d'entrada del comerç), `GET /v3/transfers/{transferId}/tasks`, `GET .../tasks/{taskId}/history`, `GET .../tasks/{taskId}/submissions` (més `/{submissionId}`).
 
 Submission (il·lustratiu):
@@ -332,10 +338,12 @@ Submission (il·lustratiu):
 ```
 
 - Tipus de resposta: `profile`, `text`, `date`, `single_select`, `multi_select`, `boolean`, `attestation`, `document`, `resource_reference`, `absence`. L'objecte `request` de cada requirement et diu quin tipus espera.
-- Una submission ha de respondre **cada requirement accionable de la ronda actual**, amb el `taskRevision` exacte que has llegit. Les submissions parcials són rebutjades.
+- Una submission ha de respondre **cada requirement accionable de la ronda actual**, amb el `taskRevision` exacte que has llegit. Ometre'n un retorna `422 task_submission_incomplete`. Algunes tasques de verificació d'identitat per a persones físiques accepten un subconjunt.
+- Per defecte, una resposta rebutjada fa fallar tota la petició i no es desa res. La resposta és `400 validation_error`, `400 invalid_document_reference` o `409 absence_conflicts_with_profile`. Envia `"allowPartial": true` per conservar les respostes vàlides: la resposta `201` llista les altres a `refusedAnswers` (`requirementId`, `code`, `pointer`, `message`), amb `code` igual a `invalid`, `absence_conflicts_with_profile`, `invalid_document_reference` o `depends_on_refused_answer`. Tracta un codi desconegut com a `invalid`. Quan no es pot conservar cap resposta, la resposta és `400 validation_error` i no es desa res. Consulta [Respostes via API](/ca/integration/onboarding/capabilities-and-requirements#keep-valid-answers-with-allowpartial).
 - Les respostes `profile` **es propaguen**: actualitzen el perfil del customer per la via de validació normal i reavaluen de seguida cada capability que referencia la mateixa feina d'intake. Les tasks d'intake germanes els requirements de les quals estan tots satisfets es tanquen automàticament.
 - Els requirements poden formar grups alternatius (`alternativeKey`): envia exactament un del grup.
 - `changes_requested` incrementa `remediationRound` i porta `reviewFeedback`. Rellegeix la task, envia de nou **amb una nova clau d'idempotència**.
+- `POST /v3/customers/{customerId}/tasks/{taskId}/withdrawals` (amb `Idempotency-Key`) retira l'única submission pendent de revisió perquè el client la pugui corregir. Les seves respostes tornen a `action_required` sense `reviewFeedback`, el resultat passa a `withdrawn` i `remediationRound` s'incrementa. Els requirements ja acceptats no canvien i el nombre de retirades no està limitat. Retorna `404 task_not_found` per a una tasca desconeguda, `409 task_not_in_review` quan no hi ha exactament una submission pendent de revisió (cap, o més d'una, per exemple una submission parcial i la seva correcció) o la tasca ha superat el termini, i `409 submission_already_forwarded` quan el banc revisa aquesta tasca directament o Swipelux ja ha remès la submission per a revisió. Les tasques creades amb `POST /v3/sandbox/tasks` també el retornen.
 - Les URLs de verificació allotjada apareixen **només** al detall de task per customer (`GET /v3/customers/{customerId}/tasks/{taskId}`) i només mentre la sessió sigui accionable; les llistes i `GET /v3/tasks/{taskId}` estan deliberadament sense URLs.
 - Els termes de servei també són una task: `openTaskIds` pot incloure una task amb `category: "terms_of_service"` la pàgina d'acceptació allotjada de la qual s'enllaça de la mateixa manera (només detall per customer). Les submissions genèriques no poden acceptar termes, i l'aprovació de KYC mai implica l'acceptació de termes.
 - Les tasks tenen àmbit per capability, així que la "mateixa" petició (per exemple prova de domicili) pot aparèixer una vegada per capability. Deduplica a la teva UI per la `key` del requirement.
@@ -525,6 +533,7 @@ Cada pas es pot publicar de forma independent; v1 o v2 i v3 conviuen contra la m
 - [ ] Les submissions estan subjectes a revisió (enviar no equival a desbloquejat) i han de respondre **cada** requirement accionable amb el `taskRevision` exacte. En cas de discrepància, rellegeix i reconstrueix.
 - [ ] No existeix webhook `task.*`, consulta la task (o el seu pare) després de cada enviament.
 - [ ] Reintent `changes_requested` equival a rellegir la task, respostes noves, **clau d'idempotència nova**.
+- [ ] Accepta el resultat de submission `withdrawn` i tracta un `refusedAnswers[].code` desconegut com a `invalid`.
 - [ ] Publicar a `/v1/documents` mai desbloqueja una capability v3, un cop un customer és a tasks, canalitza tota petició a través de tasks.
 - [ ] Poden aparèixer noves tasks en una capability ja `ready`, mantingues el bucle de tasks actiu després de l'onboarding, no només durant aquest.
 - [ ] `cancel` de capability només funciona des de `pending` o `restricted` sense recursos bloquejants (`409 capability_not_cancelable`); tornar a sol·licitar després de cancel·lar és una creació nova amb una nova clau d'idempotència.

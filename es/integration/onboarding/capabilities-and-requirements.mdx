@@ -282,6 +282,8 @@ curl --request POST \
 
 Guarda el `data.id` devuelto como `DOCUMENT_ID` antes de enviar la respuesta que lo referencia.
 
+Cada recurso de documento v3 incluye `contentSha256`, el resumen SHA-256 del archivo guardado como `sha256:` seguido del resumen hexadecimal en minúsculas. Dos documentos con el mismo resumen son idénticos byte a byte. Para comprobar si un archivo ya lo subió el cliente, por ejemplo un archivo que un revisor pidió reemplazar, calcula su SHA-256 antes de subirlo y compáralo con `contentSha256` en los documentos que las respuestas del envío anterior referencian en `documentIds`. El campo es `null` para documentos guardados antes de que Swipelux registrara los resúmenes.
+
 Para recuperar un archivo almacenado más tarde, llama a [`GET /v3/customers/{customerId}/documents/{documentId}/download`](/api-reference/documents/get-v3-customers-by-customer-id-documents-by-document-id-download). Swipelux devuelve una `url` que descarga el archivo como adjunto y expira después de una hora. Los documentos archivados devuelven `404`.
 
 ### Respuestas por API {#api-answers}
@@ -311,6 +313,78 @@ JSON
 ```
 
 Toma cada ID de requisito y tipo de respuesta de la última tarea. Si la API informa de que la tarea cambió, vuelve a obtenerla y reconstruye el envío a partir de la nueva revisión.
+
+#### Conserva las respuestas válidas con `allowPartial` {#keep-valid-answers-with-allowpartial}
+
+Por defecto, una respuesta rechazada hace fallar toda la solicitud y Swipelux no guarda nada. La respuesta es `400 validation_error`, `400 invalid_document_reference` o `409 absence_conflicts_with_profile`. Añade `"allowPartial": true` cuando quieras que Swipelux guarde las respuestas válidas y rechace solo las no válidas:
+
+```json Partial submission request
+{
+  "taskRevision": 3,
+  "allowPartial": true,
+  "answers": [
+    { "requirementId": "req_a", "answer": { "type": "text", "value": "Salary" } },
+    { "requirementId": "req_b", "answer": { "type": "document", "documentIds": ["doc_unknown"] } }
+  ]
+}
+```
+
+Swipelux devuelve `201` con el envío guardado en `data`, que contiene solo las respuestas conservadas, y lista las demás en `refusedAnswers`:
+
+```json Partial submission response
+{
+  "data": { "id": "sub_000000000000000001", "outcome": "in_review", "answers": [{ "requirementId": "req_a" }] },
+  "refusedAnswers": [
+    {
+      "requirementId": "req_b",
+      "code": "invalid_document_reference",
+      "pointer": "/answers/1/answer",
+      "message": "A referenced document is invalid."
+    }
+  ]
+}
+```
+
+Cada respuesta rechazada tiene uno de estos códigos:
+
+| `code` | Significado |
+| --- | --- |
+| `invalid` | La respuesta no cumple la forma, el formato o las restricciones de la solicitud, o el perfil del cliente no acepta el valor. |
+| `absence_conflicts_with_profile` | Se envió una ausencia para un valor que el perfil contiene. |
+| `invalid_document_reference` | Un documento referenciado no se puede usar para este cliente y esta solicitud. |
+| `depends_on_refused_answer` | La respuesta es válida por sí sola, pero se evalúa junto con una rechazada. Una respuesta condicional y la respuesta que la controla se conservan o se rechazan juntas. |
+
+Se pueden añadir más códigos. Trata un código desconocido como `invalid`. `message` nunca repite el valor enviado.
+
+`allowPartial` no relaja las demás reglas:
+
+- La solicitud debe seguir respondiendo todos los requisitos que tendría que responder sin el campo. Los requisitos abiertos sin responder siguen devolviendo `422 task_submission_incomplete`.
+- Un cuerpo que no cumple el propio esquema de la solicitud, como un campo desconocido o un tipo incorrecto, sigue devolviendo `400 validation_error`.
+- Cuando no se puede conservar ninguna respuesta, Swipelux devuelve `400 validation_error`, no guarda nada y lista cada respuesta rechazada en `errors[]`.
+- `refusedAnswers` está presente, posiblemente vacío, exactamente cuando la solicitud envió `"allowPartial": true`. Una repetición con el mismo `Idempotency-Key` devuelve los mismos `refusedAnswers`.
+
+Antes de corregir una respuesta rechazada, vuelve a leer la tarea. Un requisito rechazado normalmente sigue en `action_required`, pero una solicitud de documento puede estar ya respondida por un archivo registrado. Envía las correcciones con el nuevo `taskRevision` y un `Idempotency-Key` nuevo. Envía una respuesta condicional junto con su respuesta de control.
+
+#### Retira un envío pendiente de revisión {#withdraw-a-submission-awaiting-review}
+
+Para corregir un envío que sigue `in_review`, retíralo con `POST /v3/customers/{customerId}/tasks/{taskId}/withdrawals`. La solicitud no tiene cuerpo y requiere un `Idempotency-Key`. Las claves de API necesitan `accounts:write`, `customers:read` y `customers:write`, como para los envíos:
+
+```bash Withdraw task submission
+curl --request POST \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/tasks/${TASK_ID}/withdrawals" \
+  --header "X-API-Key: ${SWIPELUX_API_KEY}" \
+  --header "Idempotency-Key: task-withdrawal-001"
+```
+
+Swipelux devuelve `200` con el envío en `data`. Su `outcome` pasa a `withdrawn`, sus respuestas vuelven a `action_required` sin `reviewFeedback` y el siguiente envío inicia una nueva `remediationRound`. Los requisitos ya aceptados y el perfil del cliente no cambian. Las respuestas que Swipelux completó a partir del perfil o de archivos registrados siguen en revisión. Puedes retirar tantas veces como necesites. Vuelve a leer la tarea y luego envía las respuestas corregidas.
+
+Swipelux rechaza una retirada en estos casos:
+
+- `404 task_not_found`: la tarea no existe para este cliente.
+- `409 task_not_in_review`: no hay exactamente un envío pendiente de revisión (ninguno, o más de uno, por ejemplo un envío parcial y su corrección), o la tarea superó su plazo.
+- `409 submission_already_forwarded`: el banco revisa esta tarea directamente, o Swipelux ya remitió el envío para revisión. Las tareas creadas con `POST /v3/sandbox/tasks` también lo devuelven.
+
+El `outcome` de un envío ahora puede ser `withdrawn`. Actualiza cualquier cliente que compare `outcome` con una lista fija.
 
 ### Prerrequisito de beneficiario final para empresas {#beneficial-owner-prerequisite-for-businesses}
 

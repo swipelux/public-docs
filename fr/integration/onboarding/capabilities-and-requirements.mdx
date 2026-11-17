@@ -282,6 +282,8 @@ curl --request POST \
 
 Stockez le `data.id` renvoyé en tant que `DOCUMENT_ID` avant de soumettre la réponse qui y fait référence.
 
+Chaque ressource de document v3 inclut `contentSha256`, l'empreinte SHA-256 du fichier stocké sous la forme `sha256:` suivi de l'empreinte hexadécimale en minuscules. Deux documents ayant la même empreinte sont identiques octet pour octet. Pour vérifier si un fichier a déjà été téléversé par le client, par exemple un fichier qu'un examinateur a demandé de remplacer, calculez son SHA-256 avant de le téléverser et comparez-le avec `contentSha256` sur les documents que les réponses de la soumission précédente référencent dans `documentIds`. Le champ vaut `null` pour les documents stockés avant que Swipelux n'enregistre les empreintes.
+
 Pour récupérer un fichier stocké ultérieurement, appelez [`GET /v3/customers/{customerId}/documents/{documentId}/download`](/api-reference/documents/get-v3-customers-by-customer-id-documents-by-document-id-download). Swipelux renvoie une `url` qui télécharge le fichier en pièce jointe et expire après une heure. Les documents archivés renvoient `404`.
 
 ### Réponses API {#api-answers}
@@ -311,6 +313,78 @@ JSON
 ```
 
 Prenez chaque ID d'exigence et type de réponse depuis la dernière tâche. Si l'API signale que la tâche a changé, récupérez-la à nouveau et reconstruisez la soumission à partir de la nouvelle révision.
+
+#### Conserver les réponses valides avec `allowPartial` {#keep-valid-answers-with-allowpartial}
+
+Par défaut, une réponse refusée fait échouer toute la requête et Swipelux n'enregistre rien. La réponse est `400 validation_error`, `400 invalid_document_reference` ou `409 absence_conflicts_with_profile`. Ajoutez `"allowPartial": true` si vous voulez que Swipelux enregistre les réponses valides et refuse uniquement les réponses invalides :
+
+```json Partial submission request
+{
+  "taskRevision": 3,
+  "allowPartial": true,
+  "answers": [
+    { "requirementId": "req_a", "answer": { "type": "text", "value": "Salary" } },
+    { "requirementId": "req_b", "answer": { "type": "document", "documentIds": ["doc_unknown"] } }
+  ]
+}
+```
+
+Swipelux renvoie `201` avec la soumission enregistrée dans `data`, qui ne contient que les réponses conservées, et liste les autres dans `refusedAnswers` :
+
+```json Partial submission response
+{
+  "data": { "id": "sub_000000000000000001", "outcome": "in_review", "answers": [{ "requirementId": "req_a" }] },
+  "refusedAnswers": [
+    {
+      "requirementId": "req_b",
+      "code": "invalid_document_reference",
+      "pointer": "/answers/1/answer",
+      "message": "A referenced document is invalid."
+    }
+  ]
+}
+```
+
+Chaque réponse refusée porte l'un de ces codes :
+
+| `code` | Signification |
+| --- | --- |
+| `invalid` | La réponse ne respecte pas la forme, le format ou les contraintes de la demande, ou le profil du client n'accepte pas la valeur. |
+| `absence_conflicts_with_profile` | Une absence a été envoyée pour une valeur que le profil contient. |
+| `invalid_document_reference` | Un document référencé ne peut pas être utilisé pour ce client et cette demande. |
+| `depends_on_refused_answer` | La réponse est valide en elle-même, mais elle est évaluée avec une réponse refusée. Une réponse conditionnelle et la réponse qui la contrôle sont conservées ou refusées ensemble. |
+
+D'autres codes peuvent être ajoutés. Traitez un code inconnu comme `invalid`. `message` ne répète jamais la valeur soumise.
+
+`allowPartial` n'assouplit pas les autres règles :
+
+- La requête doit toujours répondre à chaque exigence à laquelle elle devrait répondre sans ce champ. Les exigences ouvertes sans réponse renvoient toujours `422 task_submission_incomplete`.
+- Un corps qui ne respecte pas le schéma de la requête lui-même, par exemple un champ inconnu ou un type incorrect, renvoie toujours `400 validation_error`.
+- Lorsqu'aucune réponse ne peut être conservée, Swipelux renvoie `400 validation_error`, n'enregistre rien et liste chaque réponse refusée dans `errors[]`.
+- `refusedAnswers` est présent, éventuellement vide, exactement lorsque la requête a envoyé `"allowPartial": true`. Une relance avec le même `Idempotency-Key` renvoie les mêmes `refusedAnswers`.
+
+Avant de corriger une réponse refusée, relisez la tâche. Une exigence refusée reste normalement `action_required`, mais une demande de document peut déjà être satisfaite par un fichier enregistré. Soumettez les corrections avec le nouveau `taskRevision` et un nouvel `Idempotency-Key`. Envoyez une réponse conditionnelle avec la réponse qui la contrôle.
+
+#### Retirer une soumission en attente d'examen {#withdraw-a-submission-awaiting-review}
+
+Pour corriger une soumission encore `in_review`, retirez-la avec `POST /v3/customers/{customerId}/tasks/{taskId}/withdrawals`. La requête n'a pas de corps et nécessite un `Idempotency-Key`. Les clés API ont besoin de `accounts:write`, `customers:read` et `customers:write`, comme pour les soumissions :
+
+```bash Withdraw task submission
+curl --request POST \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/tasks/${TASK_ID}/withdrawals" \
+  --header "X-API-Key: ${SWIPELUX_API_KEY}" \
+  --header "Idempotency-Key: task-withdrawal-001"
+```
+
+Swipelux renvoie `200` avec la soumission dans `data`. Son `outcome` devient `withdrawn`, ses réponses reviennent à `action_required` sans `reviewFeedback`, et la soumission suivante démarre un nouveau `remediationRound`. Les exigences déjà acceptées et le profil du client restent inchangés. Les réponses que Swipelux a remplies à partir du profil ou de fichiers enregistrés restent en cours d'examen. Vous pouvez retirer autant de fois que nécessaire. Relisez la tâche, puis soumettez les réponses corrigées.
+
+Swipelux refuse un retrait dans les cas suivants :
+
+- `404 task_not_found`: la tâche n'existe pas pour ce client.
+- `409 task_not_in_review`: il n'y a pas exactement une soumission en attente d'examen (aucune, ou plusieurs, par exemple une soumission partielle et sa correction), ou l'échéance de la tâche est dépassée.
+- `409 submission_already_forwarded`: la banque examine cette tâche directement, ou Swipelux a déjà transmis la soumission pour examen. Les tâches créées avec `POST /v3/sandbox/tasks` le renvoient aussi.
+
+L'`outcome` d'une soumission peut désormais valoir `withdrawn`. Mettez à jour tout client qui compare `outcome` à une liste fixe.
 
 ### Prérequis de bénéficiaire effectif pour les entreprises {#beneficial-owner-prerequisite-for-businesses}
 

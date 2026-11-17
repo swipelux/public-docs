@@ -282,6 +282,8 @@ curl --request POST \
 
 Speichern Sie die zurückgegebene `data.id` als `DOCUMENT_ID`, bevor Sie die Antwort einreichen, die darauf verweist.
 
+Jede v3-Dokumentressource enthält `contentSha256`, den SHA-256-Hash der gespeicherten Datei als `sha256:` gefolgt vom hexadezimalen Hash in Kleinbuchstaben. Zwei Dokumente mit demselben Hash sind byte-identisch. Um zu prüfen, ob eine Datei bereits vom Kunden hochgeladen wurde, zum Beispiel eine Datei, deren Ersetzung ein Prüfer angefordert hat, berechnen Sie ihren SHA-256 vor dem Hochladen und vergleichen Sie ihn mit `contentSha256` der Dokumente, auf die die Antworten der früheren Einreichung in `documentIds` verweisen. Das Feld ist `null` für Dokumente, die gespeichert wurden, bevor Swipelux Hashes erfasst hat.
+
 Um eine gespeicherte Datei später abzurufen, rufen Sie [`GET /v3/customers/{customerId}/documents/{documentId}/download`](/api-reference/documents/get-v3-customers-by-customer-id-documents-by-document-id-download) auf. Swipelux liefert eine `url`, die die Datei als Anhang herunterlädt und nach einer Stunde abläuft. Archivierte Dokumente liefern `404`.
 
 ### API-Antworten {#api-answers}
@@ -311,6 +313,78 @@ JSON
 ```
 
 Übernehmen Sie jede Anforderungs-ID und jeden Antworttyp aus der neuesten Aufgabe. Wenn die API meldet, dass sich die Aufgabe geändert hat, rufen Sie sie erneut ab und bauen Sie die Einreichung aus der neuen Revision neu auf.
+
+#### Gültige Antworten mit `allowPartial` behalten {#keep-valid-answers-with-allowpartial}
+
+Standardmäßig lässt eine abgelehnte Antwort die gesamte Anfrage scheitern, und Swipelux speichert nichts. Die Antwort ist `400 validation_error`, `400 invalid_document_reference` oder `409 absence_conflicts_with_profile`. Fügen Sie `"allowPartial": true` hinzu, wenn Swipelux die gültigen Antworten speichern und nur die ungültigen ablehnen soll:
+
+```json Partial submission request
+{
+  "taskRevision": 3,
+  "allowPartial": true,
+  "answers": [
+    { "requirementId": "req_a", "answer": { "type": "text", "value": "Salary" } },
+    { "requirementId": "req_b", "answer": { "type": "document", "documentIds": ["doc_unknown"] } }
+  ]
+}
+```
+
+Swipelux gibt `201` mit der gespeicherten Einreichung in `data` zurück, die nur die behaltenen Antworten enthält, und listet die übrigen in `refusedAnswers` auf:
+
+```json Partial submission response
+{
+  "data": { "id": "sub_000000000000000001", "outcome": "in_review", "answers": [{ "requirementId": "req_a" }] },
+  "refusedAnswers": [
+    {
+      "requirementId": "req_b",
+      "code": "invalid_document_reference",
+      "pointer": "/answers/1/answer",
+      "message": "A referenced document is invalid."
+    }
+  ]
+}
+```
+
+Jede abgelehnte Antwort hat einen dieser Codes:
+
+| `code` | Bedeutung |
+| --- | --- |
+| `invalid` | Die Antwort entspricht nicht der Form, dem Format oder den Einschränkungen der Anforderung, oder das Kundenprofil akzeptiert den Wert nicht. |
+| `absence_conflicts_with_profile` | Eine Abwesenheit wurde für einen Wert gesendet, den das Profil enthält. |
+| `invalid_document_reference` | Ein referenziertes Dokument kann für diesen Kunden und diese Anforderung nicht verwendet werden. |
+| `depends_on_refused_answer` | Die Antwort ist für sich gültig, wird aber zusammen mit einer abgelehnten beurteilt. Eine bedingte Antwort und die Antwort, die sie steuert, werden gemeinsam behalten oder abgelehnt. |
+
+Weitere Codes können hinzukommen. Behandeln Sie einen unbekannten Code als `invalid`. `message` wiederholt nie den übermittelten Wert.
+
+`allowPartial` lockert die anderen Regeln nicht:
+
+- Die Anfrage muss weiterhin jede Anforderung beantworten, die sie auch ohne das Feld beantworten müsste. Unbeantwortete offene Anforderungen geben weiterhin `422 task_submission_incomplete` zurück.
+- Ein Body, der schon am Anfrageschema scheitert, etwa durch ein unbekanntes Feld oder einen falschen Typ, gibt weiterhin `400 validation_error` zurück.
+- Wenn keine Antwort behalten werden kann, gibt Swipelux `400 validation_error` zurück, speichert nichts und listet jede abgelehnte Antwort in `errors[]` auf.
+- `refusedAnswers` ist genau dann vorhanden, möglicherweise leer, wenn die Anfrage `"allowPartial": true` gesendet hat. Eine Wiederholung mit demselben `Idempotency-Key` gibt dieselben `refusedAnswers` zurück.
+
+Lesen Sie die Aufgabe erneut, bevor Sie eine abgelehnte Antwort korrigieren. Eine abgelehnte Anforderung ist normalerweise weiterhin `action_required`, aber eine Dokumentanforderung kann bereits durch eine hinterlegte Datei beantwortet sein. Reichen Sie die Korrekturen mit der neuen `taskRevision` und einem neuen `Idempotency-Key` ein. Senden Sie eine bedingte Antwort zusammen mit der Antwort, die sie steuert.
+
+#### Eine auf Prüfung wartende Einreichung zurücknehmen {#withdraw-a-submission-awaiting-review}
+
+Um eine Einreichung zu korrigieren, die noch `in_review` ist, nehmen Sie sie mit `POST /v3/customers/{customerId}/tasks/{taskId}/withdrawals` zurück. Die Anfrage hat keinen Body und benötigt einen `Idempotency-Key`. API-Schlüssel benötigen `accounts:write`, `customers:read` und `customers:write`, wie bei Einreichungen:
+
+```bash Withdraw task submission
+curl --request POST \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/tasks/${TASK_ID}/withdrawals" \
+  --header "X-API-Key: ${SWIPELUX_API_KEY}" \
+  --header "Idempotency-Key: task-withdrawal-001"
+```
+
+Swipelux gibt `200` mit der Einreichung in `data` zurück. Ihr `outcome` wird `withdrawn`, ihre Antworten kehren ohne `reviewFeedback` zu `action_required` zurück, und die nächste Einreichung beginnt eine neue `remediationRound`. Bereits akzeptierte Anforderungen und das Kundenprofil bleiben unverändert. Antworten, die Swipelux aus dem Profil oder aus hinterlegten Dateien ausgefüllt hat, bleiben in Prüfung. Sie können so oft zurücknehmen, wie Sie benötigen. Lesen Sie die Aufgabe erneut und reichen Sie dann korrigierte Antworten ein.
+
+Swipelux lehnt eine Rücknahme in diesen Fällen ab:
+
+- `404 task_not_found`: die Aufgabe existiert für diesen Kunden nicht.
+- `409 task_not_in_review`: nicht genau eine Einreichung wartet auf Prüfung (keine oder mehr als eine, zum Beispiel eine Teileinreichung und ihre Korrektur), oder die Frist der Aufgabe ist abgelaufen.
+- `409 submission_already_forwarded`: die Bank prüft diese Aufgabe direkt, oder Swipelux hat die Einreichung bereits zur Prüfung weitergeleitet. Aufgaben, die mit `POST /v3/sandbox/tasks` erstellt wurden, geben diesen Code ebenfalls zurück.
+
+Das `outcome` einer Einreichung kann jetzt `withdrawn` sein. Aktualisieren Sie jeden Client, der `outcome` gegen eine feste Liste prüft.
 
 ### Voraussetzung des wirtschaftlich Berechtigten für Unternehmen {#beneficial-owner-prerequisite-for-businesses}
 

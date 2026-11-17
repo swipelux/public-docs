@@ -282,6 +282,8 @@ curl --request POST \
 
 そのドキュメントを参照する回答を送信する前に、返された `data.id` を `DOCUMENT_ID` として保存してください。
 
+すべての v3 ドキュメントリソースには `contentSha256` が含まれます。これは保存されたファイルの SHA-256 ダイジェストで、`sha256:` の後に小文字の 16 進ダイジェストが続く形式です。ダイジェストが同じ 2 つのドキュメントはバイト単位で同一です。審査担当者が差し替えを求めたファイルなど、顧客がすでにアップロードしたファイルかどうかを確認するには、アップロード前にその SHA-256 を計算し、以前の送信の回答が `documentIds` で参照しているドキュメントの `contentSha256` と比較します。Swipelux がダイジェストを記録する前に保存されたドキュメントでは、このフィールドは `null` です。
+
 保存済みのファイルを後で取得するには、[`GET /v3/customers/{customerId}/documents/{documentId}/download`](/api-reference/documents/get-v3-customers-by-customer-id-documents-by-document-id-download) を呼び出します。Swipelux は、ファイルを添付ファイルとしてダウンロードする `url` を返します。この URL は 1 時間後に期限切れになります。アーカイブ済みのドキュメントは `404` を返します。
 
 ### API 回答 {#api-answers}
@@ -311,6 +313,78 @@ JSON
 ```
 
 すべての要件 ID と回答タイプは、最新のタスクから取得してください。API がタスクの変更を報告した場合は、タスクを再取得し、新しいリビジョンから送信を再構築してください。
+
+#### `allowPartial` で有効な回答を保持する {#keep-valid-answers-with-allowpartial}
+
+デフォルトでは、拒否された回答が 1 つでもあるとリクエスト全体が失敗し、Swipelux は何も保存しません。レスポンスは `400 validation_error`、`400 invalid_document_reference`、`409 absence_conflicts_with_profile` のいずれかです。Swipelux に有効な回答を保存させ、無効な回答のみを拒否させたい場合は、`"allowPartial": true` を追加します。
+
+```json Partial submission request
+{
+  "taskRevision": 3,
+  "allowPartial": true,
+  "answers": [
+    { "requirementId": "req_a", "answer": { "type": "text", "value": "Salary" } },
+    { "requirementId": "req_b", "answer": { "type": "document", "documentIds": ["doc_unknown"] } }
+  ]
+}
+```
+
+Swipelux は `201` を返し、保持された回答のみを含む保存済みの送信を `data` に、それ以外の回答を `refusedAnswers` に一覧表示します。
+
+```json Partial submission response
+{
+  "data": { "id": "sub_000000000000000001", "outcome": "in_review", "answers": [{ "requirementId": "req_a" }] },
+  "refusedAnswers": [
+    {
+      "requirementId": "req_b",
+      "code": "invalid_document_reference",
+      "pointer": "/answers/1/answer",
+      "message": "A referenced document is invalid."
+    }
+  ]
+}
+```
+
+拒否された各回答には、次のいずれかのコードが付きます。
+
+| `code` | 意味 |
+| --- | --- |
+| `invalid` | 回答がリクエストの形、形式、制約を満たしていないか、顧客プロファイルがその値を受け付けません。 |
+| `absence_conflicts_with_profile` | プロファイルに値がある項目に対して、不在の回答が送信されました。 |
+| `invalid_document_reference` | 参照されたドキュメントは、この顧客とこのリクエストには使用できません。 |
+| `depends_on_refused_answer` | 回答自体は有効ですが、拒否された回答と合わせて判定されます。条件付きの回答とそれを制御する回答は、まとめて保持または拒否されます。 |
+
+今後コードが追加される場合があります。不明なコードは `invalid` として扱ってください。`message` が送信された値を繰り返すことはありません。
+
+`allowPartial` は、その他のルールを緩和しません。
+
+- リクエストは、このフィールドがない場合に回答が必要なすべての要件に引き続き回答する必要があります。未回答のオープン中の要件は、引き続き `422 task_submission_incomplete` を返します。
+- 不明なフィールドや誤った型など、リクエストスキーマ自体を満たさない本文は、引き続き `400 validation_error` を返します。
+- 保持できる回答がない場合、Swipelux は `400 validation_error` を返し、何も保存せず、拒否されたすべての回答を `errors[]` に一覧表示します。
+- `refusedAnswers` は、リクエストが `"allowPartial": true` を送信した場合にのみ存在します (空の場合もあります)。同じ `Idempotency-Key` で再送すると、同じ `refusedAnswers` が返されます。
+
+拒否された回答を修正する前に、タスクを再度読み取ってください。拒否された要件は通常 `action_required` のままですが、書類リクエストはすでに登録済みのファイルで回答されている場合があります。修正は新しい `taskRevision` と新しい `Idempotency-Key` で送信してください。条件付きの回答は、それを制御する回答と一緒に送信してください。
+
+#### 審査待ちの送信を取り下げる {#withdraw-a-submission-awaiting-review}
+
+まだ `in_review` の送信を修正するには、`POST /v3/customers/{customerId}/tasks/{taskId}/withdrawals` で取り下げます。リクエストに本文はなく、`Idempotency-Key` が必要です。送信と同様に、API キーには `accounts:write`、`customers:read`、`customers:write` が必要です。
+
+```bash Withdraw task submission
+curl --request POST \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/tasks/${TASK_ID}/withdrawals" \
+  --header "X-API-Key: ${SWIPELUX_API_KEY}" \
+  --header "Idempotency-Key: task-withdrawal-001"
+```
+
+Swipelux は `200` を返し、送信を `data` に含めます。その `outcome` は `withdrawn` になり、回答は `reviewFeedback` なしで `action_required` に戻り、次の送信で新しい `remediationRound` が始まります。すでに承認された要件と顧客プロファイルは変更されません。Swipelux がプロファイルや登録済みのファイルから入力した回答は審査中のままです。取り下げは必要な回数だけ行えます。タスクを再度読み取ってから、修正した回答を送信してください。
+
+Swipelux は次の場合に取り下げを拒否します。
+
+- `404 task_not_found`: この顧客にそのタスクが存在しません。
+- `409 task_not_in_review`: 審査待ちの送信がちょうど 1 件ではない (0 件、または部分的な送信とその修正のように複数件ある) か、タスクの期限が過ぎています。
+- `409 submission_already_forwarded`: 銀行がこのタスクを直接審査しているか、Swipelux がすでに送信を審査に回しています。`POST /v3/sandbox/tasks` で作成したタスクもこれを返します。
+
+送信の `outcome` が `withdrawn` になる場合があります。`outcome` を固定のリストと照合しているクライアントを更新してください。
 
 ### ビジネスにおける実質的支配者の前提条件 {#beneficial-owner-prerequisite-for-businesses}
 

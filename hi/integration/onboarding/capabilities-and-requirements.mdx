@@ -282,6 +282,8 @@ curl --request POST \
 
 Answer submit करने से पहले जो इसे संदर्भित करता है, लौटाए गए `data.id` को `DOCUMENT_ID` के रूप में संग्रहीत करें।
 
+हर v3 document resource में `contentSha256` शामिल होता है, जो stored file का SHA-256 digest है, `sha256:` के बाद lowercase hex digest के रूप में। एक ही digest वाले दो documents byte-identical होते हैं। यह जाँचने के लिए कि कोई file customer पहले ही upload कर चुका है या नहीं, उदाहरण के लिए वह file जिसे किसी reviewer ने replace करने को कहा, upload करने से पहले उसका SHA-256 compute करें और उसे उन documents के `contentSha256` से compare करें जिन्हें पिछले submission के answers `documentIds` में reference करते हैं। Swipelux के digests record करने से पहले stored documents के लिए यह field `null` होता है।
+
 किसी संग्रहीत फ़ाइल को बाद में प्राप्त करने के लिए, [`GET /v3/customers/{customerId}/documents/{documentId}/download`](/api-reference/documents/get-v3-customers-by-customer-id-documents-by-document-id-download) कॉल करें। Swipelux एक `url` लौटाता है जो फ़ाइल को attachment के रूप में download करता है और एक घंटे बाद समाप्त हो जाता है। Archived documents `404` लौटाते हैं।
 
 ### API answers {#api-answers}
@@ -311,6 +313,78 @@ JSON
 ```
 
 प्रत्येक requirement ID और answer type नवीनतम task से लें। यदि API यह रिपोर्ट करता है कि task बदल गया है, तो इसे पुन: प्राप्त करें और नए revision से submission को फिर से बनाएँ।
+
+#### `allowPartial` के साथ valid answers रखें {#keep-valid-answers-with-allowpartial}
+
+Default रूप से, एक refused answer पूरे request को fail कर देता है और Swipelux कुछ भी store नहीं करता। Response `400 validation_error`, `400 invalid_document_reference` या `409 absence_conflicts_with_profile` होता है। जब आप चाहते हैं कि Swipelux valid answers store करे और केवल invalid answers को refuse करे, तो `"allowPartial": true` जोड़ें:
+
+```json Partial submission request
+{
+  "taskRevision": 3,
+  "allowPartial": true,
+  "answers": [
+    { "requirementId": "req_a", "answer": { "type": "text", "value": "Salary" } },
+    { "requirementId": "req_b", "answer": { "type": "document", "documentIds": ["doc_unknown"] } }
+  ]
+}
+```
+
+Swipelux `data` में stored submission के साथ `201` लौटाता है, जिसमें केवल रखे गए answers होते हैं, और बाकी को `refusedAnswers` में सूचीबद्ध करता है:
+
+```json Partial submission response
+{
+  "data": { "id": "sub_000000000000000001", "outcome": "in_review", "answers": [{ "requirementId": "req_a" }] },
+  "refusedAnswers": [
+    {
+      "requirementId": "req_b",
+      "code": "invalid_document_reference",
+      "pointer": "/answers/1/answer",
+      "message": "A referenced document is invalid."
+    }
+  ]
+}
+```
+
+हर refused answer में इनमें से एक code होता है:
+
+| `code` | अर्थ |
+| --- | --- |
+| `invalid` | Answer request के shape, format या constraints को पूरा नहीं करता, या customer profile value को स्वीकार नहीं करता। |
+| `absence_conflicts_with_profile` | ऐसी value के लिए absence भेजी गई जो profile में मौजूद है। |
+| `invalid_document_reference` | Referenced document इस customer और request के लिए उपयोग नहीं किया जा सकता। |
+| `depends_on_refused_answer` | Answer अपने आप में valid है लेकिन refused answer के साथ मिलाकर judge किया जाता है। एक conditional answer और उसे control करने वाला answer साथ में रखे या refuse किए जाते हैं। |
+
+आगे और codes जोड़े जा सकते हैं। Unknown code को `invalid` मानें। `message` कभी भी submitted value को नहीं दोहराता।
+
+`allowPartial` अन्य rules को ढीला नहीं करता:
+
+- Request को अब भी हर उस requirement का उत्तर देना होगा जिसका उत्तर उसे field के बिना देना पड़ता। Unanswered open requirements अब भी `422 task_submission_incomplete` लौटाते हैं।
+- ऐसा body जो खुद request schema में fail होता है, जैसे unknown field या गलत type, अब भी `400 validation_error` लौटाता है।
+- जब कोई भी answer रखा नहीं जा सकता, तो Swipelux `400 validation_error` लौटाता है, कुछ भी store नहीं करता, और हर refused answer को `errors[]` में सूचीबद्ध करता है।
+- `refusedAnswers` ठीक तब मौजूद होता है, संभवतः खाली, जब request ने `"allowPartial": true` भेजा हो। उसी `Idempotency-Key` के साथ replay वही `refusedAnswers` लौटाता है।
+
+Refused answer को सुधारने से पहले task को फिर से पढ़ें। Refused requirement सामान्यतः अब भी `action_required` होता है, लेकिन document request का उत्तर record पर मौजूद किसी file से पहले ही दिया जा चुका हो सकता है। Corrections को नए `taskRevision` और नए `Idempotency-Key` के साथ submit करें। Conditional answer को उसे control करने वाले answer के साथ भेजें।
+
+#### Review की प्रतीक्षा कर रहे submission को withdraw करें {#withdraw-a-submission-awaiting-review}
+
+जो submission अभी भी `in_review` है, उसे सुधारने के लिए `POST /v3/customers/{customerId}/tasks/{taskId}/withdrawals` से वापस लें। Request का कोई body नहीं है और इसके लिए `Idempotency-Key` आवश्यक है। API keys को submissions की तरह `accounts:write`, `customers:read` और `customers:write` चाहिए:
+
+```bash Withdraw task submission
+curl --request POST \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/tasks/${TASK_ID}/withdrawals" \
+  --header "X-API-Key: ${SWIPELUX_API_KEY}" \
+  --header "Idempotency-Key: task-withdrawal-001"
+```
+
+Swipelux `data` में submission के साथ `200` लौटाता है। उसका `outcome` `withdrawn` हो जाता है, उसके answers `reviewFeedback` के बिना `action_required` पर लौट आते हैं, और अगला submission एक नया `remediationRound` शुरू करता है। पहले से accepted requirements और customer profile अपरिवर्तित रहते हैं। जिन answers को Swipelux ने profile या record पर मौजूद files से भरा, वे review में बने रहते हैं। आप जितनी बार ज़रूरत हो withdraw कर सकते हैं। Task को फिर से पढ़ें, फिर corrected answers submit करें।
+
+Swipelux इन मामलों में withdrawal को refuse करता है:
+
+- `404 task_not_found`: इस customer के लिए task मौजूद नहीं है।
+- `409 task_not_in_review`: ठीक एक submission review की प्रतीक्षा में नहीं है (कोई नहीं, या एक से अधिक, उदाहरण के लिए एक partial submission और उसका correction), या task की deadline निकल चुकी है।
+- `409 submission_already_forwarded`: bank इस task को सीधे review करता है, या Swipelux submission को पहले ही review के लिए आगे भेज चुका है। `POST /v3/sandbox/tasks` से बने tasks भी इसे लौटाते हैं।
+
+Submission `outcome` अब `withdrawn` हो सकता है। ऐसे किसी भी client को update करें जो `outcome` को एक fixed list से check करता है।
 
 ### Businesses के लिए beneficial-owner पूर्वापेक्षा {#beneficial-owner-prerequisite-for-businesses}
 

@@ -282,6 +282,8 @@ curl --request POST \
 
 Bewaar de geretourneerde `data.id` als `DOCUMENT_ID` voordat je het antwoord indient dat ernaar verwijst.
 
+Elke v3-documentresource bevat `contentSha256`, de SHA-256-hash van het opgeslagen bestand als `sha256:` gevolgd door de hexadecimale hash in kleine letters. Twee documenten met dezelfde hash zijn byte-identiek. Om te controleren of een bestand al door de klant is geüpload, bijvoorbeeld een bestand dat een beoordelaar wilde laten vervangen, bereken je de SHA-256 vóór het uploaden en vergelijk je die met `contentSha256` van de documenten waarnaar de antwoorden van de eerdere submission verwijzen in `documentIds`. Het veld is `null` voor documenten die zijn opgeslagen voordat Swipelux hashes vastlegde.
+
 Om een opgeslagen bestand later op te halen, roep je [`GET /v3/customers/{customerId}/documents/{documentId}/download`](/api-reference/documents/get-v3-customers-by-customer-id-documents-by-document-id-download) aan. Swipelux retourneert een `url` die het bestand als bijlage downloadt en na één uur verloopt. Gearchiveerde documenten retourneren `404`.
 
 ### API-antwoorden {#api-answers}
@@ -311,6 +313,78 @@ JSON
 ```
 
 Neem elke requirement-ID en elk antwoordtype uit de nieuwste taak. Als de API meldt dat de taak is gewijzigd, refetch je hem en bouw je de submission opnieuw op vanuit de nieuwe revisie.
+
+#### Behoud geldige antwoorden met `allowPartial` {#keep-valid-answers-with-allowpartial}
+
+Standaard laat één geweigerd antwoord het hele request mislukken en slaat Swipelux niets op. Het antwoord is `400 validation_error`, `400 invalid_document_reference` of `409 absence_conflicts_with_profile`. Voeg `"allowPartial": true` toe wanneer je wilt dat Swipelux de geldige antwoorden opslaat en alleen de ongeldige weigert:
+
+```json Partial submission request
+{
+  "taskRevision": 3,
+  "allowPartial": true,
+  "answers": [
+    { "requirementId": "req_a", "answer": { "type": "text", "value": "Salary" } },
+    { "requirementId": "req_b", "answer": { "type": "document", "documentIds": ["doc_unknown"] } }
+  ]
+}
+```
+
+Swipelux retourneert `201` met de opgeslagen submission in `data`, die alleen de behouden antwoorden bevat, en toont de andere in `refusedAnswers`:
+
+```json Partial submission response
+{
+  "data": { "id": "sub_000000000000000001", "outcome": "in_review", "answers": [{ "requirementId": "req_a" }] },
+  "refusedAnswers": [
+    {
+      "requirementId": "req_b",
+      "code": "invalid_document_reference",
+      "pointer": "/answers/1/answer",
+      "message": "A referenced document is invalid."
+    }
+  ]
+}
+```
+
+Elk geweigerd antwoord heeft een van deze codes:
+
+| `code` | Betekenis |
+| --- | --- |
+| `invalid` | Het antwoord voldoet niet aan de vorm, het formaat of de beperkingen van het verzoek, of het klantprofiel accepteert de waarde niet. |
+| `absence_conflicts_with_profile` | Er is een afwezigheid verstuurd voor een waarde die het profiel bevat. |
+| `invalid_document_reference` | Een gerefereerd document kan niet worden gebruikt voor deze klant en dit verzoek. |
+| `depends_on_refused_answer` | Het antwoord is op zichzelf geldig, maar wordt samen met een geweigerd antwoord beoordeeld. Een voorwaardelijk antwoord en het antwoord dat het bepaalt, worden samen behouden of geweigerd. |
+
+Er kunnen meer codes bijkomen. Behandel een onbekende code als `invalid`. `message` herhaalt nooit de ingediende waarde.
+
+`allowPartial` versoepelt de andere regels niet:
+
+- Het request moet nog steeds elke requirement beantwoorden die het zonder het veld zou moeten beantwoorden. Onbeantwoorde open requirements retourneren nog steeds `422 task_submission_incomplete`.
+- Een body die al niet aan het requestschema voldoet, zoals een onbekend veld of een verkeerd type, retourneert nog steeds `400 validation_error`.
+- Wanneer geen enkel antwoord kan worden behouden, retourneert Swipelux `400 validation_error`, slaat niets op en toont elk geweigerd antwoord in `errors[]`.
+- `refusedAnswers` is aanwezig, mogelijk leeg, precies wanneer het request `"allowPartial": true` heeft verstuurd. Een herhaling met dezelfde `Idempotency-Key` retourneert dezelfde `refusedAnswers`.
+
+Lees de task opnieuw voordat je een geweigerd antwoord corrigeert. Een geweigerde requirement is normaal gesproken nog `action_required`, maar een documentverzoek kan al beantwoord zijn door een bestand dat al bekend is. Dien de correcties in met de nieuwe `taskRevision` en een nieuwe `Idempotency-Key`. Stuur een voorwaardelijk antwoord samen met het antwoord dat het bepaalt.
+
+#### Trek een submission in die op beoordeling wacht {#withdraw-a-submission-awaiting-review}
+
+Om een submission te corrigeren die nog `in_review` is, trek je deze in met `POST /v3/customers/{customerId}/tasks/{taskId}/withdrawals`. Het request heeft geen body en vereist een `Idempotency-Key`. API-sleutels hebben `accounts:write`, `customers:read` en `customers:write` nodig, net als voor submissions:
+
+```bash Withdraw task submission
+curl --request POST \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/tasks/${TASK_ID}/withdrawals" \
+  --header "X-API-Key: ${SWIPELUX_API_KEY}" \
+  --header "Idempotency-Key: task-withdrawal-001"
+```
+
+Swipelux retourneert `200` met de submission in `data`. Het `outcome` wordt `withdrawn`, de antwoorden keren terug naar `action_required` zonder `reviewFeedback`, en de volgende submission start een nieuwe `remediationRound`. Al geaccepteerde requirements en het klantprofiel blijven ongewijzigd. Antwoorden die Swipelux heeft ingevuld vanuit het profiel of vanuit bekende bestanden, blijven in beoordeling. Je kunt zo vaak intrekken als nodig is. Lees de task opnieuw en dien daarna gecorrigeerde antwoorden in.
+
+Swipelux weigert een intrekking in deze gevallen:
+
+- `404 task_not_found`: de task bestaat niet voor deze klant.
+- `409 task_not_in_review`: er wacht niet precies één submission op beoordeling (geen, of meer dan één, bijvoorbeeld een gedeeltelijke submission en de correctie ervan), of de deadline van de task is verstreken.
+- `409 submission_already_forwarded`: de bank beoordeelt deze task rechtstreeks, of Swipelux heeft de submission al doorgestuurd voor beoordeling. Tasks die zijn gemaakt met `POST /v3/sandbox/tasks` retourneren dit ook.
+
+Het `outcome` van een submission kan nu `withdrawn` zijn. Werk elke client bij die `outcome` controleert tegen een vaste lijst.
 
 ### UBO-voorwaarde voor bedrijven {#beneficial-owner-prerequisite-for-businesses}
 

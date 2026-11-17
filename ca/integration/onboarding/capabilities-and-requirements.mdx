@@ -282,6 +282,8 @@ curl --request POST \
 
 Emmagatzema el `data.id` retornat com a `DOCUMENT_ID` abans d'enviar la resposta que hi fa referència.
 
+Cada recurs de document v3 inclou `contentSha256`, el resum SHA-256 del fitxer desat com a `sha256:` seguit del resum hexadecimal en minúscules. Dos documents amb el mateix resum són idèntics byte a byte. Per comprovar si un fitxer ja l'ha pujat el client, per exemple un fitxer que un revisor ha demanat substituir, calcula'n el SHA-256 abans de pujar-lo i compara'l amb `contentSha256` als documents que les respostes de l'enviament anterior referencien a `documentIds`. El camp és `null` per als documents desats abans que Swipelux registrés els resums.
+
 Per recuperar més tard un fitxer emmagatzemat, crida [`GET /v3/customers/{customerId}/documents/{documentId}/download`](/api-reference/documents/get-v3-customers-by-customer-id-documents-by-document-id-download). Swipelux retorna una `url` que descarrega el fitxer com a adjunt i que expira al cap d'una hora. Els documents arxivats retornen `404`.
 
 ### Respostes via API {#api-answers}
@@ -311,6 +313,78 @@ JSON
 ```
 
 Extreu cada ID de requisit i tipus de resposta de la tasca més recent. Si l'API informa que la tasca ha canviat, torna a obtenir-la i reconstrueix l'enviament a partir de la nova revisió.
+
+#### Conserva les respostes vàlides amb `allowPartial` {#keep-valid-answers-with-allowpartial}
+
+Per defecte, una resposta rebutjada fa fallar tota la petició i Swipelux no desa res. La resposta és `400 validation_error`, `400 invalid_document_reference` o `409 absence_conflicts_with_profile`. Afegeix `"allowPartial": true` quan vulguis que Swipelux desi les respostes vàlides i rebutgi només les no vàlides:
+
+```json Partial submission request
+{
+  "taskRevision": 3,
+  "allowPartial": true,
+  "answers": [
+    { "requirementId": "req_a", "answer": { "type": "text", "value": "Salary" } },
+    { "requirementId": "req_b", "answer": { "type": "document", "documentIds": ["doc_unknown"] } }
+  ]
+}
+```
+
+Swipelux retorna `201` amb l'enviament desat a `data`, que conté només les respostes conservades, i llista les altres a `refusedAnswers`:
+
+```json Partial submission response
+{
+  "data": { "id": "sub_000000000000000001", "outcome": "in_review", "answers": [{ "requirementId": "req_a" }] },
+  "refusedAnswers": [
+    {
+      "requirementId": "req_b",
+      "code": "invalid_document_reference",
+      "pointer": "/answers/1/answer",
+      "message": "A referenced document is invalid."
+    }
+  ]
+}
+```
+
+Cada resposta rebutjada té un d'aquests codis:
+
+| `code` | Significat |
+| --- | --- |
+| `invalid` | La resposta no compleix la forma, el format o les restriccions de la sol·licitud, o el perfil del client no accepta el valor. |
+| `absence_conflicts_with_profile` | S'ha enviat una absència per a un valor que el perfil conté. |
+| `invalid_document_reference` | Un document referenciat no es pot utilitzar per a aquest client i aquesta sol·licitud. |
+| `depends_on_refused_answer` | La resposta és vàlida per si sola, però s'avalua juntament amb una de rebutjada. Una resposta condicional i la resposta que la controla es conserven o es rebutgen juntes. |
+
+Se'n poden afegir més codis. Tracta un codi desconegut com a `invalid`. `message` mai no repeteix el valor enviat.
+
+`allowPartial` no relaxa les altres regles:
+
+- La petició ha de continuar responent tots els requisits que hauria de respondre sense el camp. Els requisits oberts sense resposta continuen retornant `422 task_submission_incomplete`.
+- Un cos que no compleix el mateix esquema de la petició, com ara un camp desconegut o un tipus incorrecte, continua retornant `400 validation_error`.
+- Quan no es pot conservar cap resposta, Swipelux retorna `400 validation_error`, no desa res i llista cada resposta rebutjada a `errors[]`.
+- `refusedAnswers` és present, possiblement buit, exactament quan la petició ha enviat `"allowPartial": true`. Una repetició amb el mateix `Idempotency-Key` retorna els mateixos `refusedAnswers`.
+
+Abans de corregir una resposta rebutjada, torna a llegir la tasca. Un requisit rebutjat normalment continua a `action_required`, però una sol·licitud de document ja pot estar resposta per un fitxer registrat. Envia les correccions amb el nou `taskRevision` i un `Idempotency-Key` nou. Envia una resposta condicional juntament amb la resposta que la controla.
+
+#### Retira un enviament pendent de revisió {#withdraw-a-submission-awaiting-review}
+
+Per corregir un enviament que encara és `in_review`, retira'l amb `POST /v3/customers/{customerId}/tasks/{taskId}/withdrawals`. La petició no té cos i requereix un `Idempotency-Key`. Les claus d'API necessiten `accounts:write`, `customers:read` i `customers:write`, com per als enviaments:
+
+```bash Withdraw task submission
+curl --request POST \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/tasks/${TASK_ID}/withdrawals" \
+  --header "X-API-Key: ${SWIPELUX_API_KEY}" \
+  --header "Idempotency-Key: task-withdrawal-001"
+```
+
+Swipelux retorna `200` amb l'enviament a `data`. El seu `outcome` passa a `withdrawn`, les respostes tornen a `action_required` sense `reviewFeedback` i el següent enviament inicia una nova `remediationRound`. Els requisits ja acceptats i el perfil del client no canvien. Les respostes que Swipelux ha omplert a partir del perfil o de fitxers registrats continuen en revisió. Pots retirar tantes vegades com calgui. Torna a llegir la tasca i després envia les respostes corregides.
+
+Swipelux rebutja una retirada en aquests casos:
+
+- `404 task_not_found`: la tasca no existeix per a aquest client.
+- `409 task_not_in_review`: no hi ha exactament un enviament pendent de revisió (cap, o més d'un, per exemple un enviament parcial i la seva correcció), o la tasca ha superat el termini.
+- `409 submission_already_forwarded`: el banc revisa aquesta tasca directament, o Swipelux ja ha remès l'enviament per a revisió. Les tasques creades amb `POST /v3/sandbox/tasks` també el retornen.
+
+L'`outcome` d'un enviament ara pot ser `withdrawn`. Actualitza qualsevol client que comprovi `outcome` amb una llista fixa.
 
 ### Prerequisit de propietari beneficiari per a negocis {#beneficial-owner-prerequisite-for-businesses}
 

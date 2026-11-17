@@ -113,6 +113,10 @@ sequenceDiagram
   else rejected
     SLX-->>You: task rejected, parent statusReason says what is next
   end
+  opt correct before review
+    You->>SLX: POST .../tasks/{taskId}/withdrawals
+    SLX-->>You: submission withdrawn, answers back to action_required
+  end
 ```
 
 主要な性質:
@@ -121,6 +125,8 @@ sequenceDiagram
 - 送信は **レビューによって制御されます**。送信自体は capability や account の状態を直接変更することはなく、受理された時点で変更されます。1 つ例外として、`profile` の回答は送信時に顧客プロフィールへ書き込まれます (2.3)。送信後は、task または親リソースをポーリングしてください。
 - `taskRevision` (task の `revision` のエコー) は並行制御のガードです。読み取り後に task が変更されていた場合は、再読み込みして回答を再構築してください。
 - `absence` は 1 級の回答 (「これを持っていない理由は…」) です。要件を未回答のまま残さず、これを使用してください。
+- submission で `allowPartial: true` を指定すると、リクエスト全体を失敗させる代わりに、有効な回答を保存し、無効な回答を `refusedAnswers` で返します (2.3)。
+- まだ `in_review` の submission は、審査の判定前に取り下げて修正できます (2.3)。
 - `rejected` は通常 task の終了を意味します。ホスト型検証によって却下され、その判定が後から覆された場合、task は `satisfied` になるか、新しい判定で回答されない要件が再び開かれた状態で `action_required` になります。それらの回答を新しい `revision` に対して再度送信してください。
 
 ### 1.5 資金移動
@@ -314,7 +320,7 @@ flowchart LR
 
 そのループの周辺:
 
-- **生ファイルストレージ**: `POST/GET/DELETE /v3/customers/{customerId}/documents` (加えて `/{documentId}` および `GET .../{documentId}/download`)。API キーで一度アップロードし、submission の回答で document id を参照してください。これによりすべての upload-token および direct-upload の取り込みが置き換えられます。`POST .../documents` は、`POST /v2/documents/direct-upload` からのまだ有効な顧客スコープの参照を消費する JSON ボディ (`storageKey`、`fileName`、`type`) も受け付けるため、一時保管されたアップロードはバイトを再送せずに移行できます。
+- **生ファイルストレージ**: `POST/GET/DELETE /v3/customers/{customerId}/documents` (加えて `/{documentId}` および `GET .../{documentId}/download`)。API キーで一度アップロードし、submission の回答で document id を参照してください。これによりすべての upload-token および direct-upload の取り込みが置き換えられます。`POST .../documents` は、`POST /v2/documents/direct-upload` からのまだ有効な顧客スコープの参照を消費する JSON ボディ (`storageKey`、`fileName`、`type`) も受け付けるため、一時保管されたアップロードはバイトを再送せずに移行できます。すべての v3 ドキュメントリソースには `contentSha256` (`sha256:<hex>`、またはダイジェストの記録開始前に保存されたドキュメントでは `null`) が含まれるため、バイト単位で同一のファイルの再アップロードを検出できます。
 - **新規の読み取り**: `GET /v3/tasks` (加盟店全体のインボックス)、`GET /v3/transfers/{transferId}/tasks`、`GET .../tasks/{taskId}/history`、`GET .../tasks/{taskId}/submissions` (加えて `/{submissionId}`)。
 
 Submission (例示):
@@ -332,10 +338,12 @@ Submission (例示):
 ```
 
 - 回答タイプ: `profile`、`text`、`date`、`single_select`、`multi_select`、`boolean`、`attestation`、`document`、`resource_reference`、`absence`。各要件の `request` オブジェクトが期待するタイプを示します。
-- submission は現在のラウンドの **すべての実施可能な要件** に、読み取ったとおりの `taskRevision` で回答しなければなりません。部分的な submission は拒否されます。
+- submission は現在のラウンドの **すべての実施可能な要件** に、読み取ったとおりの `taskRevision` で回答しなければなりません。1 つでも省略すると `422 task_submission_incomplete` が返されます。個人向けの一部の本人確認タスクでは、一部の要件のみの回答を受け付けます。
+- デフォルトでは、拒否された回答が 1 つでもあるとリクエスト全体が失敗し、何も保存されません。レスポンスは `400 validation_error`、`400 invalid_document_reference`、`409 absence_conflicts_with_profile` のいずれかです。有効な回答を保持するには `"allowPartial": true` を送信します。`201` レスポンスは、それ以外の回答を `refusedAnswers` (`requirementId`、`code`、`pointer`、`message`) に一覧表示し、`code` は `invalid`、`absence_conflicts_with_profile`、`invalid_document_reference`、`depends_on_refused_answer` のいずれかです。不明なコードは `invalid` として扱ってください。保持できる回答がない場合、レスポンスは `400 validation_error` となり、何も保存されません。[API 回答](/jp/integration/onboarding/capabilities-and-requirements#keep-valid-answers-with-allowpartial) を参照してください。
 - `profile` の回答は **書き込みを通します**。通常のバリデーションパスを介して customer プロフィールを更新し、同じ intake 作業を参照するすべての capability を直ちに再評価します。すべての要件が満たされた兄弟の intake task は自動的にクローズします。
 - 要件は代替グループ (`alternativeKey`) を形成できます。グループのうち 1 つだけを送信してください。
 - `changes_requested` は `remediationRound` をインクリメントし、`reviewFeedback` を保持します。task を再読み込みし、**新しい冪等性キー** で再送信してください。
+- `POST /v3/customers/{customerId}/tasks/{taskId}/withdrawals` (`Idempotency-Key` 付き) は、審査待ちの 1 件の submission を取り下げ、顧客が修正できるようにします。その回答は `reviewFeedback` なしで `action_required` に戻り、結果は `withdrawn` になり、`remediationRound` が増えます。すでに承認された要件は変更されず、取り下げ回数に制限はありません。不明なタスクには `404 task_not_found` を返します。審査待ちの submission がちょうど 1 件ではない場合 (0 件、または部分的な submission とその修正のように複数件ある場合)、またはタスクの期限が過ぎている場合は `409 task_not_in_review` を返します。銀行がこのタスクを直接審査する場合、または Swipelux がすでに submission を審査に回している場合は `409 submission_already_forwarded` を返します。`POST /v3/sandbox/tasks` で作成したタスクもこれを返します。
 - ホスト型検証 URL は、customer スコープの task 詳細 (`GET /v3/customers/{customerId}/tasks/{taskId}`) にのみ、かつセッションが実施可能な間だけ表示されます。一覧および `GET /v3/tasks/{taskId}` は意図的に URL を含みません。
 - 利用規約も task の 1 つです。`openTaskIds` には `category: "terms_of_service"` の task が含まれることがあり、そのホスト型同意ページも同じ方法でリンクされます (customer スコープの詳細のみ)。汎用的な submission では規約に同意できず、KYC の承認は規約の受諾を意味することはありません。
 - task は capability ごとにスコープされているため、「同じ」依頼 (例: 住所証明) が capability ごとに 1 回ずつ現れることがあります。要件の `key` で UI 上で重複排除してください。
@@ -525,6 +533,7 @@ v3 のサンドボックスはレビューのループをエンドツーエン�
 - [ ] submission はレビューによって制御され (送信はブロック解除と同じではない)、正確な `taskRevision` で **すべての** 実施可能な要件に回答しなければなりません。不一致の場合は再読み込みして再構築してください。
 - [ ] `task.*` webhook は存在しません。送信のたびに task (またはその親) をポーリングしてください。
 - [ ] `changes_requested` の再試行は、task を再読み込みし、新しい回答で、**新しい冪等性キー** で行うことを意味します。
+- [ ] submission の結果 `withdrawn` を受け入れ、不明な `refusedAnswers[].code` は `invalid` として扱う。
 - [ ] `/v1/documents` への POST は v3 の capability のブロックを解除することはありません。customer が task に乗ったら、すべての依頼を task を通じて駆動してください。
 - [ ] すでに `ready` の capability にも新しい task が現れる可能性があります。オンボーディング時だけでなく、その後も task ループを配線しておいてください。
 - [ ] capability の `cancel` は、`pending` または `restricted` から、かつブロッキングリソースがない場合にのみ機能します (`409 capability_not_cancelable`)。キャンセル後の再要求は、新しい冪等性キーによる新規作成です。
