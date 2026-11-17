@@ -64,6 +64,23 @@ Optional request fields:
 
 Send `institution` when the customer needs bank details from a specific bank. Swipelux reserves one issued account per customer, method, currency, and institution. A request without `institution` returns `409 conflict` if the customer already has an issued account for that method and currency at any bank. A request with `institution` returns `409 conflict` only if an account for that bank already exists.
 
+For a SWIFT account in a currency other than USD, send the `institution` that the [supported-capability response](/integration/onboarding/capabilities-and-requirements#discover-supported-capabilities) lists for that currency:
+
+```json Request body for a EUR SWIFT account
+{
+  "origin": "issued",
+  "type": "bank",
+  "method": "swift",
+  "country": "US",
+  "currency": "EUR",
+  "institution": "bmo",
+  "settlement": {
+    "accountId": "${SETTLEMENT_WALLET_ID}"
+  },
+  "label": "EUR SWIFT account"
+}
+```
+
 Account reads return the selected bank as `institution` with `id`, `name`, and `bic`. `bic` can be `null`.
 
 Idempotency applies to the selected bank. Replaying the same request returns the original account. Changing `institution` under the same `Idempotency-Key` returns `409 idempotency_conflict`.
@@ -94,6 +111,8 @@ The saved request keeps its account ID, settlement wallet, and account slot. Aft
 
 While the saved request waits, it holds the account slot. Another `allowPending` request for the same slot under a different `Idempotency-Key` returns `409 conflict`. The problem's `holder.accountId` names the waiting account. Read that account instead of retrying.
 
+The bank needs an application that requested this capability. If the bank's application only covers the capability without having requested it, an `allowPending` request returns `409 capability_not_ready` with `reason: no_ready_route` until the capability is `ready`.
+
 If the application is rejected, canceled, or archived first, the account becomes `rejected`. It no longer holds the account slot.
 
 ### Choose the settlement currency
@@ -119,8 +138,6 @@ Read [`GET /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/acco
 
 Keep the customer interface pending while `details` is absent. If `openTaskIds` is not empty, complete the latest tasks and refetch the account. Do not infer readiness from elapsed time.
 
-If the account was saved with `allowPending: true`, it stays `in_review` with `statusReason.code` set to `waiting_for_approval` until the bank approves the application.
-
 If the latest `statusReason.code` is `awaiting_assignment`, create the first pay-in for the same customer, capability, and settlement wallet through [Receive funds](/integration/receive-funds), then read the bank account again. Follow this branch only when the current account requests it.
 
 ## 4. Present bank details safely
@@ -130,5 +147,7 @@ Display only the complete details returned by the latest account read. When `det
 For issued `swift` accounts, display `details.bankName`, `details.swiftCode` (the receiving bank's BIC), `details.accountNumber`, `details.accountHolderName`, and `details.accountHolderAddress` when returned. Senders must copy the beneficiary address exactly into the international wire. Also show `details.bankAddress` and any intermediary bank fields that the account returns.
 
 These bank details are reusable. Do not replace them with funding coordinates from a quoted pay-in, which belong only to that transfer.
+
+When an issued account's SWIFT code, routing number, or account number changes, Swipelux sends `account.details_changed`. Refetch the account and show its current `details`.
 
 Next, add [Webhooks](/integration/webhooks) so provisioning updates reach your application without keeping the customer on a polling screen.
