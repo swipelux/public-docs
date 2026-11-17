@@ -87,11 +87,12 @@ const verifier = new Webhook(process.env.SWIPELUX_WEBHOOK_SECRET);
 
 export async function handleSwipeluxWebhook(request) {
   const rawBody = await request.text();
-  const event = verifier.verify(rawBody, {
+  verifier.verify(rawBody, {
     "svix-id": request.headers.get("svix-id"),
     "svix-timestamp": request.headers.get("svix-timestamp"),
     "svix-signature": request.headers.get("svix-signature"),
   });
+  const event = JSON.parse(rawBody);
 
   await webhookInbox.insertIfAbsent({
     id: event.id,
@@ -104,42 +105,20 @@ export async function handleSwipeluxWebhook(request) {
 ```
 
 ```java Java
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.svix.Webhook;
 import com.svix.exceptions.WebhookVerificationException;
-import java.net.http.HttpHeaders;
 import java.util.List;
 import java.util.Map;
 
-public class SwipeluxWebhookHandler {
-  private final Webhook verifier = new Webhook(System.getenv("SWIPELUX_WEBHOOK_SECRET"));
-  private final ObjectMapper mapper = new ObjectMapper();
-
-  // rawBody must be the unmodified request body string.
-  public int handle(String rawBody, Map<String, String> requestHeaders) throws Exception {
-    HttpHeaders headers = HttpHeaders.of(
-        Map.of(
-            "svix-id", header(requestHeaders, "svix-id"),
-            "svix-timestamp", header(requestHeaders, "svix-timestamp"),
-            "svix-signature", header(requestHeaders, "svix-signature")),
-        (name, value) -> true);
-
+class SwipeluxSignature {
+  // Pass the unmodified request body and every request header.
+  static boolean valid(String secret, String rawBody, Map<String, List<String>> headers) throws Exception {
     try {
-      verifier.verify(rawBody, headers);
+      new Webhook(secret).verify(rawBody, headers);
+      return true;
     } catch (WebhookVerificationException e) {
-      return 400;
+      return false;
     }
-
-    JsonNode event = mapper.readTree(rawBody);
-    webhookInbox.insertIfAbsent(event.get("id").asText(), event, "pending");
-
-    return 204;
-  }
-
-  private static List<String> header(Map<String, String> headers, String name) {
-    String value = headers.get(name);
-    return value == null ? List.of() : List.of(value);
   }
 }
 ```
