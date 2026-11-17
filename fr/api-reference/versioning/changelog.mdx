@@ -8,6 +8,13 @@ Cette page répertorie les modifications datées apportées à l'API Swipelux. C
 
 Pour mettre à niveau une intégration existante depuis une version antérieure, consultez [Migrer vers v3](/fr/api-reference/versioning/migrate-to-v3).
 
+<Update label="2026-11-02" description="v3" tags={["Modifié"]}>
+
+### Modifié {#changed}
+- Swipelux revérifie chaque jour les destinations de webhook enregistrées. Si le nom d'hôte d'un endpoint est désormais refusé ou se résout vers une adresse refusée, Swipelux met l'endpoint en pause et définit `disabled: true`. Un endpoint en pause le reste lorsque vous modifiez seulement son `url` ; envoyez une `url` valide avec `disabled: false` pour le réactiver. Consultez [Webhooks](/fr/integration/webhooks#use-a-public-destination-url).
+
+</Update>
+
 <Update label="2026-10-30" description="v3" tags={["Ajouté","Modifié"]}>
 
 ### Ajouté {#added}
@@ -22,6 +29,21 @@ Pour mettre à niveau une intégration existante depuis une version antérieure,
 
 ### Modifié {#changed}
 - Tant que le KYB de votre entreprise intégratrice n'est pas approuvé, Swipelux limite les créations sur toute période glissante de 24 heures dans l'ensemble de vos espaces : 10 clés API, 10 endpoints de webhook, 10 règles, 250 clients, 20 exports `sumsub_share_token` et 10 imports de vérification d'identité. Cela remplace la limite de 10 clés API actives par espace live ; révoquer une clé ne libère pas d'emplacement. Une création au-delà d'une limite renvoie `422 merchant_kyb_not_approved` ; le tableau de bord renvoie un simple `422`. Les créations échouées et les rejeux idempotents ne comptent pas. Ces limites, ainsi que la limite de 20 modifications d'URL de webhook par heure, s'appliquent aussi aux espaces sandbox, sauf si vous avez un espace live approuvé ou qui n'exige pas de KYB. Consultez [Limites de création quotidiennes](/fr/integration/go-live#daily-creation-limits).
+
+</Update>
+
+<Update label="2026-10-28" description="v3" tags={["Ajouté","Modifié"]}>
+
+### Ajouté {#added}
+- `GET /v3/customers` accepte les filtres `pooledCapabilityStatus` et `namedCapabilityStatus`, chacun avec la valeur `pending`, `ready`, `restricted`, `rejected` ou `canceled`. Il accepte aussi `hasReadyNamedAccount=true|false` pour lister les clients avec ou sans compte nominatif `ready`. Les filtres se combinent entre eux et avec les autres filtres de liste, et Swipelux les applique avant la pagination. Les clés API ont besoin de `accounts:read` ou `rails:read` pour les utiliser. Une valeur invalide renvoie `400 validation_error`. Par exemple, `namedCapabilityStatus=ready&hasReadyNamedAccount=false` trouve les clients approuvés par une banque qui n'ont pas encore de compte nominatif prêt. Consultez [Clients](/fr/integration/onboarding/customers#filter-customers-by-capability-readiness).
+- `PATCH /v3/customers/{customerId}` et `PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}` renvoient un en-tête de réponse `Swipelux-Ignored-Fields` lorsqu'ils ignorent des champs du corps qu'ils ne reconnaissent pas. L'en-tête liste les JSON Pointers des champs ignorés, séparés par des virgules et triés, avec au plus 20 pointeurs et 4096 caractères et un `...` final lorsqu'il est tronqué. Les champs à l'intérieur de `metadata` ne sont jamais signalés, et les rejeux idempotents omettent l'en-tête. Vérifiez-le après chaque mise à jour pour ne pas perdre de données sans le savoir, comme une date de naissance envoyée sous un mauvais nom de champ. Consultez [Clients](/fr/integration/onboarding/customers#check-ignored-fields-on-updates).
+- Les endpoints de webhook incluent `disabled`, qui vaut `true` tant que les livraisons vers l'endpoint sont en pause. Swipelux met aussi un endpoint en pause après des échecs de livraison répétés. Envoyez `disabled: true` dans [`PATCH /v3/webhooks/{webhookId}`](/api-reference/webhooks/patch-v3-webhooks-by-webhook-id) pour mettre les livraisons en pause et `disabled: false` pour les reprendre. La reprise revérifie l'URL de destination et renvoie `400` si elle n'est plus valide, de sorte que l'endpoint reste en pause.
+- Swipelux peut suspendre une entreprise intégratrice. Pendant la suspension, toute requête effectuée avec l'une de ses clés API renvoie `403 merchant_suspended` avec `retryable: false`, et Swipelux retient ses livraisons de webhooks, ses exécutions de règles et ses dossiers auprès des banques. Rien n'est supprimé ni révoqué : les clés API, les endpoints de webhook et les règles fonctionnent à nouveau dès que Swipelux lève la suspension. Contactez le support Swipelux pour résoudre une suspension. Consultez [Erreurs et nouvelles tentatives](/integration/errors#merchant-suspended).
+
+### Modifié {#changed}
+- `POST /v3/customers/{customerId}/export` avec `format: sumsub_share_token` renvoie `422 kyc_provider_rejected` avec `retryable: false`, au lieu de `502 request_failed`, lorsque le fournisseur de vérification d'identité refuse de créer le jeton de partage, par exemple pour un `forClientId` inconnu. La réponse contient un message Swipelux fixe et ne répète jamais le texte d'erreur du fournisseur : vérifiez donc la requête avant de réessayer. Les autres échecs du fournisseur renvoient toujours `502 request_failed`, qui peut être relancé.
+- Le portail de `GET /v3/webhooks/portal` ne crée, ne modifie, ne met en pause ni ne supprime plus d'endpoints. Avec une clé API disposant de `webhooks:write`, il affiche et fait toujours tourner le secret de signature de l'endpoint, relance les livraisons et les rejoue. Créez des endpoints avec `POST /v3/webhooks`, modifiez-les ou mettez-les en pause avec `PATCH /v3/webhooks/{webhookId}` et supprimez-les avec `DELETE /v3/webhooks/{webhookId}`. Consultez [Webhooks](/fr/integration/webhooks).
+- `POST /v3/webhooks` et `PATCH /v3/webhooks/{webhookId}` n'acceptent que les destinations dont toutes les adresses résolues sont unicast routables globalement. Ils renvoient `400 validation_error` pour les adresses des plages à usage spécial de l'IANA, les adresses multicast, les formes de transition IPv6 contenant une adresse IPv4 refusée, les noms d'hôte qui ne se résolvent pas, `localhost`, les noms d'hôte à une seule étiquette et les noms d'hôte se terminant par `.localhost`, `.local`, `.localdomain`, `.internal` ou `.home.arpa`.
 
 </Update>
 

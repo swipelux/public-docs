@@ -8,6 +8,13 @@ description: "依日期記錄 Swipelux API 各版本的新增功能、重大變�
 
 若要將既有整合從較早版本升級，請參閱[遷移至 v3](/zh-Hant/api-reference/versioning/migrate-to-v3)。
 
+<Update label="2026-11-02" description="v3" tags={["變更"]}>
+
+### 變更 {#changed}
+- Swipelux 每天都會重新檢查已儲存的 webhook 目的地。若某個端點的主機名稱現在遭到拒絕，或解析至遭拒絕的位址，Swipelux 會暫停該端點並設定 `disabled: true`。僅變更 `url` 時，已暫停的端點仍維持暫停；若要恢復，請傳送可通過檢查的 `url` 並附上 `disabled: false`。請參閱[Webhook](/zh-Hant/integration/webhooks#use-a-public-destination-url)。
+
+</Update>
+
 <Update label="2026-10-30" description="v3" tags={["新增","變更"]}>
 
 ### 新增 {#added}
@@ -22,6 +29,21 @@ description: "依日期記錄 Swipelux API 各版本的新增功能、重大變�
 
 ### 變更 {#changed}
 - 在您的整合企業 KYB 獲准之前，Swipelux 會在任意滾動 24 小時內、跨您的所有空間限制建立數量：10 個 API 金鑰、10 個 webhook 端點、10 條規則、250 位客戶、20 次 `sumsub_share_token` 匯出以及 10 次身分驗證匯入。這取代了每個正式空間 10 個有效 API 金鑰的限制；撤銷金鑰不會釋出名額。超出限制的建立會傳回 `422 merchant_kyb_not_approved`；Dashboard 會傳回一般的 `422`。失敗的建立與冪等重送不計入。這些限制以及每小時 20 次 webhook URL 變更的限制也適用於沙箱空間，除非您有已獲准或不要求 KYB 的正式空間。請參閱[每日建立限制](/zh-Hant/integration/go-live#daily-creation-limits)。
+
+</Update>
+
+<Update label="2026-10-28" description="v3" tags={["新增","變更"]}>
+
+### 新增 {#added}
+- `GET /v3/customers` 接受 `pooledCapabilityStatus` 與 `namedCapabilityStatus` 篩選條件，值可為 `pending`、`ready`、`restricted`、`rejected` 或 `canceled`。它也接受 `hasReadyNamedAccount=true|false`，用來列出擁有或沒有 `ready` 具名帳戶的客戶。這些篩選條件可彼此組合，也可與其他清單篩選條件組合，Swipelux 會在分頁之前套用。API 金鑰需要 `accounts:read` 或 `rails:read` 才能使用。無效的值會傳回 `400 validation_error`。例如，`namedCapabilityStatus=ready&hasReadyNamedAccount=false` 可找出已獲銀行核准但尚無就緒具名帳戶的客戶。請參閱[客戶](/zh-Hant/integration/onboarding/customers#filter-customers-by-capability-readiness)。
+- 當 `PATCH /v3/customers/{customerId}` 與 `PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}` 忽略無法辨識的請求本文欄位時，會傳回 `Swipelux-Ignored-Fields` 回應標頭。該標頭以逗號分隔並排序列出被忽略欄位的 JSON Pointer，最多 20 個指標與 4096 個字元，截斷時以 `...` 結尾。`metadata` 內的欄位一律不回報，冪等重送會省略此標頭。請在每次更新後檢查此標頭，以免在不知情的情況下遺失資料，例如以錯誤欄位名稱傳送的出生日期。請參閱[客戶](/zh-Hant/integration/onboarding/customers#check-ignored-fields-on-updates)。
+- Webhook 端點包含 `disabled`，在對該端點的派送暫停期間其值為 `true`。在多次派送失敗後，Swipelux 也會暫停端點。在 [`PATCH /v3/webhooks/{webhookId}`](/api-reference/webhooks/patch-v3-webhooks-by-webhook-id) 中傳送 `disabled: true` 可暫停派送，傳送 `disabled: false` 可恢復派送。恢復時會重新檢查目的地 URL，若不再通過檢查則傳回 `400`，端點會維持暫停。
+- Swipelux 可以暫停整合企業。暫停期間，使用其任何 API 金鑰發出的每個請求都會傳回附有 `retryable: false` 的 `403 merchant_suspended`，Swipelux 也會暫緩其 webhook 派送、規則執行與向銀行提出的申請。不會刪除或撤銷任何內容，因此在 Swipelux 解除暫停後，API 金鑰、webhook 端點與規則會恢復運作。若要解決暫停問題，請聯絡 Swipelux 支援團隊。請參閱[錯誤與重試](/integration/errors#merchant-suspended)。
+
+### 變更 {#changed}
+- 當身分驗證服務提供者拒絕建立共用權杖時（例如針對未知的 `forClientId`），帶有 `format: sumsub_share_token` 的 `POST /v3/customers/{customerId}/export` 會傳回附有 `retryable: false` 的 `422 kyc_provider_rejected`，而非 `502 request_failed`。回應包含固定的 Swipelux 訊息，絕不會重複提供者的錯誤文字，因此請在重試前檢查請求。其他提供者失敗仍會傳回可重試的 `502 request_failed`。
+- `GET /v3/webhooks/portal` 的入口網站不再建立、編輯、暫停或刪除端點。使用具有 `webhooks:write` 的 API 金鑰時，它仍會顯示並輪替端點簽章密鑰、重試派送並重播派送。請使用 `POST /v3/webhooks` 建立端點，使用 `PATCH /v3/webhooks/{webhookId}` 變更或暫停端點，並使用 `DELETE /v3/webhooks/{webhookId}` 刪除端點。請參閱[Webhook](/zh-Hant/integration/webhooks)。
+- `POST /v3/webhooks` 與 `PATCH /v3/webhooks/{webhookId}` 只接受所有解析位址皆為全域可路由單播位址的目的地。對於 IANA 特殊用途範圍中的位址、多播位址、內含遭拒絕 IPv4 位址的 IPv6 轉換形式、無法解析的主機名稱、`localhost`、單一標籤主機名稱，以及以 `.localhost`、`.local`、`.localdomain`、`.internal` 或 `.home.arpa` 結尾的主機名稱，會傳回 `400 validation_error`。
 
 </Update>
 

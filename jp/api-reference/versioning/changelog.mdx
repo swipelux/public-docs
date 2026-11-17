@@ -8,6 +8,13 @@ description: "Swipelux API 各バージョンの追加、破壊的変更、非�
 
 既存のインテグレーションを以前のバージョンからアップグレードする場合は、[v3 への移行](/jp/api-reference/versioning/migrate-to-v3) を参照してください。
 
+<Update label="2026-11-02" description="v3" tags={["変更"]}>
+
+### 変更 {#changed}
+- Swipelux は保存済みの webhook 送信先を毎日再確認します。エンドポイントのホスト名が拒否されるようになった場合や、拒否されるアドレスに解決される場合、Swipelux はエンドポイントを一時停止し、`disabled: true` を設定します。一時停止中のエンドポイントは、`url` だけを変更しても一時停止のままです。再開するには、確認を通過する `url` を `disabled: false` とともに送信してください。[Webhook](/jp/integration/webhooks#use-a-public-destination-url) を参照してください。
+
+</Update>
+
 <Update label="2026-10-30" description="v3" tags={["追加","変更"]}>
 
 ### 追加 {#added}
@@ -22,6 +29,21 @@ description: "Swipelux API 各バージョンの追加、破壊的変更、非�
 
 ### 変更 {#changed}
 - インテグレーション事業者の KYB が承認されるまで、Swipelux はすべてのスペース全体で、任意の連続した 24 時間における作成数を制限します。上限は API キー 10 件、webhook エンドポイント 10 件、ルール 10 件、顧客 250 件、`sumsub_share_token` エクスポート 20 件、本人確認のインポート 10 件です。これは、ライブスペースごとに有効な API キー 10 件という制限に代わるものです。キーを取り消しても枠は空きません。上限を超える作成は `422 merchant_kyb_not_approved` を返し、ダッシュボードはコードなしの `422` を返します。失敗した作成と冪等な再送はカウントされません。これらの上限と、1 時間あたり 20 回の webhook URL 変更の上限は、承認済みまたは KYB が不要なライブスペースがない限り、サンドボックススペースにも適用されます。[1 日あたりの作成上限](/jp/integration/go-live#daily-creation-limits) を参照してください。
+
+</Update>
+
+<Update label="2026-10-28" description="v3" tags={["追加","変更"]}>
+
+### 追加 {#added}
+- `GET /v3/customers` は、`pending`、`ready`、`restricted`、`rejected`、`canceled` のいずれかを指定する `pooledCapabilityStatus` フィルターと `namedCapabilityStatus` フィルターを受け付けます。また、`ready` の名義型口座を持つ顧客または持たない顧客を一覧表示する `hasReadyNamedAccount=true|false` も受け付けます。フィルターは互いに、またほかの一覧フィルターと組み合わせることができ、Swipelux はページングの前に適用します。使用するには、API キーに `accounts:read` または `rails:read` が必要です。無効な値は `400 validation_error` を返します。たとえば、`namedCapabilityStatus=ready&hasReadyNamedAccount=false` は、銀行が承認したものの、まだ ready の名義型口座を持っていない顧客を見つけます。[顧客](/jp/integration/onboarding/customers#filter-customers-by-capability-readiness) を参照してください。
+- `PATCH /v3/customers/{customerId}` と `PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}` は、認識できない本文フィールドを無視した場合に `Swipelux-Ignored-Fields` レスポンスヘッダーを返します。ヘッダーには、無視されたフィールドの JSON Pointer がカンマ区切りで並べ替えて記載され、最大 20 個のポインターと 4096 文字までで、上限に達した場合は末尾に `...` が付きます。`metadata` 内のフィールドは報告されず、冪等な再送ではヘッダーが省略されます。誤ったフィールド名で送信された生年月日などのデータを気付かないうちに失わないよう、更新のたびに確認してください。[顧客](/jp/integration/onboarding/customers#check-ignored-fields-on-updates) を参照してください。
+- webhook エンドポイントに `disabled` が含まれるようになりました。エンドポイントへの配信が一時停止している間は `true` になります。Swipelux は配信の失敗が繰り返された場合にもエンドポイントを一時停止します。配信を一時停止するには [`PATCH /v3/webhooks/{webhookId}`](/api-reference/webhooks/patch-v3-webhooks-by-webhook-id) で `disabled: true` を、再開するには `disabled: false` を送信します。再開時には送信先 URL が再確認され、確認を通過しなくなっている場合は `400` が返されるため、エンドポイントは一時停止のままになります。
+- Swipelux は統合事業者を停止できます。停止中は、その事業者のいずれかの API キーで行われたすべてのリクエストが `retryable: false` を伴う `403 merchant_suspended` を返し、Swipelux はその webhook 配信、ルールの実行、銀行への申請を保留します。何も削除または取り消されないため、Swipelux が停止を解除すると、API キー、webhook エンドポイント、ルールは再び機能します。停止を解決するには、Swipelux サポートにお問い合わせください。[エラーと再試行](/integration/errors#merchant-suspended) を参照してください。
+
+### 変更 {#changed}
+- `format: sumsub_share_token` を指定した `POST /v3/customers/{customerId}/export` は、不明な `forClientId` などの理由で本人確認プロバイダーが共有トークンの作成を拒否した場合、`502 request_failed` ではなく、`retryable: false` を伴う `422 kyc_provider_rejected` を返します。レスポンスには固定の Swipelux メッセージが含まれ、プロバイダーのエラーテキストが繰り返されることはないため、再試行する前にリクエストを確認してください。その他のプロバイダーの失敗は、引き続き再試行可能な `502 request_failed` を返します。
+- `GET /v3/webhooks/portal` のポータルでは、エンドポイントの作成、編集、一時停止、削除ができなくなりました。`webhooks:write` を持つ API キーでは、引き続きエンドポイントの署名シークレットの表示とローテーション、配信の再試行と再生ができます。エンドポイントは `POST /v3/webhooks` で作成し、`PATCH /v3/webhooks/{webhookId}` で変更または一時停止し、`DELETE /v3/webhooks/{webhookId}` で削除してください。[Webhook](/jp/integration/webhooks) を参照してください。
+- `POST /v3/webhooks` と `PATCH /v3/webhooks/{webhookId}` は、解決されたすべてのアドレスがグローバルにルーティング可能なユニキャストである送信先のみを受け付けます。IANA の特殊用途範囲のアドレス、マルチキャストアドレス、拒否される IPv4 アドレスを含む IPv6 移行形式、解決できないホスト名、`localhost`、単一ラベルのホスト名、`.localhost`、`.local`、`.localdomain`、`.internal`、`.home.arpa` で終わるホスト名に対しては `400 validation_error` を返します。
 
 </Update>
 
