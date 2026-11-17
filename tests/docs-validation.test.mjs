@@ -1394,12 +1394,12 @@ test("normalizes index source pages to public routes", () => {
 });
 
 test("commits the complete approved page and frozen source inventories", () => {
-  assert.equal(CANONICAL_NAVIGATION_PAGES.length, 40);
+  assert.equal(CANONICAL_NAVIGATION_PAGES.length, 41);
   assert.equal(TRANSLATED_LOCALES.length, 16);
   assert.equal(LOCALIZED_HOME_PAGES.length, 16);
   assert.equal(LOCALIZED_NAVIGATION_PAGES.length, 608);
-  assert.equal(REQUIRED_NAVIGATION_PAGES.length, 665);
-  assert.equal(REQUIRED_PUBLISHED_PAGES.length, 665);
+  assert.equal(REQUIRED_NAVIGATION_PAGES.length, 666);
+  assert.equal(REQUIRED_PUBLISHED_PAGES.length, 666);
   assert.equal(FROZEN_SOURCE_PAGES.length, 59);
   assert.equal(Object.keys(FROZEN_MIGRATION_DECISIONS).length, 59);
   assert.equal(EXPECTED_REDIRECT_SOURCES.length, 66);
