@@ -26,6 +26,7 @@ import {
   prepareOpenApi,
   verifyPreparedTransformations,
 } from "../scripts/lib/openapi.mjs";
+import { syntheticExampleChanges } from "../scripts/lib/synthetic-examples.mjs";
 
 const projectRoot = fileURLToPath(new URL("../", import.meta.url));
 const artifactNames = [
@@ -226,6 +227,92 @@ function makeFixture() {
     },
   };
 }
+
+test("replaces company emails only inside public examples", () => {
+  const source = makeFixture();
+  source.info.description = "Contact support@swipelux.com";
+  source.components.schemas.Customer.properties.email = {
+    type: "string",
+    example: "developer@swipelux.com",
+  };
+  const content =
+    source.paths["/v3/customers"].get.responses["200"].content["application/json"];
+  content.examples = {
+    customer: {
+      summary: "Sample customer",
+      value: {
+        id: "cus_Qs4Eat0pmv5FPfvGlf",
+        email: "developer@swipelux.com",
+        nested: [{ email: "customer@example.com" }],
+      },
+    },
+  };
+
+  const { spec, transformations } = prepareOpenApi(source, SOURCE_SHA256);
+  const prepared =
+    spec.paths["/v3/customers"].get.responses["200"].content["application/json"];
+  assert.deepEqual(prepared.examples["Sample customer"].value, {
+    id: "cus_Qs4Eat0pmv5FPfvGlf",
+    email: "developer@example.com",
+    nested: [{ email: "customer@example.com" }],
+  });
+  assert.equal(
+    spec.components.schemas.Customer.properties.email.example,
+    "developer@example.com",
+  );
+  assert.equal(spec.info.description, "Contact support@swipelux.com");
+  assert.equal(content.examples.customer.value.email, "developer@swipelux.com");
+  compareSourceToPrepared(source, spec, transformations);
+  verifyPreparedTransformations(spec, transformations);
+});
+
+test("replaces fingerprinted values only inside public examples", () => {
+  const retired = "cus_Qs4Eat0pmv5FPfvGlf";
+  const synthetic = "cus_4mT8xN2pQ7rV6sL1dZ9y";
+  const replacements = new Map([
+    [createHash("sha256").update(retired).digest("hex"), synthetic],
+  ]);
+  const spec = {
+    info: { description: retired },
+    components: {
+      schemas: {
+        Customer: { properties: { id: { type: "string", example: retired } } },
+      },
+    },
+    paths: {
+      "/v3/customers": {
+        get: {
+          responses: {
+            200: {
+              content: {
+                "application/json": {
+                  examples: {
+                    customer: { value: { id: retired, nested: [{ id: retired }] } },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  };
+
+  assert.deepEqual(syntheticExampleChanges(spec, replacements), [
+    {
+      pointer: "/components/schemas/Customer/properties/id/example",
+      value: synthetic,
+    },
+    {
+      pointer:
+        "/paths/~1v3~1customers/get/responses/200/content/application~1json/examples",
+      value: {
+        customer: { value: { id: synthetic, nested: [{ id: synthetic }] } },
+      },
+    },
+  ]);
+  assert.deepEqual(syntheticExampleChanges(spec), []);
+});
 
 test("canonicalHash sorts object keys recursively but preserves array order", () => {
   const left = {
