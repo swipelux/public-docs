@@ -90,6 +90,21 @@ Se devi esportare un cliente, usa [`POST /v3/customers/{customerId}/export`](/ap
 
 Per un formato con token di portabilità, invia il client ID del progetto KYC ricevente come `forClientId`, non il `customerId` Swipelux. Usa il `data.token` restituito prima di `data.expiresAt`. Riutilizzare la stessa `Idempotency-Key` e lo stesso body ripropone quel risultato di token; usa una nuova chiave per emettere un altro token.
 
+## Controlla i campi ignorati negli aggiornamenti {#check-ignored-fields-on-updates}
+
+[`PATCH /v3/customers/{customerId}`](/api-reference/customers/patch-v3-customers-by-customer-id) e `PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}` ignorano i campi del body che non riconoscono. Quando ignorano un campo, una risposta riuscita include l'header `Swipelux-Ignored-Fields`. L'header elenca i JSON Pointer dei campi ignorati, separati da virgole e ordinati. Le creazioni non restituiscono questo header.
+
+Controlla questo header dopo ogni aggiornamento. Altrimenti un campo con nome o posizione errati viene scartato senza errori. Ad esempio, inviare `individual.dateOfBirth` invece di `individual.birthDate` lascia la data di nascita non impostata.
+
+```http Ignored fields response header
+Swipelux-Ignored-Fields: /individual/dateOfBirth,/nickname
+```
+
+- L'header elenca al massimo 20 pointer e 4096 caratteri, e termina con `...` quando Swipelux tronca l'elenco. I segmenti dei pointer sono codificati in percentuale.
+- I campi dentro `metadata` sono a formato libero e non vengono mai segnalati.
+- Le ripetizioni idempotenti omettono l'header, quindi leggilo dalla prima risposta.
+- I campi sconosciuti potrebbero essere rifiutati con `400` in una versione futura.
+
 ## Leggi la readiness dalle capability
 
 Un cliente non ha uno stato di verifica o di readiness nell'API. Leggi il cliente con [`GET /v3/customers/{customerId}`](/api-reference/customers/get-v3-customers-by-customer-id) per ottenere i dati di profilo correnti, quindi usa le capability e i loro `openTaskIds` per decidere cosa il cliente può fare successivamente.
@@ -97,6 +112,30 @@ Un cliente non ha uno stato di verifica o di readiness nell'API. Leggi il client
 ```bash Get customer
 curl --request GET \
   "${API_BASE}/v3/customers/${CUSTOMER_ID}" \
+  --header "X-API-Key: ${SWIPELUX_API_KEY}"
+```
+
+### Filtra i clienti per readiness delle capability {#filter-customers-by-capability-readiness}
+
+Per trovare i clienti in una determinata fase di onboarding, filtra [`GET /v3/customers`](/api-reference/customers/get-v3-customers) con questi parametri di query:
+
+- `pooledCapabilityStatus`: il cliente ha una capability pooled in questo stato.
+- `namedCapabilityStatus`: il cliente ha una capability named in questo stato.
+- `hasReadyNamedAccount`: `true` restituisce i clienti con un conto named `ready`. `false` restituisce i clienti senza.
+
+I filtri di stato accettano `pending`, `ready`, `restricted`, `rejected` o `canceled`. Swipelux legge gli stati allo stesso modo di `include=capabilities`. Vedi [Tipi di conto pooled vs named](/it/integration/onboarding/capabilities-and-requirements#pooled-vs-named-account-types).
+
+Per escludere le capability che sono solo in attesa, aggiungi `namedCapabilityExcludeWait=true` o `pooledCapabilityExcludeWait=true`; questo scarta le corrispondenze il cui `statusReason.resolution` è `wait`. `namedCapabilityIncludeWait=true` o `pooledCapabilityIncludeWait=true` include anche le capability `restricted` con quella risoluzione. Ogni flag funziona solo con il proprio filtro di stato, e `ExcludeWait` prevale quando sono impostati entrambi.
+
+I filtri si combinano tra loro e con gli altri filtri dell'elenco. Swipelux li applica prima della paginazione, quindi ogni pagina contiene solo clienti corrispondenti. Le chiavi API richiedono `accounts:read` o `rails:read` per usarli. Un valore non valido restituisce `400 validation_error`.
+
+Ad esempio, per trovare i clienti approvati da una banca per una capability named che non hanno ancora un conto named ready:
+
+```bash Filter customers awaiting a named account
+curl --request GET \
+  --get "${API_BASE}/v3/customers" \
+  --data-urlencode "namedCapabilityStatus=ready" \
+  --data-urlencode "hasReadyNamedAccount=false" \
   --header "X-API-Key: ${SWIPELUX_API_KEY}"
 ```
 

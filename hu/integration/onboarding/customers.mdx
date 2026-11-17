@@ -90,6 +90,21 @@ Ha ügyfelet kell exportálnia, használja a [`POST /v3/customers/{customerId}/e
 
 Hordozhatósági token formátumhoz a fogadó KYC-projekt kliensazonosítóját küldje el `forClientId` értékként, ne a Swipelux `customerId` értékét. A visszakapott `data.token` értéket a `data.expiresAt` időpont előtt használja fel. Ugyanazon `Idempotency-Key` és törzs újbóli használata ugyanazt a tokeneredményt játssza vissza; új token kibocsátásához használjon új kulcsot.
 
+## Figyelmen kívül hagyott mezők ellenőrzése frissítéskor {#check-ignored-fields-on-updates}
+
+A [`PATCH /v3/customers/{customerId}`](/api-reference/customers/patch-v3-customers-by-customer-id) és a `PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}` figyelmen kívül hagyja azokat a törzsmezőket, amelyeket nem ismer fel. Ha figyelmen kívül hagy egy mezőt, a sikeres válasz tartalmazza a `Swipelux-Ignored-Fields` fejlécet. A fejléc vesszővel elválasztva és rendezve sorolja fel a figyelmen kívül hagyott mezők JSON Pointereit. A létrehozások nem adják vissza ezt a fejlécet.
+
+Minden frissítés után ellenőrizze ezt a fejlécet. Ellenkező esetben a hibás nevű vagy rossz helyre tett mező hiba nélkül elvész. Ha például `individual.birthDate` helyett `individual.dateOfBirth` értéket küld, a születési dátum beállítatlan marad.
+
+```http Ignored fields response header
+Swipelux-Ignored-Fields: /individual/dateOfBirth,/nickname
+```
+
+- A fejléc legfeljebb 20 mutatót és 4096 karaktert sorol fel, és `...` jellel végződik, ha a Swipelux csonkítja a listát. A mutatószegmensek százalékos kódolásúak.
+- A `metadata` belüli mezők szabad formátumúak, és soha nem kerülnek jelentésre.
+- Az idempotens ismétlések kihagyják a fejlécet, ezért az első válaszból olvassa ki.
+- Egy későbbi verzióban az ismeretlen mezőket `400` válasszal elutasíthatják.
+
 ## Készenlét olvasása képességekből
 
 Az ügyfélnek nincs ellenőrzési vagy készenléti státusza az API-ban. Olvassa be az ügyfelet a [`GET /v3/customers/{customerId}`](/api-reference/customers/get-v3-customers-by-customer-id) művelettel az aktuális profiladatokért, majd használja a képességeket és azok `openTaskIds` értékeit annak eldöntéséhez, hogy az ügyfél mit tehet legközelebb.
@@ -97,6 +112,30 @@ Az ügyfélnek nincs ellenőrzési vagy készenléti státusza az API-ban. Olvas
 ```bash Get customer
 curl --request GET \
   "${API_BASE}/v3/customers/${CUSTOMER_ID}" \
+  --header "X-API-Key: ${SWIPELUX_API_KEY}"
+```
+
+### Ügyfelek szűrése a képességek készenléte szerint {#filter-customers-by-capability-readiness}
+
+Egy adott bevezetési szakaszban lévő ügyfelek megtalálásához szűrje a [`GET /v3/customers`](/api-reference/customers/get-v3-customers) kérést ezekkel a lekérdezési paraméterekkel:
+
+- `pooledCapabilityStatus`: az ügyfélnek van ilyen állapotú közös képessége.
+- `namedCapabilityStatus`: az ügyfélnek van ilyen állapotú nevesített képessége.
+- `hasReadyNamedAccount`: a `true` azokat az ügyfeleket adja vissza, akiknek van `ready` állapotú nevesített számlájuk. A `false` azokat, akiknek nincs.
+
+Az állapotszűrők a `pending`, `ready`, `restricted`, `rejected` vagy `canceled` értéket fogadják el. A Swipelux ugyanúgy olvassa az állapotokat, mint az `include=capabilities`. Lásd: [Közös és dedikált számlatípusok](/hu/integration/onboarding/capabilities-and-requirements#pooled-vs-named-account-types).
+
+A csak várakozó képességek kihagyásához adja hozzá a `namedCapabilityExcludeWait=true` vagy `pooledCapabilityExcludeWait=true` paramétert; ez kiszűri azokat a találatokat, amelyek `statusReason.resolution` értéke `wait`. A `namedCapabilityIncludeWait=true` vagy `pooledCapabilityIncludeWait=true` az ilyen megoldású `restricted` képességeket is beleveszi. Minden jelző csak a saját állapotszűrőjével működik, és ha mindkettő be van állítva, az `ExcludeWait` érvényesül.
+
+A szűrők egymással és a többi listaszűrővel kombinálhatók. A Swipelux a lapozás előtt alkalmazza őket, így minden oldal csak egyező ügyfeleket tartalmaz. A használatukhoz az API-kulcsoknak `accounts:read` vagy `rails:read` jogosultság kell. Az érvénytelen érték `400 validation_error` választ ad.
+
+Például azoknak az ügyfeleknek a megtalálásához, akiket egy bank jóváhagyott egy nevesített képességre, de még nincs kész nevesített számlájuk:
+
+```bash Filter customers awaiting a named account
+curl --request GET \
+  --get "${API_BASE}/v3/customers" \
+  --data-urlencode "namedCapabilityStatus=ready" \
+  --data-urlencode "hasReadyNamedAccount=false" \
   --header "X-API-Key: ${SWIPELUX_API_KEY}"
 ```
 

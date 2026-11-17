@@ -90,6 +90,21 @@ Si necessites exportar un client, utilitza [`POST /v3/customers/{customerId}/exp
 
 Per a un format de token de portabilitat, envia l'ID de client del projecte KYC receptor com a `forClientId`, no el `customerId` de Swipelux. Utilitza el `data.token` retornat abans de `data.expiresAt`. Reutilitzar la mateixa `Idempotency-Key` i el mateix cos repeteix aquell resultat de token; utilitza una clau nova per emetre un altre token.
 
+## Comprova els camps ignorats en les actualitzacions {#check-ignored-fields-on-updates}
+
+[`PATCH /v3/customers/{customerId}`](/api-reference/customers/patch-v3-customers-by-customer-id) i `PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}` ignoren els camps del cos que no reconeixen. Quan ignoren un camp, una resposta correcta inclou la capçalera `Swipelux-Ignored-Fields`. La capçalera llista els JSON Pointers dels camps ignorats, separats per comes i ordenats. Les creacions no retornen aquesta capçalera.
+
+Comprova aquesta capçalera després de cada actualització. Altrament, un camp mal anomenat o mal ubicat es descarta sense cap error. Per exemple, enviar `individual.dateOfBirth` en lloc d'`individual.birthDate` deixa la data de naixement sense establir.
+
+```http Ignored fields response header
+Swipelux-Ignored-Fields: /individual/dateOfBirth,/nickname
+```
+
+- La capçalera llista com a màxim 20 punters i 4096 caràcters, i acaba amb `...` quan Swipelux retalla la llista. Els segments dels punters estan codificats amb percentatge.
+- Els camps dins de `metadata` són de format lliure i no s'informen mai.
+- Les repeticions idempotents ometen la capçalera, així que llegeix-la a la primera resposta.
+- Els camps desconeguts es poden rebutjar amb `400` en una versió futura.
+
 ## Llegeix la preparació a partir de les capacitats
 
 Un client no té un estat de verificació o de preparació a l'API. Llegeix el client amb [`GET /v3/customers/{customerId}`](/api-reference/customers/get-v3-customers-by-customer-id) per obtenir les dades de perfil actuals, i després utilitza les capacitats i els seus `openTaskIds` per decidir què pot fer a continuació el client.
@@ -97,6 +112,30 @@ Un client no té un estat de verificació o de preparació a l'API. Llegeix el c
 ```bash Get customer
 curl --request GET \
   "${API_BASE}/v3/customers/${CUSTOMER_ID}" \
+  --header "X-API-Key: ${SWIPELUX_API_KEY}"
+```
+
+### Filtra clients per preparació de capacitats {#filter-customers-by-capability-readiness}
+
+Per trobar clients en una fase d'alta concreta, filtra [`GET /v3/customers`](/api-reference/customers/get-v3-customers) amb aquests paràmetres de consulta:
+
+- `pooledCapabilityStatus`: el client té una capacitat agrupada en aquest estat.
+- `namedCapabilityStatus`: el client té una capacitat nominativa en aquest estat.
+- `hasReadyNamedAccount`: `true` retorna clients amb un compte nominatiu `ready`. `false` retorna clients sense cap.
+
+Els filtres d'estat accepten `pending`, `ready`, `restricted`, `rejected` o `canceled`. Swipelux llegeix els estats de la mateixa manera que `include=capabilities`. Consulta [Tipus de comptes agrupats vs nominatius](/ca/integration/onboarding/capabilities-and-requirements#pooled-vs-named-account-types).
+
+Per excloure les capacitats que només estan esperant, afegeix `namedCapabilityExcludeWait=true` o `pooledCapabilityExcludeWait=true`; això descarta les coincidències amb `statusReason.resolution` igual a `wait`. `namedCapabilityIncludeWait=true` o `pooledCapabilityIncludeWait=true` també coincideix amb capacitats `restricted` amb aquesta resolució. Cada indicador només funciona amb el seu filtre d'estat, i `ExcludeWait` preval quan s'estableixen tots dos.
+
+Els filtres es combinen entre ells i amb els altres filtres de la llista. Swipelux els aplica abans de paginar, de manera que cada pàgina només conté clients coincidents. Les claus d'API necessiten `accounts:read` o `rails:read` per utilitzar-los. Un valor no vàlid retorna `400 validation_error`.
+
+Per exemple, per trobar clients que un banc ha aprovat per a una capacitat nominativa i que encara no tenen cap compte nominatiu preparat:
+
+```bash Filter customers awaiting a named account
+curl --request GET \
+  --get "${API_BASE}/v3/customers" \
+  --data-urlencode "namedCapabilityStatus=ready" \
+  --data-urlencode "hasReadyNamedAccount=false" \
   --header "X-API-Key: ${SWIPELUX_API_KEY}"
 ```
 
