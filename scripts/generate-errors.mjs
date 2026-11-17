@@ -28,12 +28,11 @@ function readText(path) {
 const openapi = readJson("openapi.json");
 const provenance = readJson("openapi-provenance.json");
 const guidance = readJson("scripts/data/error-guidance.json");
-const supplements = readJson("scripts/data/error-supplements.json");
 const docsConfig = readJson("docs.json");
 const redirectInventory = readJson("docs/redirect-inventory.json");
-const { catalog } = buildErrorModels(openapi, guidance, supplements);
+const { catalog } = buildErrorModels(openapi, guidance);
 const redirects = buildErrorRedirects(catalog);
-const errorsPage = renderErrorsPage(openapi, guidance, supplements);
+const errorsPage = renderErrorsPage(openapi, guidance);
 const index = buildErrorIndex(provenance, catalog, guidance);
 const generatedDocsConfig = updateDocsConfig(docsConfig, redirects);
 const generatedInventory = updateRedirectInventory(
@@ -71,6 +70,6 @@ if (stale.length > 0) {
   process.exitCode = 1;
 } else {
   console.log(
-    `${check ? "Verified" : "Generated"} ${catalog.length} errors and ${redirects.length} redirects from x-swipelux-problems and supplements`,
+    `${check ? "Verified" : "Generated"} ${catalog.length} errors and ${redirects.length} redirects from x-swipelux-problems`,
   );
 }

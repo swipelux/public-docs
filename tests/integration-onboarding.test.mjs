@@ -471,6 +471,7 @@ test("selection and hosted-session guidance names only response fields defined b
     "availability",
     "eligibility",
     "institutions",
+    "unavailableInstitutions",
   ];
   assert.equal(new Set(supportedItem.required).size, supportedItem.required.length);
   assert.deepEqual(
