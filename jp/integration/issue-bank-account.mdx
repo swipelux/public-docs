@@ -14,17 +14,17 @@ flowchart LR
   D --> E["完全な銀行情報を表示"]
 ```
 
-## 開始前に必要なもの
+## 開始前に必要なもの {#before-you-start}
 
 顧客 ID、対象の方法と通貨に対する ready 状態の銀行ケイパビリティ、および同じ顧客が所有する ready 状態の発行ウォレットが必要です。`allowPending` を使用すると、選択した銀行がまだ顧客を審査している間もリクエストを保存できます。オープン中の作業は [ケイパビリティとタスク](/jp/integration/onboarding/capabilities-and-requirements) を通じて完了してください。
 
-## 1. 決済ウォレットを作成または選択する
+## 1. 決済ウォレットを作成または選択する {#1-create-or-select-the-settlement-wallet}
 
 [口座とウォレット](/jp/integration/accounts#create-the-account) を通じて発行ウォレットを作成し、その後再度読み取ります。現在のステータスが決済を許可する場合にのみ続行してください。
 
 レスポンスから得られる `data.id` を `SETTLEMENT_WALLET_ID` として保存します。外部ウォレットを `settlement.accountId` として使用しないでください。
 
-## 2. 発行済み銀行口座を作成する
+## 2. 発行済み銀行口座を作成する {#2-create-the-issued-bank-account}
 
 次のヘッダーとともに [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) を使用します。
 
@@ -64,6 +64,23 @@ Content-Type: application/json
 
 顧客が特定の銀行の銀行情報を必要とする場合は、`institution` を送信してください。Swipelux は、顧客、方法、通貨、institution の組み合わせごとに 1 つの発行済み口座を確保します。`institution` を指定しないリクエストは、顧客がいずれかの銀行でその方法と通貨の発行済み口座をすでに持っている場合、`409 conflict` を返します。`institution` を指定したリクエストは、その銀行の口座がすでに存在する場合にのみ `409 conflict` を返します。
 
+USD 以外の通貨の SWIFT 口座では、[サポート対象ケイパビリティのレスポンス](/jp/integration/onboarding/capabilities-and-requirements#discover-supported-capabilities) がその通貨に対して示す `institution` を送信してください。
+
+```json Request body for a EUR SWIFT account
+{
+  "origin": "issued",
+  "type": "bank",
+  "method": "swift",
+  "country": "US",
+  "currency": "EUR",
+  "institution": "bmo",
+  "settlement": {
+    "accountId": "${SETTLEMENT_WALLET_ID}"
+  },
+  "label": "EUR SWIFT account"
+}
+```
+
 口座の読み取りでは、選択した銀行が `id`、`name`、`bic` を持つ `institution` として返されます。`bic` は `null` になる場合があります。
 
 冪等性は選択した銀行に適用されます。同じリクエストを再送すると、元の口座が返されます。同じ `Idempotency-Key` で `institution` を変更すると、`409 idempotency_conflict` が返されます。
@@ -94,6 +111,8 @@ Content-Type: application/json
 
 保存されたリクエストは、待機中は口座枠を占有します。同じ枠に対して異なる `Idempotency-Key` で送信された別の `allowPending` リクエストは `409 conflict` を返します。問題レスポンスの `holder.accountId` は待機中の口座を示します。再試行せずに、その口座を読み取ってください。
 
+銀行には、このケイパビリティをリクエストした申請が必要です。銀行の申請がこのケイパビリティをリクエストせずにカバーしているだけの場合、`allowPending` リクエストはケイパビリティが `ready` になるまで `reason: no_ready_route` を伴う `409 capability_not_ready` を返します。
+
 申請が先に却下、キャンセル、またはアーカイブされた場合、口座は `rejected` になります。口座枠は解放されます。
 
 ### 決済通貨を選択する {#choose-the-settlement-currency}
@@ -113,22 +132,22 @@ Content-Type: application/json
 
 銀行口座 ID とウォレット ID には異なる役割があります。プロビジョニングと銀行情報の読み取りには銀行口座 ID を使用します。入金の入金先を識別するには決済ウォレット ID を使用します。
 
-## 3. プロビジョニングを監視する
+## 3. プロビジョニングを監視する {#3-monitor-provisioning}
 
 作成後、および関連する各 Webhook の後で、[`GET /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts-by-account-id) を読み取ります。
 
 `details` が存在しない間は、顧客インターフェースを保留状態のままにしてください。`openTaskIds` が空でない場合は、最新のタスクを完了し口座を再取得してください。経過時間から準備完了を推測しないでください。
 
-口座が `allowPending: true` で保存された場合、銀行が申請を承認するまで、口座は `in_review` のままで、`statusReason.code` は `waiting_for_approval` に設定されます。
-
 最新の `statusReason.code` が `awaiting_assignment` の場合は、[資金を受け取る](/jp/integration/receive-funds) を通じて、同じ顧客、ケイパビリティ、決済ウォレットに対する最初の入金を作成し、その後銀行口座を再度読み取ってください。このブランチは、現在の口座が要求している場合にのみ実行してください。
 
-## 4. 銀行情報を安全に提示する
+## 4. 銀行情報を安全に提示する {#4-present-bank-details-safely}
 
 最新の口座読み取りで返された完全な詳細情報のみを表示してください。`details.referenceRequired` が true の場合は、`details.reference` を正確に表示し、コピー可能にしてください。false の場合、参照情報を勝手に作らないでください。
 
 発行済みの `swift` 口座では、返された場合に `details.bankName`、`details.swiftCode`(受取銀行の BIC)、`details.accountNumber`、`details.accountHolderName`、`details.accountHolderAddress` を表示してください。送金者は、受取人の住所を国際電信送金に正確にコピーする必要があります。`details.bankAddress` と、口座が返す中継銀行のフィールドもあわせて表示してください。
 
 これらの銀行情報は再利用可能です。見積もり付き入金の資金移動座標(その送金にのみ属する)で置き換えないでください。
+
+発行済み口座の SWIFT コード、ルーティング番号、または口座番号が変更されると、Swipelux は `account.details_changed` を送信します。口座を再取得し、現在の `details` を表示してください。
 
 次に、[Webhooks](/jp/integration/webhooks) を追加して、ポーリング画面に顧客を留めることなく、プロビジョニングの更新をアプリケーションに届けてください。

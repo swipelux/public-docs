@@ -113,6 +113,10 @@ sequenceDiagram
   else rejected
     SLX-->>You: task rejected, parent statusReason says what is next
   end
+  opt correct before review
+    You->>SLX: POST .../tasks/{taskId}/withdrawals
+    SLX-->>You: submission withdrawn, answers back to action_required
+  end
 ```
 
 मुख्य विशेषताएँ:
@@ -121,6 +125,8 @@ sequenceDiagram
 - सबमिट करना **समीक्षा-नियंत्रित** है: यह कभी भी सीधे capability या account स्थिति नहीं बदलता, स्वीकृति बदलती है। एक अपवाद: `profile` उत्तर सबमिट पर customer profile में सीधे लिखे जाते हैं (2.3)। सबमिट करने के बाद, task या मूल संसाधन को पोल करें।
 - `taskRevision` (task के `revision` की प्रतिध्वनि) एक समवर्ती-रक्षक है: यदि आपके पढ़ने के बाद task बदल गया, तो पुनः पढ़ें और अपने उत्तर फिर से तैयार करें।
 - `absence` एक प्रथम-श्रेणी उत्तर है ("मेरे पास यह इसलिए नहीं है क्योंकि...")। इसे उपयोग करें, requirements को अधूरा छोड़ने के बजाय।
+- Submission पर `allowPartial: true` valid answers को store करता है और पूरे request को fail करने के बजाय invalid answers को `refusedAnswers` में लौटाता है (2.3)।
+- जो submission अभी भी `in_review` है, उसे किसी भी review decision से पहले withdraw और correct किया जा सकता है (2.3)।
 - `rejected` आमतौर पर task को समाप्त कर देता है। जब किसी hosted verification ने उसे rejected किया हो और वह decision बाद में पलट दिया जाए, तो task `satisfied` हो सकता है, या `action_required` हो सकता है, जिसमें वे requirements फिर से खुल जाती हैं जिनका नया decision उत्तर नहीं देता। उन्हें नए `revision` के विरुद्ध फिर से सबमिट करें।
 
 ### 1.5 पैसे की गति
@@ -314,7 +320,7 @@ flowchart LR
 
 उस लूप के आसपास:
 
-- **कच्चा फ़ाइल भंडारण**: `POST/GET/DELETE /v3/customers/{customerId}/documents` (साथ ही `/{documentId}` और `GET .../{documentId}/download`), अपनी API key के साथ एक बार अपलोड करें, फिर submission उत्तरों में document ids का संदर्भ दें। यह हर upload-token और direct-upload intake को प्रतिस्थापित करता है। `POST .../documents` एक JSON body (`storageKey`, `fileName`, `type`) भी स्वीकार करता है जो `POST /v2/documents/direct-upload` से अभी भी ताज़ा customer-scoped reference को consume करता है, जिससे park किए गए uploads bytes दोबारा भेजे बिना माइग्रेट हो जाते हैं।
+- **कच्चा फ़ाइल भंडारण**: `POST/GET/DELETE /v3/customers/{customerId}/documents` (साथ ही `/{documentId}` और `GET .../{documentId}/download`), अपनी API key के साथ एक बार अपलोड करें, फिर submission उत्तरों में document ids का संदर्भ दें। यह हर upload-token और direct-upload intake को प्रतिस्थापित करता है। `POST .../documents` एक JSON body (`storageKey`, `fileName`, `type`) भी स्वीकार करता है जो `POST /v2/documents/direct-upload` से अभी भी ताज़ा customer-scoped reference को consume करता है, जिससे park किए गए uploads bytes दोबारा भेजे बिना माइग्रेट हो जाते हैं। हर v3 document resource में `contentSha256` होता है (`sha256:<hex>`, या digests record होने से पहले stored documents के लिए `null`), ताकि आप byte-identical file के re-upload का पता लगा सकें।
 - **बिल्कुल नए reads**: `GET /v3/tasks` (merchant-व्यापी inbox), `GET /v3/transfers/{transferId}/tasks`, `GET .../tasks/{taskId}/history`, `GET .../tasks/{taskId}/submissions` (साथ ही `/{submissionId}`)।
 
 Submission (दृष्टांतीय):
@@ -332,10 +338,12 @@ Submission (दृष्टांतीय):
 ```
 
 - उत्तर प्रकार: `profile`, `text`, `date`, `single_select`, `multi_select`, `boolean`, `attestation`, `document`, `resource_reference`, `absence`। प्रत्येक requirement का `request` ऑब्जेक्ट आपको बताता है कि वह किस प्रकार की अपेक्षा करता है।
-- एक submission को **वर्तमान दौर के प्रत्येक कार्रवाई-योग्य requirement** का उत्तर देना चाहिए, उसी सटीक `taskRevision` के साथ जिसे आपने पढ़ा। आंशिक submissions अस्वीकृत होते हैं।
+- एक submission को **वर्तमान दौर के प्रत्येक कार्रवाई-योग्य requirement** का उत्तर देना चाहिए, उसी सटीक `taskRevision` के साथ जिसे आपने पढ़ा। किसी एक को छोड़ने पर `422 task_submission_incomplete` लौटता है। Individuals के लिए कुछ identity verification tasks एक subset स्वीकार करते हैं।
+- Default रूप से, एक refused answer पूरे request को fail कर देता है और कुछ भी store नहीं होता। Response `400 validation_error`, `400 invalid_document_reference` या `409 absence_conflicts_with_profile` होता है। Valid answers रखने के लिए `"allowPartial": true` भेजें: `201` response बाकी answers को `refusedAnswers` (`requirementId`, `code`, `pointer`, `message`) में सूचीबद्ध करता है, जहाँ `code` `invalid`, `absence_conflicts_with_profile`, `invalid_document_reference` या `depends_on_refused_answer` में से एक होता है। Unknown code को `invalid` मानें। जब कोई भी answer रखा नहीं जा सकता, तो response `400 validation_error` होता है और कुछ भी store नहीं होता। [API answers](/hi/integration/onboarding/capabilities-and-requirements#keep-valid-answers-with-allowpartial) देखें।
 - `profile` उत्तर **सीधे लिखते हैं**: वे सामान्य सत्यापन पथ के माध्यम से customer profile को अपडेट करते हैं और उसी intake कार्य को संदर्भित करने वाली प्रत्येक capability का तुरंत पुनः-मूल्यांकन करते हैं। सहोदर intake tasks जिनके सारे requirements संतुष्ट हैं, स्वतः बंद हो जाते हैं।
 - Requirements वैकल्पिक समूह बना सकते हैं (`alternativeKey`): समूह में से ठीक एक सबमिट करें।
 - `changes_requested` `remediationRound` को बढ़ाता है और `reviewFeedback` वहन करता है। task पुनः पढ़ें, **एक ताज़ा idempotency कुंजी** के साथ फिर से सबमिट करें।
+- `POST /v3/customers/{customerId}/tasks/{taskId}/withdrawals` (`Idempotency-Key` के साथ) review की प्रतीक्षा कर रहे उस एक submission को वापस लेता है ताकि customer उसे सुधार सके। उसके answers `reviewFeedback` के बिना `action_required` पर लौट आते हैं, उसका outcome `withdrawn` हो जाता है, और `remediationRound` बढ़ जाता है। पहले से accepted requirements अप्रभावित रहते हैं, और withdrawals की संख्या सीमित नहीं है। यह unknown task के लिए `404 task_not_found` लौटाता है, `409 task_not_in_review` तब जब ठीक एक submission review की प्रतीक्षा में न हो (कोई नहीं, या एक से अधिक, उदाहरण के लिए एक partial submission और उसका correction) या task की deadline निकल चुकी हो, और `409 submission_already_forwarded` तब जब bank इस task को सीधे review करता है, या Swipelux submission को पहले ही review के लिए आगे भेज चुका हो। `POST /v3/sandbox/tasks` से बने tasks भी इसे लौटाते हैं।
 - होस्टेड verification URLs **केवल** customer-scoped task विवरण (`GET /v3/customers/{customerId}/tasks/{taskId}`) पर और केवल तब जब session कार्रवाई-योग्य हो प्रकट होते हैं; सूचियाँ और `GET /v3/tasks/{taskId}` जानबूझकर URL-मुक्त हैं।
 - सेवा की शर्तें भी एक task है: `openTaskIds` में `category: "terms_of_service"` का एक task शामिल हो सकता है जिसका होस्टेड स्वीकृति पृष्ठ उसी तरह लिंक किया जाता है (केवल customer-scoped विवरण)। सामान्य submissions शर्तें स्वीकार नहीं कर सकते, और KYC अनुमोदन कभी शर्तें स्वीकार नहीं करता।
 - Tasks प्रति capability scoped हैं, इसलिए "समान" माँग (उदाहरण के लिए पते का प्रमाण) प्रति capability एक बार दिखाई दे सकती है। अपने UI में requirement `key` द्वारा duplicate हटाएँ।
@@ -525,6 +533,7 @@ v3 sandbox समीक्षा लूप का पूरा अनुकर�
 - [ ] Submissions समीक्षा-नियंत्रित हैं (सबमिट करना अनब्लॉक करने के समान नहीं है) और सटीक `taskRevision` के साथ **प्रत्येक** कार्रवाई-योग्य requirement का उत्तर देना चाहिए। बेमेल होने पर, पुनः पढ़ें और फिर से तैयार करें।
 - [ ] कोई `task.*` webhook नहीं है, प्रत्येक सबमिट के बाद task (या इसके मूल) को पोल करें।
 - [ ] `changes_requested` पुनः प्रयास बराबर है task को पुनः पढ़ना, ताज़ा उत्तर, **ताज़ी idempotency कुंजी**।
+- [ ] Submission outcome `withdrawn` स्वीकार करें, और unknown `refusedAnswers[].code` को `invalid` मानें।
 - [ ] `/v1/documents` पर पोस्ट करना कभी v3 capability को अनब्लॉक नहीं करेगा, एक बार customer tasks पर आ जाए, सभी माँगों को tasks के माध्यम से चलाएँ।
 - [ ] पहले से `ready` capability पर नए tasks दिखाई दे सकते हैं, ऑनबोर्डिंग के बाद भी task लूप जोड़े रखें, केवल इसके दौरान नहीं।
 - [ ] Capability `cancel` केवल `pending` या `restricted` से बिना अवरोधक संसाधनों के काम करता है (`409 capability_not_cancelable`); रद्द करने के बाद पुनः-अनुरोध एक ताज़ा idempotency कुंजी के साथ ताज़ा निर्माण है।

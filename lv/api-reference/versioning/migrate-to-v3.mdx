@@ -113,6 +113,10 @@ sequenceDiagram
   else rejected
     SLX-->>You: task rejected, parent statusReason says what is next
   end
+  opt correct before review
+    You->>SLX: POST .../tasks/{taskId}/withdrawals
+    SLX-->>You: submission withdrawn, answers back to action_required
+  end
 ```
 
 Galvenās īpašības:
@@ -121,6 +125,8 @@ Galvenās īpašības:
 - Iesniegšana ir **pārskatīšanas vārtoti**: tā nekad tieši nemaina spējas vai konta stāvokli, tikai pieņemšana to dara. Viens izņēmums: `profile` atbildes iesniegšanas brīdī tiek rakstītas klienta profilā (2.3). Pēc iesniegšanas apjautā uzdevumu vai vecāka resursu.
 - `taskRevision` (uzdevuma `revision` atbalss) ir konkurentuma sargs: ja uzdevums ir mainījies kopš tā, kad tu to nolasīji, nolasi vēlreiz un pārbūvē atbildes.
 - `absence` ir pirmās klases atbilde („man tā nav, jo...”), izmanto to tā vietā, lai prasības paliktu nepabeigtas.
+- `allowPartial: true` iesniegumā saglabā derīgās atbildes un atgriež nederīgās laukā `refusedAnswers`, nevis liek visam pieprasījumam neizdoties (2.3).
+- Iesniegumu, kas joprojām ir `in_review`, var atsaukt un labot pirms jebkāda pārskatīšanas lēmuma (2.3).
 - `rejected` parasti noslēdz uzdevumu. Ja to noraidīja mitināta verifikācija un šis lēmums vēlāk tiek atcelts, uzdevums var kļūt `satisfied` vai `action_required` ar no jauna atvērtām prasībām, uz kurām jaunais lēmums neatbild. Iesniedz tās vēlreiz pret jauno `revision`.
 
 ### 1.5 Naudas kustība
@@ -314,7 +320,7 @@ Katra mantotā dokumentu virsma attēlojas uz to pašu aizstājēju: lasi `GET /
 
 Ap šo cilpu:
 
-- **Neapstrādāta failu glabāšana**: `POST/GET/DELETE /v3/customers/{customerId}/documents` (plus `/{documentId}` un `GET .../{documentId}/download`), augšupielādē vienreiz ar savu API atslēgu, tad atsaucies uz dokumenta id iesniegumu atbildēs. Tas aizstāj katru upload-token un direct-upload uzņemšanu. `POST .../documents` pieņem arī JSON ķermeni (`storageKey`, `fileName`, `type`), kas patērē vēl svaigu klienta tvēruma atsauci no `POST /v2/documents/direct-upload`, tāpēc novietotās augšupielādes migrē bez baitu atkārtotas sūtīšanas.
+- **Neapstrādāta failu glabāšana**: `POST/GET/DELETE /v3/customers/{customerId}/documents` (plus `/{documentId}` un `GET .../{documentId}/download`), augšupielādē vienreiz ar savu API atslēgu, tad atsaucies uz dokumenta id iesniegumu atbildēs. Tas aizstāj katru upload-token un direct-upload uzņemšanu. `POST .../documents` pieņem arī JSON ķermeni (`storageKey`, `fileName`, `type`), kas patērē vēl svaigu klienta tvēruma atsauci no `POST /v2/documents/direct-upload`, tāpēc novietotās augšupielādes migrē bez baitu atkārtotas sūtīšanas. Katrs v3 dokumenta resurss satur `contentSha256` (`sha256:<hex>`, vai `null` dokumentiem, kas saglabāti, pirms kontrolsummas tika reģistrētas), tāpēc tu vari atklāt baitu ziņā identiska faila atkārtotu augšupielādi.
 - **Jauni lasījumi**: `GET /v3/tasks` (tirgotāja mēroga iesūtne), `GET /v3/transfers/{transferId}/tasks`, `GET .../tasks/{taskId}/history`, `GET .../tasks/{taskId}/submissions` (plus `/{submissionId}`).
 
 Iesniegums (ilustratīvs):
@@ -332,10 +338,12 @@ Iesniegums (ilustratīvs):
 ```
 
 - Atbildes tipi: `profile`, `text`, `date`, `single_select`, `multi_select`, `boolean`, `attestation`, `document`, `resource_reference`, `absence`. Katras prasības `request` objekts pasaka, kādu tipu tas sagaida.
-- Iesniegumam jāatbild uz **katru rīcības prasīgu prasību pašreizējā kārtā**, ar tieši to `taskRevision`, ko tu nolasīji. Daļēji iesniegumi tiek noraidīti.
+- Iesniegumam jāatbild uz **katru rīcības prasīgu prasību pašreizējā kārtā**, ar tieši to `taskRevision`, ko tu nolasīji. Ja kādu izlaid, tiek atgriezts `422 task_submission_incomplete`. Daži fizisku personu identitātes verifikācijas uzdevumi pieņem apakškopu.
+- Pēc noklusējuma viena noraidīta atbilde liek visam pieprasījumam neizdoties, un nekas netiek saglabāts. Atbilde ir `400 validation_error`, `400 invalid_document_reference` vai `409 absence_conflicts_with_profile`. Nosūti `"allowPartial": true`, lai saglabātu derīgās atbildes: `201` atbilde pārējās uzskaita laukā `refusedAnswers` (`requirementId`, `code`, `pointer`, `message`), kur `code` ir viens no `invalid`, `absence_conflicts_with_profile`, `invalid_document_reference` vai `depends_on_refused_answer`. Nezināmu kodu apstrādā kā `invalid`. Ja nevienu atbildi nevar saglabāt, atbilde ir `400 validation_error` un nekas netiek saglabāts. Skati [API atbildes](/lv/integration/onboarding/capabilities-and-requirements#keep-valid-answers-with-allowpartial).
 - `profile` atbildes **raksta cauri**: tās atjaunina klienta profilu pa normālu validācijas ceļu un uzreiz pārvērtē katru spēju, kas atsaucas uz to pašu uzņemšanas darbu. Brāļu uzņemšanas uzdevumi, kuru prasības visas ir izpildītas, automātiski aizveras.
 - Prasības var veidot alternatīvas grupas (`alternativeKey`): iesniedz tieši vienu no grupas.
 - `changes_requested` palielina `remediationRound` un nes `reviewFeedback`. Nolasi uzdevumu vēlreiz, iesniedz vēlreiz **ar svaigu idempotences atslēgu**.
+- `POST /v3/customers/{customerId}/tasks/{taskId}/withdrawals` (ar `Idempotency-Key`) atsauc to vienīgo iesniegumu, kas gaida pārskatīšanu, lai klients to varētu labot. Tā atbildes atgriežas statusā `action_required` bez `reviewFeedback`, tā rezultāts kļūst `withdrawn`, un `remediationRound` tiek palielināts. Jau pieņemtās prasības netiek ietekmētas, un atsaukšanas reižu skaits nav ierobežots. Atgriež `404 task_not_found` nezināmam uzdevumam, `409 task_not_in_review`, ja pārskatīšanu negaida tieši viens iesniegums (neviens vai vairāk nekā viens, piemēram, daļējs iesniegums un tā labojums) vai uzdevuma termiņš ir beidzies, un `409 submission_already_forwarded`, ja banka šo uzdevumu pārskata tieši vai Swipelux jau ir nosūtījis iesniegumu pārskatīšanai. To atgriež arī uzdevumi, kas izveidoti ar `POST /v3/sandbox/tasks`.
 - Mitinātās verifikācijas URL parādās **tikai** klientam apjomotā uzdevuma detalizācijā (`GET /v3/customers/{customerId}/tasks/{taskId}`) un tikai kamēr sesija ir rīcības prasīga; saraksti un `GET /v3/tasks/{taskId}` ir apzināti bez URL.
 - Lietošanas noteikumi arī ir uzdevums: `openTaskIds` var iekļaut `category: "terms_of_service"` uzdevumu, kura mitinātā pieņemšanas lapa ir saistīta tāpat (tikai klientam apjomota detalizācija). Vispārīgi iesniegumi nevar pieņemt noteikumus, un KYC apstiprinājums nekad nenozīmē noteikumu pieņemšanu.
 - Uzdevumi ir apjomoti pa spējām, tāpēc „tas pats” lūgums (piemēram, adreses pierādījums) var parādīties vienreiz katrai spējai. Dedublē UI pēc prasības `key`.
@@ -525,6 +533,7 @@ Katrs solis piegādājams neatkarīgi; v1 vai v2 un v3 darbojas paralēli pret t
 - [ ] Iesniegumi ir pārskatīšanas vārtoti (iesniegšana nav tas pats, kas atbloķēšana) un jāatbild uz **katru** rīcības prasīgu prasību ar tieši `taskRevision`. Neatbilstības gadījumā nolasi vēlreiz un pārbūvē.
 - [ ] Nav `task.*` webhook, apjautā uzdevumu (vai tā vecāku) pēc katra iesnieguma.
 - [ ] `changes_requested` atkārtojums ir: nolasi uzdevumu vēlreiz, svaigas atbildes, **svaiga idempotences atslēga**.
+- [ ] Pieņem iesnieguma rezultātu `withdrawn` un nezināmu `refusedAnswers[].code` apstrādā kā `invalid`.
 - [ ] Postēšana uz `/v1/documents` nekad neatbloķē v3 spēju, kad klients ir uz uzdevumiem, virzi katru lūgumu caur uzdevumiem.
 - [ ] Jauni uzdevumi var parādīties uz jau `ready` spējas, turi uzdevumu cilpu ievadītu pēc uzņemšanas, ne tikai tās laikā.
 - [ ] Spējas `cancel` darbojas tikai no `pending` vai `restricted` bez bloķējošiem resursiem (`409 capability_not_cancelable`); atkārtota pieprasīšana pēc atcelšanas ir svaiga izveide ar svaigu idempotences atslēgu.

@@ -90,6 +90,21 @@ Ja nepieciešams eksportēt klientu, izmantojiet [`POST /v3/customers/{customerI
 
 Pārnesamības marķiera formātam nosūtiet saņemošā KYC projekta klienta ID kā `forClientId`, nevis Swipelux `customerId`. Izmantojiet atgriezto `data.token` pirms `data.expiresAt`. Tā paša `Idempotency-Key` un pamatteksta atkārtota izmantošana atkārto šo marķiera rezultātu; izmantojiet jaunu atslēgu, lai izsniegtu citu marķieri.
 
+## Pārbaudiet ignorētos laukus atjauninājumos {#check-ignored-fields-on-updates}
+
+[`PATCH /v3/customers/{customerId}`](/api-reference/customers/patch-v3-customers-by-customer-id) un `PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}` ignorē pamatteksta laukus, ko neatpazīst. Ja tie ignorē lauku, veiksmīgā atbilde ietver galveni `Swipelux-Ignored-Fields`. Galvene uzskaita ignorēto lauku JSON Pointers, atdalītus ar komatiem un sakārtotus. Izveides pieprasījumi šo galveni neatgriež.
+
+Pārbaudiet šo galveni pēc katras atjaunināšanas. Pretējā gadījumā nepareizi nosaukts vai novietots lauks tiek atmests bez kļūdas. Piemēram, nosūtot `individual.dateOfBirth`, nevis `individual.birthDate`, dzimšanas datums netiek iestatīts.
+
+```http Ignored fields response header
+Swipelux-Ignored-Fields: /individual/dateOfBirth,/nickname
+```
+
+- Galvene uzskaita ne vairāk kā 20 rādītājus un 4096 rakstzīmes un beidzas ar `...`, ja Swipelux saīsina sarakstu. Rādītāju segmenti ir procentkodēti.
+- Lauki `metadata` iekšienē ir brīvas formas un nekad netiek ziņoti.
+- Idempotenti atkārtojumi izlaiž galveni, tāpēc nolasiet to no pirmās atbildes.
+- Nezināmi lauki nākamajā versijā var tikt noraidīti ar `400`.
+
 ## Nolasiet gatavību no iespējām
 
 Klientam API nav verifikācijas vai gatavības statusa. Nolasiet klientu ar [`GET /v3/customers/{customerId}`](/api-reference/customers/get-v3-customers-by-customer-id), lai iegūtu pašreizējos profila datus, pēc tam izmantojiet iespējas un to `openTaskIds`, lai izlemtu, ko klients var darīt tālāk.
@@ -97,6 +112,30 @@ Klientam API nav verifikācijas vai gatavības statusa. Nolasiet klientu ar [`GE
 ```bash Get customer
 curl --request GET \
   "${API_BASE}/v3/customers/${CUSTOMER_ID}" \
+  --header "X-API-Key: ${SWIPELUX_API_KEY}"
+```
+
+### Filtrējiet klientus pēc iespēju gatavības {#filter-customers-by-capability-readiness}
+
+Lai atrastu klientus noteiktā piesaistes posmā, filtrējiet [`GET /v3/customers`](/api-reference/customers/get-v3-customers) ar šiem vaicājuma parametriem:
+
+- `pooledCapabilityStatus`: klientam ir apkopota iespēja šajā statusā.
+- `namedCapabilityStatus`: klientam ir nosaukta iespēja šajā statusā.
+- `hasReadyNamedAccount`: `true` atgriež klientus ar `ready` nosauktu kontu. `false` atgriež klientus bez tā.
+
+Statusa filtri pieņem `pending`, `ready`, `restricted`, `rejected` vai `canceled`. Swipelux nolasa statusus tāpat kā `include=capabilities`. Skatiet [Apkopotais un nosauktais konta veids](/lv/integration/onboarding/capabilities-and-requirements#pooled-vs-named-account-types).
+
+Lai izslēgtu iespējas, kas tikai gaida, pievienojiet `namedCapabilityExcludeWait=true` vai `pooledCapabilityExcludeWait=true`; tas izslēdz atbilstības, kuru `statusReason.resolution` ir `wait`. `namedCapabilityIncludeWait=true` vai `pooledCapabilityIncludeWait=true` iekļauj arī `restricted` iespējas ar šo risinājumu. Katrs karodziņš darbojas tikai ar savu statusa filtru, un `ExcludeWait` ir prioritāte, ja iestatīti abi.
+
+Filtrus var kombinēt savā starpā un ar citiem saraksta filtriem. Swipelux tos piemēro pirms lapošanas, tāpēc katrā lapā ir tikai atbilstoši klienti. API atslēgām to lietošanai nepieciešams `accounts:read` vai `rails:read`. Nederīga vērtība atgriež `400 validation_error`.
+
+Piemēram, lai atrastu klientus, kurus banka ir apstiprinājusi nosauktai iespējai, bet kuriem vēl nav gatava nosaukta konta:
+
+```bash Filter customers awaiting a named account
+curl --request GET \
+  --get "${API_BASE}/v3/customers" \
+  --data-urlencode "namedCapabilityStatus=ready" \
+  --data-urlencode "hasReadyNamedAccount=false" \
   --header "X-API-Key: ${SWIPELUX_API_KEY}"
 ```
 

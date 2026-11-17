@@ -14,17 +14,17 @@ flowchart LR
   D --> E["Vollständige Bankdaten anzeigen"]
 ```
 
-## Bevor Sie beginnen
+## Bevor Sie beginnen {#before-you-start}
 
 Sie benötigen eine Kunden-ID, eine bereite Bank-Fähigkeit für die beabsichtigte Methode und Währung sowie eine bereite ausgegebene Wallet, die demselben Kunden gehört. Mit `allowPending` können Sie die Anfrage speichern, während die ausgewählte Bank den Kunden noch prüft. Erledigen Sie offene Arbeit über [Fähigkeiten und Aufgaben](/de/integration/onboarding/capabilities-and-requirements).
 
-## 1. Settlement-Wallet anlegen oder auswählen
+## 1. Settlement-Wallet anlegen oder auswählen {#1-create-or-select-the-settlement-wallet}
 
 Legen Sie eine ausgegebene Wallet über [Konten und Wallets](/de/integration/accounts#create-the-account) an und lesen Sie sie dann erneut. Fahren Sie nur fort, wenn ihr aktueller Status Settlement erlaubt.
 
 Speichern Sie ihre aus der Antwort abgeleitete `data.id` als `SETTLEMENT_WALLET_ID`. Verwenden Sie keine externe Wallet für `settlement.accountId`.
 
-## 2. Ausgegebenes Bankkonto anlegen
+## 2. Ausgegebenes Bankkonto anlegen {#2-create-the-issued-bank-account}
 
 Verwenden Sie [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) mit diesen Headern:
 
@@ -64,6 +64,23 @@ Optionale Anfragefelder:
 
 Senden Sie `institution`, wenn der Kunde Bankdaten von einer bestimmten Bank benötigt. Swipelux reserviert ein ausgegebenes Konto pro Kunde, Methode, Währung und Institution. Eine Anfrage ohne `institution` gibt `409 conflict` zurück, wenn der Kunde bereits bei einer beliebigen Bank ein ausgegebenes Konto für diese Methode und Währung hat. Eine Anfrage mit `institution` gibt `409 conflict` nur zurück, wenn für diese Bank bereits ein Konto existiert.
 
+Für ein SWIFT-Konto in einer anderen Währung als USD senden Sie die `institution`, die die [Antwort zu den unterstützten Fähigkeiten](/de/integration/onboarding/capabilities-and-requirements#discover-supported-capabilities) für diese Währung auflistet:
+
+```json Request body for a EUR SWIFT account
+{
+  "origin": "issued",
+  "type": "bank",
+  "method": "swift",
+  "country": "US",
+  "currency": "EUR",
+  "institution": "bmo",
+  "settlement": {
+    "accountId": "${SETTLEMENT_WALLET_ID}"
+  },
+  "label": "EUR SWIFT account"
+}
+```
+
 Kontolesungen geben die ausgewählte Bank als `institution` mit `id`, `name` und `bic` zurück. `bic` kann `null` sein.
 
 Die Idempotenz bezieht sich auf die ausgewählte Bank. Das erneute Senden derselben Anfrage gibt das ursprüngliche Konto zurück. Eine Änderung von `institution` unter demselben `Idempotency-Key` gibt `409 idempotency_conflict` zurück.
@@ -94,6 +111,8 @@ Die gespeicherte Anfrage behält ihre Konto-ID, ihre Settlement-Wallet und ihren
 
 Solange die gespeicherte Anfrage wartet, belegt sie den Konto-Slot. Eine weitere `allowPending`-Anfrage für denselben Slot mit einem anderen `Idempotency-Key` gibt `409 conflict` zurück. Das Feld `holder.accountId` des Problems nennt das wartende Konto. Lesen Sie dieses Konto, anstatt es erneut zu versuchen.
 
+Die Bank benötigt einen Antrag, der diese Fähigkeit angefordert hat. Wenn der Antrag bei der Bank die Fähigkeit nur abdeckt, ohne sie angefordert zu haben, gibt eine `allowPending`-Anfrage `409 capability_not_ready` mit `reason: no_ready_route` zurück, bis die Fähigkeit `ready` ist.
+
 Wenn der Antrag zuvor abgelehnt, storniert oder archiviert wird, wechselt das Konto zu `rejected`. Es belegt dann keinen Konto-Slot mehr.
 
 ### Settlement-Währung auswählen {#choose-the-settlement-currency}
@@ -113,22 +132,22 @@ Standardmäßig werden Einzahlungen in der Währung der Settlement-Wallet abgewi
 
 Die Bankkonto-ID und die Wallet-ID haben unterschiedliche Rollen. Lesen Sie Bereitstellung und Bankdaten über die Bankkonto-ID. Verwenden Sie die Settlement-Wallet-ID, um zu kennzeichnen, wohin Einzahlungen gutgeschrieben werden.
 
-## 3. Bereitstellung überwachen
+## 3. Bereitstellung überwachen {#3-monitor-provisioning}
 
 Lesen Sie [`GET /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts-by-account-id) nach der Erstellung und nach jedem relevanten Webhook.
 
 Halten Sie die Kundenoberfläche im Wartezustand, solange `details` fehlt. Wenn `openTaskIds` nicht leer ist, erledigen Sie die neuesten Aufgaben und rufen Sie das Konto erneut ab. Leiten Sie die Bereitschaft nicht aus verstrichener Zeit ab.
 
-Wenn das Konto mit `allowPending: true` gespeichert wurde, bleibt es im Status `in_review` mit `statusReason.code` gleich `waiting_for_approval`, bis die Bank den Antrag genehmigt.
-
 Wenn der neueste `statusReason.code` gleich `awaiting_assignment` ist, erstellen Sie das erste Pay-in für denselben Kunden, dieselbe Fähigkeit und dieselbe Settlement-Wallet über [Gelder empfangen](/de/integration/receive-funds) und lesen Sie das Bankkonto anschließend erneut. Folgen Sie diesem Zweig nur, wenn das aktuelle Konto es verlangt.
 
-## 4. Bankdaten sicher präsentieren
+## 4. Bankdaten sicher präsentieren {#4-present-bank-details-safely}
 
 Zeigen Sie nur die vollständigen Details an, die von der neuesten Kontenlesung zurückgegeben wurden. Wenn `details.referenceRequired` true ist, zeigen Sie die genaue `details.reference` an und machen Sie sie kopierbar. Wenn sie false ist, erfinden Sie keine Referenz.
 
 Zeigen Sie bei ausgegebenen `swift`-Konten `details.bankName`, `details.swiftCode` (die BIC der empfangenden Bank), `details.accountNumber`, `details.accountHolderName` und `details.accountHolderAddress` an, sofern sie zurückgegeben werden. Absender müssen die Begünstigtenadresse exakt in die internationale Überweisung übernehmen. Zeigen Sie außerdem `details.bankAddress` und alle Felder zu zwischengeschalteten Banken an, die das Konto zurückgibt.
 
 Diese Bankdaten sind wiederverwendbar. Ersetzen Sie sie nicht durch Finanzierungskoordinaten aus einem quotierten Pay-in, die nur zu diesem Transfer gehören.
+
+Wenn sich der SWIFT-Code, die Routing-Nummer oder die Kontonummer eines ausgegebenen Kontos ändert, sendet Swipelux `account.details_changed`. Rufen Sie das Konto erneut ab und zeigen Sie seine aktuellen `details` an.
 
 Fügen Sie als Nächstes [Webhooks](/de/integration/webhooks) hinzu, damit Bereitstellungs-Updates Ihre Anwendung erreichen, ohne den Kunden auf einem Polling-Bildschirm zu halten.

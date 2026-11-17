@@ -90,6 +90,21 @@ JSON
 
 ポータビリティトークン形式の場合は、Swipelux の `customerId` ではなく、受け取り側の KYC プロジェクトのクライアント ID を `forClientId` として送信してください。返された `data.token` は `data.expiresAt` より前に使用してください。同じ `Idempotency-Key` とボディを再利用すると、そのトークンの結果が再生されます。別のトークンを発行するには新しいキーを使用してください。
 
+## 更新時に無視されたフィールドを確認する {#check-ignored-fields-on-updates}
+
+[`PATCH /v3/customers/{customerId}`](/api-reference/customers/patch-v3-customers-by-customer-id) と `PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}` は、認識できない本文フィールドを無視します。フィールドを無視した場合、成功レスポンスに `Swipelux-Ignored-Fields` ヘッダーが含まれます。このヘッダーには、無視されたフィールドの JSON Pointer がカンマ区切りで並べ替えて記載されます。作成リクエストではこのヘッダーは返されません。
+
+更新のたびにこのヘッダーを確認してください。確認しないと、名前や位置を誤ったフィールドがエラーなしで破棄されます。たとえば、`individual.birthDate` の代わりに `individual.dateOfBirth` を送信すると、生年月日は設定されないままになります。
+
+```http Ignored fields response header
+Swipelux-Ignored-Fields: /individual/dateOfBirth,/nickname
+```
+
+- ヘッダーには最大 20 個のポインターと 4096 文字までが記載され、Swipelux が一覧を切り詰めた場合は末尾が `...` になります。ポインターのセグメントはパーセントエンコードされます。
+- `metadata` 内のフィールドは自由形式で、報告されることはありません。
+- 冪等な再送ではヘッダーが省略されるため、最初のレスポンスから読み取ってください。
+- 将来のバージョンでは、不明なフィールドが `400` で拒否される場合があります。
+
 ## ケイパビリティから ready 状態を読み取る
 
 顧客自体には、API における検証や ready 状態はありません。現在のプロファイルデータを取得するには [`GET /v3/customers/{customerId}`](/api-reference/customers/get-v3-customers-by-customer-id) で顧客を読み取り、ケイパビリティとその `openTaskIds` を使って、顧客が次に何をできるかを判断してください。
@@ -97,6 +112,30 @@ JSON
 ```bash Get customer
 curl --request GET \
   "${API_BASE}/v3/customers/${CUSTOMER_ID}" \
+  --header "X-API-Key: ${SWIPELUX_API_KEY}"
+```
+
+### ケイパビリティの準備状況で顧客を絞り込む {#filter-customers-by-capability-readiness}
+
+特定のオンボーディング段階にある顧客を見つけるには、次のクエリパラメーターで [`GET /v3/customers`](/api-reference/customers/get-v3-customers) を絞り込みます。
+
+- `pooledCapabilityStatus`: 顧客がこのステータスのプール型ケイパビリティを持っています。
+- `namedCapabilityStatus`: 顧客がこのステータスの名義型ケイパビリティを持っています。
+- `hasReadyNamedAccount`: `true` は `ready` の名義型口座を持つ顧客を返します。`false` は持たない顧客を返します。
+
+ステータスフィルターには `pending`、`ready`、`restricted`、`rejected`、`canceled` を指定できます。Swipelux は `include=capabilities` と同じ方法でステータスを読み取ります。[プール型と名義型の口座タイプ](/jp/integration/onboarding/capabilities-and-requirements#pooled-vs-named-account-types) を参照してください。
+
+待機中のみのケイパビリティを除外するには、`namedCapabilityExcludeWait=true` または `pooledCapabilityExcludeWait=true` を追加します。これにより、`statusReason.resolution` が `wait` の一致が除外されます。`namedCapabilityIncludeWait=true` または `pooledCapabilityIncludeWait=true` は、その解決方法を持つ `restricted` のケイパビリティにも一致します。各フラグは対応するステータスフィルターとのみ機能し、両方を指定した場合は `ExcludeWait` が優先されます。
+
+フィルターは互いに、またほかの一覧フィルターと組み合わせることができます。Swipelux はページングの前に適用するため、各ページには一致する顧客のみが含まれます。使用するには、API キーに `accounts:read` または `rails:read` が必要です。無効な値は `400 validation_error` を返します。
+
+たとえば、銀行が名義型ケイパビリティを承認したものの、まだ ready の名義型口座を持っていない顧客を見つけるには、次のようにします。
+
+```bash Filter customers awaiting a named account
+curl --request GET \
+  --get "${API_BASE}/v3/customers" \
+  --data-urlencode "namedCapabilityStatus=ready" \
+  --data-urlencode "hasReadyNamedAccount=false" \
   --header "X-API-Key: ${SWIPELUX_API_KEY}"
 ```
 

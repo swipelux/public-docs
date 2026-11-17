@@ -14,17 +14,17 @@ flowchart LR
   D --> E["Zobrazte kompletní bankovní údaje"]
 ```
 
-## Než začnete
+## Než začnete {#before-you-start}
 
 Potřebujete ID zákazníka, připravenou bankovní capability pro zamýšlenou metodu a měnu a připravenou vydanou peněženku vlastněnou stejným zákazníkem. Pomocí `allowPending` můžete požadavek uložit, zatímco vybraná banka zákazníka ještě posuzuje. Otevřenou práci dokončete přes [Capabilities a úkoly](/cs/integration/onboarding/capabilities-and-requirements).
 
-## 1. Vytvořte nebo vyberte vypořádací peněženku
+## 1. Vytvořte nebo vyberte vypořádací peněženku {#1-create-or-select-the-settlement-wallet}
 
 Vytvořte vydanou peněženku podle [Účty a peněženky](/cs/integration/accounts#create-the-account), poté ji znovu přečtěte. Pokračujte jen tehdy, když její aktuální stav umožňuje vypořádání.
 
 Uložte její `data.id` z odpovědi jako `SETTLEMENT_WALLET_ID`. Nepoužívejte externí peněženku pro `settlement.accountId`.
 
-## 2. Vytvořte vydaný bankovní účet
+## 2. Vytvořte vydaný bankovní účet {#2-create-the-issued-bank-account}
 
 Použijte [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) s těmito hlavičkami:
 
@@ -64,6 +64,23 @@ Volitelná pole požadavku:
 
 Odešlete `institution`, když zákazník potřebuje bankovní údaje od konkrétní banky. Swipelux rezervuje jeden vydaný účet na zákazníka, metodu, měnu a instituci. Požadavek bez `institution` vrátí `409 conflict`, pokud zákazník již má vydaný účet pro tuto metodu a měnu u kterékoli banky. Požadavek s `institution` vrátí `409 conflict` pouze tehdy, když účet pro tuto banku již existuje.
 
+Pro účet SWIFT v jiné měně než USD odešlete `institution`, kterou pro danou měnu uvádí [odpověď s podporovanými capabilities](/cs/integration/onboarding/capabilities-and-requirements#discover-supported-capabilities):
+
+```json Request body for a EUR SWIFT account
+{
+  "origin": "issued",
+  "type": "bank",
+  "method": "swift",
+  "country": "US",
+  "currency": "EUR",
+  "institution": "bmo",
+  "settlement": {
+    "accountId": "${SETTLEMENT_WALLET_ID}"
+  },
+  "label": "EUR SWIFT account"
+}
+```
+
 Čtení účtu vrací vybranou banku jako `institution` s poli `id`, `name` a `bic`. `bic` může být `null`.
 
 Idempotence se vztahuje k vybrané bance. Opakované odeslání stejného požadavku vrátí původní účet. Změna `institution` pod stejným `Idempotency-Key` vrátí `409 idempotency_conflict`.
@@ -94,6 +111,8 @@ Uložený požadavek si ponechává své ID účtu, vypořádací peněženku i 
 
 Dokud uložený požadavek čeká, drží slot účtu. Další požadavek `allowPending` pro stejný slot s jiným `Idempotency-Key` vrátí `409 conflict`. Pole `holder.accountId` v problému uvádí čekající účet. Místo opakování požadavku načtěte tento účet.
 
+Banka potřebuje aplikaci, která o tuto capability požádala. Pokud aplikace u banky capability pouze pokrývá, aniž by o ni požádala, požadavek `allowPending` vrací `409 capability_not_ready` s `reason: no_ready_route`, dokud capability není `ready`.
+
 Pokud je žádost nejprve zamítnuta, zrušena nebo archivována, účet přejde do stavu `rejected`. Slot účtu již nedrží.
 
 ### Zvolte měnu vypořádání {#choose-the-settlement-currency}
@@ -113,22 +132,22 @@ Ve výchozím nastavení se vklady vypořádávají v měně vypořádací peně
 
 ID bankovního účtu a ID peněženky mají různé role. Přes ID bankovního účtu čtěte provisioning a bankovní údaje. ID vypořádací peněženky používejte k identifikaci místa, kde jsou vklady připisovány.
 
-## 3. Sledujte provisioning
+## 3. Sledujte provisioning {#3-monitor-provisioning}
 
 Přečtěte [`GET /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts-by-account-id) po vytvoření a po každém relevantním webhooku.
 
 Nechte zákaznické rozhraní ve stavu čekajícím, dokud `details` chybí. Pokud `openTaskIds` není prázdný, dokončete nejnovější úkoly a znovu načtěte účet. Neodvozujte připravenost z uplynulého času.
 
-Pokud byl účet uložen s `allowPending: true`, zůstává ve stavu `in_review` s `statusReason.code` nastaveným na `waiting_for_approval`, dokud banka žádost neschválí.
-
 Pokud je nejnovější `statusReason.code` `awaiting_assignment`, vytvořte první příchozí platbu pro stejného zákazníka, capability a vypořádací peněženku přes [Přijímat prostředky](/cs/integration/receive-funds) a poté bankovní účet znovu přečtěte. Touto větví postupujte pouze tehdy, když ji aktuální účet vyžaduje.
 
-## 4. Prezentujte bankovní údaje bezpečně
+## 4. Prezentujte bankovní údaje bezpečně {#4-present-bank-details-safely}
 
 Zobrazte pouze úplné údaje vrácené nejnovějším čtením účtu. Když je `details.referenceRequired` true, zobrazte přesnou `details.reference` a umožněte její zkopírování. Když je false, referenci si nevymýšlejte.
 
 U vydaných účtů `swift` zobrazte `details.bankName`, `details.swiftCode` (BIC přijímající banky), `details.accountNumber`, `details.accountHolderName` a `details.accountHolderAddress`, pokud jsou vráceny. Odesílatelé musí adresu příjemce zkopírovat do mezinárodního převodu přesně. Zobrazte také `details.bankAddress` a všechna pole zprostředkující banky, která účet vrací.
 
 Tyto bankovní údaje jsou opakovaně použitelné. Nenahrazujte je financovacími souřadnicemi z odkvótované příchozí platby, které patří pouze k danému převodu.
+
+Když se změní kód SWIFT, směrovací číslo nebo číslo účtu vydaného účtu, Swipelux odešle `account.details_changed`. Znovu načtěte účet a zobrazte jeho aktuální `details`.
 
 Dále přidejte [Webhooky](/cs/integration/webhooks), aby aktualizace provisioningu dosáhly vaší aplikace, aniž byste zákazníka drželi na pollingové obrazovce.

@@ -113,6 +113,10 @@ sequenceDiagram
   else rejected
     SLX-->>You: task rejected, parent statusReason says what is next
   end
+  opt correct before review
+    You->>SLX: POST .../tasks/{taskId}/withdrawals
+    SLX-->>You: submission withdrawn, answers back to action_required
+  end
 ```
 
 Keskeisiä ominaisuuksia:
@@ -121,6 +125,8 @@ Keskeisiä ominaisuuksia:
 - Lähettäminen on **arviointi-ohjattua**: se ei koskaan muuta capabilityn tai tilin tilaa suoraan, hyväksyminen tekee sen. Yksi poikkeus: `profile`-vastaukset kirjoittavat lähetyshetkellä läpi asiakasprofiiliin (2.3). Lähettämisen jälkeen pollaa taskia tai vanhempiresurssia.
 - `taskRevision` (taskin `revision`-arvon kaiku) on samanaikaisuuden suoja: jos task on muuttunut sen jälkeen kun luit sen, lue uudelleen ja rakenna vastauksesi uudelleen.
 - `absence` on täysivaltainen vastaus ("Minulla ei ole tätä, koska ..."), käytä sitä sen sijaan että jättäisit pyynnöt roikkumaan.
+- `allowPartial: true` submissionissa tallentaa kelvolliset vastaukset ja palauttaa virheelliset kentässä `refusedAnswers` sen sijaan, että koko pyyntö epäonnistuisi (2.3).
+- Submission, joka on yhä `in_review`, voidaan peruuttaa ja korjata ennen tarkistuspäätöstä (2.3).
 - `rejected` yleensä päättää taskin. Kun isännöity vahvistus hylkäsi sen ja päätös myöhemmin kumotaan, taskista voi tulla `satisfied` tai `action_required`, jolloin pyynnöt, joihin uusi päätös ei vastaa, avataan uudelleen. Lähetä ne uudelleen uutta `revision`-arvoa vasten.
 
 ### 1.5 Rahansiirto
@@ -314,7 +320,7 @@ Jokainen vanha asiakirjapinta kuvautuu samaan korvaajaan: lue `GET /v3/customers
 
 Tuon silmukan ympärillä:
 
-- **Raakatiedostojen tallennus**: `POST/GET/DELETE /v3/customers/{customerId}/documents` (plus `/{documentId}` ja `GET .../{documentId}/download`), lataa kerran API-avaimellasi ja viittaa sitten asiakirjatunnisteisiin submission-vastauksissa. Tämä korvaa jokaisen upload-token- ja direct-upload-vastaanoton. `POST .../documents` hyväksyy myös JSON-rungon (`storageKey`, `fileName`, `type`), joka kuluttaa vielä tuoreen asiakaskohtaisen viitteen `POST /v2/documents/direct-upload`-kutsusta, joten pysäköidyt lataukset migroituvat lähettämättä tavuja uudelleen.
+- **Raakatiedostojen tallennus**: `POST/GET/DELETE /v3/customers/{customerId}/documents` (plus `/{documentId}` ja `GET .../{documentId}/download`), lataa kerran API-avaimellasi ja viittaa sitten asiakirjatunnisteisiin submission-vastauksissa. Tämä korvaa jokaisen upload-token- ja direct-upload-vastaanoton. `POST .../documents` hyväksyy myös JSON-rungon (`storageKey`, `fileName`, `type`), joka kuluttaa vielä tuoreen asiakaskohtaisen viitteen `POST /v2/documents/direct-upload`-kutsusta, joten pysäköidyt lataukset migroituvat lähettämättä tavuja uudelleen. Jokainen v3-asiakirjaresurssi sisältää kentän `contentSha256` (`sha256:<hex>`, tai `null` asiakirjoille, jotka tallennettiin ennen tiivisteiden tallentamista), joten voit havaita tavu tavulta identtisen tiedoston uudelleenlatauksen.
 - **Aivan uudet luvut**: `GET /v3/tasks` (kauppiaslaajuinen postilaatikko), `GET /v3/transfers/{transferId}/tasks`, `GET .../tasks/{taskId}/history`, `GET .../tasks/{taskId}/submissions` (plus `/{submissionId}`).
 
 Submission (havainnollistava):
@@ -332,10 +338,12 @@ Submission (havainnollistava):
 ```
 
 - Vastaustyypit: `profile`, `text`, `date`, `single_select`, `multi_select`, `boolean`, `attestation`, `document`, `resource_reference`, `absence`. Kunkin requirementin `request`-objekti kertoo, minkä tyypin se odottaa.
-- Submissionin on vastattava **jokaiseen toimintaa vaativaan requirementiin nykyisellä kierroksella**, tarkalla sinun lukemallasi `taskRevision`-arvolla. Osittaiset submissionit hylätään.
+- Submissionin on vastattava **jokaiseen toimintaa vaativaan requirementiin nykyisellä kierroksella**, tarkalla sinun lukemallasi `taskRevision`-arvolla. Yhden pois jättäminen palauttaa `422 task_submission_incomplete`. Jotkin yksityishenkilöiden henkilöllisyyden todentamistehtävät hyväksyvät osajoukon.
+- Oletuksena yksi hylätty vastaus saa koko pyynnön epäonnistumaan, eikä mitään tallenneta. Vastaus on `400 validation_error`, `400 invalid_document_reference` tai `409 absence_conflicts_with_profile`. Lähetä `"allowPartial": true` säilyttääksesi kelvolliset vastaukset: `201`-vastaus listaa muut kentässä `refusedAnswers` (`requirementId`, `code`, `pointer`, `message`), ja `code` on yksi arvoista `invalid`, `absence_conflicts_with_profile`, `invalid_document_reference` tai `depends_on_refused_answer`. Käsittele tuntematon koodi arvona `invalid`. Kun yhtään vastausta ei voida säilyttää, vastaus on `400 validation_error` eikä mitään tallenneta. Katso [API-vastaukset](/fi/integration/onboarding/capabilities-and-requirements#keep-valid-answers-with-allowpartial).
 - `profile`-vastaukset **kirjoittavat läpi**: ne päivittävät asiakasprofiilin normaalin validointireitin kautta ja arvioivat välittömästi uudelleen jokaisen samaan intake-työhön viittaavan capabilityn. Sisar-intake-taskit, joiden kaikki requirementit on täytetty, sulkeutuvat automaattisesti.
 - Requirementit voivat muodostaa vaihtoehtoisia ryhmiä (`alternativeKey`): lähetä tasan yksi ryhmästä.
 - `changes_requested` kasvattaa `remediationRound`-arvoa ja kantaa `reviewFeedback`-tietoa. Lue task uudelleen ja lähetä uudelleen **tuoreella idempotency-avaimella**.
+- `POST /v3/customers/{customerId}/tasks/{taskId}/withdrawals` (`Idempotency-Key`-otsakkeella) peruuttaa sen yhden tarkistusta odottavan submissionin, jotta asiakas voi korjata sen. Sen vastaukset palaavat tilaan `action_required` ilman `reviewFeedback`-kenttää, sen tulokseksi tulee `withdrawn`, ja `remediationRound` kasvaa. Jo hyväksyttyihin requirementeihin ei kosketa, eikä peruutusten määrää ole rajoitettu. Palauttaa `404 task_not_found` tuntemattomalle tehtävälle, `409 task_not_in_review`, kun tarkistusta ei odota täsmälleen yksi submission (ei yhtään, tai useampi kuin yksi, esimerkiksi osittainen submission ja sen korjaus) tai tehtävän määräaika on umpeutunut, ja `409 submission_already_forwarded`, kun pankki tarkistaa tämän tehtävän suoraan tai Swipelux on jo välittänyt submissionin tarkistettavaksi. Myös kutsulla `POST /v3/sandbox/tasks` luodut tehtävät palauttavat sen.
 - Isännöidyt verifiointi-URLit näkyvät **vain** asiakaskohtaisessa task-detaljissa (`GET /v3/customers/{customerId}/tasks/{taskId}`) ja vain niin kauan kuin istunto vaatii toimintaa; listat ja `GET /v3/tasks/{taskId}` ovat tarkoituksellisesti URL-vapaita.
 - Käyttöehdot ovat myös task: `openTaskIds` voi sisältää taskin `category: "terms_of_service"`, jonka isännöity hyväksymissivu linkitetään samalla tavalla (vain asiakaskohtainen detalji). Yleiset submissionit eivät voi hyväksyä ehtoja, eikä KYC-hyväksyntä koskaan tarkoita ehtojen hyväksyntää.
 - Taskit on rajattu capability-kohtaisesti, joten "sama" pyyntö (esimerkiksi osoitteentodistus) voi ilmestyä kerran per capability. Dedupliko käyttöliittymässäsi requirementin `key`-arvolla.
@@ -525,6 +533,7 @@ Jokainen vaihe toimitetaan itsenäisesti; v1 tai v2 ja v3 ajavat rinnakkain sama
 - [ ] Submissionit ovat arviointiohjattuja (lähettäminen ei ole sama kuin avattu) ja niiden on vastattava **jokaiseen** toimintaa vaativaan requirementiin tarkalla `taskRevision`-arvolla. Ristiriidassa lue uudelleen ja rakenna uudelleen.
 - [ ] `task.*`-webhookia ei ole olemassa, pollaa taskia (tai sen vanhempaa) jokaisen lähetyksen jälkeen.
 - [ ] Uusintayritys `changes_requested`-tapauksessa tarkoittaa taskin lukemista uudelleen, tuoreita vastauksia, **tuoretta idempotency-avainta**.
+- [ ] Hyväksy submissionin tulos `withdrawn` ja käsittele tuntematon `refusedAnswers[].code` arvona `invalid`.
 - [ ] `/v1/documents`-osoitteeseen postaaminen ei koskaan avaa v3-capabilitya, kun asiakas on taskeissa, ohjaa jokainen pyyntö taskien kautta.
 - [ ] Uusia taskeja voi ilmestyä jo `ready`-tilaiselle capabilitylle, pidä task-silmukka kytkettynä onboardingin jälkeen, ei vain sen aikana.
 - [ ] Capability `cancel` toimii vain tiloista `pending` tai `restricted` ilman estäviä resursseja (`409 capability_not_cancelable`); uudelleen pyytäminen peruutuksen jälkeen on tuore luonti tuoreella idempotency-avaimella.

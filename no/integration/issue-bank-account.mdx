@@ -14,17 +14,17 @@ flowchart LR
   D --> E["Vis fullstendige bankopplysninger"]
 ```
 
-## Før du starter
+## Før du starter {#before-you-start}
 
 Du trenger en kunde-ID, en klar bank-capability for tiltenkt metode og valuta, samt en klar utstedt lommebok eid av samme kunde. Med `allowPending` kan du lagre forespørselen mens den valgte banken fortsatt vurderer kunden. Fullfør åpent arbeid via [Capabilities og oppgaver](/no/integration/onboarding/capabilities-and-requirements).
 
-## 1. Opprett eller velg oppgjørslommeboken
+## 1. Opprett eller velg oppgjørslommeboken {#1-create-or-select-the-settlement-wallet}
 
 Opprett en utstedt lommebok via [Kontoer og lommebøker](/no/integration/accounts#create-the-account), og les den så på nytt. Fortsett kun når gjeldende status tillater oppgjør.
 
 Lagre dens responsavledede `data.id` som `SETTLEMENT_WALLET_ID`. Ikke bruk en ekstern lommebok for `settlement.accountId`.
 
-## 2. Opprett den utstedte bankkontoen
+## 2. Opprett den utstedte bankkontoen {#2-create-the-issued-bank-account}
 
 Bruk [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) med disse headerne:
 
@@ -64,6 +64,23 @@ Valgfrie felt i forespørselen:
 
 Send `institution` når kunden trenger bankopplysninger fra en bestemt bank. Swipelux reserverer én utstedt konto per kunde, metode, valuta og institusjon. En forespørsel uten `institution` returnerer `409 conflict` hvis kunden allerede har en utstedt konto for den metoden og valutaen i en hvilken som helst bank. En forespørsel med `institution` returnerer `409 conflict` kun hvis det allerede finnes en konto i den banken.
 
+For en SWIFT-konto i en annen valuta enn USD sender du `institution` som [svaret med støttede capabilities](/no/integration/onboarding/capabilities-and-requirements#discover-supported-capabilities) oppgir for den valutaen:
+
+```json Request body for a EUR SWIFT account
+{
+  "origin": "issued",
+  "type": "bank",
+  "method": "swift",
+  "country": "US",
+  "currency": "EUR",
+  "institution": "bmo",
+  "settlement": {
+    "accountId": "${SETTLEMENT_WALLET_ID}"
+  },
+  "label": "EUR SWIFT account"
+}
+```
+
 Kontolesninger returnerer den valgte banken som `institution` med `id`, `name` og `bic`. `bic` kan være `null`.
 
 Idempotens gjelder for den valgte banken. Å spille av samme forespørsel på nytt returnerer den opprinnelige kontoen. Å endre `institution` under samme `Idempotency-Key` returnerer `409 idempotency_conflict`.
@@ -94,6 +111,8 @@ Den lagrede forespørselen beholder konto-ID-en, oppgjørslommeboken og kontopla
 
 Mens den lagrede forespørselen venter, holder den kontoplassen. En annen `allowPending`-forespørsel for samme plass med en annen `Idempotency-Key` returnerer `409 conflict`. Problemets `holder.accountId` angir den ventende kontoen. Les den kontoen i stedet for å prøve på nytt.
 
+Banken trenger en søknad som har bedt om denne capability-en. Hvis søknaden hos banken bare dekker capability-en uten å ha bedt om den, returnerer en `allowPending`-forespørsel `409 capability_not_ready` med `reason: no_ready_route` til capability-en er `ready`.
+
 Hvis søknaden først blir avvist, kansellert eller arkivert, blir kontoen `rejected`. Den holder ikke lenger kontoplassen.
 
 ### Velg oppgjørsvaluta {#choose-the-settlement-currency}
@@ -113,22 +132,22 @@ Som standard gjøres innskudd opp i oppgjørslommebokens valuta. Sett `settlemen
 
 Bankkonto-ID-en og lommebok-ID-en har ulike roller. Les provisjonering og bankopplysninger via bankkonto-ID-en. Bruk oppgjørslommebok-ID-en til å identifisere hvor innskudd krediteres.
 
-## 3. Overvåk provisjonering
+## 3. Overvåk provisjonering {#3-monitor-provisioning}
 
 Les [`GET /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts-by-account-id) etter opprettelse og etter hver relevante webhook.
 
 Hold kundegrensesnittet ventende mens `details` mangler. Hvis `openTaskIds` ikke er tom, fullfør de siste oppgavene og hent kontoen på nytt. Ikke slutt fra forløpt tid at kontoen er klar.
 
-Hvis kontoen ble lagret med `allowPending: true`, forblir den `in_review` med `statusReason.code` satt til `waiting_for_approval` til banken godkjenner søknaden.
-
 Hvis siste `statusReason.code` er `awaiting_assignment`, opprett den første pay-in-en for samme kunde, capability og oppgjørslommebok via [Motta midler](/no/integration/receive-funds), og les så bankkontoen på nytt. Følg denne grenen kun når gjeldende konto ber om det.
 
-## 4. Presenter bankopplysninger trygt
+## 4. Presenter bankopplysninger trygt {#4-present-bank-details-safely}
 
 Vis kun de komplette opplysningene returnert av siste kontolesning. Når `details.referenceRequired` er true, vis den nøyaktige `details.reference` og gjør den kopierbar. Når den er false, ikke oppfinn en referanse.
 
 For utstedte `swift`-kontoer, vis `details.bankName`, `details.swiftCode` (mottakerbankens BIC), `details.accountNumber`, `details.accountHolderName` og `details.accountHolderAddress` når de returneres. Avsendere må kopiere mottakerens adresse nøyaktig inn i den internasjonale overføringen. Vis også `details.bankAddress` og eventuelle felt for mellombank som kontoen returnerer.
 
 Disse bankopplysningene er gjenbrukbare. Ikke erstatt dem med finansieringskoordinater fra en prisfestet pay-in, som hører kun til den overføringen.
+
+Når SWIFT-koden, routingnummeret eller kontonummeret til en utstedt konto endres, sender Swipelux `account.details_changed`. Hent kontoen på nytt og vis gjeldende `details`.
 
 Deretter, legg til [Webhooks](/no/integration/webhooks) slik at provisjoneringsoppdateringer når applikasjonen din uten å måtte holde kunden på en pollingskjerm.

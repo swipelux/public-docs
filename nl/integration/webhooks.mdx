@@ -52,7 +52,7 @@ Werk het endpoint bij met [`PATCH /v3/webhooks/{webhookId}`](/api-reference/webh
 - Nieuwe abonnementen moeten v3-eventnamen gebruiken.
 - Je kunt een legacy-eventnaam behouden als het endpoint er al op is geabonneerd. Het toevoegen van een nieuwe legacy-naam retourneert `400 validation_error`.
 
-Totdat de KYB van je integrerende bedrijf is goedgekeurd, kun je in totaal 20 webhook-URL-wijzigingen per uur doen, verdeeld over alle endpoints in je live-omgevingen die KYB vereisen. Wijzigingen in sandbox-omgevingen tellen niet mee. Een endpoint aanmaken of de `url` ervan wijzigen telt als wijziging. Alleen `events` wijzigen of de huidige URL opnieuw opslaan telt niet. Het overschrijden van de limiet retourneert `422 merchant_kyb_not_approved`. Zie [Go-live](/nl/integration/go-live#activate-your-production-space).
+Totdat de KYB van je integrerende bedrijf is goedgekeurd, zijn het aanmaken van endpoints en URL-wijzigingen beperkt. Zie [Go-live](/nl/integration/go-live#daily-creation-limits).
 
 Deze body behoudt de URL en vervangt de selectie:
 
@@ -61,6 +61,12 @@ Deze body behoudt de URL en vervangt de selectie:
   "events": ["transfer.state_changed", "capability.status_changed"]
 }
 ```
+
+## Gebruik een openbare bestemmings-URL {#use-a-public-destination-url}
+
+Het opslaan van een URL retourneert `400 validation_error` als een adres waarnaar de hostnaam resolvet privé, loopback, link-local, gereserveerd of multicast is, als de hostnaam niet resolvet, of als het `localhost` is, een naam met één label, of eindigt op `.localhost`, `.local`, `.localdomain`, `.internal` of `.home.arpa`.
+
+Swipelux controleert opgeslagen URL's dagelijks opnieuw en pauzeert een endpoint waarvan de hostnaam of het adres nu wordt geweigerd (`disabled: true`). Stuur een geldige `url` met `disabled: false` om het te hervatten.
 
 ## Verifieer voordat je parseert
 
@@ -72,18 +78,21 @@ Swipelux levert nieuwe webhook-integraties via Svix. Verifieer de raw request bo
 
 Parseer geen JSON en veroorzaak geen side effects voordat de verificatie is geslaagd.
 
-```javascript Verify signature
+<CodeGroup>
+
+```javascript JavaScript
 import { Webhook } from "svix";
 
 const verifier = new Webhook(process.env.SWIPELUX_WEBHOOK_SECRET);
 
 export async function handleSwipeluxWebhook(request) {
   const rawBody = await request.text();
-  const event = verifier.verify(rawBody, {
+  verifier.verify(rawBody, {
     "svix-id": request.headers.get("svix-id"),
     "svix-timestamp": request.headers.get("svix-timestamp"),
     "svix-signature": request.headers.get("svix-signature"),
   });
+  const event = JSON.parse(rawBody);
 
   await webhookInbox.insertIfAbsent({
     id: event.id,
@@ -94,6 +103,27 @@ export async function handleSwipeluxWebhook(request) {
   return new Response(null, { status: 204 });
 }
 ```
+
+```java Java
+import com.svix.Webhook;
+import com.svix.exceptions.WebhookVerificationException;
+import java.util.List;
+import java.util.Map;
+
+class SwipeluxSignature {
+  // Pass the unmodified request body and every request header.
+  static boolean valid(String secret, String rawBody, Map<String, List<String>> headers) throws Exception {
+    try {
+      new Webhook(secret).verify(rawBody, headers);
+      return true;
+    } catch (WebhookVerificationException e) {
+      return false;
+    }
+  }
+}
+```
+
+</CodeGroup>
 
 Weiger requests met ontbrekende of ongeldige signatures. Houd de raw body beschikbaar totdat de verificatie is voltooid.
 

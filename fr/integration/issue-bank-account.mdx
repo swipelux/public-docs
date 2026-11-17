@@ -14,17 +14,17 @@ flowchart LR
   D --> E["Afficher les coordonnées bancaires complètes"]
 ```
 
-## Avant de commencer
+## Avant de commencer {#before-you-start}
 
 Vous avez besoin d'un ID de client, d'une capacité bancaire prête pour la méthode et la devise prévues, et d'un portefeuille émis prêt détenu par le même client. Avec `allowPending`, vous pouvez enregistrer la demande pendant que la banque sélectionnée examine encore le client. Complétez le travail ouvert via [Capacités et tâches](/fr/integration/onboarding/capabilities-and-requirements).
 
-## 1. Créer ou sélectionner le portefeuille de règlement
+## 1. Créer ou sélectionner le portefeuille de règlement {#1-create-or-select-the-settlement-wallet}
 
 Créez un portefeuille émis via [Comptes et portefeuilles](/fr/integration/accounts#create-the-account), puis lisez-le à nouveau. Continuez uniquement lorsque son statut actuel autorise le règlement.
 
 Stockez son `data.id` dérivé de la réponse en tant que `SETTLEMENT_WALLET_ID`. N'utilisez pas de portefeuille externe pour `settlement.accountId`.
 
-## 2. Créer le compte bancaire émis
+## 2. Créer le compte bancaire émis {#2-create-the-issued-bank-account}
 
 Utilisez [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) avec ces en-têtes :
 
@@ -64,6 +64,23 @@ Champs de requête facultatifs :
 
 Envoyez `institution` lorsque le client a besoin de coordonnées bancaires d'une banque précise. Swipelux réserve un compte émis par client, méthode, devise et institution. Une requête sans `institution` renvoie `409 conflict` si le client possède déjà un compte émis pour cette méthode et cette devise auprès de n'importe quelle banque. Une requête avec `institution` renvoie `409 conflict` uniquement si un compte existe déjà pour cette banque.
 
+Pour un compte SWIFT dans une devise autre que l'USD, envoyez l'`institution` que la [réponse des capacités prises en charge](/fr/integration/onboarding/capabilities-and-requirements#discover-supported-capabilities) indique pour cette devise :
+
+```json Request body for a EUR SWIFT account
+{
+  "origin": "issued",
+  "type": "bank",
+  "method": "swift",
+  "country": "US",
+  "currency": "EUR",
+  "institution": "bmo",
+  "settlement": {
+    "accountId": "${SETTLEMENT_WALLET_ID}"
+  },
+  "label": "EUR SWIFT account"
+}
+```
+
 Les lectures de compte renvoient la banque sélectionnée sous `institution` avec `id`, `name` et `bic`. `bic` peut valoir `null`.
 
 L'idempotence s'applique à la banque sélectionnée. Rejouer la même requête renvoie le compte d'origine. Modifier `institution` avec la même `Idempotency-Key` renvoie `409 idempotency_conflict`.
@@ -94,6 +111,8 @@ La demande enregistrée conserve son ID de compte, son portefeuille de règlemen
 
 Tant que la demande enregistrée est en attente, elle réserve l'emplacement de compte. Une autre demande `allowPending` pour le même emplacement avec un `Idempotency-Key` différent renvoie `409 conflict`. Le champ `holder.accountId` du problème indique le compte en attente. Lisez ce compte au lieu de réessayer.
 
+La banque a besoin d'un dossier qui a demandé cette capacité. Si le dossier auprès de la banque couvre seulement la capacité sans l'avoir demandée, une demande `allowPending` renvoie `409 capability_not_ready` avec `reason: no_ready_route` jusqu'à ce que la capacité soit `ready`.
+
 Si le dossier est d'abord rejeté, annulé ou archivé, le compte passe à `rejected`. Il ne réserve plus l'emplacement de compte.
 
 ### Choisir la devise de règlement {#choose-the-settlement-currency}
@@ -113,22 +132,22 @@ Par défaut, les dépôts sont réglés dans la devise du portefeuille de règle
 
 L'ID du compte bancaire et l'ID du portefeuille ont des rôles différents. Lisez le provisionnement et les coordonnées bancaires via l'ID du compte bancaire. Utilisez l'ID du portefeuille de règlement pour identifier où les dépôts sont crédités.
 
-## 3. Surveiller le provisionnement
+## 3. Surveiller le provisionnement {#3-monitor-provisioning}
 
 Lisez [`GET /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts-by-account-id) après la création et après chaque webhook pertinent.
 
 Maintenez l'interface client en attente tant que `details` est absent. Si `openTaskIds` n'est pas vide, complétez les dernières tâches et récupérez à nouveau le compte. N'inférez pas la disponibilité à partir du temps écoulé.
 
-Si le compte a été enregistré avec `allowPending: true`, il reste `in_review` avec `statusReason.code` défini sur `waiting_for_approval` jusqu'à ce que la banque approuve le dossier.
-
 Si le dernier `statusReason.code` est `awaiting_assignment`, créez le premier encaissement pour le même client, la même capacité et le même portefeuille de règlement via [Recevoir des fonds](/fr/integration/receive-funds), puis lisez à nouveau le compte bancaire. Suivez cette branche uniquement lorsque le compte actuel le demande.
 
-## 4. Présenter les coordonnées bancaires en toute sécurité
+## 4. Présenter les coordonnées bancaires en toute sécurité {#4-present-bank-details-safely}
 
 Affichez uniquement les coordonnées complètes renvoyées par la dernière lecture du compte. Lorsque `details.referenceRequired` est true, affichez exactement la `details.reference` et rendez-la copiable. Lorsqu'elle est false, n'inventez pas de référence.
 
 Pour les comptes `swift` émis, affichez `details.bankName`, `details.swiftCode` (le BIC de la banque réceptrice), `details.accountNumber`, `details.accountHolderName` et `details.accountHolderAddress` lorsqu'ils sont renvoyés. Les émetteurs doivent copier exactement l'adresse du bénéficiaire dans le virement international. Affichez également `details.bankAddress` et tous les champs de banque intermédiaire renvoyés par le compte.
 
 Ces coordonnées bancaires sont réutilisables. Ne les remplacez pas par des coordonnées de financement provenant d'un encaissement avec devis, qui n'appartiennent qu'à ce transfert.
+
+Lorsque le code SWIFT, le numéro de routage ou le numéro de compte d'un compte émis change, Swipelux envoie `account.details_changed`. Récupérez à nouveau le compte et affichez ses `details` actuels.
 
 Ensuite, ajoutez des [Webhooks](/fr/integration/webhooks) afin que les mises à jour de provisionnement atteignent votre application sans garder le client sur un écran de polling.

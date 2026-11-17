@@ -52,7 +52,7 @@ JSON
 - 新的订阅必须使用 v3 事件名称。
 - 如果端点已订阅某个旧版事件名称,您可以保留它。添加新的旧版名称会返回 `400 validation_error`。
 
-在您的接入方企业 KYB 获得批准之前，您在所有需要 KYB 的生产空间中的全部端点上，每小时总共可以进行 20 次 Webhook URL 更改。沙盒空间中的更改不计入。创建端点或更改其 `url` 算作一次更改。仅更改 `events` 或保存当前 URL 则不算。超出限制会返回 `422 merchant_kyb_not_approved`。请参阅[上线](/cn/integration/go-live#activate-your-production-space)。
+在您的接入企业 KYB 获批之前,端点创建和 URL 变更会受到限制。请参阅[上线](/cn/integration/go-live#daily-creation-limits)。
 
 以下请求体保留 URL 并替换事件选择:
 
@@ -61,6 +61,12 @@ JSON
   "events": ["transfer.state_changed", "capability.status_changed"]
 }
 ```
+
+## 使用公开的目标 URL {#use-a-public-destination-url}
+
+如果某个 URL 的主机名解析到的任一地址为私有、环回、链路本地、保留或组播地址,或主机名无法解析,或主机名为 `localhost`、单标签名称,或以 `.localhost`、`.local`、`.localdomain`、`.internal` 或 `.home.arpa` 结尾,保存该 URL 会返回 `400 validation_error`。
+
+Swipelux 每天都会重新检查已保存的 URL,并暂停主机名或地址现在被拒绝的端点(`disabled: true`)。如需恢复,请发送一个可通过检查的 `url` 并附带 `disabled: false`。
 
 ## 在解析前先校验
 
@@ -72,18 +78,21 @@ Swipelux 通过 Svix 投递新的 Webhook 集成。请使用您的端点签名�
 
 在校验通过之前,请勿解析 JSON,也不要产生任何副作用。
 
-```javascript Verify signature
+<CodeGroup>
+
+```javascript JavaScript
 import { Webhook } from "svix";
 
 const verifier = new Webhook(process.env.SWIPELUX_WEBHOOK_SECRET);
 
 export async function handleSwipeluxWebhook(request) {
   const rawBody = await request.text();
-  const event = verifier.verify(rawBody, {
+  verifier.verify(rawBody, {
     "svix-id": request.headers.get("svix-id"),
     "svix-timestamp": request.headers.get("svix-timestamp"),
     "svix-signature": request.headers.get("svix-signature"),
   });
+  const event = JSON.parse(rawBody);
 
   await webhookInbox.insertIfAbsent({
     id: event.id,
@@ -94,6 +103,27 @@ export async function handleSwipeluxWebhook(request) {
   return new Response(null, { status: 204 });
 }
 ```
+
+```java Java
+import com.svix.Webhook;
+import com.svix.exceptions.WebhookVerificationException;
+import java.util.List;
+import java.util.Map;
+
+class SwipeluxSignature {
+  // Pass the unmodified request body and every request header.
+  static boolean valid(String secret, String rawBody, Map<String, List<String>> headers) throws Exception {
+    try {
+      new Webhook(secret).verify(rawBody, headers);
+      return true;
+    } catch (WebhookVerificationException e) {
+      return false;
+    }
+  }
+}
+```
+
+</CodeGroup>
 
 对缺少或非法签名的请求请直接拒绝。在校验完成之前,请始终保留原始请求体。
 

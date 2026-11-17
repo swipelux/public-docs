@@ -52,7 +52,7 @@ Oppdater endepunktet med [`PATCH /v3/webhooks/{webhookId}`](/api-reference/webho
 - Nye abonnementer må bruke v3-hendelsesnavn.
 - Du kan beholde et eldre hendelsesnavn hvis endepunktet allerede abonnerer på det. Å legge til et nytt eldre navn returnerer `400 validation_error`.
 
-Inntil KYB for den integrerende virksomheten din er godkjent, kan du gjøre totalt 20 webhook-URL-endringer per time, på tvers av alle endepunkter i live-områdene dine som krever KYB. Endringer i sandbox-områder telles ikke. Å opprette et endepunkt eller endre `url`-en teller som en endring. Å endre bare `events` eller lagre den nåværende URL-en gjør det ikke. Å overskride grensen returnerer `422 merchant_kyb_not_approved`. Se [Go live](/no/integration/go-live#activate-your-production-space).
+Inntil KYB-en for den integrerende bedriften din er godkjent, er opprettelse av endepunkter og URL-endringer begrenset. Se [Go live](/no/integration/go-live#daily-creation-limits).
 
 Denne body-en beholder URL-en og erstatter utvalget:
 
@@ -61,6 +61,12 @@ Denne body-en beholder URL-en og erstatter utvalget:
   "events": ["transfer.state_changed", "capability.status_changed"]
 }
 ```
+
+## Bruk en offentlig destinasjons-URL {#use-a-public-destination-url}
+
+Lagring av en URL returnerer `400 validation_error` hvis en adresse som vertsnavnet løses til, er privat, loopback, link-local, reservert eller multicast, hvis vertsnavnet ikke løses, eller hvis det er `localhost`, et navn med én etikett eller slutter på `.localhost`, `.local`, `.localdomain`, `.internal` eller `.home.arpa`.
+
+Swipelux sjekker lagrede URL-er på nytt hver dag og setter et endepunkt på pause hvis vertsnavnet eller adressen nå avvises (`disabled: true`). For å gjenoppta det sender du en gyldig `url` med `disabled: false`.
 
 ## Verifiser før parsing
 
@@ -72,18 +78,21 @@ Swipelux leverer nye webhook-integrasjoner via Svix. Verifiser den rå forespør
 
 Ikke parse JSON eller forårsak sideeffekter før verifiseringen lykkes.
 
-```javascript Verify signature
+<CodeGroup>
+
+```javascript JavaScript
 import { Webhook } from "svix";
 
 const verifier = new Webhook(process.env.SWIPELUX_WEBHOOK_SECRET);
 
 export async function handleSwipeluxWebhook(request) {
   const rawBody = await request.text();
-  const event = verifier.verify(rawBody, {
+  verifier.verify(rawBody, {
     "svix-id": request.headers.get("svix-id"),
     "svix-timestamp": request.headers.get("svix-timestamp"),
     "svix-signature": request.headers.get("svix-signature"),
   });
+  const event = JSON.parse(rawBody);
 
   await webhookInbox.insertIfAbsent({
     id: event.id,
@@ -94,6 +103,27 @@ export async function handleSwipeluxWebhook(request) {
   return new Response(null, { status: 204 });
 }
 ```
+
+```java Java
+import com.svix.Webhook;
+import com.svix.exceptions.WebhookVerificationException;
+import java.util.List;
+import java.util.Map;
+
+class SwipeluxSignature {
+  // Pass the unmodified request body and every request header.
+  static boolean valid(String secret, String rawBody, Map<String, List<String>> headers) throws Exception {
+    try {
+      new Webhook(secret).verify(rawBody, headers);
+      return true;
+    } catch (WebhookVerificationException e) {
+      return false;
+    }
+  }
+}
+```
+
+</CodeGroup>
 
 Avvis forespørsler med manglende eller ugyldige signaturer. Behold den rå body-en tilgjengelig til verifiseringen er ferdig.
 

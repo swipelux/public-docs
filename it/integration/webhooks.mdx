@@ -52,7 +52,7 @@ Aggiorna l'endpoint con [`PATCH /v3/webhooks/{webhookId}`](/api-reference/webhoo
 - Le nuove iscrizioni devono usare nomi di evento v3.
 - Puoi mantenere un nome di evento legacy se l'endpoint è già iscritto a quell'evento. L'aggiunta di un nuovo nome legacy restituisce `400 validation_error`.
 
-Finché il KYB del tuo business integratore non viene approvato, puoi effettuare in totale 20 modifiche dell'URL dei webhook all'ora, su tutti gli endpoint dei tuoi spazi live che richiedono il KYB. Le modifiche negli spazi sandbox non vengono conteggiate. Creare un endpoint o modificarne l'`url` conta come modifica. Modificare solo gli `events` o salvare l'URL attuale non conta. Il superamento del limite restituisce `422 merchant_kyb_not_approved`. Consulta [Go live](/it/integration/go-live#activate-your-production-space).
+Finché il KYB della tua azienda integratrice non viene approvato, le creazioni di endpoint e le modifiche dell'URL sono limitate. Vedi [Go live](/it/integration/go-live#daily-creation-limits).
 
 Questo body mantiene l'URL e sostituisce la selezione:
 
@@ -61,6 +61,12 @@ Questo body mantiene l'URL e sostituisce la selezione:
   "events": ["transfer.state_changed", "capability.status_changed"]
 }
 ```
+
+## Usa un URL di destinazione pubblico {#use-a-public-destination-url}
+
+Il salvataggio di un URL restituisce `400 validation_error` se uno qualsiasi degli indirizzi in cui si risolve il suo nome host è privato, di loopback, link-local, riservato o multicast, se il nome host non si risolve, oppure se è `localhost`, un nome a etichetta singola o termina con `.localhost`, `.local`, `.localdomain`, `.internal` o `.home.arpa`.
+
+Swipelux ricontrolla ogni giorno gli URL salvati e mette in pausa un endpoint il cui nome host o indirizzo ora viene rifiutato (`disabled: true`). Per riattivarlo, invia un `url` valido con `disabled: false`.
 
 ## Verifica prima di parsare
 
@@ -72,18 +78,21 @@ Swipelux consegna le nuove integrazioni webhook tramite Svix. Verifica il body g
 
 Non parsare JSON o causare side effect prima che la verifica abbia successo.
 
-```javascript Verify signature
+<CodeGroup>
+
+```javascript JavaScript
 import { Webhook } from "svix";
 
 const verifier = new Webhook(process.env.SWIPELUX_WEBHOOK_SECRET);
 
 export async function handleSwipeluxWebhook(request) {
   const rawBody = await request.text();
-  const event = verifier.verify(rawBody, {
+  verifier.verify(rawBody, {
     "svix-id": request.headers.get("svix-id"),
     "svix-timestamp": request.headers.get("svix-timestamp"),
     "svix-signature": request.headers.get("svix-signature"),
   });
+  const event = JSON.parse(rawBody);
 
   await webhookInbox.insertIfAbsent({
     id: event.id,
@@ -94,6 +103,27 @@ export async function handleSwipeluxWebhook(request) {
   return new Response(null, { status: 204 });
 }
 ```
+
+```java Java
+import com.svix.Webhook;
+import com.svix.exceptions.WebhookVerificationException;
+import java.util.List;
+import java.util.Map;
+
+class SwipeluxSignature {
+  // Pass the unmodified request body and every request header.
+  static boolean valid(String secret, String rawBody, Map<String, List<String>> headers) throws Exception {
+    try {
+      new Webhook(secret).verify(rawBody, headers);
+      return true;
+    } catch (WebhookVerificationException e) {
+      return false;
+    }
+  }
+}
+```
+
+</CodeGroup>
 
 Rifiuta le richieste con firme mancanti o non valide. Mantieni disponibile il body grezzo finché la verifica non è completa.
 

@@ -52,7 +52,7 @@ Endpoint को [`PATCH /v3/webhooks/{webhookId}`](/api-reference/webhooks/patch
 - नए subscriptions को v3 event names का उपयोग करना होगा।
 - यदि endpoint पहले से किसी legacy event name को subscribe करता है, तो आप उसे बनाए रख सकते हैं। नया legacy name जोड़ने पर `400 validation_error` लौटता है।
 
-जब तक आपके integrating business का KYB approve नहीं हो जाता, आप KYB की आवश्यकता वाले अपने live spaces के सभी endpoints में कुल मिलाकर प्रति घंटे 20 webhook URL बदलाव कर सकते हैं। Sandbox spaces में किए गए बदलाव नहीं गिने जाते। Endpoint बनाना या उसका `url` बदलना एक बदलाव माना जाता है। केवल `events` बदलना या मौजूदा URL save करना बदलाव नहीं माना जाता। Limit पार करने पर `422 merchant_kyb_not_approved` लौटाया जाता है। [Go live](/hi/integration/go-live#activate-your-production-space) देखें।
+जब तक आपके integrating business का KYB approve नहीं होता, endpoint creations और URL changes सीमित हैं। [Go live](/hi/integration/go-live#daily-creation-limits) देखें।
 
 यह body URL को बनाए रखती है और selection को replace करती है:
 
@@ -61,6 +61,12 @@ Endpoint को [`PATCH /v3/webhooks/{webhookId}`](/api-reference/webhooks/patch
   "events": ["transfer.state_changed", "capability.status_changed"]
 }
 ```
+
+## Public destination URL का उपयोग करें {#use-a-public-destination-url}
+
+URL save करने पर `400 validation_error` लौटता है यदि उसका hostname जिस भी address पर resolve होता है वह private, loopback, link-local, reserved या multicast हो, यदि hostname resolve नहीं होता, या यदि वह `localhost`, single-label name हो या `.localhost`, `.local`, `.localdomain`, `.internal` या `.home.arpa` पर खत्म होता हो।
+
+Swipelux saved URLs को रोज़ फिर से check करता है और ऐसे endpoint को pause करता है जिसका hostname या address अब refused है (`disabled: true`)। उसे resume करने के लिए, valid `url` के साथ `disabled: false` भेजें।
 
 ## Parsing से पहले verify करें
 
@@ -72,18 +78,21 @@ Swipelux नए webhook integrations को Svix के माध्यम स�
 
 Verification सफल होने से पहले JSON parse न करें या side effects का कारण न बनें।
 
-```javascript Verify signature
+<CodeGroup>
+
+```javascript JavaScript
 import { Webhook } from "svix";
 
 const verifier = new Webhook(process.env.SWIPELUX_WEBHOOK_SECRET);
 
 export async function handleSwipeluxWebhook(request) {
   const rawBody = await request.text();
-  const event = verifier.verify(rawBody, {
+  verifier.verify(rawBody, {
     "svix-id": request.headers.get("svix-id"),
     "svix-timestamp": request.headers.get("svix-timestamp"),
     "svix-signature": request.headers.get("svix-signature"),
   });
+  const event = JSON.parse(rawBody);
 
   await webhookInbox.insertIfAbsent({
     id: event.id,
@@ -94,6 +103,27 @@ export async function handleSwipeluxWebhook(request) {
   return new Response(null, { status: 204 });
 }
 ```
+
+```java Java
+import com.svix.Webhook;
+import com.svix.exceptions.WebhookVerificationException;
+import java.util.List;
+import java.util.Map;
+
+class SwipeluxSignature {
+  // Pass the unmodified request body and every request header.
+  static boolean valid(String secret, String rawBody, Map<String, List<String>> headers) throws Exception {
+    try {
+      new Webhook(secret).verify(rawBody, headers);
+      return true;
+    } catch (WebhookVerificationException e) {
+      return false;
+    }
+  }
+}
+```
+
+</CodeGroup>
 
 अनुपस्थित या अमान्य signatures वाले requests को अस्वीकार करें। Verification पूरा होने तक raw body उपलब्ध रखें।
 

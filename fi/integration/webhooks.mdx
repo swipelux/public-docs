@@ -52,7 +52,7 @@ Päivitä päätepiste [`PATCH /v3/webhooks/{webhookId}`](/api-reference/webhook
 - Uusien tilausten on käytettävä v3-tapahtumanimiä.
 - Voit säilyttää vanhan tapahtumanimen, jos päätepiste on jo tilannut sen. Uuden vanhan nimen lisääminen palauttaa `400 validation_error` -virheen.
 
-Kunnes integroivan yrityksesi KYB on hyväksytty, voit tehdä yhteensä 20 webhook-URL-muutosta tunnissa kaikissa päätepisteissä niissä tuotantotiloissasi, jotka edellyttävät KYB:tä. Sandbox-tilojen muutoksia ei lasketa. Päätepisteen luominen tai sen `url`-kentän muuttaminen lasketaan muutokseksi. Pelkkä `events`-kentän muuttaminen tai nykyisen URL:n tallentaminen ei. Rajan ylittäminen palauttaa `422 merchant_kyb_not_approved`. Katso [Käynnistys tuotantoon](/fi/integration/go-live#activate-your-production-space).
+Kunnes integroivan yrityksesi KYB on hyväksytty, päätepisteiden luontia ja URL-muutoksia on rajoitettu. Katso [Käynnistys tuotantoon](/fi/integration/go-live#daily-creation-limits).
 
 Tämä runko säilyttää URL-osoitteen ja korvaa valinnan:
 
@@ -61,6 +61,12 @@ Tämä runko säilyttää URL-osoitteen ja korvaa valinnan:
   "events": ["transfer.state_changed", "capability.status_changed"]
 }
 ```
+
+## Käytä julkista kohde-URL-osoitetta {#use-a-public-destination-url}
+
+URL-osoitteen tallentaminen palauttaa `400 validation_error`, jos jokin osoite, johon sen isäntänimi ratkeaa, on yksityinen, loopback-, link-local-, varattu tai multicast-osoite, jos isäntänimi ei ratkea tai jos se on `localhost`, yksiosainen nimi tai sen pääte on `.localhost`, `.local`, `.localdomain`, `.internal` tai `.home.arpa`.
+
+Swipelux tarkistaa tallennetut URL-osoitteet uudelleen päivittäin ja keskeyttää päätepisteen, jonka isäntänimi tai osoite nyt hylätään (`disabled: true`). Jatka sitä lähettämällä kelvollinen `url` ja `disabled: false`.
 
 ## Vahvista ennen jäsennystä
 
@@ -72,18 +78,21 @@ Swipelux toimittaa uudet webhook-integraatiot Svixin kautta. Vahvista raaka pyyn
 
 Älä jäsennä JSON:ää tai aiheuta sivuvaikutuksia ennen kuin vahvistus onnistuu.
 
-```javascript Verify signature
+<CodeGroup>
+
+```javascript JavaScript
 import { Webhook } from "svix";
 
 const verifier = new Webhook(process.env.SWIPELUX_WEBHOOK_SECRET);
 
 export async function handleSwipeluxWebhook(request) {
   const rawBody = await request.text();
-  const event = verifier.verify(rawBody, {
+  verifier.verify(rawBody, {
     "svix-id": request.headers.get("svix-id"),
     "svix-timestamp": request.headers.get("svix-timestamp"),
     "svix-signature": request.headers.get("svix-signature"),
   });
+  const event = JSON.parse(rawBody);
 
   await webhookInbox.insertIfAbsent({
     id: event.id,
@@ -94,6 +103,27 @@ export async function handleSwipeluxWebhook(request) {
   return new Response(null, { status: 204 });
 }
 ```
+
+```java Java
+import com.svix.Webhook;
+import com.svix.exceptions.WebhookVerificationException;
+import java.util.List;
+import java.util.Map;
+
+class SwipeluxSignature {
+  // Pass the unmodified request body and every request header.
+  static boolean valid(String secret, String rawBody, Map<String, List<String>> headers) throws Exception {
+    try {
+      new Webhook(secret).verify(rawBody, headers);
+      return true;
+    } catch (WebhookVerificationException e) {
+      return false;
+    }
+  }
+}
+```
+
+</CodeGroup>
 
 Hylkää pyynnöt, joissa on puuttuva tai virheellinen allekirjoitus. Pidä raaka runko saatavilla, kunnes vahvistus valmistuu.
 

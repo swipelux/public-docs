@@ -90,6 +90,21 @@ JSON
 
 이식성 토큰(portability-token) 형식의 경우, Swipelux `customerId`가 아니라 수신 KYC 프로젝트의 클라이언트 ID를 `forClientId`로 보내세요. 반환된 `data.token`을 `data.expiresAt` 이전에 사용하세요. 동일한 `Idempotency-Key`와 본문을 재사용하면 그 토큰 결과가 재생돼요. 다른 토큰을 발급하려면 새 키를 사용하세요.
 
+## 업데이트 시 무시된 필드 확인 {#check-ignored-fields-on-updates}
+
+[`PATCH /v3/customers/{customerId}`](/api-reference/customers/patch-v3-customers-by-customer-id) 및 `PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}`는 인식하지 못하는 본문 필드를 무시해요. 필드를 무시하면 성공 응답에 `Swipelux-Ignored-Fields` 헤더가 포함돼요. 이 헤더는 무시된 필드의 JSON Pointer를 쉼표로 구분하고 정렬해서 나열해요. 생성 요청은 이 헤더를 반환하지 않아요.
+
+업데이트할 때마다 이 헤더를 확인하세요. 그렇지 않으면 이름이나 위치가 잘못된 필드가 오류 없이 버려져요. 예를 들어 `individual.birthDate` 대신 `individual.dateOfBirth`를 보내면 생년월일이 설정되지 않은 채로 남아요.
+
+```http Ignored fields response header
+Swipelux-Ignored-Fields: /individual/dateOfBirth,/nickname
+```
+
+- 헤더는 최대 20개 포인터와 4096자까지 나열하며, Swipelux가 목록을 자르면 `...`로 끝나요. 포인터 세그먼트는 퍼센트 인코딩돼요.
+- `metadata` 안의 필드는 자유 형식이며 보고되지 않아요.
+- 멱등 재전송은 헤더를 생략하므로 첫 번째 응답에서 읽으세요.
+- 향후 버전에서는 알 수 없는 필드가 `400`으로 거부될 수 있어요.
+
 ## 케이퍼빌리티에서 준비 상태 확인
 
 고객은 API 내에서 검증이나 준비 상태를 별도로 갖지 않아요. 현재 프로필 데이터를 위해 [`GET /v3/customers/{customerId}`](/api-reference/customers/get-v3-customers-by-customer-id)로 고객을 조회한 뒤, 케이퍼빌리티와 그 `openTaskIds`를 사용해 고객이 다음에 무엇을 할 수 있는지 결정하세요.
@@ -97,6 +112,30 @@ JSON
 ```bash Get customer
 curl --request GET \
   "${API_BASE}/v3/customers/${CUSTOMER_ID}" \
+  --header "X-API-Key: ${SWIPELUX_API_KEY}"
+```
+
+### 케이퍼빌리티 준비 상태로 고객 필터링 {#filter-customers-by-capability-readiness}
+
+특정 온보딩 단계에 있는 고객을 찾으려면 다음 쿼리 매개변수로 [`GET /v3/customers`](/api-reference/customers/get-v3-customers)를 필터링하세요:
+
+- `pooledCapabilityStatus`: 고객이 이 상태의 풀링 케이퍼빌리티를 가지고 있어요.
+- `namedCapabilityStatus`: 고객이 이 상태의 명의 케이퍼빌리티를 가지고 있어요.
+- `hasReadyNamedAccount`: `true`는 `ready` 명의 계좌가 있는 고객을 반환해요. `false`는 없는 고객을 반환해요.
+
+상태 필터는 `pending`, `ready`, `restricted`, `rejected`, `canceled`를 허용해요. Swipelux는 `include=capabilities`와 같은 방식으로 상태를 읽어요. [풀 계좌 대 명명 계좌 유형](/ko/integration/onboarding/capabilities-and-requirements#pooled-vs-named-account-types)도 참고하세요.
+
+대기 중이기만 한 케이퍼빌리티를 제외하려면 `namedCapabilityExcludeWait=true` 또는 `pooledCapabilityExcludeWait=true`를 추가하세요. 그러면 `statusReason.resolution`이 `wait`인 결과가 제외돼요. `namedCapabilityIncludeWait=true` 또는 `pooledCapabilityIncludeWait=true`는 그 해결 방법을 가진 `restricted` 케이퍼빌리티도 포함해요. 각 플래그는 해당 상태 필터와 함께일 때만 작동하며, 둘 다 설정하면 `ExcludeWait`가 우선해요.
+
+필터는 서로, 그리고 다른 목록 필터와 결합할 수 있어요. Swipelux는 페이지를 나누기 전에 필터를 적용하므로 각 페이지에는 일치하는 고객만 포함돼요. 사용하려면 API 키에 `accounts:read` 또는 `rails:read`가 필요해요. 잘못된 값은 `400 validation_error`를 반환해요.
+
+예를 들어 은행이 명의 케이퍼빌리티를 승인했지만 아직 준비된 명의 계좌가 없는 고객을 찾으려면:
+
+```bash Filter customers awaiting a named account
+curl --request GET \
+  --get "${API_BASE}/v3/customers" \
+  --data-urlencode "namedCapabilityStatus=ready" \
+  --data-urlencode "hasReadyNamedAccount=false" \
   --header "X-API-Key: ${SWIPELUX_API_KEY}"
 ```
 

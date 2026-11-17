@@ -52,7 +52,7 @@ A végpontot a [`PATCH /v3/webhooks/{webhookId}`](/api-reference/webhooks/patch-
 - Az új feliratkozásoknak v3 eseményneveket kell használniuk.
 - Megtarthat egy régi eseménynevet, ha a végpont már feliratkozott rá. Új régi eseménynév hozzáadása `400 validation_error` hibát ad vissza.
 
-Amíg az integráló vállalkozása KYB-ellenőrzését jóvá nem hagyják, óránként összesen 20 webhook URL-módosítást végezhet a KYB-t igénylő éles környezetei összes végpontján. A sandbox környezetekben végzett módosítások nem számítanak bele. Egy végpont létrehozása vagy az `url` mezőjének módosítása módosításnak számít. Csak az `events` módosítása vagy a jelenlegi URL mentése nem számít annak. A korlát túllépése `422 merchant_kyb_not_approved` választ ad vissza. Lásd: [Éles indulás](/hu/integration/go-live#activate-your-production-space).
+Amíg az integráló vállalkozása KYB-je nincs jóváhagyva, a végpontok létrehozása és az URL-módosítások korlátozottak. Lásd: [Éles indulás](/hu/integration/go-live#daily-creation-limits).
 
 Ez a törzs megtartja az URL-t, és lecseréli a kiválasztást:
 
@@ -61,6 +61,12 @@ Ez a törzs megtartja az URL-t, és lecseréli a kiválasztást:
   "events": ["transfer.state_changed", "capability.status_changed"]
 }
 ```
+
+## Nyilvános cél URL használata {#use-a-public-destination-url}
+
+Egy URL mentése `400 validation_error` választ ad, ha a gazdagépnevéből feloldott bármely cím privát, loopback, link-local, fenntartott vagy multicast, ha a gazdagépnév nem oldható fel, vagy ha az `localhost`, egycímkés név, illetve `.localhost`, `.local`, `.localdomain`, `.internal` vagy `.home.arpa` végű.
+
+A Swipelux naponta újraellenőrzi a mentett URL-eket, és szünetelteti azt a végpontot, amelynek gazdagépneve vagy címe most elutasított (`disabled: true`). A folytatáshoz küldjön egy megfelelő `url` értéket `disabled: false` mellett.
 
 ## Ellenőrzés az elemzés előtt
 
@@ -72,18 +78,21 @@ A Swipelux az új webhook integrációkat Svix-en keresztül szállítja. Ellen�
 
 Az ellenőrzés sikeres befejezése előtt ne elemezzen JSON-t és ne okozzon mellékhatásokat.
 
-```javascript Verify signature
+<CodeGroup>
+
+```javascript JavaScript
 import { Webhook } from "svix";
 
 const verifier = new Webhook(process.env.SWIPELUX_WEBHOOK_SECRET);
 
 export async function handleSwipeluxWebhook(request) {
   const rawBody = await request.text();
-  const event = verifier.verify(rawBody, {
+  verifier.verify(rawBody, {
     "svix-id": request.headers.get("svix-id"),
     "svix-timestamp": request.headers.get("svix-timestamp"),
     "svix-signature": request.headers.get("svix-signature"),
   });
+  const event = JSON.parse(rawBody);
 
   await webhookInbox.insertIfAbsent({
     id: event.id,
@@ -94,6 +103,27 @@ export async function handleSwipeluxWebhook(request) {
   return new Response(null, { status: 204 });
 }
 ```
+
+```java Java
+import com.svix.Webhook;
+import com.svix.exceptions.WebhookVerificationException;
+import java.util.List;
+import java.util.Map;
+
+class SwipeluxSignature {
+  // Pass the unmodified request body and every request header.
+  static boolean valid(String secret, String rawBody, Map<String, List<String>> headers) throws Exception {
+    try {
+      new Webhook(secret).verify(rawBody, headers);
+      return true;
+    } catch (WebhookVerificationException e) {
+      return false;
+    }
+  }
+}
+```
+
+</CodeGroup>
 
 Utasítsa el a hiányzó vagy érvénytelen aláírásokkal érkező kéréseket. Tartsa elérhetőnek a nyers törzset, amíg az ellenőrzés be nem fejeződik.
 

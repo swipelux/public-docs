@@ -46,11 +46,27 @@ Minden intézménybejegyzés tartalmaz egy `logoUrl` mezőt és egy `isDefault` 
       "bic": "CHASUS33",
       "logoUrl": "https://wallet.swipelux.com/bank-logos/jpmorgan.png",
       "countries": ["US"],
-      "isDefault": true
+      "isDefault": true,
+      "currencies": [
+        { "code": "USD", "institution": "jpmorgan" }
+      ]
     }
   ]
 }
 ```
+
+Minden dedikált képességnél minden intézménybejegyzés a `currencies` mezőt is felsorolja. Minden elem megad egy deviza `code` értéket, amelyet egy kibocsátott számla fogadhat, valamint azt az `institution` értéket, amelyet [a számla megnyitásakor](/hu/integration/issue-bank-account#choose-the-bank) el kell küldenie. Az `ach_named`, `wire_named` és `rtp_named` az USD-t sorolja fel. A `sepa_named` az EUR-t, a `faster_payments_named` a GBP-t, az `ipp_named` pedig az AED-t sorolja fel. A `swift_named` minden olyan devizát felsorol, amelyben a bank SWIFT-számlákat bocsát ki. Egy deviza a bejegyzéstől eltérő intézményt is megnevezhet. Például a `lead_bank` nem USD SWIFT-devizái a `bmo` intézményt nevezik meg. A közös képességek kihagyják a `currencies` mezőt.
+
+A `swift_named` esetében a bank dönti el, hogy ezek közül a devizák közül melyikeket nyithatják meg az egyes ügyfelek. Az a számla, amelynek devizáját a bank nem kínálja ennek az ügyfélnek, `rejected` állapotba kerül `statusReason.code: currency_unavailable` értékkel.
+
+A `bmo` értéket csak a számla megnyitásakor küldje el. Az a képességkérés vagy feladat-előnézet, amely a `bmo` értéket nevezi meg az `institutions` mezőben, `422 capability_institutions_unsupported` választ ad. Helyette kérje a `swift_named` képességet a `lead_bank` intézménynél.
+
+Ha kihagyja az `institutions` mezőt, a Swipelux kiválasztja az ügyfélre vonatkozó alapértelmezett bankot. Az alapértelmezés ügyfelenként dől el, és idővel változhat, például ha az ügyfél profilja megváltozik, vagy egy bank bevonási folyamata megnyílik vagy lezárul. Az `isDefault` értékét minden alkalommal a támogatott képességek válaszából olvassa ki, ahelyett hogy eltárolná. Éles módban:
+
+- Az `ach_named` és a `wire_named` alapértelmezése a Lead Bank (`lead_bank`), ha a Lead Bank fogad új ügyfeleket, és be tudja vonni ezt az ügyfelet: a profil legalább egy országot megad, és a Lead Bank minden benne szereplő országot elfogad, egy vállalkozás profilja olyan jogi formát ad meg, amelyet a Lead Bank elfogad, és az ügyfélnek nincs `ready` állapotú kérelme egy másik banknál, sem dedikált, sem közös. Ellenkező esetben az alapértelmezés a JPMorgan Chase (`jpmorgan`).
+- Az `ach_pooled` és a `wire_pooled` alapértelmezése a JPMorgan Chase (`jpmorgan`).
+
+Az alapértelmezés csak új kiválasztásra vonatkozik. Az ügyfél már meglévő jóváhagyott (`ready`) kérelme, vagy egy másik banknál lévő aktuális kérelme továbbra is elsőbbséget élvez az alapértelmezéssel és az `isDefault` jelölésű bankkal szemben. Egy bank rögzítéséhez küldje el annak azonosítóját az `institutions` mezőben. A sandboxban az ACH, Wire és SWIFT képességek csak a JPMorgan Chase-nél (`jpmorgan`) érhetők el. Lásd: [Sandbox tesztelés](/hu/integration/sandbox).
 
 Tárolja a kiválasztott `data[].id` értéket `CAPABILITY_ID`-ként. Soha ne másoljon képességazonosítót másik ügyféltől vagy környezetből.
 
@@ -128,7 +144,7 @@ Dedikált (named) banki képességek esetén minden ügyfélnek bankonként egy 
 A kérésre adott válasz megmutatja, melyik esetet használta a Swipelux:
 
 - A `201` azt jelenti, hogy a kérés új alkalmazási esetet nyitott.
-- A `200` azt jelenti, hogy a kérés egy, az ügyfélnél már meglévő alkalmazási esetre oldódott fel, például egy olyan banki képesség ismételt kérésekor, amellyel az ügyfél már rendelkezik, vagy egy törölt képesség kérésekor. A `card` vagy `stablecoin_transfers` ismételt kérése továbbra is [`409 capability_already_exists`](/integration/errors#capability-already-exists) hibát ad vissza.
+- A `200` azt jelenti, hogy a kérés egy, az ügyfélnél már meglévő alkalmazási esetre oldódott fel, például egy olyan banki képesség ismételt kérésekor, amellyel az ügyfél már rendelkezik, vagy egy törölt banki képesség kérésekor, amely a meglévő kérelméhez csatlakozik. A `card` vagy `stablecoin_transfers` ismételt kérése továbbra is [`409 capability_already_exists`](/integration/errors#capability-already-exists) hibát ad vissza, egy törölt `card` képesség kérése pedig [`409 capability_not_reopenable`](/integration/errors#capability-not-reopenable) hibát.
 - A `selectedApplicationId` egy legfelső szintű mező a `data` mellett, amely a kérés által kiválasztott vagy megnyitott eset azonosítóját tartalmazza. A Swipelux kihagyja, ha a kérés nem választott ki esetet. Egy idempotens ismétlés ugyanazt az értéket adja vissza.
 
 Rövidített válasz:
@@ -352,6 +368,8 @@ curl --request POST \
 
 Tárolja a visszakapott `data.id` értéket `DOCUMENT_ID`-ként, mielőtt beküldi a rá hivatkozó választ.
 
+Minden v3 dokumentumerőforrás tartalmazza a `contentSha256` mezőt, a tárolt fájl SHA-256 kivonatát `sha256:` előtaggal és kisbetűs hexadecimális kivonattal. Két azonos kivonatú dokumentum bájtra azonos. Annak ellenőrzéséhez, hogy egy fájlt az ügyfél már feltöltött-e, például egy fájlt, amelynek cseréjét egy felülvizsgáló kérte, számítsa ki a SHA-256 kivonatát feltöltés előtt, és hasonlítsa össze azoknak a dokumentumoknak a `contentSha256` értékével, amelyekre a korábbi beküldés válaszai a `documentIds` mezőben hivatkoznak. A mező értéke `null` azoknál a dokumentumoknál, amelyeket a Swipelux a kivonatok rögzítése előtt tárolt.
+
 Egy tárolt fájl későbbi lekéréséhez hívja meg a [`GET /v3/customers/{customerId}/documents/{documentId}/download`](/api-reference/documents/get-v3-customers-by-customer-id-documents-by-document-id-download) műveletet. A Swipelux egy `url`-t ad vissza, amely a fájlt mellékletként tölti le, és egy óra után lejár. Az archivált dokumentumok `404`-et adnak vissza.
 
 ### API válaszok {#api-answers}
@@ -381,6 +399,78 @@ JSON
 ```
 
 Vegyen minden követelményazonosítót és válaszreprezentációt a legfrissebb feladatból. Ha az API jelzi, hogy a feladat megváltozott, olvassa be újra és állítsa össze a beküldést az új revízió alapján.
+
+#### Érvényes válaszok megtartása az `allowPartial` segítségével {#keep-valid-answers-with-allowpartial}
+
+Alapértelmezés szerint egyetlen elutasított válasz a teljes kérést meghiúsítja, és a Swipelux semmit sem tárol. A válasz `400 validation_error`, `400 invalid_document_reference` vagy `409 absence_conflicts_with_profile`. Adja hozzá az `"allowPartial": true` értéket, ha azt szeretné, hogy a Swipelux tárolja az érvényes válaszokat, és csak az érvényteleneket utasítsa el:
+
+```json Partial submission request
+{
+  "taskRevision": 3,
+  "allowPartial": true,
+  "answers": [
+    { "requirementId": "req_a", "answer": { "type": "text", "value": "Salary" } },
+    { "requirementId": "req_b", "answer": { "type": "document", "documentIds": ["doc_unknown"] } }
+  ]
+}
+```
+
+A Swipelux `201` választ ad a `data` mezőben a tárolt beküldéssel, amely csak a megtartott válaszokat tartalmazza, a többit pedig a `refusedAnswers` mezőben sorolja fel:
+
+```json Partial submission response
+{
+  "data": { "id": "sub_000000000000000001", "outcome": "in_review", "answers": [{ "requirementId": "req_a" }] },
+  "refusedAnswers": [
+    {
+      "requirementId": "req_b",
+      "code": "invalid_document_reference",
+      "pointer": "/answers/1/answer",
+      "message": "A referenced document is invalid."
+    }
+  ]
+}
+```
+
+Minden elutasított válasz az alábbi kódok egyikét kapja:
+
+| `code` | Jelentés |
+| --- | --- |
+| `invalid` | A válasz nem felel meg a kérés alakjának, formátumának vagy korlátozásainak, vagy az ügyfélprofil nem fogadja el az értéket. |
+| `absence_conflicts_with_profile` | Hiány lett beküldve egy olyan értékre, amelyet a profil tartalmaz. |
+| `invalid_document_reference` | Egy hivatkozott dokumentum nem használható ehhez az ügyfélhez és kéréshez. |
+| `depends_on_refused_answer` | A válasz önmagában érvényes, de egy elutasított válasszal együtt kerül elbírálásra. Egy feltételes válasz és az azt vezérlő válasz együtt marad meg vagy együtt kerül elutasításra. |
+
+További kódok is megjelenhetnek. Az ismeretlen kódot kezelje `invalid` értékként. A `message` soha nem ismétli meg a beküldött értéket.
+
+Az `allowPartial` nem lazítja a többi szabályt:
+
+- A kérésnek továbbra is meg kell válaszolnia minden olyan követelményt, amelyet a mező nélkül is meg kellene válaszolnia. A megválaszolatlan nyitott követelmények továbbra is `422 task_submission_incomplete` választ adnak.
+- Az a törzs, amely már magának a kérés sémájának sem felel meg, például ismeretlen mező vagy hibás típus miatt, továbbra is `400 validation_error` választ ad.
+- Ha egyetlen válasz sem tartható meg, a Swipelux `400 validation_error` választ ad, semmit sem tárol, és minden elutasított választ felsorol az `errors[]` mezőben.
+- A `refusedAnswers` pontosan akkor szerepel, akár üresen is, ha a kérés `"allowPartial": true` értéket küldött. Ugyanazzal az `Idempotency-Key` értékkel megismételt kérés ugyanazokat a `refusedAnswers` elemeket adja vissza.
+
+Mielőtt kijavít egy elutasított választ, olvassa be újra a feladatot. Egy elutasított követelmény általában továbbra is `action_required`, de egy dokumentumkérést már megválaszolhat egy nyilvántartott fájl. A javításokat az új `taskRevision` értékkel és új `Idempotency-Key` értékkel küldje be. A feltételes választ az azt vezérlő válasszal együtt küldje el.
+
+#### Felülvizsgálatra váró beküldés visszavonása {#withdraw-a-submission-awaiting-review}
+
+Egy még `in_review` állapotú beküldés javításához vonja vissza a `POST /v3/customers/{customerId}/tasks/{taskId}/withdrawals` segítségével. A kérésnek nincs törzse, és `Idempotency-Key` szükséges hozzá. Az API-kulcsoknak `accounts:write`, `customers:read` és `customers:write` jogosultság kell, ahogy a beküldésekhez is:
+
+```bash Withdraw task submission
+curl --request POST \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/tasks/${TASK_ID}/withdrawals" \
+  --header "X-API-Key: ${SWIPELUX_API_KEY}" \
+  --header "Idempotency-Key: task-withdrawal-001"
+```
+
+A Swipelux `200` választ ad a beküldéssel a `data` mezőben. Az `outcome` értéke `withdrawn` lesz, a válaszai `reviewFeedback` nélkül visszakerülnek `action_required` állapotba, és a következő beküldés új `remediationRound` kört indít. A már elfogadott követelmények és az ügyfélprofil nem változnak. Azok a válaszok, amelyeket a Swipelux a profilból vagy nyilvántartott fájlokból töltött ki, felülvizsgálat alatt maradnak. Annyiszor vonhat vissza, ahányszor szükséges. Olvassa be újra a feladatot, majd küldje be a javított válaszokat.
+
+A Swipelux ezekben az esetekben utasítja el a visszavonást:
+
+- `404 task_not_found`: a feladat nem létezik ehhez az ügyfélhez.
+- `409 task_not_in_review`: nem pontosan egy beküldés vár felülvizsgálatra (egy sem, vagy több is, például egy részleges beküldés és annak javítása), vagy a feladat határideje lejárt.
+- `409 submission_already_forwarded`: a bank közvetlenül vizsgálja ezt a feladatot, vagy a Swipelux már továbbította a beküldést felülvizsgálatra. A `POST /v3/sandbox/tasks` segítségével létrehozott feladatok is ezt adják vissza.
+
+A beküldés `outcome` értéke mostantól `withdrawn` is lehet. Frissítsen minden olyan klienst, amely az `outcome` értékét rögzített listával veti össze.
 
 ### Haszonhúzó előfeltétel vállalkozásoknál {#beneficial-owner-prerequisite-for-businesses}
 

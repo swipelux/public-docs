@@ -90,6 +90,21 @@ JSON
 
 若需可攜性權杖格式,請在 `forClientId` 中傳送接收方 KYC 專案的 client ID,而非 Swipelux 的 `customerId`。請在 `data.expiresAt` 之前使用回傳的 `data.token`。重複使用相同的 `Idempotency-Key` 與請求主體會重播該權杖結果;若要核發另一組權杖,請使用新的金鑰。
 
+## 檢查更新時被忽略的欄位 {#check-ignored-fields-on-updates}
+
+[`PATCH /v3/customers/{customerId}`](/api-reference/customers/patch-v3-customers-by-customer-id) 與 `PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}` 會忽略無法辨識的請求本文欄位。當它們忽略某個欄位時,成功的回應會包含 `Swipelux-Ignored-Fields` 標頭。該標頭以逗號分隔並排序列出被忽略欄位的 JSON Pointer。建立請求不會傳回此標頭。
+
+請在每次更新後檢查此標頭。否則,名稱錯誤或位置錯誤的欄位會在沒有錯誤的情況下被捨棄。例如,傳送 `individual.dateOfBirth` 而非 `individual.birthDate` 會讓出生日期維持未設定。
+
+```http Ignored fields response header
+Swipelux-Ignored-Fields: /individual/dateOfBirth,/nickname
+```
+
+- 該標頭最多列出 20 個指標與 4096 個字元,當 Swipelux 截斷清單時以 `...` 結尾。指標區段採用百分比編碼。
+- `metadata` 內的欄位為自由格式,一律不回報。
+- 冪等重送會省略此標頭,因此請從第一次回應中讀取。
+- 未來版本可能會以 `400` 拒絕未知欄位。
+
 ## 從能力讀取就緒狀態
 
 客戶在 API 中並不具備驗證或就緒狀態。請使用 [`GET /v3/customers/{customerId}`](/api-reference/customers/get-v3-customers-by-customer-id) 讀取當前的個人資料,然後利用能力及其 `openTaskIds` 來判斷該客戶接下來可以做什麼。
@@ -97,6 +112,30 @@ JSON
 ```bash Get customer
 curl --request GET \
   "${API_BASE}/v3/customers/${CUSTOMER_ID}" \
+  --header "X-API-Key: ${SWIPELUX_API_KEY}"
+```
+
+### 依能力就緒狀態篩選客戶 {#filter-customers-by-capability-readiness}
+
+若要找出處於特定開戶階段的客戶,請使用下列查詢參數篩選 [`GET /v3/customers`](/api-reference/customers/get-v3-customers):
+
+- `pooledCapabilityStatus`:客戶擁有處於此狀態的共用能力。
+- `namedCapabilityStatus`:客戶擁有處於此狀態的具名能力。
+- `hasReadyNamedAccount`:`true` 傳回擁有 `ready` 具名帳戶的客戶。`false` 傳回沒有此類帳戶的客戶。
+
+狀態篩選條件接受 `pending`、`ready`、`restricted`、`rejected` 或 `canceled`。Swipelux 讀取狀態的方式與 `include=capabilities` 相同。請參閱[共用型與專屬型帳戶類型](/zh-Hant/integration/onboarding/capabilities-and-requirements#pooled-vs-named-account-types)。
+
+若要排除僅在等待中的能力,請加入 `namedCapabilityExcludeWait=true` 或 `pooledCapabilityExcludeWait=true`;這會移除 `statusReason.resolution` 為 `wait` 的符合項目。`namedCapabilityIncludeWait=true` 或 `pooledCapabilityIncludeWait=true` 也會納入具有該處理方式的 `restricted` 能力。每個旗標只搭配其對應的狀態篩選條件使用,兩者同時設定時以 `ExcludeWait` 為準。
+
+這些篩選條件可彼此組合,也可與其他清單篩選條件組合。Swipelux 會在分頁之前套用,因此每一頁只包含符合的客戶。API 金鑰需要 `accounts:read` 或 `rails:read` 才能使用。無效的值會傳回 `400 validation_error`。
+
+例如,找出已獲銀行核准具名能力但尚無就緒具名帳戶的客戶:
+
+```bash Filter customers awaiting a named account
+curl --request GET \
+  --get "${API_BASE}/v3/customers" \
+  --data-urlencode "namedCapabilityStatus=ready" \
+  --data-urlencode "hasReadyNamedAccount=false" \
   --header "X-API-Key: ${SWIPELUX_API_KEY}"
 ```
 

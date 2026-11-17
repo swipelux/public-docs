@@ -8,35 +8,152 @@ Denne siden lister opp daterte endringer i Swipelux API-et. Hver oppføring nevn
 
 For å oppgradere en eksisterende integrasjon fra en tidligere versjon, se [Migrere til v3](/no/api-reference/versioning/migrate-to-v3).
 
+<Update label="2026-11-16" description="v3" tags={["Lagt til","Endret","Rettet"]}>
+
+### Lagt til
+- `GET /v3/customers` godtar `pooledCapabilityIncludeWait`, `pooledCapabilityExcludeWait`, `namedCapabilityIncludeWait` og `namedCapabilityExcludeWait`. Bruk hver av dem med det tilsvarende filteret `pooledCapabilityStatus` eller `namedCapabilityStatus`. `IncludeWait` legger til begrensede capabilities med løsningen `wait`, og `ExcludeWait` fjerner capabilities med løsningen `wait`. Når begge er `true`, vinner `ExcludeWait`. Filtrene krever `accounts:read` eller `rails:read`. Se [Kunder](/no/integration/onboarding/customers#filter-customers-by-capability-readiness).
+- Capability-sammendrag som returneres med `include=capabilities`, kan inneholde `statusReason.resolution`: `wait`, `contact_support` eller `none`. For en årsak som avhenger av oppgaver, les capability-en.
+- Et dokumentkrav kan returnere `constraints.idNumber` med en lengde på 3 til 50 tegn. Når `required` er `true`, tar du med ID-nummeret i `documentMetadata`. Dashbordet ber om ID-nummeret og utstedelseslandet når et dokument trenger dem.
+- `PATCH /v3/customers/{customerId}/accounts/{accountId}` godtar `bankAddress` (opptil 105 tegn), `bankCity` og `bankPostalCode` på en ekstern SWIFT-konto som ikke er i USD. SWIFT-utbetalinger i utenlandsk valuta krever `bankAddress` og `bankCity`. Å endre disse feltene på en USD-konto returnerer `409 conflict`. Mens et ventende tilbud eller en ventende utbetaling bruker kontoen, returnerer en endring `409 account_has_active_transfers`, som du kan prøve på nytt.
+- I dashbordet godtar KYB dokumenter i WebP, HEIF og HEIC.
+
+### Endret
+- Swipelux sender [`account.details_changed`](/api-reference/webhooks/account-details-changed) når SWIFT-koden, routingnummeret eller kontonummeret til en utstedt konto endres. `data.object` er den gjeldende kontoen, og `data.previous` inneholder bare `routingVersion`. Se [Utsted en bankkonto](/no/integration/issue-bank-account).
+- Å arkivere en lommebokkonto som er oppgjørslommeboken til en bankkonto som ikke er arkivert, returnerer `409 account_has_dependent_accounts`. Flytt bankkontoens oppgjør til en annen lommebok med `PATCH`, eller arkiver bankkontoen først.
+- `PATCH /v3/customers/{customerId}/recipients/{recipientId}` avviser felt for den andre mottakertypen med `400 validation_error` og en `invalid_field`-feil for hvert felt: `companyName` og `businessIndustry` på en privatperson, `firstName` og `lastName` på en bedrift.
+- `POST /v3/customers/{customerId}/tasks/{taskId}/withdrawals` returnerer også `409 idempotency_request_in_progress` med `retryable: true` mens en identisk forespørsel fortsatt kjører.
+- I dashbordet viser en avvist kundesletting ressursene som blokkerer den, mottakerlandet bruker en landvelger, og tekstfelt i profilen er begrenset til 256 tegn. Etter at du har opprettet en utbetaling fra en kundeside eller fra Balances, åpnes detaljene.
+
+### Rettet
+- Swipelux sender ikke lenger to `capability.status_changed`-hendelser for én capability i én oppdatering, og sender ingen når statusen ender der den startet.
+- Når en konto avvises mens den fortsatt klargjøres, rapporterer `account.status_changed` `previous.state: "provisioning"` i stedet for `"in_review"`.
+
+</Update>
+
+<Update label="2026-11-09" description="v3" tags={["Lagt til","Endret","Rettet"]}>
+
+### Lagt til
+- Når banken ber om et støttedokument for en USD SWIFT-utbetaling til en tredjepart, åpner Swipelux en oppgave med `category: "transaction_rfi"` på overføringen. Den ber om ett dokument og referansen til det. Besvar den med de eksisterende endepunktene for oppgaveinnsending, så videresender Swipelux svaret til banken. Swipelux kansellerer oppgaven hvis utbetalingen fullføres uten bankens godkjenning, feiler eller refunderes. Se [Tilbud og overføringer](/no/integration/quotes-and-transfers#supporting-documents-for-swift-payouts).
+- Utstedte SWIFT-kontoer i alle banker returnerer mottakerens postadresse i `details.accountHolderAddress`. Tidligere returnerte bare kontoer i Lead Bank og BMO den. Den skiller seg fra `details.bankAddress`, adressen til mottakerbanken. Se [Utsted en bankkonto](/no/integration/issue-bank-account).
+- Et innskudd på en SWIFT-konto som ikke er i USD, i kontoens valuta, gjøres opp til oppgjørslommeboken som USDC. Overføringens `amounts.in` viser beløpet som ble mottatt i kontoens valuta, og `amounts.out` viser USDC som ble levert. Tidligere ble disse innskuddene holdt tilbake for gjennomgang uten overføring eller webhook.
+- Et dokumentkrav kan returnere `constraints.issuingCountryRequired: true`. Hvert dokument som sendes inn for det, må inneholde `issuingCountry` i `documentMetadata`.
+
+### Endret
+- Et nytt forsøk som kommer mens den første identiske forespørselen fortsatt kjører, returnerer `409 idempotency_request_in_progress` med `retryable: true` for capability-forespørsler, dokumenter, mottakere og deres destinasjoner, regler, webhooks, tilbud, overføringer, kanselleringer av overføringer og delingstokener for verifiseringsøkter. Tidligere returnerte disse rutene `idempotency_conflict`. Å gjenbruke en nøkkel med en annen body returnerer fortsatt `idempotency_conflict`. Se [Feil og nye forsøk](/integration/errors#idempotency-request-in-progress).
+- Tilbud på bank-pay-ins returnerer spesifikke feil i stedet for en generell feil: `400 quote_amount_out_of_range`, `400 quote_volume_limit_exceeded`, `400 quote_destination_network_unsupported`, `503 quote_temporarily_unavailable` (kan prøves på nytt) eller `502 quote_failed`.
+- `DELETE /v3/customers/{customerId}/documents/{documentId}` returnerer `409 document_in_use` mens en søknad under bankgjennomgang er avhengig av dokumentet. Arkiver det etter at gjennomgangen er ferdig eller søknaden er kansellert.
+- En bankkonto som ikke er i USD, og som har USDT som oppgjørslommebok, returnerer nå `400 invalid_settlement_target` ved oppretting og oppdatering, selv uten en eksplisitt `settlement.currency`. Se [Velg oppgjørsvaluta](/no/integration/issue-bank-account#choose-the-settlement-currency).
+- I dashbordet markerer gjennomgangen av utbetalingen et mottaksbeløp i utenlandsk valuta som et estimat.
+- I dashbordet og på den offentlige sporingssiden viser en fullført overføring som banken returnerte eller reverserte, et varsel. Statusen forblir Completed.
+
+### Rettet
+- Utstedte bankkontoer sender `account.status_changed` når de blir klare. Se [Webhooks](/no/integration/webhooks).
+- Å prøve en flerdelt dokumentopplasting på nytt med samme idempotensnøkkel og samme fil returnerer ikke lenger `409`.
+- Transaksjonsfiltrene i dashbordet knytter bankutbetalinger til bankrailen deres og dekker alle kryptonettverk. Søk etter eksakt ID finner små pay-ins.
+
+</Update>
+
+<Update label="2026-11-04" description="v3" tags={["Lagt til"]}>
+
+### Lagt til
+- Kunder med en klar Lead Bank (`lead_bank`) `swift_named`-capability kan sende SWIFT-utbetalinger i AUD, CAD, CHF, CZK, DKK, EUR, GBP, HKD, HUF, JPY, MXN, NOK, NZD, PLN, SEK, SGD og ZAR. En valuta banken ikke aktiverer for kunden, returnerer `422 bank_not_supported_for_customer`. Lag tilbudet med et nøyaktig USDC-`in.amount`, som Swipelux trekker gebyret sitt i USD fra. Tilbudets `out.amount` er et estimat merket med det nye `out.amountEstimated: true`, å sende `out.amount` returnerer `422 validation_error`, og overføringen registrerer det utbetalte beløpet når utbetalingen er fullført. EUR, GBP, CHF, CZK, DKK, HUF, NOK, PLN og SEK krever en gyldig IBAN. De andre valutaene godtar en gyldig IBAN eller et lokalt kontonummer, som for MXN er en 18-sifret CLABE. Innehaverens adresse trenger et postnummer. En returnert utbetaling går til gjennomgang hos Swipelux i stedet for automatisk refusjon. Se [Send midler](/no/integration/send-funds#foreign-currency-swift-payouts).
+
+</Update>
+
+<Update label="2026-11-02" description="v3" tags={["Lagt til","Endret","Rettet"]}>
+
+### Lagt til
+- Dashbordet har en **Agents**-side for å koble AI-agenter til Swipelux. **Your agents** viser agentene som er koblet til i Sandbox og Live, og lar deg koble dem fra. Se [Bruk Swipelux fra AI-agenten din](/integration/ai-agents).
+- Kundelisten i dashbordet får filtrene **Shared methods**, **Bank accounts** og **Opened bank account**.
+
+### Endret
+- Swipelux sjekker lagrede webhook-destinasjoner på nytt hver dag. Hvis vertsnavnet til et endepunkt nå avvises eller løses til en avvist adresse, setter Swipelux endepunktet på pause og angir `disabled: true`. Et endepunkt på pause forblir på pause når du bare endrer `url`; send en gyldig `url` med `disabled: false` for å gjenoppta det. Se [Webhooks](/no/integration/webhooks#use-a-public-destination-url).
+- Oppretting av regler avviser en mållommebok på et annet nettverk, eller en bankdestinasjon, med `400 rule_target_invalid`. Se [Feil og nye forsøk](/integration/errors#rule-target-invalid).
+- Svar ved nedlasting av dokumenter har `Cache-Control: private, no-store`.
+- Etter en gjenoppretting av passkey sender dashbordet deg en e-post og setter utbetalinger, uttak, oppretting av hemmelige nøkler, agenttilkoblinger og teaminvitasjoner på pause i 24 timer.
+
+### Rettet
+- Regler kjøres nå når midler sendt fra en annen Swipelux-lommebok kommer inn på utløserlommeboken.
+- Arkivering av en kunde blokkeres ikke lenger av bankkontoer som aldri ble utstedt.
+- `include=capabilities` returnerer ikke lenger en tom liste for enkelte kunder.
+- Saldoer på sandbox-kontoer viser ikke lenger avrundingsfeil med flyttall.
+- Tilbud på bankutbetalinger med et utviklergebyr som ruten ikke kan belaste, avvises ved tilbudet med `400 validation_error` i stedet for å feile ved utførelse.
+- En betalingslenke for kort åpner ikke lenger en ny checkout når tilbudet utløper mens den første kortbetalingen fortsatt behandles.
+- Fullførte pay-ins med kort beholder fiat-kildebeløpet sitt.
+- For Lead Bank tilbyr dashbordets **Open bank account**-skuff ikke lenger USDT-nettverk som banken ikke støtter, og den tilbyr USDT på Solana.
+
+</Update>
+
 <Update label="2026-11-01" description="v3" tags={["Lagt til"]}>
 
 ### Lagt til
 - Hver oppføring fra [`GET /v3/customers/{customerId}/capabilities/supported`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-supported) inneholder `unavailableInstitutions`. Den lister opp bankene som tilbyr capability-varianten, men ikke godtar denne kunden, hver med en `id`, et `name` og `reasons` i samme form som `statusReason`. Gjeldende årsakskoder er `jurisdiction_unsupported`, `legal_form_unsupported` og `customer_type_unsupported`. Feltet er `[]` på pooled oppføringer og oppføringer som ikke er bank, og en bank vises aldri i både `institutions` og `unavailableInstitutions`. Hvis du oppgir en utilgjengelig bank i en capability-forespørsel, returneres fortsatt `422 capability_institutions_unsupported`. Se [Funksjoner og krav](/no/integration/onboarding/capabilities-and-requirements#show-why-a-bank-is-unavailable).
+- Kunder med en klar Lead Bank (`lead_bank`) `swift_named`-capability kan åpne utstedte SWIFT-kontoer i AUD, CAD, CHF, CZK, DKK, EUR, GBP, HKD, HUF, JPY, MXN, NOK, NZD, PLN, SEK, SGD og ZAR, én konto per valuta. Svaret med støttede capabilities viser dem i `lead_bank`-oppføringen for `swift_named` med `institution: "bmo"`. Send den `institution` sammen med valutaen. BMO Bank N.A. (`bmo`, BIC `HATRUS44`) er banken som oppgis på disse kontoene, og `GET /v3/institutions` viser den. Banken bestemmer hvilke valutaer hver kunde kan åpne, og en konto i en valuta den ikke tilbyr, ender som `rejected` med `statusReason.code: currency_unavailable`. Å oppgi `lead_bank` med en av disse valutaene returnerer `400 validation_error` som nevner `bmo`. Å oppgi `bmo` med USD eller en annen metode enn `swift` returnerer `400 validation_error`. En capability-forespørsel eller oppgaveforhåndsvisning som oppgir `bmo`, returnerer `422 capability_institutions_unsupported`. Se [Utsted en bankkonto](/no/integration/issue-bank-account#choose-the-bank).
 
 </Update>
 
-<Update label="2026-10-30" description="v3" tags={["Lagt til"]}>
+<Update label="2026-10-30" description="v3" tags={["Lagt til","Endret"]}>
 
 ### Lagt til
-- Autentiserte forespørsler har en hastighetsgrense per API-nøkkel, per integrerende virksomhet og per klient-IP-adresse. En forespørsel over en grense returnerer `429 rate_limited` med `retryable: true` og en `Retry-After`-header som angir hvor mange sekunder du må vente før du prøver på nytt. Integrerende virksomheter som ennå ikke er godkjent, har lavere grenser. Hver autentiserte operasjon i API-referansen viser `429`-svaret. Gjentatte mislykkede autentiseringer fra én IP-adresse returnerer også `429` når grensen deres er overskredet, mens gyldige API-nøkler sendt fra den adressen fortsatt fungerer.
+- Autentiserte forespørsler har hastighetsbegrensning per API-nøkkel, per integrerende bedrift og per klient-IP-adresse. En forespørsel over en grense returnerer `429 rate_limited` med `retryable: true` og en `Retry-After`-header som oppgir hvor mange sekunder du må vente før du prøver på nytt. Integrerende bedrifter som ennå ikke er godkjent, har lavere grenser. Hver autentisert operasjon i API-referansen viser `429`-svaret. Gjentatte mislykkede autentiseringer fra én IP-adresse returnerer også `429` når de er over grensen sin, og en gyldig API-nøkkel sendt fra den adressen kan få det samme svaret til grensen er gjenopprettet, så prøv på nytt etter `Retry-After`-forsinkelsen. Se [Feil og nye forsøk](/integration/errors#rate-limited).
+
+### Endret
+- Swipelux har deaktivert eldre API-nøkler uten en offentlig del, for eksempel nøkler uten punktum. Forespørsler med dem returnerer `401 unauthorized`.
+
+</Update>
+
+<Update label="2026-10-29" description="v3" tags={["Endret"]}>
+
+### Endret
+- Inntil KYB-en for den integrerende bedriften din er godkjent, begrenser Swipelux opprettelser i enhver rullerende 24-timersperiode på tvers av alle områdene dine: 10 API-nøkler, 10 webhook-endepunkter, 10 regler, 250 kunder, 20 `sumsub_share_token`-eksporter og 10 importer av identitetsverifiseringer. Dette erstatter grensen på 10 aktive API-nøkler per live-område; å tilbakekalle en nøkkel frigjør ingen plass. En opprettelse over en grense returnerer `422 merchant_kyb_not_approved`; dashbordet returnerer en vanlig `422`. Mislykkede opprettelser og idempotente gjentakelser teller ikke. Disse grensene, og grensen på 20 endringer av webhook-URL per time, gjelder også i sandbox-områder med mindre du har et live-område som er godkjent eller ikke krever KYB. Se [Daglige opprettelsesgrenser](/no/integration/go-live#daily-creation-limits).
 
 </Update>
 
 <Update label="2026-10-28" description="v3" tags={["Lagt til","Endret"]}>
 
 ### Lagt til
-- Webhook-endepunkter inkluderer `disabled`, som er `true` mens leveranser til endepunktet er satt på pause. Swipelux setter også et endepunkt på pause etter gjentatte leveringsfeil. Send `disabled: true` i [`PATCH /v3/webhooks/{webhookId}`](/api-reference/webhooks/patch-v3-webhooks-by-webhook-id) for å sette leveranser på pause og `disabled: false` for å gjenoppta dem. Når du gjenopptar, kontrolleres mål-URL-en på nytt, og `400` returneres hvis den ikke lenger består, slik at endepunktet forblir på pause.
+- `GET /v3/customers` godtar filtrene `pooledCapabilityStatus` og `namedCapabilityStatus`, hver satt til `pending`, `ready`, `restricted`, `rejected` eller `canceled`. Det godtar også `hasReadyNamedAccount=true|false` for å liste kunder med eller uten en `ready` navngitt konto. Filtrene kan kombineres med hverandre og med de andre listefiltrene, og Swipelux bruker dem før paginering. API-nøkler trenger `accounts:read` eller `rails:read` for å bruke dem. En ugyldig verdi returnerer `400 validation_error`. For eksempel finner `namedCapabilityStatus=ready&hasReadyNamedAccount=false` kunder som en bank har godkjent, men som ennå ikke har en klar navngitt konto. Se [Kunder](/no/integration/onboarding/customers#filter-customers-by-capability-readiness).
+- `PATCH /v3/customers/{customerId}` og `PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}` returnerer en `Swipelux-Ignored-Fields`-svarheader når de ignorerer body-felt de ikke kjenner igjen. Headeren lister JSON Pointers for de ignorerte feltene, kommaseparert og sortert, med maks 20 pekere og 4096 tegn og en avsluttende `...` når den er avkortet. Felt i `metadata` rapporteres aldri, og idempotente gjentakelser utelater headeren. Sjekk den etter hver oppdatering, slik at du ikke mister data uten å merke det, for eksempel en fødselsdato sendt under feil feltnavn. Se [Kunder](/no/integration/onboarding/customers#check-ignored-fields-on-updates).
+- Webhook-endepunkter inkluderer `disabled`, som er `true` mens leveranser til endepunktet er satt på pause. Swipelux setter også et endepunkt på pause etter gjentatte leveringsfeil. Send `disabled: true` i [`PATCH /v3/webhooks/{webhookId}`](/api-reference/webhooks/patch-v3-webhooks-by-webhook-id) for å sette leveranser på pause og `disabled: false` for å gjenoppta dem. Gjenopptak sjekker destinasjons-URL-en på nytt og returnerer `400` hvis den ikke lenger består, slik at endepunktet forblir på pause.
+- Swipelux kan suspendere en integrerende bedrift. Mens den er suspendert, returnerer alle forespørsler med noen av API-nøklene dens `403 merchant_suspended` med `retryable: false`, og Swipelux holder tilbake webhook-leveranser, regelkjøringer og søknader til banker. Ingenting slettes eller tilbakekalles, så API-nøkler, webhook-endepunkter og regler fungerer igjen når Swipelux opphever suspensjonen. Kontakt Swipelux-support for å løse en suspensjon. Se [Feil og nye forsøk](/integration/errors#merchant-suspended).
 
 ### Endret
-- `POST /v3/customers/{customerId}/export` med `format: sumsub_share_token` returnerer `422 kyc_provider_rejected` med `retryable: false` i stedet for `502 request_failed` når leverandøren av identitetsverifisering nekter å opprette share token, for eksempel for en ukjent `forClientId`. Svaret inneholder en fast Swipelux-melding og gjentar aldri leverandørens feiltekst, så kontroller forespørselen før du prøver igjen. Andre leverandørfeil returnerer fortsatt `502 request_failed`, som kan prøves på nytt.
-- Portalen fra `GET /v3/webhooks/portal` oppretter, redigerer, setter på pause eller sletter ikke lenger endepunkter. Med en API-nøkkel som har `webhooks:write`, viser og roterer den fortsatt endepunktets signeringshemmelighet, prøver leveranser på nytt og spiller dem av på nytt. Opprett endepunkter med `POST /v3/webhooks`, endre eller sett dem på pause med `PATCH /v3/webhooks/{webhookId}`, og slett dem med `DELETE /v3/webhooks/{webhookId}`. Se [Webhooks](/no/integration/webhooks).
+- `POST /v3/customers/{customerId}/export` med `format: sumsub_share_token` returnerer `422 kyc_provider_rejected` med `retryable: false`, i stedet for `502 request_failed`, når leverandøren av identitetsverifisering nekter å opprette delingstokenet, for eksempel for en ukjent `forClientId`. Svaret har en fast Swipelux-melding og gjentar aldri leverandørens feiltekst, så sjekk forespørselen før du prøver på nytt. Andre leverandørfeil returnerer fortsatt `502 request_failed`, som kan prøves på nytt.
+- Portalen fra `GET /v3/webhooks/portal` oppretter, redigerer, setter på pause eller sletter ikke lenger endepunkter. Med en API-nøkkel som har `webhooks:write`, viser og roterer den fortsatt endepunktets signeringshemmelighet, prøver leveranser på nytt og spiller dem av igjen. Opprett endepunkter med `POST /v3/webhooks`, endre eller sett dem på pause med `PATCH /v3/webhooks/{webhookId}`, og slett dem med `DELETE /v3/webhooks/{webhookId}`. Se [Webhooks](/no/integration/webhooks).
+- `POST /v3/webhooks` og `PATCH /v3/webhooks/{webhookId}` godtar bare destinasjoner der alle løste adresser er globalt rutbar unicast. De returnerer `400 validation_error` for adresser i IANA-områder for spesielle formål, multicast-adresser, IPv6-overgangsformer som inneholder en avvist IPv4-adresse, vertsnavn som ikke løses, `localhost`, vertsnavn med én etikett og vertsnavn som slutter på `.localhost`, `.local`, `.localdomain`, `.internal` eller `.home.arpa`.
 
 </Update>
 
-<Update label="2026-10-25" description="v3" tags={["Endret"]}>
+<Update label="2026-10-26" description="v3" tags={["Lagt til","Endret","Rettet"]}>
+
+### Lagt til
+- I forhandlerpanelet lar **Settings** > **Customer pages** eiere og administratorer laste opp en bedriftslogo (PNG, JPG eller WebP, opptil 512 KB) og angi en `https://`-retur-URL for hvert område. Logoen erstatter Swipelux-ordmerket på kundenes hostede vilkårssider i live-områder. Når området har en retur-URL, tilbyr den fullførte vilkårssiden **Return to the app**.
+
+### Endret
+- Den hostede vilkårssiden har fått nytt design. Hver side i et sandbox-forløp viser et **Sandbox**-merke.
+- I et live-område som krever KYB, holder forhandlerpanelet **Customers**, **Balances** og **Transactions** låst til KYB-en din er godkjent. Startsiden viser trinnene for å gå live, og kundens **Bank accounts**-del viser én rad per bank med valutaene og viser bankdetaljene når banken godkjenner.
+- `POST /v3/quotes` for en pay-in returnerer `422 capability_direction_unsupported` med `retryable: false`, i stedet for en `503 rail_temporarily_unavailable` som kan prøves på nytt, når ingen bank som betjener capability-en tilbyr pay-in-tilbud, slik som med `ach_named` og `wire_named` hos Lead Bank (`lead_bank`). Et nytt forsøk med samme `Idempotency-Key` spiller av `422` på nytt.
+- `DELETE /v3/customers/{customerId}` returnerer `409 merchant_kyb_subject_archive_refused` med `retryable: false` for bedriftens KYB-kunde. Be Swipelux-support om å flytte KYB-en din til en annen kunde først.
+
+### Rettet
+- Når en hostet verifisering går til gjennomgang og den var oppgavens siste åpne element, blir capability-en `pending` med `statusReason.code: information_in_review`, og en søknad som var `action_required`, blir `in_review`. Swipelux sender `capability.status_changed` og `application.status_changed` for disse endringene. Tidligere beholdt begge sin forrige status, og Swipelux sendte ingen webhook.
+- I en oppgaveinnsending erstatter et objektsvar, for eksempel en adresse, en foretaksregistrering eller eierstruktur, den lagrede verdien i stedet for å slås sammen med den, så felt som mangler i det nye svaret, for eksempel `state` eller `streetLine2`, fjernes. `PATCH`-forespørsler på kunder og tilknyttede parter slår fortsatt sammen.
+- `GET /v3/webhooks` returnerer `200` med en tom `data`-matrise, i stedet for `502 request_failed`, før ditt første webhook-endepunkt, portaløkt eller hendelse finnes.
+- Et nytt forsøk med samme `Idempotency-Key` som spiller av et lagret feilsvar, inkluderer nå `X-Request-Id`, satt til forsøkets egen forespørsels-ID. Body beholder `correlationId` fra den første forespørselen.
+- Å be om en `card`-capability på nytt etter at du har kansellert den, returnerer `409 capability_not_reopenable` med `retryable: false` i stedet for `500`.
+
+</Update>
+
+<Update label="2026-10-25" description="v3" tags={["Lagt til","Endret"]}>
+
+### Lagt til
+- Utstedte SWIFT-kontoer kan åpnes hos Lead Bank (`lead_bank`) under kundens `swift_named`-capability.
+- `GET /v3/customers/{customerId}/capabilities/supported` returnerer `institutions[].currencies` for navngitte capabilities. Hvert element er en valuta-`code` og `institution` du sender når du åpner kontoen: USD for `ach_named`, `wire_named`, `rtp_named` og `swift_named`, EUR for `sepa_named`, GBP for `faster_payments_named` og AED for `ipp_named`. Samlede capabilities utelater `currencies`. Se [Capabilities og oppgaver](/no/integration/onboarding/capabilities-and-requirements#discover-supported-capabilities).
 
 ### Endret
 - Inntil KYB for den integrerende virksomheten din er godkjent, kan du gjøre totalt 20 webhook-URL-endringer per time, på tvers av alle endepunkter i live-områdene dine som krever KYB. Endringer i sandbox-områder telles ikke. Å overskride webhook-URL-grensen returnerer `422 merchant_kyb_not_approved`. Å endre bare et endepunkts `events` eller lagre den nåværende URL-en teller ikke som en URL-endring. I dashboardet avviser Swipelux mer enn 10 aktive API-nøkler per live-område som krever KYB, med et vanlig `422`-svar. Swipelux avviser også mer enn 5 områder per merchant med et vanlig `422`-svar så lenge du har minst ett live-område, alle live-områdene dine krever KYB og ingen er godkjent. Områdegrensen teller både sandbox- og live-områder; den gjelder ikke hvis et live-område ikke krever KYB. Sandbox-områder er unntatt fra skriveblokkeringen, webhook-URL-grensen og nøkkelgrensen. Se [Go live](/no/integration/go-live#activate-your-production-space).
+- Utstedte ACH- og wire-kontoer godtar bare USD, og det samme gjør SWIFT-kontoer hos `lead_bank`. En forespørsel i en annen valuta returnerer `400 validation_error`. Tidligere ble den godtatt og deretter utstedt i USD eller aldri klargjort.
+- Når ingen av kundens klare banker utsteder den forespurte valutaen, returnerer `POST /v3/customers/{customerId}/accounts` `409 capability_not_ready` med `reason: "no_issuable_route"`. Velg en annen valuta eller institusjon i stedet for å prøve på nytt.
 
 </Update>
 
@@ -68,6 +185,34 @@ For å oppgradere en eksisterende integrasjon fra en tidligere versjon, se [Migr
 
 </Update>
 
+<Update label="2026-10-19" description="v3" tags={["Lagt til","Endret","Rettet"]}>
+
+### Lagt til
+- Dokumentforespørsler som Swipelux videresender til en bank, kan inneholde bankens grense per fil i `request.constraints.maxSizeBytes`. Forhandlerpanelet og den hostede siden for informasjonsforespørsler krymper JPEG-, PNG- og WebP-bilder slik at de passer innenfor grensen, og avviser filer som fortsatt overskrider den. Se [Last opp dokumenter](/no/integration/onboarding/capabilities-and-requirements#upload-documents).
+- Når Swipelux har en åpen forespørsel om bedriftsverifiseringen din (KYB) i et live-område som krever KYB, åpner forhandlerpanelet KYB-siden første gang du laster det inn i en nettleserfane. Knappen **Action needed** i toppfeltet fører også dit.
+
+### Endret
+- En ny forespørsel om en kansellert bank-capability returnerer `201` når forespørselen åpner en ny søknad, og `200` når den slutter seg til en søknad kunden allerede har. Se [Capabilities og oppgaver](/no/integration/onboarding/capabilities-and-requirements#shared-applications-per-bank).
+- Nye samlede intake-oppgaver som ber om `/financialProfile/accountPurposes`, ber også om `/financialProfile/accountPurposeDescription`. Beskrivelsen er bare påkrevd når formålene inkluderer `other`; uten den returnerer innsendingen `400 validation_error` på den pekeren. Forhandlerpanelet viser beskrivelsesfeltet bare mens **Something else** er valgt.
+- Navngitte JPMorgan Chase-capabilities (`jpmorgan`) for privatkunder krever `employment.occupation`. Et arbeidssvar uten yrke returnerer `400 validation_error`. Søknader som ikke er sendt til banken ennå, får kravet: åpne intake-oppgaver får det lagt til, og fullført intake får en oppfølgingsoppgave. Samlede capabilities og andre banker er uendret.
+- `GET /v3/customers` rapporterer bostedslandet til en privatperson som `country` når bostedsadressen ikke har land. Filteret `country` samsvarer med den samme verdien. Se [Kunder](/no/integration/onboarding/customers).
+- `POST /v3/sandbox/tasks/{taskId}/review` avgjør hvert uavgjort svar på oppgaven, på tvers av alle åpne innsendingsrunder og gjenbrukt dokumentasjon som venter på gjennomgang. Se [Sandbox-testing](/no/integration/sandbox#test-an-open-task).
+- Den hostede siden for informasjonsforespørsler viser én statusoppsummering, med hver forespurt korreksjon ved siden av elementet sitt.
+- Forhandlerpanelet viser erklæringer sammen med de forespurte elementene i stedet for under **Terms of Service**, merker bankdestinasjonen til en payout som **Destination Account** og viser ventende payouts som **Processing**.
+
+### Rettet
+- En capability der alle gjenværende oppgavesvar er akseptert eller under gjennomgang, inkludert svar Swipelux fylte ut fra kundens eksisterende profil og dokumenter, rapporterer nå `pending` med `statusReason.code: information_in_review` i stedet for å bli værende `restricted` med `tasks_due`. Se [Capabilities og oppgaver](/no/integration/onboarding/capabilities-and-requirements#continue-when-the-capability-is-ready).
+- En `allowPending`-kontoforespørsel hos en bank der den godkjente søknaden dekker capability-en uten å ha bedt om den, returnerer `409 capability_not_ready` med `reason: no_ready_route` i stedet for `500`. Den samme forespørselen lykkes når capability-en er `ready`. Se [Utsted en bankkonto](/no/integration/issue-bank-account#save-the-request-before-bank-approval).
+- En søknad hos Lead Bank (`lead_bank`) som banken avslår, blir `rejected` i stedet for å bli værende `in_review`.
+- Swipelux gjennomgår nå svar på oppfølgende intake-oppgaver, for eksempel et dokument om midlenes opprinnelse som ble forespurt etter den første intake-oppgaven, slik at søknadene sendes til banken i stedet for å bli værende `requested`.
+- Når Swipelux aksepterer alle svar på en intake-oppgave mens vilkårsøkten fortsatt er åpen, eller du gjør det med `POST /v3/sandbox/tasks/{taskId}/review`, feiler ikke gjennomgangen lenger med `409 kyc_process_conflict`. Oppgaven blir `satisfied` og capability-en `ready` når kunden godtar vilkårene. En ny forespørsel om en kansellert `ach_named`- eller `wire_named`-capability etter en slik gjennomgang lykkes også.
+- I oppgaveinnsendinger godtar `documentMetadata[].issuedOn` en dato inntil én dag etter innsendingens UTC-dato, slik at et dokument utstedt i dag i en tidssone foran UTC godtas. `maxIssueAgeDays` teller fortsatt fra UTC-datoen.
+- Når du legger til en ny mottaker i forhandlerpanelet, tilbyr kontoskjemaet bare betalingsmetoder som er klare.
+- Forhandlerpanelet beholder statusen til skjemadeler som allerede er sendt mens resten av et skjema sendes inn, godtar en utstedelsesdato for dokumenter som er i dag i kundens tidssone, viser ikke lenger en tom forespørsel et øyeblikk etter at du har sendt et KYB-svar, og beholder opplastede filer når du bytter mellom et nettsted- og et dokumentsvar.
+- Panelet med transaksjonsdetaljer i forhandlerpanelet åpnes ikke lenger avkuttet.
+
+</Update>
+
 <Update label="2026-10-15" description="v3" tags={["Endret"]}>
 
 ### Endret
@@ -86,6 +231,34 @@ For å oppgradere en eksisterende integrasjon fra en tidligere versjon, se [Migr
 
 </Update>
 
+<Update label="2026-10-12" description="v3" tags={["Lagt til","Endret","Rettet"]}>
+
+### Lagt til
+- `POST /v3/customers/{customerId}/tasks/{taskId}/submissions` godtar en valgfri `allowPartial: true`. Swipelux lagrer da de gyldige svarene og returnerer `201` med `refusedAnswers`, der hver oppføring har `requirementId`, `code`, `pointer` og `message`. `code` er `invalid`, `absence_conflicts_with_profile`, `invalid_document_reference` eller `depends_on_refused_answer`, og flere koder kan bli lagt til. Når ingen svar kan beholdes, er svaret `400 validation_error`, og ingenting lagres. `allowPartial` endrer ikke hvilke krav en innsending må besvare, og uten feltet er oppførselen uendret. Se [Behold gyldige svar med `allowPartial`](/no/integration/onboarding/capabilities-and-requirements#keep-valid-answers-with-allowpartial).
+- `POST /v3/customers/{customerId}/tasks/{taskId}/withdrawals` trekker tilbake en innsending som venter på gjennomgang, slik at kunden kan rette den. Den krever en `Idempotency-Key`. Svarene i innsendingen går tilbake til `action_required`, og neste innsending starter en ny `remediationRound`. En tilbaketrekking returnerer `409 task_not_in_review` når ikke nøyaktig én innsending venter på gjennomgang eller oppgavens frist har passert, og `409 submission_already_forwarded` når banken gjennomgår oppgaven direkte eller Swipelux allerede har sendt innsendingen videre til gjennomgang. Se [Trekk tilbake en innsending som venter på gjennomgang](/no/integration/onboarding/capabilities-and-requirements#withdraw-a-submission-awaiting-review).
+- Dokumentressurser inkluderer `contentSha256`, SHA-256-sjekksummen for den lagrede filen som `sha256:` etterfulgt av den heksadesimale sjekksummen med små bokstaver, eller `null` for dokumenter som ble lagret før sjekksummer ble registrert. Sammenlign den med sjekksummen til en fil for å oppdage en ny opplasting av en fil som allerede er lagret. Se [Last opp dokumenter](/no/integration/onboarding/capabilities-and-requirements#upload-documents).
+- Mottakerskjemaet i forhandlerpanelet legger til SPEI- (Mexico, MXN), Pix- og Pix Safe-kontoer når kundens tilsvarende tilgang er klar, og **Pay out**-skuffen kan betale SPEI-kontoer. Se [Mottakere og destinasjoner](/no/integration/recipients).
+- I et offentlig oppgaveskjema har en person under gjennomgang **Edit details**. Den tar personen tilbake fra gjennomgang slik at opplysningene kan rettes i stedet for å legges til på nytt. Svarene og dokumentene må legges inn på nytt.
+
+### Endret
+- `outcome` for innsendinger får `withdrawn` for en innsending som kunden trakk tilbake før en gjennomgangsbeslutning. Oppdater alle klienter som avviser ukjente utfall.
+- Et akseptert dokument eller et dokument under gjennomgang besvarer nå en tilsvarende dokumentforespørsel i en annen banks søknad, selv når bankene formulerer forespørselen ulikt. Kunder laster opp den samme filen færre ganger. En fil som er eldre enn forespørselens `maxIssueAgeDays`, for eksempel et adressebevis eldre enn 90 dager, gjenbrukes ikke.
+- Fiat-mottakerdestinasjoner krever nå en `ready` capability for metoden sin, også for kunder der banktilgangen ble satt opp før capabilities. Ellers returnerer `POST /v3/customers/{customerId}/recipients/{recipientId}/destinations` `409 rail_not_ready`. Lommebokdestinasjoner er uendret. Se [Mottakere og destinasjoner](/no/integration/recipients).
+- Å utstede en bankkonto for en metode kunden ikke har capability for, returnerer `409 capability_not_ready`, med årsaken `route_selection_required` når forespørselen utelater `institution`, og `no_ready_route` når den oppgir en. Begge lister i `capabilities` de capabilities som kan utstede kontoen. Årsakene `ambiguous_route_scope` og `rail_not_ready` returneres ikke lenger. Se [Utsted en bankkonto](/no/integration/issue-bank-account).
+- En tilbuds- eller kontoforespørsel som prøves på nytt med en `Idempotency-Key` der den tidligere ruten ikke lenger kan fortsette, returnerer `409 capability_not_ready` med `retryable: true`. Send den på nytt med en ny `Idempotency-Key`.
+- Offentlige oppgaveskjemaer beholder gyldige svar når noen avvises, og viser årsaken ved siden av hvert avvist svar. Personer under gjennomgang forblir oppført med status.
+- Offentlige oppgaveskjemaer kjører identitetsverifisering for privatpersoner inne i skjemaet. I forhandlerpanelet lenker en privatpersons oppgave som tilbyr hostet verifisering bare til den verifiseringen, og **Documents**-delen tilbyr ikke lenger opplasting for privatkunder.
+- Kundens **Profile**-fane i forhandlerpanelet lagrer én del om gangen, og å tømme et felt tømmer det nå.
+
+### Rettet
+- Et Lead Bank-payouttilbud som banken avviser, returnerer `400 quote_failed` i stedet for `500`, og et banken ikke kan svare på, returnerer `503 quote_temporarily_unavailable`, som du kan prøve på nytt. Se [Tilbud og overføringer](/no/integration/quotes-and-transfers).
+- En innsending for en Lead Bank-eieroppgave returnerer ikke lenger `500` mens en annen bank gjennomgår den samme adressen.
+- For privatpersoner åpner dokumenter som forespørres etter at identitetsverifiseringen er fullført, en ny hostet verifiseringsøkt.
+- Skjemaer i forhandlerpanelet fortsetter å fungere når nettleseren oversetter siden, og kundefaner gjenopprettes etter en Swipelux-lansering.
+- Feltene i KYB-skjemaet viser feil først etter at du har forlatt et felt.
+
+</Update>
+
 <Update label="2026-10-08" description="v3" tags={["Lagt til","Endret","Rettet"]}>
 
 ### Lagt til
@@ -97,6 +270,8 @@ For å oppgradere en eksisterende integrasjon fra en tidligere versjon, se [Migr
 - Citi (`citibank`) tilbys bare til bedriftskunder. Alle bedrifter beholder pooled Citi, og named Citi tilbys bare til bedrifter registrert utenfor USA. Når en kunde ikke tilbys Citi, utelater listen over støttede banker den, å angi den returnerer `422 capability_institutions_unsupported`, og en metode som bare Citi tilbyr, vises som `disabled`. En forespørsel uten `institutions` velger blant de gjenværende bankene. Eksisterende søknader og kontoer er uendret.
 - Named CFSB-funksjoner (`cfsb`) tilbys bare til amerikanske kunder: bedrifter registrert i USA og privatpersoner bosatt der. For andre kunder utelater listen over støttede banker named CFSB, og å angi den returnerer `422 capability_institutions_unsupported`. En forespørsel uten `institutions` velger blant de gjenværende bankene. Pooled CFSB, kunder med ukjent land og eksisterende søknader er uendret.
 - Named ACH-, Wire- og SWIFT-funksjoner hos Lead Bank (`lead_bank`) tilbys bare til kunder som Lead Bank kan onboarde, basert på selskapsform og land. For andre kunder utelater listen over støttede banker `lead_bank`, og å angi den returnerer `422 capability_institutions_unsupported`. Kunder som Lead Bank allerede har onboardet, og funksjoner der den åpne forespørselen allerede angir `lead_bank`, beholder den. Eksisterende søknader og kontoer er uendret.
+- I live-modus bruker en `ach_named`- eller `wire_named`-capabilityforespørsel uten `institutions` nå Lead Bank (`lead_bank`) som standard når Lead Bank tar imot nye kunder og kan onboarde kunden: profilen oppgir minst ett land og Lead Bank godtar hvert land i den, profilen til en bedrift oppgir en selskapsform som Lead Bank godtar, og kunden har ingen `ready`-søknad hos en annen bank, navngitt eller samlet. Andre kunder bruker JPMorgan Chase (`jpmorgan`) som standard, slik `ach_named` allerede gjorde. `wire_named` hadde ingen standardbank tidligere. En gjeldende søknad kunden allerede har, har fortsatt forrang. `isDefault` i `GET /v3/customers/{customerId}/capabilities/supported` bruker Lead Bank-regelen for hver kunde, så den merkede banken kan variere mellom kunder og endre seg over tid. Se [Capabilities og oppgaver](/no/integration/onboarding/capabilities-and-requirements#discover-supported-capabilities).
+- `wire_pooled`-forespørsler uten `institutions` bruker nå JPMorgan Chase (`jpmorgan`) som standard, som listen over støttede capabilities merker med `isDefault`. Tidligere valgte de CFSB (`cfsb`).
 - RTP er bare pooled. Ingen bank tilbyr `rtp_named` for nye forespørsler, så listen over støttede funksjoner viser den som `disabled`. For en kunde som ikke har `rtp_named`, returnerer en forespørsel om funksjonen eller en forhåndsvisning av oppgavene for den `422 capability_institutions_unsupported` hvis den angir en bank, og `422 capability_variant_unavailable` hvis den ikke har `institutions`. Pooled RTP (`rtp_pooled`) tilbys hos Citi, så bare bedriftskunder kan be om den.
 - Nye forespørsler om identitetsdokumenter for privatpersoner og reelle rettighetshavere kan angi `constraints.identityMetadataRequired: true`, slik at hver fil trenger ID-nummer og utstedende land i `documentMetadata`. Nye forespørsler om adressebevis for bedrifter og bostedsbevis for eiere kan angi `constraints.maxIssueAgeDays: 90`, slik at hver fil trenger utstedelsesdato. Eksisterende oppgaver beholder sine krav, så les begrensningene på hver oppgaveforespørsel.
 - Et oppgavesvar på en forespørsel om bedriftsregistrering, der `profilePointer` er `/business/registration`, trenger jurisdiksjonslandet, registreringsnummeret og en stiftelsesdato før innsendingsdatoen, alt samlet. Forespørselens `valueSchema` publiserer denne regelen, og et delvis svar returnerer `400 validation_error`.
@@ -109,6 +284,7 @@ For å oppgradere en eksisterende integrasjon fra en tidligere versjon, se [Migr
 - `POST /v3/customers`, `PATCH /v3/customers/{customerId}`, `POST /v3/customers/{customerId}/related-parties`, `PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}` og `POST /v3/customers/{customerId}/tasks/{taskId}/submissions` returnerer `400 validation_error` når en profilverdi eller et oppgavesvar inneholder en Swipelux-skjemalenke, for eksempel en RFI-, kundeforespørsels- eller overføringssporingslenke. Dette gjelder ikke `externalId` eller `metadata`. Hver avvist verdi vises i `errors[]` med `code: public_form_link` og sin JSON Pointer, og svaret gjentar aldri lenken. Send i stedet selve informasjonen. Se [Feil og nye forsøk](/integration/errors#validation-error).
 
 ### Rettet
+- `ach_pooled`-forespørsler uten `institutions` velger nå JPMorgan Chase (`jpmorgan`), banken som listen over støttede capabilities merker med `isDefault`. Tidligere kunne de velge Citi (`citibank`). Eksisterende søknader og kontoer er uendret.
 - Responser for payout-tilbud og overføringer beholder et kildebeløp i USDC eller USDT med seks desimaler, for eksempel `4009.711365` i stedet for `4009.71`. Fiat-beløp beholder to desimaler. Å opprette eller lese en payout der kildebeløpet i stablecoin har mer enn to desimaler, returnerer ikke lenger `500`.
 - Referansen for [`POST /v3/customers/{customerId}/capabilities/{capabilityId}/cancel`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id-cancel) beskriver nå kansellering slik den faktisk fungerer. Du kan kansellere en funksjon med status `ready`, funksjonen `stablecoin_transfers` kan ikke kanselleres, og kansellering avslutter bare den funksjonen, mens søknadene beholder sin status, sine oppgaver og godkjenninger.
 - En forespørsel om en funksjon eller en forhåndsvisning av oppgaver som angir en bankkode i `institutions` i stedet for en offentlig institusjons-ID, for eksempel `citi` for `citibank`, returnerer `422 capability_institutions_unsupported` med de tilgjengelige ID-ene i stedet for `503 kyc_configuration_unavailable`.

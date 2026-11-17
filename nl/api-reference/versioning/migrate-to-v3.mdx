@@ -113,6 +113,10 @@ sequenceDiagram
   else rejected
     SLX-->>You: task rejected, parent statusReason says what is next
   end
+  opt correct before review
+    You->>SLX: POST .../tasks/{taskId}/withdrawals
+    SLX-->>You: submission withdrawn, answers back to action_required
+  end
 ```
 
 Belangrijke eigenschappen:
@@ -121,6 +125,8 @@ Belangrijke eigenschappen:
 - Indienen is **beoordeling-gestuurd**: het muteert nooit direct de status van een capability of account, dat doet acceptatie. Eén uitzondering: `profile`-antwoorden schrijven bij indienen door naar het klantprofiel (2.3). Poll na indienen de task of de bovenliggende resource.
 - `taskRevision` (echo van de `revision` van de task) is een concurrency-beveiliging: is de task gewijzigd sinds u hem las, lees dan opnieuw en bouw uw antwoorden opnieuw op.
 - `absence` is een volwaardig antwoord ("Ik heb dit niet omdat ..."), gebruik het in plaats van vereisten open te laten.
+- `allowPartial: true` op een submission slaat de geldige antwoorden op en retourneert de ongeldige in `refusedAnswers` in plaats van het hele request te laten mislukken (2.3).
+- Een submission die nog `in_review` is, kan vóór een beoordelingsbeslissing worden ingetrokken en gecorrigeerd (2.3).
 - `rejected` beëindigt de task meestal. Wanneer een gehoste verificatie hem heeft afgewezen en die beslissing later wordt teruggedraaid, kan de task `satisfied` worden, of `action_required` met de vereisten die de nieuwe beslissing niet beantwoordt opnieuw geopend. Dien die opnieuw in tegen de nieuwe `revision`.
 
 ### 1.5 Geldbewegingen
@@ -314,7 +320,7 @@ Elk legacy documentoppervlak wordt naar dezelfde vervanging gemapt: lees `GET /v
 
 Rondom die loop:
 
-- **Ruwe bestandsopslag**: `POST/GET/DELETE /v3/customers/{customerId}/documents` (plus `/{documentId}` en `GET .../{documentId}/download`), upload één keer met uw API-sleutel en verwijs dan naar document-ids in submission-antwoorden. Dit vervangt elke upload-token- en direct-upload-intake. `POST .../documents` accepteert ook een JSON-body (`storageKey`, `fileName`, `type`) die een nog verse, klant-gescopete referentie van `POST /v2/documents/direct-upload` consumeert, zodat geparkeerde uploads migreren zonder bytes opnieuw te versturen.
+- **Ruwe bestandsopslag**: `POST/GET/DELETE /v3/customers/{customerId}/documents` (plus `/{documentId}` en `GET .../{documentId}/download`), upload één keer met uw API-sleutel en verwijs dan naar document-ids in submission-antwoorden. Dit vervangt elke upload-token- en direct-upload-intake. `POST .../documents` accepteert ook een JSON-body (`storageKey`, `fileName`, `type`) die een nog verse, klant-gescopete referentie van `POST /v2/documents/direct-upload` consumeert, zodat geparkeerde uploads migreren zonder bytes opnieuw te versturen. Elke v3-documentresource bevat `contentSha256` (`sha256:<hex>`, of `null` voor documenten die zijn opgeslagen voordat hashes werden vastgelegd), zodat u een nieuwe upload van een byte-identiek bestand kunt herkennen.
 - **Geheel nieuw**: `GET /v3/tasks` (merchant-brede inbox), `GET /v3/transfers/{transferId}/tasks`, `GET .../tasks/{taskId}/history`, `GET .../tasks/{taskId}/submissions` (plus `/{submissionId}`).
 
 Submission (illustratief):
@@ -332,10 +338,12 @@ Submission (illustratief):
 ```
 
 - Antwoordtypes: `profile`, `text`, `date`, `single_select`, `multi_select`, `boolean`, `attestation`, `document`, `resource_reference`, `absence`. Het `request`-object van elke requirement zegt welk type wordt verwacht.
-- Een submission moet **elke actionable requirement in de huidige ronde** beantwoorden, met exact de `taskRevision` die u hebt gelezen. Deelsubmissions worden afgewezen.
+- Een submission moet **elke actionable requirement in de huidige ronde** beantwoorden, met exact de `taskRevision` die u hebt gelezen. Er een weglaten retourneert `422 task_submission_incomplete`. Sommige identiteitsverificatietasks voor particulieren accepteren een deelverzameling.
+- Standaard laat één geweigerd antwoord het hele request mislukken en wordt er niets opgeslagen. Het antwoord is `400 validation_error`, `400 invalid_document_reference` of `409 absence_conflicts_with_profile`. Stuur `"allowPartial": true` om de geldige antwoorden te behouden: het `201`-antwoord toont de andere in `refusedAnswers` (`requirementId`, `code`, `pointer`, `message`), met `code` als een van `invalid`, `absence_conflicts_with_profile`, `invalid_document_reference` of `depends_on_refused_answer`. Behandel een onbekende code als `invalid`. Wanneer geen enkel antwoord kan worden behouden, is het antwoord `400 validation_error` en wordt er niets opgeslagen. Zie [API-antwoorden](/nl/integration/onboarding/capabilities-and-requirements#keep-valid-answers-with-allowpartial).
 - `profile`-antwoorden **schrijven door**: ze werken het klantprofiel bij via het normale validatiepad en evalueren onmiddellijk elke capability opnieuw die naar hetzelfde intake-werk verwijst. Broer-en-zus intake-tasks waarvan alle requirements zijn voldaan, sluiten automatisch.
 - Requirements kunnen alternatieve groepen vormen (`alternativeKey`): dien er precies één van de groep in.
 - `changes_requested` verhoogt `remediationRound` en draagt `reviewFeedback`. Lees de task opnieuw en dien opnieuw in **met een nieuwe idempotency-key**.
+- `POST /v3/customers/{customerId}/tasks/{taskId}/withdrawals` (met `Idempotency-Key`) trekt de ene submission in die op beoordeling wacht, zodat de klant deze kan corrigeren. De antwoorden keren terug naar `action_required` zonder `reviewFeedback`, de uitkomst wordt `withdrawn` en `remediationRound` wordt verhoogd. Al geaccepteerde requirements blijven ongemoeid, en het aantal intrekkingen is niet beperkt. Retourneert `404 task_not_found` voor een onbekende task, `409 task_not_in_review` wanneer er niet precies één submission op beoordeling wacht (geen, of meer dan één, bijvoorbeeld een gedeeltelijke submission en de correctie ervan) of de deadline van de task is verstreken, en `409 submission_already_forwarded` wanneer de bank deze task rechtstreeks beoordeelt of Swipelux de submission al heeft doorgestuurd voor beoordeling. Tasks die zijn gemaakt met `POST /v3/sandbox/tasks` retourneren dit ook.
 - Gehoste verificatie-URL's verschijnen **enkel** in klantgeschopte task-details (`GET /v3/customers/{customerId}/tasks/{taskId}`) en alleen zolang de sessie actionable is; lijsten en `GET /v3/tasks/{taskId}` zijn bewust URL-vrij.
 - De gebruiksvoorwaarden zijn ook een task: `openTaskIds` kan een task met `category: "terms_of_service"` bevatten waarvan de gehoste acceptatiepagina op dezelfde manier is gekoppeld (alleen klantgeschopte detail). Generieke submissions kunnen geen voorwaarden accepteren, en KYC-goedkeuring impliceert nooit acceptatie van voorwaarden.
 - Tasks zijn per capability afgebakend, dus dezelfde vraag (bijvoorbeeld adresbewijs) kan eenmaal per capability verschijnen. Dedupliceer in uw UI op de requirement `key`.
@@ -525,6 +533,7 @@ Elke stap kan onafhankelijk worden uitgeleverd; v1 of v2 en v3 draaien naast elk
 - [ ] Submissions zijn beoordeling-gestuurd (indienen is niet hetzelfde als gedeblokkeerd) en moeten **elke** actionable requirement met de exacte `taskRevision` beantwoorden. Bij mismatch opnieuw lezen en opnieuw opbouwen.
 - [ ] Er bestaat geen `task.*`-webhook, poll de task (of zijn bovenliggende object) na elk indienen.
 - [ ] Retry bij `changes_requested` betekent task opnieuw lezen, nieuwe antwoorden, **nieuwe idempotency-key**.
+- [ ] Accepteer de submission-uitkomst `withdrawn` en behandel een onbekende `refusedAnswers[].code` als `invalid`.
 - [ ] Posten naar `/v1/documents` deblokkeert nooit een v3-capability, zodra een klant op tasks zit, drijf u elke vraag via tasks.
 - [ ] Nieuwe tasks kunnen verschijnen op een reeds `ready` capability, houd de taakloop actief na onboarding, niet alleen tijdens.
 - [ ] Capability `cancel` werkt alleen vanuit `pending` of `restricted` zonder blokkerende resources (`409 capability_not_cancelable`); opnieuw aanvragen na annuleren is een nieuwe create met een nieuwe idempotency-key.

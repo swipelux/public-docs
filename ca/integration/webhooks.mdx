@@ -52,7 +52,7 @@ Actualitza l'endpoint amb [`PATCH /v3/webhooks/{webhookId}`](/api-reference/webh
 - Les subscripcions noves han d'utilitzar noms d'esdeveniments v3.
 - Pots conservar un nom d'esdeveniment heretat si l'endpoint ja hi està subscrit. Afegir un nom heretat nou retorna `400 validation_error`.
 
-Fins que el KYB del teu negoci integrador estigui aprovat, pots fer 20 canvis d'URL de webhook per hora en total, entre tots els endpoints dels teus espais en viu que requereixen KYB. Els canvis als espais de sandbox no compten. Crear un endpoint o canviar-ne la `url` compta com a canvi. Canviar només els `events` o desar l'URL actual no compta. Superar el límit retorna `422 merchant_kyb_not_approved`. Consulta [Anar en producció](/ca/integration/go-live#activate-your-production-space).
+Fins que s'aprovi el KYB del teu negoci integrador, les creacions d'endpoints i els canvis d'URL estan limitats. Consulta [Anar en producció](/ca/integration/go-live#daily-creation-limits).
 
 Aquest cos conserva l'URL i substitueix la selecció:
 
@@ -61,6 +61,12 @@ Aquest cos conserva l'URL i substitueix la selecció:
   "events": ["transfer.state_changed", "capability.status_changed"]
 }
 ```
+
+## Utilitza un URL de destinació públic {#use-a-public-destination-url}
+
+Desar un URL retorna `400 validation_error` si alguna adreça en què es resol el seu nom d'amfitrió és privada, de loopback, link-local, reservada o multicast, si el nom d'amfitrió no es resol, o si és `localhost`, un nom d'una sola etiqueta o acaba en `.localhost`, `.local`, `.localdomain`, `.internal` o `.home.arpa`.
+
+Swipelux torna a comprovar cada dia els URL desats i posa en pausa un endpoint el nom d'amfitrió o l'adreça del qual ara es rebutja (`disabled: true`). Per reprendre'l, envia una `url` vàlida amb `disabled: false`.
 
 ## Verifica abans d'analitzar
 
@@ -72,18 +78,21 @@ Swipelux lliura les noves integracions de webhooks a través de Svix. Verifica e
 
 No analitzis el JSON ni provoquis efectes secundaris abans que la verificació tingui èxit.
 
-```javascript Verify signature
+<CodeGroup>
+
+```javascript JavaScript
 import { Webhook } from "svix";
 
 const verifier = new Webhook(process.env.SWIPELUX_WEBHOOK_SECRET);
 
 export async function handleSwipeluxWebhook(request) {
   const rawBody = await request.text();
-  const event = verifier.verify(rawBody, {
+  verifier.verify(rawBody, {
     "svix-id": request.headers.get("svix-id"),
     "svix-timestamp": request.headers.get("svix-timestamp"),
     "svix-signature": request.headers.get("svix-signature"),
   });
+  const event = JSON.parse(rawBody);
 
   await webhookInbox.insertIfAbsent({
     id: event.id,
@@ -94,6 +103,27 @@ export async function handleSwipeluxWebhook(request) {
   return new Response(null, { status: 204 });
 }
 ```
+
+```java Java
+import com.svix.Webhook;
+import com.svix.exceptions.WebhookVerificationException;
+import java.util.List;
+import java.util.Map;
+
+class SwipeluxSignature {
+  // Pass the unmodified request body and every request header.
+  static boolean valid(String secret, String rawBody, Map<String, List<String>> headers) throws Exception {
+    try {
+      new Webhook(secret).verify(rawBody, headers);
+      return true;
+    } catch (WebhookVerificationException e) {
+      return false;
+    }
+  }
+}
+```
+
+</CodeGroup>
 
 Rebutja les sol·licituds amb signatures absents o no vàlides. Manté el cos brut disponible fins que la verificació es completi.
 

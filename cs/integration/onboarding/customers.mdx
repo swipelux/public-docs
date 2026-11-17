@@ -90,6 +90,21 @@ Pokud potřebujete exportovat zákazníka, použijte [`POST /v3/customers/{custo
 
 Pro formát tokenu přenositelnosti odešlete client ID přijímajícího KYC projektu jako `forClientId`, nikoli Swipelux `customerId`. Vrácený `data.token` použijte před `data.expiresAt`. Opětovné použití stejného `Idempotency-Key` a těla přehraje výsledek daného tokenu; pro vydání dalšího tokenu použijte nový klíč.
 
+## Kontrola ignorovaných polí při aktualizacích {#check-ignored-fields-on-updates}
+
+[`PATCH /v3/customers/{customerId}`](/api-reference/customers/patch-v3-customers-by-customer-id) a `PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}` ignorují pole těla, která nerozpoznají. Když pole ignorují, úspěšná odpověď obsahuje hlavičku `Swipelux-Ignored-Fields`. Hlavička uvádí JSON Pointery ignorovaných polí oddělené čárkami a seřazené. Vytváření tuto hlavičku nevrací.
+
+Tuto hlavičku kontrolujte po každé aktualizaci. Jinak se špatně pojmenované nebo umístěné pole bez chyby zahodí. Například odeslání `individual.dateOfBirth` místo `individual.birthDate` ponechá datum narození nenastavené.
+
+```http Ignored fields response header
+Swipelux-Ignored-Fields: /individual/dateOfBirth,/nickname
+```
+
+- Hlavička uvádí nejvýše 20 ukazatelů a 4096 znaků a končí `...`, když Swipelux seznam zkrátí. Segmenty ukazatelů jsou procentově kódované.
+- Pole uvnitř `metadata` mají volný formát a nikdy se nehlásí.
+- Idempotentní opakování hlavičku vynechávají, proto ji čtěte z první odpovědi.
+- Neznámá pole mohou být v budoucí verzi odmítnuta s `400`.
+
 ## Čtěte připravenost z capabilities
 
 Zákazník nemá v API stav ověření ani připravenosti. Přečtěte zákazníka pomocí [`GET /v3/customers/{customerId}`](/api-reference/customers/get-v3-customers-by-customer-id) pro aktuální data profilu, poté použijte capabilities a jejich `openTaskIds` k rozhodnutí, co může zákazník dělat dále.
@@ -97,6 +112,30 @@ Zákazník nemá v API stav ověření ani připravenosti. Přečtěte zákazní
 ```bash Get customer
 curl --request GET \
   "${API_BASE}/v3/customers/${CUSTOMER_ID}" \
+  --header "X-API-Key: ${SWIPELUX_API_KEY}"
+```
+
+### Filtrování zákazníků podle připravenosti capabilities {#filter-customers-by-capability-readiness}
+
+Chcete-li najít zákazníky v určité fázi onboardingu, filtrujte [`GET /v3/customers`](/api-reference/customers/get-v3-customers) pomocí těchto parametrů dotazu:
+
+- `pooledCapabilityStatus`: zákazník má sdruženou capability v tomto stavu.
+- `namedCapabilityStatus`: zákazník má pojmenovanou capability v tomto stavu.
+- `hasReadyNamedAccount`: `true` vrací zákazníky s pojmenovaným účtem `ready`. `false` vrací zákazníky bez něj.
+
+Filtry stavu přijímají `pending`, `ready`, `restricted`, `rejected` nebo `canceled`. Swipelux čte stavy stejně jako `include=capabilities`. Viz [Sdružené vs. pojmenované typy účtů](/cs/integration/onboarding/capabilities-and-requirements#pooled-vs-named-account-types).
+
+Chcete-li vynechat capabilities, které pouze čekají, přidejte `namedCapabilityExcludeWait=true` nebo `pooledCapabilityExcludeWait=true`; tím se vyřadí shody, jejichž `statusReason.resolution` je `wait`. `namedCapabilityIncludeWait=true` nebo `pooledCapabilityIncludeWait=true` zahrne také capabilities `restricted` s tímto řešením. Každý příznak funguje jen se svým filtrem stavu a `ExcludeWait` má přednost, když jsou nastaveny oba.
+
+Filtry lze kombinovat navzájem i s ostatními filtry seznamu. Swipelux je uplatní před stránkováním, takže každá stránka obsahuje jen odpovídající zákazníky. Klíče API k jejich použití potřebují `accounts:read` nebo `rails:read`. Neplatná hodnota vrátí `400 validation_error`.
+
+Například pro nalezení zákazníků, které banka schválila pro pojmenovanou capability a kteří zatím nemají připravený pojmenovaný účet:
+
+```bash Filter customers awaiting a named account
+curl --request GET \
+  --get "${API_BASE}/v3/customers" \
+  --data-urlencode "namedCapabilityStatus=ready" \
+  --data-urlencode "hasReadyNamedAccount=false" \
   --header "X-API-Key: ${SWIPELUX_API_KEY}"
 ```
 

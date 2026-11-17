@@ -113,6 +113,10 @@ sequenceDiagram
   else rejected
     SLX-->>You: task rejected, parent statusReason says what is next
   end
+  opt correct before review
+    You->>SLX: POST .../tasks/{taskId}/withdrawals
+    SLX-->>You: submission withdrawn, answers back to action_required
+  end
 ```
 
 Sentrale egenskaper:
@@ -121,6 +125,8 @@ Sentrale egenskaper:
 - Innsending er **gjennomgangs-styrt**: den endrer aldri capability- eller kontostatus direkte, det gjør aksept. Ett unntak: `profile`-svar skrives direkte inn i kundeprofilen ved innsending (2.3). Etter innsending poller du tasken eller foreldreressursen.
 - `taskRevision` (ekko av taskens `revision`) er en samtidighetsvakt: har tasken endret seg siden du leste, må du lese på nytt og bygge svarene på nytt.
 - `absence` er et fullverdig svar ("Jeg har ikke dette fordi ..."), bruk det i stedet for å la krav henge.
+- `allowPartial: true` på en submission lagrer de gyldige svarene og returnerer de ugyldige i `refusedAnswers` i stedet for at hele forespørselen feiler (2.3).
+- En submission som fortsatt er `in_review`, kan trekkes tilbake og rettes før en gjennomgangsbeslutning (2.3).
 - `rejected` avslutter vanligvis tasken. Når en hostet verifisering avviste den og den beslutningen senere omgjøres, kan tasken bli `satisfied`, eller `action_required` med kravene som den nye beslutningen ikke besvarer, åpnet på nytt. Send inn disse på nytt mot den nye `revision`.
 
 ### 1.5 Pengeflytting
@@ -314,7 +320,7 @@ Hvert eldre dokumentoverflate mappes til samme erstatning: les `GET /v3/customer
 
 Rundt den løkken:
 
-- **Rå fillagring**: `POST/GET/DELETE /v3/customers/{customerId}/documents` (pluss `/{documentId}` og `GET .../{documentId}/download`), last opp én gang med API-nøkkelen din, og referer så til dokument-id-er i submission-svar. Dette erstatter alle upload-token- og direct-upload-inntak. `POST .../documents` godtar også en JSON-body (`storageKey`, `fileName`, `type`) som konsumerer en fortsatt fersk kundeavgrenset referanse fra `POST /v2/documents/direct-upload`, slik at parkerte opplastinger migreres uten å sende bytene på nytt.
+- **Rå fillagring**: `POST/GET/DELETE /v3/customers/{customerId}/documents` (pluss `/{documentId}` og `GET .../{documentId}/download`), last opp én gang med API-nøkkelen din, og referer så til dokument-id-er i submission-svar. Dette erstatter alle upload-token- og direct-upload-inntak. `POST .../documents` godtar også en JSON-body (`storageKey`, `fileName`, `type`) som konsumerer en fortsatt fersk kundeavgrenset referanse fra `POST /v2/documents/direct-upload`, slik at parkerte opplastinger migreres uten å sende bytene på nytt. Hver v3-dokumentressurs har `contentSha256` (`sha256:<hex>`, eller `null` for dokumenter som ble lagret før sjekksummer ble registrert), slik at du kan oppdage en ny opplasting av en byte-identisk fil.
 - **Helt nye lesninger**: `GET /v3/tasks` (merchant-omfattende innboks), `GET /v3/transfers/{transferId}/tasks`, `GET .../tasks/{taskId}/history`, `GET .../tasks/{taskId}/submissions` (pluss `/{submissionId}`).
 
 Submission (illustrativ):
@@ -332,10 +338,12 @@ Submission (illustrativ):
 ```
 
 - Svartyper: `profile`, `text`, `date`, `single_select`, `multi_select`, `boolean`, `attestation`, `document`, `resource_reference`, `absence`. Hvert requirements `request`-objekt sier hvilken type det forventer.
-- En submission må besvare **hvert handlingskrevende requirement i gjeldende runde**, med nøyaktig den `taskRevision` du leste. Delvise submissions avvises.
+- En submission må besvare **hvert handlingskrevende requirement i gjeldende runde**, med nøyaktig den `taskRevision` du leste. Utelates ett, returneres `422 task_submission_incomplete`. Noen identitetsverifiseringsoppgaver for privatpersoner godtar et delsett.
+- Som standard får ett avvist svar hele forespørselen til å feile, og ingenting lagres. Svaret er `400 validation_error`, `400 invalid_document_reference` eller `409 absence_conflicts_with_profile`. Send `"allowPartial": true` for å beholde de gyldige svarene: `201`-svaret lister de andre i `refusedAnswers` (`requirementId`, `code`, `pointer`, `message`), der `code` er en av `invalid`, `absence_conflicts_with_profile`, `invalid_document_reference` eller `depends_on_refused_answer`. Behandle en ukjent kode som `invalid`. Når ingen svar kan beholdes, er svaret `400 validation_error`, og ingenting lagres. Se [API-svar](/no/integration/onboarding/capabilities-and-requirements#keep-valid-answers-with-allowpartial).
 - `profile`-svar **skriver gjennom**: de oppdaterer kundeprofilen via den vanlige valideringsveien og re-evaluerer umiddelbart hver capability som refererer til det samme intake-arbeidet. Søskenlagerte intake-tasks der alle requirements er oppfylt, lukkes automatisk.
 - Requirements kan danne alternative grupper (`alternativeKey`): send inn nøyaktig én av gruppen.
 - `changes_requested` øker `remediationRound` og bærer `reviewFeedback`. Les tasken på nytt og send inn på nytt **med en ny idempotency-nøkkel**.
+- `POST /v3/customers/{customerId}/tasks/{taskId}/withdrawals` (med `Idempotency-Key`) trekker tilbake den ene submission som venter på gjennomgang, slik at kunden kan rette den. Svarene går tilbake til `action_required` uten `reviewFeedback`, utfallet blir `withdrawn`, og `remediationRound` økes. Requirements som allerede er akseptert, berøres ikke, og antall tilbaketrekkinger er ikke begrenset. Returnerer `404 task_not_found` for en ukjent oppgave, `409 task_not_in_review` når ikke nøyaktig én submission venter på gjennomgang (ingen, eller flere enn én, for eksempel en delvis submission og rettelsen av den) eller oppgavens frist har passert, og `409 submission_already_forwarded` når banken gjennomgår denne oppgaven direkte eller Swipelux allerede har sendt submission videre til gjennomgang. Oppgaver opprettet med `POST /v3/sandbox/tasks` returnerer det også.
 - Hostede verifikasjons-URLer vises **kun** på kundeavgrenset task-detalj (`GET /v3/customers/{customerId}/tasks/{taskId}`) og bare mens sesjonen er handlingskrevende; lister og `GET /v3/tasks/{taskId}` er bevisst URL-frie.
 - Tjenestevilkår er også en task: `openTaskIds` kan inkludere en task med `category: "terms_of_service"` hvis hostede aksepteringside er lenket på samme måte (kun kundeavgrenset detalj). Generiske submissions kan ikke godta vilkår, og KYC-godkjenning innebærer aldri aksept av vilkår.
 - Tasks er avgrenset per capability, så det "samme" kravet (for eksempel adressebekreftelse) kan dukke opp én gang per capability. Dedupliser i UI-en på requirement `key`.
@@ -525,6 +533,7 @@ Hvert trinn leveres uavhengig; v1 eller v2 og v3 kjører side om side mot samme 
 - [ ] Submissions er gjennomgangs-styrt (innsending er ikke det samme som opplåst) og må besvare **hvert** handlingskrevende requirement med nøyaktig `taskRevision`. Ved uoverensstemmelse må du lese på nytt og bygge på nytt.
 - [ ] Det finnes ingen `task.*`-webhook, poll tasken (eller foreldreobjektet) etter hver innsending.
 - [ ] Retry ved `changes_requested` betyr å lese tasken på nytt, nye svar, **ny idempotency-nøkkel**.
+- [ ] Godta submission-utfallet `withdrawn`, og behandle en ukjent `refusedAnswers[].code` som `invalid`.
 - [ ] Å poste til `/v1/documents` låser aldri opp en v3-capability, når en kunde er på tasks, driv hver forespørsel gjennom tasks.
 - [ ] Nye tasks kan dukke opp på en allerede `ready` capability, hold task-løkken koblet etter onboarding, ikke bare under.
 - [ ] Capability `cancel` fungerer kun fra `pending` eller `restricted` uten blokkerende ressurser (`409 capability_not_cancelable`); å be på nytt etter kansellering er en fersk opprettelse med en ny idempotency-nøkkel.

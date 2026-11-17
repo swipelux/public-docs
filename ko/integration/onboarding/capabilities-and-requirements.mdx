@@ -46,11 +46,27 @@ curl --request GET \
       "bic": "CHASUS33",
       "logoUrl": "https://wallet.swipelux.com/bank-logos/jpmorgan.png",
       "countries": ["US"],
-      "isDefault": true
+      "isDefault": true,
+      "currencies": [
+        { "code": "USD", "institution": "jpmorgan" }
+      ]
     }
   ]
 }
 ```
+
+모든 명의 케이퍼빌리티에서 각 기관 항목은 `currencies`도 나열해요. 각 항목은 발급 계좌가 받을 수 있는 통화 `code`와 [그 계좌를 열 때](/ko/integration/issue-bank-account#choose-the-bank) 보내야 하는 `institution`을 알려줘요. `ach_named`, `wire_named`, `rtp_named`는 USD를 나열해요. `sepa_named`는 EUR, `faster_payments_named`는 GBP, `ipp_named`는 AED를 나열해요. `swift_named`는 은행이 SWIFT 계좌를 발급하는 모든 통화를 나열해요. 통화가 항목 자체와 다른 기관을 가리킬 수도 있어요. 예를 들어 `lead_bank`의 USD 이외 SWIFT 통화는 `bmo`를 가리켜요. 풀링 케이퍼빌리티는 `currencies`를 생략해요.
+
+`swift_named`의 경우 각 고객이 이 통화 중 어떤 통화를 열 수 있는지는 은행이 결정해요. 은행이 이 고객에게 제공하지 않는 통화의 계좌는 `statusReason.code: currency_unavailable`과 함께 `rejected`로 끝나요.
+
+`bmo`는 계좌를 열 때만 보내세요. `institutions`에 `bmo`를 지정한 케이퍼빌리티 요청이나 태스크 미리보기는 `422 capability_institutions_unsupported`를 반환해요. 대신 `lead_bank`에서 `swift_named`를 요청하세요.
+
+`institutions`를 생략하면 Swipelux가 이 고객에게 적용되는 기본 은행을 선택해요. 기본 은행은 고객별로 결정되며, 예를 들어 고객의 프로필이 바뀌거나 은행의 온보딩이 열리거나 닫힐 때 시간이 지나면서 바뀔 수 있어요. `isDefault`를 저장하지 말고 매번 지원 케이퍼빌리티 응답에서 읽으세요. 라이브 모드에서는 다음과 같아요:
+
+- `ach_named`와 `wire_named`는 Lead Bank가 신규 고객을 받고 이 고객을 온보딩할 수 있을 때 기본적으로 Lead Bank(`lead_bank`)를 사용해요. 조건은 프로필에 국가가 하나 이상 있고 Lead Bank가 그 모든 국가를 허용하며, 법인 프로필에 Lead Bank가 허용하는 법적 형태가 있고, 고객이 다른 은행에 명의 또는 풀링 여부와 관계없이 `ready` 신청이 없는 것이에요. 그렇지 않으면 기본적으로 JPMorgan Chase(`jpmorgan`)를 사용해요.
+- `ach_pooled`와 `wire_pooled`는 기본적으로 JPMorgan Chase(`jpmorgan`)를 사용해요.
+
+기본 은행은 새로운 선택에만 적용돼요. 고객이 이미 가진 승인된(`ready`) 신청이나 다른 은행의 현재 신청은 여전히 기본 은행과 `isDefault`로 표시된 은행보다 우선해요. 은행을 고정하려면 해당 ID를 `institutions`에 보내세요. 샌드박스에서는 ACH, Wire, SWIFT 케이퍼빌리티가 JPMorgan Chase(`jpmorgan`)에서만 제공돼요. [샌드박스 테스트](/ko/integration/sandbox)를 참고하세요.
 
 선택한 `data[].id`를 `CAPABILITY_ID`로 저장하세요. 다른 고객이나 환경의 케이퍼빌리티 ID를 절대 복사하지 마세요.
 
@@ -128,7 +144,7 @@ curl --request POST \
 요청 응답을 보면 Swipelux가 어떤 신청 건을 사용했는지 알 수 있어요:
 
 - `201`은 요청이 새 신청 건을 열었다는 뜻이에요.
-- `200`은 요청이 고객이 이미 가진 신청 건으로 확인되었다는 뜻이에요. 예를 들어 고객이 이미 보유한 은행 케이퍼빌리티를 반복 요청하거나, 취소된 케이퍼빌리티를 요청한 경우예요. `card` 또는 `stablecoin_transfers`를 반복 요청하면 여전히 [`409 capability_already_exists`](/integration/errors#capability-already-exists)를 반환해요.
+- `200`은 요청이 고객이 이미 가진 신청 건으로 확인되었다는 뜻이에요. 예를 들어 고객이 이미 보유한 은행 케이퍼빌리티를 반복 요청하거나, 기존 신청에 합류하는 취소된 은행 케이퍼빌리티를 요청한 경우예요. `card` 또는 `stablecoin_transfers`를 반복 요청하면 여전히 [`409 capability_already_exists`](/integration/errors#capability-already-exists)를 반환하고, 취소된 `card` 케이퍼빌리티를 요청하면 [`409 capability_not_reopenable`](/integration/errors#capability-not-reopenable)을 반환해요.
 - `selectedApplicationId`는 `data` 옆에 있는 최상위 필드로, 요청이 선택하거나 연 신청 건의 ID를 담고 있어요. 요청이 신청 건을 선택하지 않았다면 Swipelux는 이 필드를 생략해요. 멱등 재실행은 같은 값을 반환해요.
 
 축약된 응답:
@@ -352,6 +368,8 @@ curl --request POST \
 
 이를 참조하는 답변을 제출하기 전에 반환된 `data.id`를 `DOCUMENT_ID`로 저장하세요.
 
+모든 v3 문서 리소스에는 `contentSha256`이 포함돼요. 이는 저장된 파일의 SHA-256 다이제스트로, `sha256:` 뒤에 소문자 16진수 다이제스트가 오는 형식이에요. 다이제스트가 같은 두 문서는 바이트 단위로 동일해요. 검토자가 교체를 요청한 파일처럼 고객이 이미 업로드한 파일인지 확인하려면, 업로드하기 전에 파일의 SHA-256을 계산하고 이전 제출의 답변이 `documentIds`에서 참조하는 문서의 `contentSha256`과 비교하세요. Swipelux가 다이제스트를 기록하기 전에 저장된 문서의 경우 이 필드는 `null`이에요.
+
 저장된 파일을 나중에 가져오려면 [`GET /v3/customers/{customerId}/documents/{documentId}/download`](/api-reference/documents/get-v3-customers-by-customer-id-documents-by-document-id-download)를 호출하세요. Swipelux는 파일을 첨부 파일로 다운로드하는 `url`을 반환하며, 이 URL은 1시간 후에 만료돼요. 아카이브된 문서는 `404`를 반환해요.
 
 ### API 답변 {#api-answers}
@@ -381,6 +399,78 @@ JSON
 ```
 
 모든 요건 ID와 답변 유형은 최신 태스크에서 가져오세요. API가 태스크가 변경되었다고 알리면 다시 조회하고 새 리비전에서 제출을 재구성하세요.
+
+#### `allowPartial`로 유효한 답변 유지 {#keep-valid-answers-with-allowpartial}
+
+기본적으로 거부된 답변이 하나라도 있으면 전체 요청이 실패하고 Swipelux는 아무것도 저장하지 않아요. 응답은 `400 validation_error`, `400 invalid_document_reference`, `409 absence_conflicts_with_profile` 중 하나예요. Swipelux가 유효한 답변은 저장하고 유효하지 않은 답변만 거부하게 하려면 `"allowPartial": true`를 추가하세요:
+
+```json Partial submission request
+{
+  "taskRevision": 3,
+  "allowPartial": true,
+  "answers": [
+    { "requirementId": "req_a", "answer": { "type": "text", "value": "Salary" } },
+    { "requirementId": "req_b", "answer": { "type": "document", "documentIds": ["doc_unknown"] } }
+  ]
+}
+```
+
+Swipelux는 유지된 답변만 담긴 저장된 제출을 `data`에 담아 `201`을 반환하고, 나머지 답변은 `refusedAnswers`에 나열해요:
+
+```json Partial submission response
+{
+  "data": { "id": "sub_000000000000000001", "outcome": "in_review", "answers": [{ "requirementId": "req_a" }] },
+  "refusedAnswers": [
+    {
+      "requirementId": "req_b",
+      "code": "invalid_document_reference",
+      "pointer": "/answers/1/answer",
+      "message": "A referenced document is invalid."
+    }
+  ]
+}
+```
+
+거부된 각 답변에는 다음 코드 중 하나가 있어요:
+
+| `code` | 의미 |
+| --- | --- |
+| `invalid` | 답변이 요청의 형태, 형식 또는 제약 조건을 충족하지 않거나, 고객 프로필이 해당 값을 허용하지 않아요. |
+| `absence_conflicts_with_profile` | 프로필에 값이 있는 항목에 대해 부재 답변을 보냈어요. |
+| `invalid_document_reference` | 참조된 문서를 이 고객과 이 요청에 사용할 수 없어요. |
+| `depends_on_refused_answer` | 답변 자체는 유효하지만 거부된 답변과 함께 판단돼요. 조건부 답변과 그것을 제어하는 답변은 함께 유지되거나 함께 거부돼요. |
+
+코드가 추가될 수 있어요. 알 수 없는 코드는 `invalid`로 처리하세요. `message`는 제출된 값을 절대 반복하지 않아요.
+
+`allowPartial`은 다른 규칙을 완화하지 않아요:
+
+- 요청은 이 필드가 없을 때 답해야 하는 모든 요구 사항에 여전히 답해야 해요. 답하지 않은 열린 요구 사항은 여전히 `422 task_submission_incomplete`를 반환해요.
+- 알 수 없는 필드나 잘못된 타입처럼 요청 스키마 자체를 충족하지 않는 본문은 여전히 `400 validation_error`를 반환해요.
+- 유지할 수 있는 답변이 없으면 Swipelux는 `400 validation_error`를 반환하고, 아무것도 저장하지 않으며, 거부된 모든 답변을 `errors[]`에 나열해요.
+- `refusedAnswers`는 요청이 `"allowPartial": true`를 보낸 경우에만 존재하며, 비어 있을 수도 있어요. 같은 `Idempotency-Key`로 재전송하면 같은 `refusedAnswers`가 반환돼요.
+
+거부된 답변을 수정하기 전에 태스크를 다시 읽으세요. 거부된 요구 사항은 보통 여전히 `action_required`이지만, 문서 요청은 이미 등록된 파일로 답변되었을 수 있어요. 새 `taskRevision`과 새 `Idempotency-Key`로 수정 사항을 제출하세요. 조건부 답변은 그것을 제어하는 답변과 함께 보내세요.
+
+#### 검토 대기 중인 제출 철회 {#withdraw-a-submission-awaiting-review}
+
+아직 `in_review`인 제출을 수정하려면 `POST /v3/customers/{customerId}/tasks/{taskId}/withdrawals`로 철회하세요. 요청에는 본문이 없고 `Idempotency-Key`가 필요해요. 제출과 마찬가지로 API 키에는 `accounts:write`, `customers:read`, `customers:write`가 필요해요:
+
+```bash Withdraw task submission
+curl --request POST \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/tasks/${TASK_ID}/withdrawals" \
+  --header "X-API-Key: ${SWIPELUX_API_KEY}" \
+  --header "Idempotency-Key: task-withdrawal-001"
+```
+
+Swipelux는 `data`에 제출을 담아 `200`을 반환해요. 제출의 `outcome`은 `withdrawn`이 되고, 답변은 `reviewFeedback` 없이 `action_required`로 돌아가며, 다음 제출은 새 `remediationRound`를 시작해요. 이미 승인된 요구 사항과 고객 프로필은 변경되지 않아요. Swipelux가 프로필이나 등록된 파일에서 채운 답변은 검토 중으로 남아요. 필요한 만큼 여러 번 철회할 수 있어요. 태스크를 다시 읽은 다음 수정된 답변을 제출하세요.
+
+Swipelux는 다음 경우에 철회를 거부해요:
+
+- `404 task_not_found`: 이 고객에 대한 태스크가 존재하지 않아요.
+- `409 task_not_in_review`: 검토 대기 중인 제출이 정확히 하나가 아니거나(없거나, 부분 제출과 그 수정처럼 둘 이상인 경우), 태스크의 기한이 지났어요.
+- `409 submission_already_forwarded`: 은행이 이 태스크를 직접 검토하거나, Swipelux가 이미 제출을 검토로 넘겼어요. `POST /v3/sandbox/tasks`로 생성한 태스크도 이를 반환해요.
+
+제출 `outcome`이 이제 `withdrawn`일 수 있어요. 고정된 목록과 `outcome`을 비교하는 클라이언트를 업데이트하세요.
 
 ### 기업의 실질적 소유자 전제 조건 {#beneficial-owner-prerequisite-for-businesses}
 

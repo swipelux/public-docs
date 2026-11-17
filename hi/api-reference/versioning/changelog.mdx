@@ -8,35 +8,152 @@ description: "Swipelux API के संस्करणों में पर�
 
 पहले के संस्करण से मौजूदा इंटीग्रेशन को अपग्रेड करने के लिए, [v3 पर माइग्रेट करें](/hi/api-reference/versioning/migrate-to-v3) देखें।
 
+<Update label="2026-11-16" description="v3" tags={["जोड़ा गया","बदला गया","ठीक किया गया"]}>
+
+### जोड़ा गया
+- `GET /v3/customers` `pooledCapabilityIncludeWait`, `pooledCapabilityExcludeWait`, `namedCapabilityIncludeWait` और `namedCapabilityExcludeWait` स्वीकार करता है। हर एक को matching `pooledCapabilityStatus` या `namedCapabilityStatus` filter के साथ उपयोग करें। `IncludeWait` उन restricted capabilities को जोड़ता है जिनका resolution `wait` है, और `ExcludeWait` उन capabilities को हटाता है जिनका resolution `wait` है। जब दोनों `true` हों, तो `ExcludeWait` लागू होता है। Filters को `accounts:read` या `rails:read` चाहिए। [Customers](/hi/integration/onboarding/customers#filter-customers-by-capability-readiness) देखें।
+- `include=capabilities` के साथ लौटाए गए capability summaries में `statusReason.resolution` हो सकता है: `wait`, `contact_support` या `none`। Tasks पर निर्भर reason के लिए, capability पढ़ें।
+- एक document requirement 3 से 50 characters की length के साथ `constraints.idNumber` लौटा सकती है। जब उसका `required` `true` हो, तो `documentMetadata` में ID number शामिल करें। जब किसी document को इनकी आवश्यकता होती है, तो dashboard ID number और issuing country माँगता है।
+- `PATCH /v3/customers/{customerId}/accounts/{accountId}` external non-USD SWIFT account पर `bankAddress` (105 characters तक), `bankCity` और `bankPostalCode` स्वीकार करता है। Foreign-currency SWIFT payouts को `bankAddress` और `bankCity` चाहिए। USD account पर इन fields को बदलने से `409 conflict` लौटता है। जब कोई pending quote या payout account का उपयोग कर रहा हो, तो बदलाव `409 account_has_active_transfers` लौटाता है, जिसे आप retry कर सकते हैं।
+- Dashboard में, KYB WebP, HEIF और HEIC documents स्वीकार करता है।
+
+### बदला गया
+- जब किसी issued account का SWIFT code, routing number या account number बदलता है, तो Swipelux [`account.details_changed`](/api-reference/webhooks/account-details-changed) भेजता है। `data.object` current account है, और `data.previous` में केवल `routingVersion` होता है। [Bank account जारी करें](/hi/integration/issue-bank-account) देखें।
+- ऐसे wallet account को archive करना जो किसी non-archived bank account का settlement wallet है, `409 account_has_dependent_accounts` लौटाता है। Bank account के settlement को `PATCH` से किसी दूसरे wallet पर ले जाएँ, या पहले bank account को archive करें।
+- `PATCH /v3/customers/{customerId}/recipients/{recipientId}` दूसरे recipient type के fields को `400 validation_error` और हर field के लिए `invalid_field` error के साथ reject करता है: individual पर `companyName` और `businessIndustry`, business पर `firstName` और `lastName`।
+- `POST /v3/customers/{customerId}/tasks/{taskId}/withdrawals` भी `retryable: true` के साथ `409 idempotency_request_in_progress` लौटाता है जब तक एक identical request अभी चल रहा हो।
+- Dashboard में, refused customer deletion उसे block करने वाले resources सूचीबद्ध करता है, recipient country के लिए country picker उपयोग होता है, और profile text inputs 256 characters तक सीमित हैं। Customer page या Balances से payout बनाने के बाद, उसकी details खुलती हैं।
+
+### ठीक किया गया
+- Swipelux अब एक ही update में एक capability के लिए दो `capability.status_changed` events नहीं भेजता, और जब status वहीं खत्म होता है जहाँ से शुरू हुआ था तो कोई नहीं भेजता।
+- जब कोई account provisioning के दौरान ही reject होता है, तो `account.status_changed` `"in_review"` के बजाय `previous.state: "provisioning"` report करता है।
+
+</Update>
+
+<Update label="2026-11-09" description="v3" tags={["जोड़ा गया","बदला गया","ठीक किया गया"]}>
+
+### जोड़ा गया
+- जब bank किसी third party को USD SWIFT payout पर supporting document माँगता है, तो Swipelux transfer पर `category: "transaction_rfi"` वाला task खोलता है। यह एक document और उसका reference माँगता है। इसका उत्तर मौजूदा task submission endpoints से दें, और Swipelux उत्तर bank को forward करता है। यदि payout bank के approval के बिना complete होता है, fail होता है या refund होता है, तो Swipelux task cancel कर देता है। [Quotes और transfers](/hi/integration/quotes-and-transfers#supporting-documents-for-swift-payouts) देखें।
+- हर bank के issued SWIFT accounts `details.accountHolderAddress` में beneficiary का postal address लौटाते हैं। पहले, केवल Lead Bank और BMO accounts इसे लौटाते थे। यह `details.bankAddress` से अलग है, जो receiving bank का address है। [Bank account जारी करें](/hi/integration/issue-bank-account) देखें।
+- Account की currency में non-USD SWIFT account में deposit settlement wallet में USDC के रूप में settle होता है। Transfer का `amounts.in` account की currency में प्राप्त amount दिखाता है, और `amounts.out` delivered USDC दिखाता है। पहले, ये deposits बिना transfer या webhook के review के लिए रोके जाते थे।
+- एक document requirement `constraints.issuingCountryRequired: true` लौटा सकती है। उसके लिए submit किए गए हर document में `documentMetadata` में `issuingCountry` शामिल होना चाहिए।
+
+### बदला गया
+- पहला identical request अभी चल रहा हो तब आने वाला retry capability requests, documents, recipients और उनके destinations, rules, webhooks, quotes, transfers, transfer cancellations और verification-session share tokens पर `retryable: true` के साथ `409 idempotency_request_in_progress` लौटाता है। पहले, ये routes `idempotency_conflict` लौटाते थे। अलग body के साथ key का दोबारा उपयोग अब भी `idempotency_conflict` लौटाता है। [Errors और retries](/integration/errors#idempotency-request-in-progress) देखें।
+- Bank pay-in quotes generic failure के बजाय specific errors लौटाते हैं: `400 quote_amount_out_of_range`, `400 quote_volume_limit_exceeded`, `400 quote_destination_network_unsupported`, `503 quote_temporarily_unavailable` (retryable) या `502 quote_failed`।
+- `DELETE /v3/customers/{customerId}/documents/{documentId}` तब `409 document_in_use` लौटाता है जब bank review में कोई application उस document पर निर्भर हो। Review खत्म होने या application cancel होने के बाद इसे archive करें।
+- ऐसा non-USD bank account जिसका settlement wallet USDT है, अब create और update पर `400 invalid_settlement_target` लौटाता है, explicit `settlement.currency` के बिना भी। [Settlement currency चुनें](/hi/integration/issue-bank-account#choose-the-settlement-currency) देखें।
+- Dashboard में, payout review foreign-currency receive amount को estimate के रूप में mark करता है।
+- Dashboard और public tracking page पर, bank द्वारा return या reverse किया गया completed transfer एक notice दिखाता है। उसका status Completed रहता है।
+
+### ठीक किया गया
+- Issued bank accounts ready होने पर `account.status_changed` भेजते हैं। [Webhooks](/hi/integration/webhooks) देखें।
+- उसी idempotency key और file के साथ multipart document upload retry करने पर अब `409` नहीं लौटता।
+- Dashboard transaction filters bank payouts को उनकी bank rail से match करते हैं और हर crypto network cover करते हैं। Exact ID से search करने पर छोटे pay-ins मिल जाते हैं।
+
+</Update>
+
+<Update label="2026-11-04" description="v3" tags={["जोड़ा गया"]}>
+
+### जोड़ा गया
+- Ready Lead Bank (`lead_bank`) `swift_named` capability वाले customers AUD, CAD, CHF, CZK, DKK, EUR, GBP, HKD, HUF, JPY, MXN, NOK, NZD, PLN, SEK, SGD और ZAR में SWIFT payouts भेज सकते हैं। ऐसी currency जिसे bank customer के लिए enable नहीं करता, `422 bank_not_supported_for_customer` लौटाती है। Exact USDC `in.amount` के साथ quote बनाएँ, जिससे Swipelux अपनी fee USD में लेता है। Quote का `out.amount` नए `out.amountEstimated: true` से marked एक estimate है, `out.amount` भेजने पर `422 validation_error` लौटता है, और payout complete होने पर transfer delivered amount record करता है। EUR, GBP, CHF, CZK, DKK, HUF, NOK, PLN और SEK के लिए valid IBAN चाहिए। अन्य currencies valid IBAN या local account number स्वीकार करती हैं, जो MXN के लिए 18 अंकों का CLABE है। Holder address में postal code होना चाहिए। Returned payout automatic refund के बजाय Swipelux review में जाता है। [Funds भेजें](/hi/integration/send-funds#foreign-currency-swift-payouts) देखें।
+
+</Update>
+
+<Update label="2026-11-02" description="v3" tags={["जोड़ा गया","बदला गया","ठीक किया गया"]}>
+
+### जोड़ा गया
+- Dashboard में AI agents को Swipelux से connect करने के लिए **Agents** page है। **Your agents** Sandbox और Live में connected agents सूचीबद्ध करता है और आपको उन्हें disconnect करने देता है। [अपने AI agent से Swipelux का उपयोग करें](/integration/ai-agents) देखें।
+- Dashboard customer list में **Shared methods**, **Bank accounts** और **Opened bank account** filters जोड़े गए हैं।
+
+### बदला गया
+- Swipelux saved webhook destinations को रोज़ फिर से check करता है। यदि किसी endpoint का hostname अब refused है या refused address पर resolve होता है, तो Swipelux endpoint को pause करता है और `disabled: true` set करता है। Paused endpoint तब भी paused रहता है जब आप केवल उसका `url` बदलते हैं; उसे resume करने के लिए valid `url` के साथ `disabled: false` भेजें। [Webhooks](/hi/integration/webhooks#use-a-public-destination-url) देखें।
+- Rule creation किसी दूसरे network पर target wallet, या bank destination, को `400 rule_target_invalid` के साथ refuse करता है। [Errors और retries](/integration/errors#rule-target-invalid) देखें।
+- Document download responses में `Cache-Control: private, no-store` होता है।
+- Passkey recovery के बाद, dashboard आपको email भेजता है और 24 घंटों के लिए payouts, withdrawals, secret key creation, agent connections और team invitations pause कर देता है।
+
+### ठीक किया गया
+- अब rules तब चलते हैं जब किसी दूसरे Swipelux wallet से भेजे गए funds trigger wallet में आते हैं।
+- कभी issue न हुए bank accounts अब customer को archive करने से नहीं रोकते।
+- `include=capabilities` अब कुछ customers के लिए खाली list नहीं लौटाता।
+- Sandbox account balances अब floating-point rounding errors नहीं दिखाते।
+- ऐसी developer fee वाले bank payout quotes जिसे route charge नहीं कर सकता, execution पर fail होने के बजाय quote के समय `400 validation_error` के साथ refuse होते हैं।
+- Card payment link अब दूसरा checkout नहीं खोलता जब पहला card payment process होते समय उसका quote expire हो जाता है।
+- Completed card pay-ins अपना fiat source amount बनाए रखते हैं।
+- Lead Bank के लिए, dashboard का **Open bank account** drawer अब ऐसे USDT networks नहीं देता जिन्हें bank support नहीं करता, और Solana पर USDT देता है।
+
+</Update>
+
 <Update label="2026-11-01" description="v3" tags={["जोड़ा गया"]}>
 
 ### जोड़ा गया
 - [`GET /v3/customers/{customerId}/capabilities/supported`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-supported) की प्रत्येक entry में `unavailableInstitutions` शामिल होता है। यह उन banks को सूचीबद्ध करता है जो capability variant offer करते हैं लेकिन इस customer को स्वीकार नहीं करते, और प्रत्येक में एक `id`, एक `name`, और `statusReason` shape में `reasons` होते हैं। वर्तमान reason codes `jurisdiction_unsupported`, `legal_form_unsupported`, और `customer_type_unsupported` हैं। Pooled और non-bank entries पर यह field `[]` होता है, और कोई bank कभी भी `institutions` और `unavailableInstitutions` दोनों में नहीं दिखता। Capability request में किसी unavailable bank का नाम देने पर अब भी `422 capability_institutions_unsupported` लौटता है। [Capabilities और requirements](/hi/integration/onboarding/capabilities-and-requirements#show-why-a-bank-is-unavailable) देखें।
+- Ready Lead Bank (`lead_bank`) `swift_named` capability वाले customers AUD, CAD, CHF, CZK, DKK, EUR, GBP, HKD, HUF, JPY, MXN, NOK, NZD, PLN, SEK, SGD और ZAR में issued SWIFT accounts खोल सकते हैं, हर currency के लिए एक account। Supported-capability response इन्हें `swift_named` की `lead_bank` entry पर `institution: "bmo"` के साथ सूचीबद्ध करता है। Currency के साथ वह `institution` भेजें। BMO Bank N.A. (`bmo`, BIC `HATRUS44`) इन accounts पर दिखाया जाने वाला bank है, और `GET /v3/institutions` इसे सूचीबद्ध करता है। Bank तय करता है कि हर customer कौन-सी currencies खोल सकता है, और ऐसी currency का account जिसे bank offer नहीं करता `statusReason.code: currency_unavailable` के साथ `rejected` पर समाप्त होता है। इनमें से किसी currency के साथ `lead_bank` बताने पर `bmo` का नाम लेने वाला `400 validation_error` लौटता है। USD या `swift` के अलावा किसी method के साथ `bmo` बताने पर `400 validation_error` लौटता है। `bmo` बताने वाला capability request या task preview `422 capability_institutions_unsupported` लौटाता है। [Bank account जारी करें](/hi/integration/issue-bank-account#choose-the-bank) देखें।
 
 </Update>
 
-<Update label="2026-10-30" description="v3" tags={["जोड़ा गया"]}>
+<Update label="2026-10-30" description="v3" tags={["जोड़ा गया","बदला गया"]}>
 
 ### जोड़ा गया
-- Authenticated requests पर API key, integrating business और client IP address के हिसाब से rate limit लागू होती है। Limit से ज़्यादा request `429 rate_limited` लौटाती है, जिसमें `retryable: true` और एक `Retry-After` header होता है। यह header बताता है कि retry करने से पहले कितने सेकंड इंतज़ार करना है। जिन integrating businesses को अभी approval नहीं मिला है, उनकी limits कम होती हैं। API reference में हर authenticated operation `429` response सूचीबद्ध करता है। एक IP address से बार-बार असफल authentication भी अपनी limit पार होने पर `429` लौटाते हैं, जबकि उस address से भेजी गई valid API keys काम करती रहती हैं।
+- Authenticated requests पर प्रति API key, प्रति integrating business और प्रति client IP address rate limit लागू होती है। Limit से अधिक request `retryable: true` और `Retry-After` header के साथ `429 rate_limited` लौटाता है, जो retry करने से पहले प्रतीक्षा के seconds बताता है। जो integrating businesses अभी approved नहीं हैं, उनकी limits कम होती हैं। API reference में हर authenticated operation `429` response सूचीबद्ध करता है। एक IP address से बार-बार failed authentications भी limit पार होने पर `429` लौटाते हैं, और उस address से भेजी गई valid API key को भी limit recover होने तक वही response मिल सकता है, इसलिए `Retry-After` delay के बाद retry करें। [Errors और retries](/integration/errors#rate-limited) देखें।
+
+### बदला गया
+- Swipelux ने ऐसी legacy API keys deactivate कर दी हैं जिनका कोई public part नहीं है, जैसे बिना dots वाली keys। इनके साथ requests `401 unauthorized` लौटाते हैं।
+
+</Update>
+
+<Update label="2026-10-29" description="v3" tags={["बदला गया"]}>
+
+### बदला गया
+- जब तक आपके integrating business का KYB approve नहीं होता, Swipelux आपके सभी spaces में किसी भी rolling 24 घंटों में creations को सीमित करता है: 10 API keys, 10 webhook endpoints, 10 rules, 250 customers, 20 `sumsub_share_token` exports और 10 identity verification imports। यह प्रति live space 10 active API keys की limit की जगह लेता है; किसी key को revoke करने से slot खाली नहीं होता। Limit से अधिक creation `422 merchant_kyb_not_approved` लौटाता है; dashboard एक सामान्य `422` लौटाता है। Failed creations और idempotent replays नहीं गिने जाते। ये limits, और प्रति घंटे 20 webhook URL changes की limit, sandbox spaces में भी लागू होती हैं, जब तक आपके पास कोई live space न हो जो approved हो या KYB आवश्यक न करता हो। [Daily creation limits](/hi/integration/go-live#daily-creation-limits) देखें।
 
 </Update>
 
 <Update label="2026-10-28" description="v3" tags={["जोड़ा गया","बदला गया"]}>
 
 ### जोड़ा गया
-- Webhook endpoints में `disabled` शामिल है, जो तब तक `true` रहता है जब तक endpoint पर deliveries रुकी हुई हैं। बार-बार delivery failures के बाद Swipelux भी किसी endpoint को रोक देता है। Deliveries रोकने के लिए [`PATCH /v3/webhooks/{webhookId}`](/api-reference/webhooks/patch-v3-webhooks-by-webhook-id) में `disabled: true` भेजें और उन्हें फिर से शुरू करने के लिए `disabled: false` भेजें। फिर से शुरू करने पर destination URL दोबारा जाँचा जाता है और अगर वह अब पास नहीं होता तो `400` लौटाया जाता है, इसलिए endpoint रुका ही रहता है।
+- `GET /v3/customers` `pooledCapabilityStatus` और `namedCapabilityStatus` filters स्वीकार करता है, जिनमें से हर एक `pending`, `ready`, `restricted`, `rejected` या `canceled` पर set होता है। यह `hasReadyNamedAccount=true|false` भी स्वीकार करता है, ताकि ऐसे customers list किए जा सकें जिनके पास `ready` named account है या नहीं है। Filters एक-दूसरे के साथ और अन्य list filters के साथ combine होते हैं, और Swipelux उन्हें paging से पहले लागू करता है। इन्हें उपयोग करने के लिए API keys को `accounts:read` या `rails:read` चाहिए। Invalid value `400 validation_error` लौटाती है। उदाहरण के लिए, `namedCapabilityStatus=ready&hasReadyNamedAccount=false` उन customers को ढूँढता है जिन्हें bank ने approve किया है लेकिन जिनके पास अभी ready named account नहीं है। [Customers](/hi/integration/onboarding/customers#filter-customers-by-capability-readiness) देखें।
+- `PATCH /v3/customers/{customerId}` और `PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}` जब ऐसे body fields ignore करते हैं जिन्हें वे नहीं पहचानते, तो `Swipelux-Ignored-Fields` response header लौटाते हैं। Header ignored fields के JSON Pointers को comma-separated और sorted रूप में list करता है, अधिकतम 20 pointers और 4096 characters के साथ, और cap होने पर अंत में `...` के साथ। `metadata` के अंदर के fields कभी report नहीं होते, और idempotent replays header छोड़ देते हैं। हर update के बाद इसे check करें ताकि आप बिना जाने data न खोएँ, जैसे गलत field name से भेजी गई date of birth। [Customers](/hi/integration/onboarding/customers#check-ignored-fields-on-updates) देखें।
+- Webhook endpoints में `disabled` शामिल है, जो endpoint पर deliveries paused रहने तक `true` होता है। Swipelux बार-बार delivery failures के बाद भी endpoint pause करता है। Deliveries pause करने के लिए [`PATCH /v3/webhooks/{webhookId}`](/api-reference/webhooks/patch-v3-webhooks-by-webhook-id) में `disabled: true` और resume करने के लिए `disabled: false` भेजें। Resume करने पर destination URL फिर से check होता है और यदि वह अब pass नहीं होता तो `400` लौटता है, इसलिए endpoint paused रहता है।
+- Swipelux किसी integrating business को suspend कर सकता है। Suspended रहने के दौरान, उसकी किसी भी API key से किया गया हर request `retryable: false` के साथ `403 merchant_suspended` लौटाता है, और Swipelux उसकी webhook deliveries, rule executions और banks को applications रोक देता है। कुछ भी delete या revoke नहीं होता, इसलिए Swipelux के suspension हटाते ही API keys, webhook endpoints और rules फिर से काम करते हैं। Suspension सुलझाने के लिए Swipelux support से संपर्क करें। [Errors और retries](/integration/errors#merchant-suspended) देखें।
 
 ### बदला गया
-- जब identity verification provider share token बनाने से मना करता है, उदाहरण के लिए किसी अज्ञात `forClientId` के लिए, तो `format: sumsub_share_token` के साथ `POST /v3/customers/{customerId}/export` अब `502 request_failed` के बजाय `retryable: false` के साथ `422 kyc_provider_rejected` लौटाता है। Response में Swipelux का एक निश्चित message होता है और यह provider के error text को कभी नहीं दोहराता, इसलिए retry करने से पहले request जाँचें। अन्य provider failures अब भी `502 request_failed` लौटाते हैं, जिसे retry किया जा सकता है।
-- `GET /v3/webhooks/portal` से मिलने वाला portal अब endpoints बनाता, edit करता, रोकता या delete नहीं करता। `webhooks:write` वाली API key के साथ, यह अब भी endpoint signing secret दिखाता और rotate करता है, deliveries retry करता है और उन्हें replay करता है। Endpoints को `POST /v3/webhooks` से बनाएँ, `PATCH /v3/webhooks/{webhookId}` से बदलें या रोकें, और `DELETE /v3/webhooks/{webhookId}` से delete करें। [Webhooks](/hi/integration/webhooks) देखें।
+- `format: sumsub_share_token` के साथ `POST /v3/customers/{customerId}/export` `502 request_failed` के बजाय `retryable: false` के साथ `422 kyc_provider_rejected` लौटाता है, जब identity verification provider share token बनाने से इनकार करता है, उदाहरण के लिए किसी unknown `forClientId` के लिए। Response में एक fixed Swipelux message होता है और यह provider का error text कभी नहीं दोहराता, इसलिए retry करने से पहले request check करें। अन्य provider failures अब भी `502 request_failed` लौटाते हैं, जो retryable है।
+- `GET /v3/webhooks/portal` का portal अब endpoints create, edit, pause या delete नहीं करता। `webhooks:write` वाली API key के साथ, यह अब भी endpoint signing secret दिखाता और rotate करता है, deliveries retry करता है और उन्हें replay करता है। Endpoints `POST /v3/webhooks` से बनाएँ, `PATCH /v3/webhooks/{webhookId}` से बदलें या pause करें, और `DELETE /v3/webhooks/{webhookId}` से delete करें। [Webhooks](/hi/integration/webhooks) देखें।
+- `POST /v3/webhooks` और `PATCH /v3/webhooks/{webhookId}` केवल ऐसे destinations स्वीकार करते हैं जिनका हर resolved address globally routable unicast हो। वे IANA special-purpose ranges के addresses, multicast addresses, refused IPv4 address वाले IPv6 transition forms, resolve न होने वाले hostnames, `localhost`, single-label hostnames, और `.localhost`, `.local`, `.localdomain`, `.internal` या `.home.arpa` पर खत्म होने वाले hostnames के लिए `400 validation_error` लौटाते हैं।
 
 </Update>
 
-<Update label="2026-10-25" description="v3" tags={["बदला गया"]}>
+<Update label="2026-10-26" description="v3" tags={["जोड़ा गया","बदला गया","ठीक किया गया"]}>
+
+### जोड़ा गया
+- Merchant panel में, **Settings** > **Customer pages** owners और admins को company logo upload करने (PNG, JPG या WebP, 512 KB तक) और हर space के लिए `https://` return URL set करने देता है। Live spaces में logo आपके customers के hosted terms pages पर Swipelux wordmark की जगह दिखता है। जब space में return URL होता है, तो completed terms page **Return to the app** देता है।
+
+### बदला गया
+- Hosted terms page का नया design है। Sandbox journey का हर page एक **Sandbox** badge दिखाता है।
+- KYB आवश्यक करने वाले live space में, merchant panel आपके KYB के approve होने तक **Customers**, **Balances** और **Transactions** को locked रखता है। Home go live करने के steps दिखाता है, और customer का **Bank accounts** section हर bank के लिए उसकी currencies के साथ एक row दिखाता है और bank के approve करते ही bank details दिखाता है।
+- Pay-in के लिए `POST /v3/quotes` retryable `503 rail_temporarily_unavailable` के बजाय `retryable: false` के साथ `422 capability_direction_unsupported` लौटाता है, जब capability serve करने वाला कोई bank pay-in quotes नहीं देता, जैसे Lead Bank (`lead_bank`) पर `ach_named` और `wire_named` के साथ। उसी `Idempotency-Key` के साथ retry `422` को replay करता है।
+- `DELETE /v3/customers/{customerId}` आपके business के KYB customer के लिए `retryable: false` के साथ `409 merchant_kyb_subject_archive_refused` लौटाता है। पहले Swipelux support से अपना KYB किसी दूसरे customer पर move करने को कहें।
+
+### ठीक किया गया
+- जब कोई hosted verification review में जाता है और वह task का आखिरी open item था, तो capability `statusReason.code: information_in_review` के साथ `pending` हो जाती है, और जो application `action_required` था वह `in_review` हो जाता है। Swipelux इन बदलावों के लिए `capability.status_changed` और `application.status_changed` भेजता है। पहले, दोनों अपना पुराना status बनाए रखते थे और Swipelux कोई webhook नहीं भेजता था।
+- Task submission में, address, business registration या ownership जैसा object answer stored value को merge करने के बजाय replace करता है, इसलिए नए answer में छोड़े गए fields, जैसे `state` या `streetLine2`, हटा दिए जाते हैं। Customers और related parties पर `PATCH` requests अब भी merge करते हैं।
+- आपका पहला webhook endpoint, portal session या event मौजूद होने से पहले, `GET /v3/webhooks` `502 request_failed` के बजाय खाली `data` array के साथ `200` लौटाता है।
+- उसी `Idempotency-Key` के साथ retry, जो stored error response replay करता है, अब `X-Request-Id` शामिल करता है, जो retry के अपने request ID पर set होता है। Body पहले request का `correlationId` बनाए रखता है।
+- Cancel करने के बाद `card` capability का दोबारा request करने पर `500` के बजाय `retryable: false` के साथ `409 capability_not_reopenable` लौटता है।
+
+</Update>
+
+<Update label="2026-10-25" description="v3" tags={["जोड़ा गया","बदला गया"]}>
+
+### जोड़ा गया
+- Issued SWIFT accounts को customer की `swift_named` capability के तहत Lead Bank (`lead_bank`) पर खोला जा सकता है।
+- `GET /v3/customers/{customerId}/capabilities/supported` named capabilities के लिए `institutions[].currencies` लौटाता है। हर item एक currency `code` और वह `institution` है जिसे आप account खोलते समय भेजते हैं: `ach_named`, `wire_named`, `rtp_named` और `swift_named` के लिए USD, `sepa_named` के लिए EUR, `faster_payments_named` के लिए GBP और `ipp_named` के लिए AED। Pooled capabilities `currencies` को छोड़ देती हैं। [Capabilities और tasks](/hi/integration/onboarding/capabilities-and-requirements#discover-supported-capabilities) देखें।
 
 ### बदला गया
 - जब तक आपके integrating business का KYB approve नहीं हो जाता, आप KYB की आवश्यकता वाले अपने live spaces के सभी endpoints में कुल मिलाकर प्रति घंटे 20 webhook URL बदलाव कर सकते हैं। Sandbox spaces में किए गए बदलाव नहीं गिने जाते। Webhook URL limit पार करने पर `422 merchant_kyb_not_approved` लौटाया जाता है। किसी endpoint के केवल `events` बदलना या उसका मौजूदा URL save करना URL बदलाव नहीं माना जाता। Dashboard में, Swipelux KYB की आवश्यकता वाले प्रति live space 10 से अधिक active API keys को एक सामान्य `422` response के साथ अस्वीकार करता है। जब आपके पास कम से कम एक live space हो, आपके सभी live spaces को KYB की आवश्यकता हो और कोई भी approve न हुआ हो, तब Swipelux प्रति merchant 5 से अधिक spaces को भी एक सामान्य `422` response के साथ अस्वीकार करता है। Space limit में sandbox और live दोनों spaces गिने जाते हैं; यदि किसी live space को KYB की आवश्यकता नहीं है, तो यह लागू नहीं होती। Sandbox spaces write block, webhook URL limit और key limit से मुक्त हैं। [Go live](/hi/integration/go-live#activate-your-production-space) देखें।
+- Issued ACH और wire accounts केवल USD स्वीकार करते हैं, और `lead_bank` पर SWIFT accounts भी। किसी अन्य currency में request `400 validation_error` लौटाता है। पहले, इसे स्वीकार करके USD में issue किया जाता था या कभी provision नहीं किया जाता था।
+- जब customer का कोई भी ready bank requested currency issue नहीं करता, तो `POST /v3/customers/{customerId}/accounts` `reason: "no_issuable_route"` के साथ `409 capability_not_ready` लौटाता है। Retry करने के बजाय कोई दूसरी currency या institution चुनें।
 
 </Update>
 
@@ -68,6 +185,34 @@ description: "Swipelux API के संस्करणों में पर�
 
 </Update>
 
+<Update label="2026-10-19" description="v3" tags={["जोड़ा गया","बदला गया","ठीक किया गया"]}>
+
+### जोड़ा गया
+- Swipelux जो document requests किसी bank को forward करता है, उनमें `request.constraints.maxSizeBytes` में bank की per-file limit हो सकती है। Merchant panel और hosted information request page JPEG, PNG और WebP photos को limit में फ़िट करने के लिए छोटा करते हैं और उन files को अस्वीकार करते हैं जो फिर भी limit से बड़ी हों। [Documents upload करें](/hi/integration/onboarding/capabilities-and-requirements#upload-documents) देखें।
+- जब Swipelux के पास KYB आवश्यक करने वाले live space में आपके business verification (KYB) पर कोई open request हो, तो merchant panel को किसी browser tab में पहली बार load करने पर वह KYB page खोलता है। Header में **Action needed** button भी वहीं ले जाता है।
+
+### बदला गया
+- किसी canceled bank capability का दोबारा request करने पर, request के नया application खोलने पर `201` और customer के पहले से मौजूद application में शामिल होने पर `200` लौटता है। [Capabilities और tasks](/hi/integration/onboarding/capabilities-and-requirements#shared-applications-per-bank) देखें।
+- नए pooled intake tasks जो `/financialProfile/accountPurposes` माँगते हैं, वे `/financialProfile/accountPurposeDescription` भी माँगते हैं। Description केवल तब आवश्यक है जब purposes में `other` शामिल हो; इसके बिना submission उस pointer पर `400 validation_error` लौटाता है। Merchant panel description field केवल तब दिखाता है जब **Something else** चुना गया हो।
+- Individual customers के लिए named JPMorgan Chase (`jpmorgan`) capabilities को `employment.occupation` की आवश्यकता है। Occupation के बिना employment answer `400 validation_error` लौटाता है। जो applications अभी bank को नहीं भेजे गए हैं, उन पर यह requirement लागू होती है: open intake tasks में यह जुड़ जाती है, और completed intake को एक follow-up task मिलता है। Pooled capabilities और अन्य banks में कोई बदलाव नहीं है।
+- `GET /v3/customers` किसी individual के residence country को `country` के रूप में report करता है जब residential address में country न हो। `country` filter उसी value से match करता है। [Customers](/hi/integration/onboarding/customers) देखें।
+- `POST /v3/sandbox/tasks/{taskId}/review` task के हर undecided answer पर निर्णय लेता है, सभी open submission rounds में और review की प्रतीक्षा कर रहे reused evidence पर भी। [Sandbox testing](/hi/integration/sandbox#test-an-open-task) देखें।
+- Hosted information request page एक ही status summary दिखाता है, और हर requested correction उसके item के पास दिखता है।
+- Merchant panel declarations को **Terms of Service** के नीचे के बजाय requested items के साथ सूचीबद्ध करता है, payout के bank destination को **Destination Account** label देता है, और pending payouts को **Processing** के रूप में दिखाता है।
+
+### ठीक किया गया
+- जिस capability के सभी शेष task answers accepted या in review हैं, जिनमें वे answers भी शामिल हैं जिन्हें Swipelux ने customer की मौजूदा profile और documents से भरा, वह अब `tasks_due` के साथ `restricted` बने रहने के बजाय `statusReason.code: information_in_review` के साथ `pending` report करती है। [Capabilities और tasks](/hi/integration/onboarding/capabilities-and-requirements#continue-when-the-capability-is-ready) देखें।
+- ऐसे bank पर `allowPending` account request, जिसका approved application capability को cover करता है लेकिन उसने उसे request नहीं किया था, `500` के बजाय `reason: no_ready_route` के साथ `409 capability_not_ready` लौटाता है। Capability `ready` होते ही वही request सफल होता है। [Bank account जारी करें](/hi/integration/issue-bank-account#save-the-request-before-bank-approval) देखें।
+- Lead Bank (`lead_bank`) का application जिसे bank decline करता है, `in_review` में बने रहने के बजाय `rejected` हो जाता है।
+- Swipelux अब follow-up intake tasks के answers review करता है, जैसे पहले intake task के बाद माँगा गया source-of-funds document, ताकि उनके applications `requested` में बने रहने के बजाय bank को submit हों।
+- जब Swipelux किसी intake task के हर answer को उसके terms session के खुले रहते accept करता है, या आप `POST /v3/sandbox/tasks/{taskId}/review` से ऐसा करते हैं, तो review अब `409 kyc_process_conflict` के साथ fail नहीं होता। Customer के terms accept करते ही task `satisfied` और capability `ready` हो जाती है। ऐसे review के बाद किसी canceled `ach_named` या `wire_named` capability का दोबारा request भी सफल होता है।
+- Task submissions में, `documentMetadata[].issuedOn` submission की UTC date के एक दिन बाद तक की date स्वीकार करता है, ताकि UTC से आगे वाले timezone में आज issue हुआ document स्वीकार हो। `maxIssueAgeDays` अब भी UTC date से गिना जाता है।
+- Merchant panel में नया recipient जोड़ते समय, account form केवल वही payment methods दिखाता है जो ready हैं।
+- Merchant panel form के बाकी हिस्से के submit होने के दौरान पहले से भेजे गए form sections का status बनाए रखता है, customer के timezone में आज की document issue date स्वीकार करता है, KYB response भेजने के बाद कुछ पल के लिए खाली request नहीं दिखाता, और website और document answer के बीच switch करने पर uploaded files बनाए रखता है।
+- Merchant panel में transaction details panel अब कटा हुआ नहीं खुलता।
+
+</Update>
+
 <Update label="2026-10-15" description="v3" tags={["बदला गया"]}>
 
 ### बदला गया
@@ -86,6 +231,34 @@ description: "Swipelux API के संस्करणों में पर�
 
 </Update>
 
+<Update label="2026-10-12" description="v3" tags={["जोड़ा गया","बदला गया","ठीक किया गया"]}>
+
+### जोड़ा गया
+- `POST /v3/customers/{customerId}/tasks/{taskId}/submissions` एक वैकल्पिक `allowPartial: true` स्वीकार करता है। तब Swipelux valid answers store करता है और `refusedAnswers` के साथ `201` लौटाता है, जहाँ हर entry में `requirementId`, `code`, `pointer` और `message` होते हैं। `code` `invalid`, `absence_conflicts_with_profile`, `invalid_document_reference` या `depends_on_refused_answer` होता है, और आगे और codes जोड़े जा सकते हैं। जब कोई भी answer रखा नहीं जा सकता, तो response `400 validation_error` होता है और कुछ भी store नहीं होता। `allowPartial` यह नहीं बदलता कि submission को किन requirements का उत्तर देना है, और इसके बिना behavior अपरिवर्तित रहता है। [`allowPartial` के साथ valid answers रखें](/hi/integration/onboarding/capabilities-and-requirements#keep-valid-answers-with-allowpartial) देखें।
+- `POST /v3/customers/{customerId}/tasks/{taskId}/withdrawals` review की प्रतीक्षा कर रहे submission को वापस लेता है ताकि customer उसे सुधार सके। इसके लिए `Idempotency-Key` आवश्यक है। Submission के answers `action_required` पर लौट आते हैं, और अगला submission एक नया `remediationRound` शुरू करता है। Withdrawal `409 task_not_in_review` लौटाता है जब ठीक एक submission review की प्रतीक्षा में न हो या task की deadline निकल चुकी हो, और `409 submission_already_forwarded` लौटाता है जब bank task को सीधे review करता है या Swipelux submission को पहले ही review के लिए आगे भेज चुका हो। [Review की प्रतीक्षा कर रहे submission को withdraw करें](/hi/integration/onboarding/capabilities-and-requirements#withdraw-a-submission-awaiting-review) देखें।
+- Document resources में `contentSha256` शामिल है, जो stored file का SHA-256 digest है, `sha256:` के बाद lowercase hex digest के रूप में, या digests record होने से पहले stored documents के लिए `null`। पहले से stored file के re-upload का पता लगाने के लिए इसे किसी file के digest से compare करें। [Documents upload करें](/hi/integration/onboarding/capabilities-and-requirements#upload-documents) देखें।
+- Merchant panel का recipient form अब customer की matching access ready होते ही SPEI (Mexico, MXN), Pix और Pix Safe accounts जोड़ता है, और **Pay out** drawer SPEI accounts को भुगतान कर सकता है। [Recipients और destinations](/hi/integration/recipients) देखें।
+- Public task form में, review में मौजूद व्यक्ति के लिए **Edit details** उपलब्ध है। यह व्यक्ति को review से वापस लाता है ताकि उनकी details को फिर से जोड़ने के बजाय सुधारा जा सके। उनके answers और documents फिर से दर्ज करने होंगे।
+
+### बदला गया
+- Submission `outcome` में अब `withdrawn` जुड़ गया है, उस submission के लिए जिसे customer ने किसी भी review decision से पहले वापस ले लिया। ऐसे किसी भी client को update करें जो unknown outcomes को reject करता है।
+- Accepted या in-review document अब किसी अन्य bank के application पर matching document request का उत्तर देता है, भले ही banks request को अलग शब्दों में लिखें। Customers एक ही file कम बार upload करते हैं। Request के `maxIssueAgeDays` से पुरानी file, जैसे 90 दिनों से पुराना proof of address, दोबारा उपयोग नहीं होती।
+- Fiat recipient destinations को अब अपने method के लिए `ready` capability चाहिए, उन customers के लिए भी जिनका bank access capabilities से पहले set up हुआ था। अन्यथा `POST /v3/customers/{customerId}/recipients/{recipientId}/destinations` `409 rail_not_ready` लौटाता है। Wallet destinations अपरिवर्तित हैं। [Recipients और destinations](/hi/integration/recipients) देखें।
+- ऐसे method के लिए bank account issue करना जिसकी customer के पास capability नहीं है, `409 capability_not_ready` लौटाता है, reason `route_selection_required` के साथ जब request `institution` छोड़ देता है और `no_ready_route` के साथ जब वह कोई institution बताता है। दोनों `capabilities` में वे capabilities सूचीबद्ध करते हैं जो account issue कर सकती हैं। `ambiguous_route_scope` और `rail_not_ready` reasons अब नहीं लौटाए जाते। [Bank account जारी करें](/hi/integration/issue-bank-account) देखें।
+- ऐसे `Idempotency-Key` के साथ retry किया गया quote या account request, जिसका पहले वाला route अब आगे नहीं बढ़ सकता, `retryable: true` के साथ `409 capability_not_ready` लौटाता है। इसे नए `Idempotency-Key` के साथ फिर से भेजें।
+- Public task forms कुछ answers refuse होने पर भी valid answers रखते हैं, और हर refused answer के पास reason दिखाते हैं। Review में मौजूद लोग अपने status के साथ सूचीबद्ध रहते हैं।
+- Public task forms individuals के लिए identity verification form के अंदर ही चलाते हैं। Merchant panel में, hosted verification देने वाला individual का task केवल उसी verification से link करता है, और **Documents** section अब individual customers के लिए upload नहीं देता।
+- Merchant panel का customer **Profile** tab एक बार में एक section save करता है, और किसी field को खाली करने पर अब वह सच में clear होता है।
+
+### ठीक किया गया
+- Lead Bank payout quote जिसे bank refuse करता है, `500` के बजाय `400 quote_failed` लौटाता है, और जिसका bank उत्तर नहीं दे सकता, वह `503 quote_temporarily_unavailable` लौटाता है, जिसे आप retry कर सकते हैं। [Quotes और transfers](/hi/integration/quotes-and-transfers) देखें।
+- Lead Bank owner task submission अब `500` नहीं लौटाता जब कोई अन्य bank उसी address को review कर रहा हो।
+- Individuals के लिए, identity verification पूरा होने के बाद माँगे गए documents एक नया hosted verification session खोलते हैं।
+- Browser के page translate करने पर भी merchant panel forms काम करते रहते हैं, और Swipelux release के बाद customer tabs recover हो जाते हैं।
+- KYB form fields केवल तब errors दिखाते हैं जब आप किसी field से बाहर निकलते हैं।
+
+</Update>
+
 <Update label="2026-10-08" description="v3" tags={["जोड़ा गया","बदला गया","ठीक किया गया"]}>
 
 ### जोड़ा गया
@@ -97,6 +270,8 @@ description: "Swipelux API के संस्करणों में पर�
 - Citi (`citibank`) केवल business customers को offer किया जाता है। हर business के पास pooled Citi बना रहता है, और named Citi केवल US के बाहर registered businesses को offer किया जाता है। जब किसी customer को Citi offer नहीं किया जाता, तो supported list उसे छोड़ देती है, उसका नाम देने पर `422 capability_institutions_unsupported` लौटता है, और जो method केवल Citi offer करता है वह `disabled` के रूप में list होता है। `institutions` के बिना request बाकी banks में से चुनती है। मौजूदा applications और accounts में कोई बदलाव नहीं है।
 - Named CFSB (`cfsb`) capabilities केवल US customers को offer की जाती हैं: US में registered businesses और वहाँ रहने वाले individuals। अन्य customers के लिए supported list named CFSB को छोड़ देती है, और उसका नाम देने पर `422 capability_institutions_unsupported` लौटता है। `institutions` के बिना request बाकी banks में से चुनती है। Pooled CFSB, जिन customers का country unknown है, और मौजूदा applications में कोई बदलाव नहीं है।
 - Lead Bank (`lead_bank`) की named ACH, Wire और SWIFT capabilities केवल उन customers को offer की जाती हैं जिन्हें Lead Bank उनके legal form और countries के आधार पर onboard कर सकता है। अन्य customers के लिए supported list `lead_bank` को छोड़ देती है, और उसका नाम देने पर `422 capability_institutions_unsupported` लौटता है। जिन customers को Lead Bank पहले ही onboard कर चुका है, और जिन capabilities की open request में पहले से `lead_bank` का नाम है, उनके पास यह बना रहता है। मौजूदा applications और accounts में कोई बदलाव नहीं है।
+- Live mode में, `institutions` छोड़ने वाला `ach_named` या `wire_named` capability request अब default रूप से Lead Bank (`lead_bank`) चुनता है, जब Lead Bank नए customers स्वीकार करता है और customer को onboard कर सकता है: profile में कम से कम एक country हो और Lead Bank उसमें मौजूद हर country स्वीकार करता हो, business की profile में ऐसा legal form हो जिसे Lead Bank स्वीकार करता है, और customer का किसी अन्य bank पर कोई `ready` application न हो, चाहे named हो या pooled। अन्य customers के लिए default JPMorgan Chase (`jpmorgan`) है, जैसा `ach_named` के लिए पहले से था। `wire_named` का पहले कोई default bank नहीं था। Customer के पास पहले से मौजूद current application को अब भी प्राथमिकता मिलती है। `GET /v3/customers/{customerId}/capabilities/supported` में `isDefault` हर customer के लिए Lead Bank rule लागू करता है, इसलिए marked bank customers के बीच अलग हो सकता है और समय के साथ बदल सकता है। [Capabilities और tasks](/hi/integration/onboarding/capabilities-and-requirements#discover-supported-capabilities) देखें।
+- `institutions` छोड़ने वाले `wire_pooled` requests अब default रूप से JPMorgan Chase (`jpmorgan`) चुनते हैं, जिसे supported list `isDefault` से mark करती है। पहले वे CFSB (`cfsb`) चुनते थे।
 - RTP केवल pooled है। कोई भी bank नई requests के लिए `rtp_named` offer नहीं करता, इसलिए supported list उसे `disabled` के रूप में दिखाती है। जिस customer के पास `rtp_named` नहीं है, उसके लिए इसकी कोई capability request या task preview जो किसी bank का नाम देता है, `422 capability_institutions_unsupported` लौटाता है, और `institutions` के बिना वाला `422 capability_variant_unavailable` लौटाता है। Pooled RTP (`rtp_pooled`) Citi पर offer किया जाता है, इसलिए केवल business customers ही इसकी request कर सकते हैं।
 - Individuals और beneficial owners के लिए नई identity document requests `constraints.identityMetadataRequired: true` set कर सकती हैं, जिससे हर file के लिए `documentMetadata` में उसका ID number और issuing country ज़रूरी होता है। नई business proof-of-address और owner proof-of-residence requests `constraints.maxIssueAgeDays: 90` set कर सकती हैं, जिससे हर file के लिए उसकी issue date ज़रूरी होती है। मौजूदा tasks अपनी requirements बनाए रखते हैं, इसलिए हर task request पर constraints पढ़ें।
 - Business registration request के task answer के लिए, जिसका `profilePointer` `/business/registration` है, jurisdiction country, registration number और submission date से पहले की formation date, सभी एक साथ ज़रूरी हैं। Request का `valueSchema` यह rule publish करता है, और अधूरा answer `400 validation_error` लौटाता है।
@@ -109,6 +284,7 @@ description: "Swipelux API के संस्करणों में पर�
 - जब किसी profile value या task answer में Swipelux form link होता है, जैसे RFI, customer request या transfer tracking link, तो `POST /v3/customers`, `PATCH /v3/customers/{customerId}`, `POST /v3/customers/{customerId}/related-parties`, `PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}` और `POST /v3/customers/{customerId}/tasks/{taskId}/submissions` `400 validation_error` लौटाते हैं। यह `externalId` या `metadata` पर लागू नहीं होता। हर अस्वीकृत value `errors[]` में `code: public_form_link` और अपने JSON Pointer के साथ दिखाई देती है, और response कभी भी link को दोहराता नहीं है। इसके बजाय जानकारी स्वयं भेजें। [Errors और retries](/integration/errors#validation-error) देखें।
 
 ### ठीक किया गया
+- `institutions` छोड़ने वाले `ach_pooled` requests अब JPMorgan Chase (`jpmorgan`) चुनते हैं, वह bank जिसे supported list `isDefault` से mark करती है। पहले वे Citi (`citibank`) चुन सकते थे। मौजूदा applications और accounts में कोई बदलाव नहीं है।
 - Payout quote और transfer responses USDC या USDT source amount को छह decimal places तक रखते हैं, उदाहरण के लिए `4009.71` के बजाय `4009.711365`। Fiat amounts दो decimals रखते हैं। जिस payout का stablecoin source amount दो से अधिक decimals वाला है, उसे बनाने या पढ़ने पर अब `500` नहीं लौटता।
 - [`POST /v3/customers/{customerId}/capabilities/{capabilityId}/cancel`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id-cancel) reference अब cancellation को वैसे ही describe करता है जैसे वह काम करता है। आप एक `ready` capability cancel कर सकते हैं, `stablecoin_transfers` capability cancel नहीं की जा सकती, और cancel करने से केवल वही capability समाप्त होती है, जबकि उसके applications अपना status, tasks और approvals बनाए रखते हैं।
 - जो capability request या task preview `institutions` में public institution ID के बजाय bank code list करता है, जैसे `citibank` के बजाय `citi`, वह `503 kyc_configuration_unavailable` के बजाय उपलब्ध IDs का नाम देते हुए `422 capability_institutions_unsupported` लौटाता है।

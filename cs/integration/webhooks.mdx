@@ -52,7 +52,7 @@ Endpoint aktualizujte pomocí [`PATCH /v3/webhooks/{webhookId}`](/api-reference/
 - Nová přihlášení musí používat názvy událostí v3.
 - Název legacy události si můžete ponechat, pokud je k ní endpoint již přihlášen. Přidání nového legacy názvu vrátí `400 validation_error`.
 
-Dokud není KYB vaší integrující firmy schváleno, můžete provést celkem 20 změn URL webhooku za hodinu napříč všemi endpointy ve vašich živých prostorech, které vyžadují KYB. Změny v sandboxových prostorech se nezapočítávají. Vytvoření endpointu nebo změna jeho `url` se počítá jako změna. Změna pouze `events` nebo uložení aktuální URL nikoli. Překročení limitu vrací `422 merchant_kyb_not_approved`. Viz [Uvedení do provozu](/cs/integration/go-live#activate-your-production-space).
+Dokud není KYB vaší integrující firmy schváleno, je vytváření endpointů a změny URL omezeno. Viz [Uvedení do provozu](/cs/integration/go-live#daily-creation-limits).
 
 Toto tělo zachová URL a nahradí výběr:
 
@@ -61,6 +61,12 @@ Toto tělo zachová URL a nahradí výběr:
   "events": ["transfer.state_changed", "capability.status_changed"]
 }
 ```
+
+## Použijte veřejnou cílovou URL {#use-a-public-destination-url}
+
+Uložení URL vrátí `400 validation_error`, pokud je některá adresa, na kterou se překládá její název hostitele, soukromá, loopback, link-local, rezervovaná nebo multicastová, pokud se název hostitele nepřekládá, nebo pokud je to `localhost`, jednoúrovňový název nebo končí na `.localhost`, `.local`, `.localdomain`, `.internal` nebo `.home.arpa`.
+
+Swipelux denně znovu kontroluje uložené URL a pozastaví endpoint, jehož název hostitele nebo adresa je nyní odmítnuta (`disabled: true`). Pro obnovení odešlete platnou `url` s `disabled: false`.
 
 ## Ověřte před parsováním
 
@@ -72,18 +78,21 @@ Swipelux doručuje nové webhookové integrace přes Svix. Ověřte surové těl
 
 Neparsujte JSON ani nezpůsobujte vedlejší efekty, dokud ověření neuspěje.
 
-```javascript Verify signature
+<CodeGroup>
+
+```javascript JavaScript
 import { Webhook } from "svix";
 
 const verifier = new Webhook(process.env.SWIPELUX_WEBHOOK_SECRET);
 
 export async function handleSwipeluxWebhook(request) {
   const rawBody = await request.text();
-  const event = verifier.verify(rawBody, {
+  verifier.verify(rawBody, {
     "svix-id": request.headers.get("svix-id"),
     "svix-timestamp": request.headers.get("svix-timestamp"),
     "svix-signature": request.headers.get("svix-signature"),
   });
+  const event = JSON.parse(rawBody);
 
   await webhookInbox.insertIfAbsent({
     id: event.id,
@@ -94,6 +103,27 @@ export async function handleSwipeluxWebhook(request) {
   return new Response(null, { status: 204 });
 }
 ```
+
+```java Java
+import com.svix.Webhook;
+import com.svix.exceptions.WebhookVerificationException;
+import java.util.List;
+import java.util.Map;
+
+class SwipeluxSignature {
+  // Pass the unmodified request body and every request header.
+  static boolean valid(String secret, String rawBody, Map<String, List<String>> headers) throws Exception {
+    try {
+      new Webhook(secret).verify(rawBody, headers);
+      return true;
+    } catch (WebhookVerificationException e) {
+      return false;
+    }
+  }
+}
+```
+
+</CodeGroup>
 
 Odmítejte požadavky s chybějícím nebo neplatným podpisem. Surové tělo mějte k dispozici, dokud ověření nedokončí.
 

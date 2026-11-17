@@ -113,6 +113,10 @@ sequenceDiagram
   else rejected
     SLX-->>You: task rejected, parent statusReason says what is next
   end
+  opt correct before review
+    You->>SLX: POST .../tasks/{taskId}/withdrawals
+    SLX-->>You: submission withdrawn, answers back to action_required
+  end
 ```
 
 Wichtige Eigenschaften:
@@ -121,6 +125,8 @@ Wichtige Eigenschaften:
 - Das Übermitteln ist **prüfungsgesteuert**: Es verändert weder Capability- noch Account-Status direkt, das tut erst die Annahme. Eine Ausnahme: `profile`-Antworten schreiben beim Übermitteln direkt ins Kundenprofil durch (2.3). Nach dem Übermitteln pollen Sie den Task oder die übergeordnete Ressource.
 - `taskRevision` (Echo der `revision` des Tasks) ist ein Nebenläufigkeitsschutz: Hat sich der Task seit Ihrem Lesen geändert, lesen Sie neu und bauen Ihre Antworten neu auf.
 - `absence` ist eine vollwertige Antwort ("Ich habe das nicht, weil ..."), verwenden Sie sie, statt Anforderungen offen zu lassen.
+- `allowPartial: true` bei einer Submission speichert die gültigen Antworten und gibt die ungültigen in `refusedAnswers` zurück, statt die gesamte Anfrage scheitern zu lassen (2.3).
+- Eine Submission, die noch `in_review` ist, kann vor jeder Prüfungsentscheidung zurückgenommen und korrigiert werden (2.3).
 - `rejected` beendet den Task in der Regel. Hat eine gehostete Verifizierung ihn abgelehnt und wird diese Entscheidung später aufgehoben, kann der Task `satisfied` oder `action_required` werden, wobei die Anforderungen, die die neue Entscheidung nicht beantwortet, wieder geöffnet werden. Übermitteln Sie diese erneut gegen die neue `revision`.
 
 ### 1.5 Geldbewegung
@@ -314,7 +320,7 @@ Jede alte Dokumentenoberfläche wird auf denselben Ersatz abgebildet: lesen Sie 
 
 Rund um diese Schleife:
 
-- **Rohdateispeicher**: `POST/GET/DELETE /v3/customers/{customerId}/documents` (plus `/{documentId}` und `GET .../{documentId}/download`), einmal mit Ihrem API-Schlüssel hochladen, dann Dokument-Ids in Submission-Antworten referenzieren. Dies ersetzt jeden Upload-Token und jedes Direct-Upload-Intake. `POST .../documents` akzeptiert auch einen JSON-Body (`storageKey`, `fileName`, `type`), der eine noch frische kundenbezogene Referenz aus `POST /v2/documents/direct-upload` verbraucht, sodass geparkte Uploads ohne erneutes Senden der Bytes migrieren.
+- **Rohdateispeicher**: `POST/GET/DELETE /v3/customers/{customerId}/documents` (plus `/{documentId}` und `GET .../{documentId}/download`), einmal mit Ihrem API-Schlüssel hochladen, dann Dokument-Ids in Submission-Antworten referenzieren. Dies ersetzt jeden Upload-Token und jedes Direct-Upload-Intake. `POST .../documents` akzeptiert auch einen JSON-Body (`storageKey`, `fileName`, `type`), der eine noch frische kundenbezogene Referenz aus `POST /v2/documents/direct-upload` verbraucht, sodass geparkte Uploads ohne erneutes Senden der Bytes migrieren. Jede v3-Dokumentressource enthält `contentSha256` (`sha256:<hex>`, oder `null` für Dokumente, die gespeichert wurden, bevor Hashes erfasst wurden), sodass Sie das erneute Hochladen einer byte-identischen Datei erkennen können.
 - **Neu**: `GET /v3/tasks` (händlerweiter Posteingang), `GET /v3/transfers/{transferId}/tasks`, `GET .../tasks/{taskId}/history`, `GET .../tasks/{taskId}/submissions` (plus `/{submissionId}`).
 
 Submission (beispielhaft):
@@ -332,10 +338,12 @@ Submission (beispielhaft):
 ```
 
 - Antworttypen: `profile`, `text`, `date`, `single_select`, `multi_select`, `boolean`, `attestation`, `document`, `resource_reference`, `absence`. Das `request`-Objekt jeder Anforderung sagt, welchen Typ sie erwartet.
-- Eine Submission muss **jede aktionierbare Anforderung in der aktuellen Runde** beantworten, mit der exakten `taskRevision`, die Sie gelesen haben. Teilsubmissions werden abgelehnt.
+- Eine Submission muss **jede aktionierbare Anforderung in der aktuellen Runde** beantworten, mit der exakten `taskRevision`, die Sie gelesen haben. Fehlt eine, wird `422 task_submission_incomplete` zurückgegeben. Einige Identitätsverifizierungs-Tasks für Privatpersonen akzeptieren eine Teilmenge.
+- Standardmäßig lässt eine abgelehnte Antwort die gesamte Anfrage scheitern, und nichts wird gespeichert. Die Antwort ist `400 validation_error`, `400 invalid_document_reference` oder `409 absence_conflicts_with_profile`. Senden Sie `"allowPartial": true`, um die gültigen Antworten zu behalten: Die `201`-Antwort listet die übrigen in `refusedAnswers` auf (`requirementId`, `code`, `pointer`, `message`), mit `code` als einem von `invalid`, `absence_conflicts_with_profile`, `invalid_document_reference` oder `depends_on_refused_answer`. Behandeln Sie einen unbekannten Code als `invalid`. Wenn keine Antwort behalten werden kann, ist die Antwort `400 validation_error` und nichts wird gespeichert. Siehe [API-Antworten](/de/integration/onboarding/capabilities-and-requirements#keep-valid-answers-with-allowpartial).
 - `profile`-Antworten **schreiben durch**: Sie aktualisieren das Kundenprofil über den normalen Validierungspfad und bewerten sofort jede Capability neu, die auf dieselbe Intake-Arbeit verweist. Geschwister-Intake-Tasks, deren Anforderungen alle erfüllt sind, schließen automatisch.
 - Anforderungen können alternative Gruppen bilden (`alternativeKey`): reichen Sie genau eine aus der Gruppe ein.
 - `changes_requested` erhöht `remediationRound` und trägt `reviewFeedback`. Lesen Sie den Task erneut und übermitteln Sie erneut **mit einem frischen Idempotency-Key**.
+- `POST /v3/customers/{customerId}/tasks/{taskId}/withdrawals` (mit `Idempotency-Key`) nimmt die eine Submission zurück, die auf Prüfung wartet, damit der Kunde sie korrigieren kann. Ihre Antworten kehren ohne `reviewFeedback` zu `action_required` zurück, ihr Ergebnis wird `withdrawn`, und `remediationRound` wird erhöht. Bereits akzeptierte Anforderungen bleiben unberührt, und die Anzahl der Rücknahmen ist nicht begrenzt. Es gibt `404 task_not_found` für einen unbekannten Task zurück, `409 task_not_in_review`, wenn nicht genau eine Submission auf Prüfung wartet (keine oder mehr als eine, zum Beispiel eine Teil-Submission und ihre Korrektur) oder die Frist des Tasks abgelaufen ist, und `409 submission_already_forwarded`, wenn die Bank diesen Task direkt prüft oder Swipelux die Submission bereits zur Prüfung weitergeleitet hat. Tasks, die mit `POST /v3/sandbox/tasks` erstellt wurden, geben es ebenfalls zurück.
 - Gehostete Verifizierungs-URLs erscheinen **nur** im kundenspezifischen Task-Detail (`GET /v3/customers/{customerId}/tasks/{taskId}`) und nur, solange die Session aktionierbar ist; Listen und `GET /v3/tasks/{taskId}` sind bewusst URL-frei.
 - Nutzungsbedingungen sind ebenfalls ein Task: `openTaskIds` kann einen Task mit `category: "terms_of_service"` enthalten, dessen gehostete Akzeptanzseite auf demselben Weg verlinkt wird (nur kundenspezifisches Detail). Generische Submissions können Bedingungen nicht annehmen, und eine KYC-Freigabe impliziert nie eine Annahme der Bedingungen.
 - Tasks sind pro Capability abgegrenzt, daher kann die "gleiche" Anforderung (z. B. Adressnachweis) einmal pro Capability erscheinen. Deduplizieren Sie in Ihrer UI über den `key` der Anforderung.
@@ -525,6 +533,7 @@ Jeder Schritt lässt sich unabhängig ausliefern; v1 oder v2 und v3 laufen paral
 - [ ] Submissions sind prüfungsgesteuert (Übermitteln ist nicht dasselbe wie entsperrt) und müssen **jede** aktionierbare Anforderung mit der exakten `taskRevision` beantworten. Bei Nichtübereinstimmung erneut lesen und neu aufbauen.
 - [ ] Es gibt kein `task.*`-Webhook, pollen Sie den Task (oder sein übergeordnetes Objekt) nach jedem Übermitteln.
 - [ ] Wiederholung bei `changes_requested` bedeutet: Task erneut lesen, frische Antworten, **frischer Idempotency-Key**.
+- [ ] Akzeptieren Sie das Submission-Ergebnis `withdrawn` und behandeln Sie einen unbekannten `refusedAnswers[].code` als `invalid`.
 - [ ] Das Posten auf `/v1/documents` entsperrt niemals eine v3-Capability, sobald ein Kunde auf Tasks ist, treiben Sie jede Anforderung über Tasks.
 - [ ] Neue Tasks können an einer bereits `ready` Capability erscheinen, halten Sie die Task-Schleife nach dem Onboarding weiterhin aktiv, nicht nur währenddessen.
 - [ ] Capability-`cancel` funktioniert nur aus `pending` oder `restricted` ohne blockierende Ressourcen (`409 capability_not_cancelable`); erneutes Anfordern nach dem Abbrechen ist ein frisches Create mit einem frischen Idempotency-Key.

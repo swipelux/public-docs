@@ -90,6 +90,21 @@ Hvis du må eksportere en kunde, bruker du [`POST /v3/customers/{customerId}/exp
 
 For et portabilitets-token-format sender du klient-ID-en til det mottakende KYC-prosjektet som `forClientId`, ikke Swipelux `customerId`. Bruk den returnerte `data.token` før `data.expiresAt`. Gjenbruk av samme `Idempotency-Key` og body spiller av det token-resultatet på nytt; bruk en ny nøkkel for å utstede et nytt token.
 
+## Sjekk ignorerte felt ved oppdateringer {#check-ignored-fields-on-updates}
+
+[`PATCH /v3/customers/{customerId}`](/api-reference/customers/patch-v3-customers-by-customer-id) og `PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}` ignorerer body-felt de ikke kjenner igjen. Når de ignorerer et felt, inneholder et vellykket svar headeren `Swipelux-Ignored-Fields`. Headeren lister JSON Pointers for de ignorerte feltene, kommaseparert og sortert. Opprettelser returnerer ikke denne headeren.
+
+Sjekk denne headeren etter hver oppdatering. Ellers forkastes et felt med feil navn eller plassering uten feil. Hvis du for eksempel sender `individual.dateOfBirth` i stedet for `individual.birthDate`, blir fødselsdatoen ikke satt.
+
+```http Ignored fields response header
+Swipelux-Ignored-Fields: /individual/dateOfBirth,/nickname
+```
+
+- Headeren lister maks 20 pekere og 4096 tegn, og slutter med `...` når Swipelux avkorter listen. Pekersegmenter er prosentkodet.
+- Felt i `metadata` er fritt formatert og rapporteres aldri.
+- Idempotente gjentakelser utelater headeren, så les den fra det første svaret.
+- Ukjente felt kan bli avvist med `400` i en fremtidig versjon.
+
 ## Les klarhet fra capabilities
 
 En kunde har ikke en verifiserings- eller klarhetsstatus i API-et. Les kunden med [`GET /v3/customers/{customerId}`](/api-reference/customers/get-v3-customers-by-customer-id) for gjeldende profildata, og bruk deretter capabilities og deres `openTaskIds` for å avgjøre hva kunden kan gjøre videre.
@@ -97,6 +112,30 @@ En kunde har ikke en verifiserings- eller klarhetsstatus i API-et. Les kunden me
 ```bash Get customer
 curl --request GET \
   "${API_BASE}/v3/customers/${CUSTOMER_ID}" \
+  --header "X-API-Key: ${SWIPELUX_API_KEY}"
+```
+
+### Filtrer kunder etter capability-klarhet {#filter-customers-by-capability-readiness}
+
+For å finne kunder på et bestemt onboardingtrinn filtrerer du [`GET /v3/customers`](/api-reference/customers/get-v3-customers) med disse spørringsparameterne:
+
+- `pooledCapabilityStatus`: kunden har en samlet capability med denne statusen.
+- `namedCapabilityStatus`: kunden har en navngitt capability med denne statusen.
+- `hasReadyNamedAccount`: `true` returnerer kunder med en `ready` navngitt konto. `false` returnerer kunder uten.
+
+Statusfiltrene godtar `pending`, `ready`, `restricted`, `rejected` eller `canceled`. Swipelux leser statuser på samme måte som `include=capabilities`. Se [Pooled vs named kontotyper](/no/integration/onboarding/capabilities-and-requirements#pooled-vs-named-account-types).
+
+For å utelate capabilities som bare venter, legger du til `namedCapabilityExcludeWait=true` eller `pooledCapabilityExcludeWait=true`; det fjerner treff der `statusReason.resolution` er `wait`. `namedCapabilityIncludeWait=true` eller `pooledCapabilityIncludeWait=true` treffer også `restricted` capabilities med den løsningen. Hvert flagg fungerer bare med sitt statusfilter, og `ExcludeWait` vinner når begge er satt.
+
+Filtrene kan kombineres med hverandre og med de andre listefiltrene. Swipelux bruker dem før paginering, så hver side inneholder bare kunder som samsvarer. API-nøkler trenger `accounts:read` eller `rails:read` for å bruke dem. En ugyldig verdi returnerer `400 validation_error`.
+
+For eksempel, for å finne kunder som en bank har godkjent for en navngitt capability, men som ennå ikke har en klar navngitt konto:
+
+```bash Filter customers awaiting a named account
+curl --request GET \
+  --get "${API_BASE}/v3/customers" \
+  --data-urlencode "namedCapabilityStatus=ready" \
+  --data-urlencode "hasReadyNamedAccount=false" \
   --header "X-API-Key: ${SWIPELUX_API_KEY}"
 ```
 

@@ -14,17 +14,17 @@ flowchart LR
   D --> E["Mostra les dades bancàries completes"]
 ```
 
-## Abans de començar
+## Abans de començar {#before-you-start}
 
 Necessites un ID de client, una capacitat bancària preparada per al mètode i moneda previstos, i una cartera emesa preparada propietat del mateix client. Amb `allowPending`, pots desar la sol·licitud mentre el banc seleccionat encara revisa el client. Completa el treball obert mitjançant [Capacitats i tasques](/ca/integration/onboarding/capabilities-and-requirements).
 
-## 1. Crea o selecciona la cartera de liquidació
+## 1. Crea o selecciona la cartera de liquidació {#1-create-or-select-the-settlement-wallet}
 
 Crea una cartera emesa mitjançant [Comptes i carteres](/ca/integration/accounts#create-the-account), i després torna a llegir-la. Continua només quan el seu estat actual permeti la liquidació.
 
 Emmagatzema el seu `data.id` derivat de la resposta com a `SETTLEMENT_WALLET_ID`. No utilitzis una cartera externa per a `settlement.accountId`.
 
-## 2. Crea el compte bancari emès
+## 2. Crea el compte bancari emès {#2-create-the-issued-bank-account}
 
 Utilitza [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) amb aquestes capçaleres:
 
@@ -64,6 +64,23 @@ Camps opcionals de la sol·licitud:
 
 Envia `institution` quan el client necessiti dades bancàries d'un banc concret. Swipelux reserva un compte emès per client, mètode, moneda i institució. Una sol·licitud sense `institution` retorna `409 conflict` si el client ja té un compte emès per a aquest mètode i moneda en qualsevol banc. Una sol·licitud amb `institution` retorna `409 conflict` només si ja existeix un compte per a aquest banc.
 
+Per a un compte SWIFT en una moneda diferent d'USD, envia la `institution` que la [resposta de capacitats suportades](/ca/integration/onboarding/capabilities-and-requirements#discover-supported-capabilities) indica per a aquesta moneda:
+
+```json Request body for a EUR SWIFT account
+{
+  "origin": "issued",
+  "type": "bank",
+  "method": "swift",
+  "country": "US",
+  "currency": "EUR",
+  "institution": "bmo",
+  "settlement": {
+    "accountId": "${SETTLEMENT_WALLET_ID}"
+  },
+  "label": "EUR SWIFT account"
+}
+```
+
 Les lectures del compte retornen el banc seleccionat com a `institution` amb `id`, `name` i `bic`. `bic` pot ser `null`.
 
 La idempotència s'aplica al banc seleccionat. Repetir la mateixa sol·licitud retorna el compte original. Canviar `institution` amb la mateixa `Idempotency-Key` retorna `409 idempotency_conflict`.
@@ -94,6 +111,8 @@ La sol·licitud desada conserva el seu ID de compte, la cartera de liquidació i
 
 Mentre la sol·licitud desada espera, ocupa la plaça de compte. Una altra sol·licitud `allowPending` per a la mateixa plaça amb un `Idempotency-Key` diferent retorna `409 conflict`. El camp `holder.accountId` del problema indica el compte en espera. Llegeix aquest compte en lloc de tornar-ho a provar.
 
+El banc necessita una sol·licitud que hagi demanat aquesta capacitat. Si la sol·licitud del banc només cobreix la capacitat sense haver-la demanat, una sol·licitud `allowPending` retorna `409 capability_not_ready` amb `reason: no_ready_route` fins que la capacitat és `ready`.
+
 Si la sol·licitud d'alta es rebutja, es cancel·la o s'arxiva abans, el compte passa a `rejected`. Ja no ocupa la plaça de compte.
 
 ### Escull la moneda de liquidació {#choose-the-settlement-currency}
@@ -113,22 +132,22 @@ Per defecte, els dipòsits es liquiden en la moneda de la cartera de liquidació
 
 L'ID del compte bancari i l'ID de la cartera tenen rols diferents. Llegeix el provisionament i les dades bancàries a través de l'ID del compte bancari. Utilitza l'ID de la cartera de liquidació per identificar on s'acrediten els dipòsits.
 
-## 3. Monitoritza el provisionament
+## 3. Monitoritza el provisionament {#3-monitor-provisioning}
 
 Llegeix [`GET /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts-by-account-id) després de la creació i després de cada webhook rellevant.
 
 Manté la interfície del client pendent mentre `details` estigui absent. Si `openTaskIds` no està buit, completa les tasques més recents i torna a obtenir el compte. No infereixis la preparació a partir del temps transcorregut.
 
-Si el compte es va desar amb `allowPending: true`, es manté a `in_review` amb `statusReason.code` establert a `waiting_for_approval` fins que el banc aprovi la sol·licitud d'alta.
-
 Si l'últim `statusReason.code` és `awaiting_assignment`, crea el primer cobrament per al mateix client, capacitat i cartera de liquidació mitjançant [Rebre fons](/ca/integration/receive-funds), i després torna a llegir el compte bancari. Segueix aquesta branca només quan el compte actual ho sol·liciti.
 
-## 4. Presenta les dades bancàries de manera segura
+## 4. Presenta les dades bancàries de manera segura {#4-present-bank-details-safely}
 
 Mostra només les dades completes retornades per l'última lectura del compte. Quan `details.referenceRequired` és true, mostra la `details.reference` exacta i fes-la copiable. Quan és false, no inventis una referència.
 
 Per als comptes `swift` emesos, mostra `details.bankName`, `details.swiftCode` (el BIC del banc receptor), `details.accountNumber`, `details.accountHolderName` i `details.accountHolderAddress` quan es retornin. Els remitents han de copiar l'adreça del beneficiari exactament a la transferència internacional. Mostra també `details.bankAddress` i qualsevol camp de banc intermediari que retorni el compte.
 
 Aquestes dades bancàries són reutilitzables. No les substitueixis per coordenades de finançament d'un cobrament cotitzat, que pertanyen només a aquesta transferència.
+
+Quan canvien el codi SWIFT, el número de ruta o el número de compte d'un compte emès, Swipelux envia `account.details_changed`. Torna a obtenir el compte i mostra els seus `details` actuals.
 
 A continuació, afegeix [Webhooks](/ca/integration/webhooks) perquè les actualitzacions de provisionament arribin a la teva aplicació sense mantenir el client en una pantalla de sondeig.

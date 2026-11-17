@@ -14,17 +14,17 @@ flowchart LR
   D --> E["Teljes banki adatok megjelenítése"]
 ```
 
-## Mielőtt kezdi
+## Mielőtt kezdi {#before-you-start}
 
 Szüksége van egy ügyfélazonosítóra, egy kész banki képességre a szándékolt módszerre és devizára, valamint egy ugyanahhoz az ügyfélhez tartozó kész kibocsátott tárcára. Az `allowPending` segítségével elmentheti a kérést, amíg a kiválasztott bank még felülvizsgálja az ügyfelet. A nyitott munkát végezze el a [Képességek és feladatok](/hu/integration/onboarding/capabilities-and-requirements) alapján.
 
-## 1. Rendezési tárca létrehozása vagy kiválasztása
+## 1. Rendezési tárca létrehozása vagy kiválasztása {#1-create-or-select-the-settlement-wallet}
 
 Hozzon létre egy kibocsátott tárcát a [Számlák és tárcák](/hu/integration/accounts#create-the-account) alapján, majd olvassa be újra. Csak akkor folytassa, ha az aktuális státusza engedi a rendezést.
 
 Tárolja a válaszból származó `data.id` értéket `SETTLEMENT_WALLET_ID`-ként. Ne használjon külső tárcát a `settlement.accountId` mezőhöz.
 
-## 2. Kibocsátott bankszámla létrehozása
+## 2. Kibocsátott bankszámla létrehozása {#2-create-the-issued-bank-account}
 
 Használja a [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) műveletet az alábbi fejlécekkel:
 
@@ -64,6 +64,23 @@ Opcionális kérésmezők:
 
 Küldje el az `institution` mezőt, ha az ügyfélnek egy adott bank banki adataira van szüksége. A Swipelux ügyfelenként, módszerenként, devizánként és intézményenként egy kibocsátott számlát foglal le. Az `institution` mező nélküli kérés `409 conflict` hibát ad vissza, ha az ügyfélnek már van kibocsátott számlája az adott módszerre és devizára bármelyik banknál. Az `institution` mezőt tartalmazó kérés csak akkor ad vissza `409 conflict` hibát, ha az adott bankhoz már létezik számla.
 
+Az USD-től eltérő devizájú SWIFT-számlához küldje el azt az `institution` értéket, amelyet a [támogatott képességek válasza](/hu/integration/onboarding/capabilities-and-requirements#discover-supported-capabilities) az adott devizához megad:
+
+```json Request body for a EUR SWIFT account
+{
+  "origin": "issued",
+  "type": "bank",
+  "method": "swift",
+  "country": "US",
+  "currency": "EUR",
+  "institution": "bmo",
+  "settlement": {
+    "accountId": "${SETTLEMENT_WALLET_ID}"
+  },
+  "label": "EUR SWIFT account"
+}
+```
+
 A számla olvasásai a kiválasztott bankot `institution` értékként adják vissza, `id`, `name` és `bic` mezőkkel. A `bic` értéke lehet `null`.
 
 Az idempotencia a kiválasztott bankra vonatkozik. Ugyanannak a kérésnek az ismételt elküldése az eredeti számlát adja vissza. Az `institution` módosítása ugyanazzal az `Idempotency-Key` értékkel `409 idempotency_conflict` hibát ad vissza.
@@ -94,6 +111,8 @@ A mentett kérés megtartja a számlaazonosítóját, a rendezési tárcáját �
 
 Amíg a mentett kérés várakozik, foglalja a számlahelyet. Egy másik `allowPending` kérés ugyanarra a helyre, eltérő `Idempotency-Key` értékkel, `409 conflict` választ ad. A probléma `holder.accountId` mezője megnevezi a várakozó számlát. Újrapróbálkozás helyett olvassa ki azt a számlát.
 
+A banknak olyan kérelemre van szüksége, amely ezt a képességet kérte. Ha a bankhoz benyújtott kérelem csak lefedi a képességet anélkül, hogy kérte volna, egy `allowPending` kérés `409 capability_not_ready` választ ad `reason: no_ready_route` értékkel, amíg a képesség `ready` nem lesz.
+
 Ha a kérelmet előbb elutasítják, visszavonják vagy archiválják, a számla `rejected` állapotba kerül. Ekkor már nem foglalja a számlahelyet.
 
 ### A rendezési deviza kiválasztása {#choose-the-settlement-currency}
@@ -113,22 +132,22 @@ Az `USDT` használatához egy `USD` számlára és egy olyan hálózaton lévő 
 
 A bankszámla azonosítójának és a tárca azonosítójának eltérő szerepük van. A provisioning és a banki adatok olvasása a bankszámla azonosítón keresztül történik. A rendezési tárca azonosítóját arra használja, hogy azonosítsa, hová íródnak jóvá a betétek.
 
-## 3. Provisioning követése
+## 3. Provisioning követése {#3-monitor-provisioning}
 
 Olvassa be a [`GET /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts-by-account-id) műveletet a létrehozás után és minden releváns webhook után.
 
 Tartsa függőben az ügyfélfelületet, amíg a `details` hiányzik. Ha az `openTaskIds` nem üres, végezze el a legfrissebb feladatokat és olvassa be újra a számlát. Ne következtessen készenlétre az eltelt időből.
 
-Ha a számlát `allowPending: true` értékkel mentette, `in_review` állapotban marad `waiting_for_approval` értékű `statusReason.code` mellett, amíg a bank jóvá nem hagyja a kérelmet.
-
 Ha a legfrissebb `statusReason.code` értéke `awaiting_assignment`, hozza létre az első pénzbefizetést ugyanahhoz az ügyfélhez, képességhez és rendezési tárcához a [Pénz fogadása](/hu/integration/receive-funds) alapján, majd olvassa be újra a bankszámlát. Csak akkor kövesse ezt az ágat, ha az aktuális számla kéri.
 
-## 4. Banki adatok biztonságos megjelenítése
+## 4. Banki adatok biztonságos megjelenítése {#4-present-bank-details-safely}
 
 Csak a legfrissebb számla olvasása által visszaadott teljes részleteket jelenítse meg. Ha a `details.referenceRequired` értéke true, mutassa a pontos `details.reference` értéket és tegye másolhatóvá. Ha false, ne találjon ki hivatkozást.
 
 Kibocsátott `swift` számlák esetén jelenítse meg a `details.bankName`, a `details.swiftCode` (a fogadó bank BIC-kódja), a `details.accountNumber`, a `details.accountHolderName` és a `details.accountHolderAddress` értékét, ha a válasz tartalmazza őket. A küldőknek pontosan át kell másolniuk a kedvezményezett címét a nemzetközi átutalásba. Jelenítse meg a `details.bankAddress` értékét és a számla által visszaadott esetleges közvetítő banki mezőket is.
 
 Ezek a banki adatok újrafelhasználhatók. Ne cserélje őket árazott pénzbefizetésből származó befizetési koordinátákra, amelyek csak arra az átutalásra vonatkoznak.
+
+Ha egy kibocsátott számla SWIFT-kódja, routing száma vagy számlaszáma megváltozik, a Swipelux `account.details_changed` eseményt küld. Kérje le újra a számlát, és jelenítse meg az aktuális `details` adatait.
 
 Ezután adjon hozzá [Webhookokat](/hu/integration/webhooks), hogy a provisioning frissítései eljussanak az alkalmazásához anélkül, hogy az ügyfelet lekérdezési képernyőn tartaná.

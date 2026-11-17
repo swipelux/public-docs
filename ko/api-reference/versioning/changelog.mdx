@@ -8,35 +8,152 @@ description: "Swipelux API의 날짜별 변경 사항을 나열하고, 항목마
 
 기존 통합을 이전 버전에서 업그레이드하려면 [v3로 마이그레이션](/ko/api-reference/versioning/migrate-to-v3)을 참조하십시오.
 
+<Update label="2026-11-16" description="v3" tags={["추가","변경","수정"]}>
+
+### 추가
+- `GET /v3/customers`는 `pooledCapabilityIncludeWait`, `pooledCapabilityExcludeWait`, `namedCapabilityIncludeWait`, `namedCapabilityExcludeWait`를 허용합니다. 각각 해당하는 `pooledCapabilityStatus` 또는 `namedCapabilityStatus` 필터와 함께 사용하세요. `IncludeWait`는 해결 방법이 `wait`인 제한된 케이퍼빌리티를 추가하고, `ExcludeWait`는 해결 방법이 `wait`인 케이퍼빌리티를 제거합니다. 둘 다 `true`이면 `ExcludeWait`가 우선합니다. 이 필터에는 `accounts:read` 또는 `rails:read`가 필요합니다. [고객](/ko/integration/onboarding/customers#filter-customers-by-capability-readiness)을 참고하세요.
+- `include=capabilities`로 반환되는 케이퍼빌리티 요약에 `statusReason.resolution`(`wait`, `contact_support`, `none`)이 포함될 수 있습니다. 태스크에 따라 달라지는 사유는 케이퍼빌리티를 조회하세요.
+- 문서 요구 사항이 길이 3~50자의 `constraints.idNumber`를 반환할 수 있습니다. 그 `required`가 `true`이면 `documentMetadata`에 신분증 번호를 포함하세요. 대시보드는 문서에 필요한 경우 신분증 번호와 발급 국가를 요청합니다.
+- `PATCH /v3/customers/{customerId}/accounts/{accountId}`는 USD가 아닌 외부 SWIFT 계좌에서 `bankAddress`(최대 105자), `bankCity`, `bankPostalCode`를 허용합니다. 외화 SWIFT 지급에는 `bankAddress`와 `bankCity`가 필요합니다. USD 계좌에서 이 필드를 변경하면 `409 conflict`가 반환됩니다. 대기 중인 견적이나 지급이 계좌를 사용하는 동안 변경하면 재시도할 수 있는 `409 account_has_active_transfers`가 반환됩니다.
+- 대시보드의 KYB에서 WebP, HEIF, HEIC 문서를 허용합니다.
+
+### 변경
+- 발급 계좌의 SWIFT 코드, 라우팅 번호 또는 계좌 번호가 변경되면 Swipelux가 [`account.details_changed`](/api-reference/webhooks/account-details-changed)를 보냅니다. `data.object`는 현재 계좌이며, `data.previous`에는 `routingVersion`만 포함됩니다. [은행 계좌 발급](/ko/integration/issue-bank-account)을 참고하세요.
+- 보관되지 않은 은행 계좌의 정산 지갑인 지갑 계좌를 보관하면 `409 account_has_dependent_accounts`가 반환됩니다. `PATCH`로 은행 계좌의 정산을 다른 지갑으로 옮기거나 은행 계좌를 먼저 보관하세요.
+- `PATCH /v3/customers/{customerId}/recipients/{recipientId}`는 다른 수취인 유형의 필드를 `400 validation_error`와 필드별 `invalid_field` 오류로 거부합니다. 개인의 경우 `companyName`과 `businessIndustry`, 법인의 경우 `firstName`과 `lastName`이 해당됩니다.
+- 동일한 요청이 아직 실행 중인 동안 `POST /v3/customers/{customerId}/tasks/{taskId}/withdrawals`도 `retryable: true`와 함께 `409 idempotency_request_in_progress`를 반환합니다.
+- 대시보드에서 거부된 고객 삭제는 이를 막는 리소스를 나열하고, 수취인 국가는 국가 선택기를 사용하며, 프로필 텍스트 입력은 256자로 제한됩니다. 고객 페이지나 Balances에서 지급을 생성하면 상세 정보가 열립니다.
+
+### 수정
+- Swipelux는 더 이상 한 번의 업데이트에서 하나의 케이퍼빌리티에 대해 `capability.status_changed` 이벤트를 두 번 보내지 않으며, 상태가 시작 상태로 끝나면 이벤트를 보내지 않습니다.
+- 계좌가 프로비저닝 중에 거부되면 `account.status_changed`는 `"in_review"` 대신 `previous.state: "provisioning"`을 보고합니다.
+
+</Update>
+
+<Update label="2026-11-09" description="v3" tags={["추가","변경","수정"]}>
+
+### 추가
+- 은행이 제3자에게 보내는 USD SWIFT 지급에 대해 증빙 서류를 요청하면 Swipelux는 전송에 `category: "transaction_rfi"` 태스크를 엽니다. 이 태스크는 서류 한 건과 참조 정보를 요청합니다. 기존 태스크 제출 엔드포인트로 답변하면 Swipelux가 답변을 은행에 전달합니다. 지급이 은행 승인 없이 완료되거나, 실패하거나, 환불되면 Swipelux가 태스크를 취소합니다. [견적과 전송](/ko/integration/quotes-and-transfers#supporting-documents-for-swift-payouts)을 참고하세요.
+- 모든 은행의 발급 SWIFT 계좌가 `details.accountHolderAddress`에 수취인의 우편 주소를 반환합니다. 이전에는 Lead Bank와 BMO 계좌만 반환했습니다. 이는 수취 은행 주소인 `details.bankAddress`와 다릅니다. [은행 계좌 발급](/ko/integration/issue-bank-account)을 참고하세요.
+- USD가 아닌 SWIFT 계좌에 계좌 통화로 입금되면 정산 지갑에 USDC로 정산됩니다. 전송의 `amounts.in`은 계좌 통화로 받은 금액을, `amounts.out`은 전달된 USDC를 표시합니다. 이전에는 이러한 입금이 전송이나 웹훅 없이 검토를 위해 보류되었습니다.
+- 문서 요구 사항이 `constraints.issuingCountryRequired: true`를 반환할 수 있습니다. 이 요구 사항에 제출하는 각 문서의 `documentMetadata`에는 `issuingCountry`가 포함되어야 합니다.
+
+### 변경
+- 첫 번째 동일 요청이 아직 실행 중일 때 도착한 재시도는 케이퍼빌리티 요청, 문서, 수취인 및 그 목적지, 규칙, 웹훅, 견적, 전송, 전송 취소, 확인 세션 공유 토큰에서 `retryable: true`와 함께 `409 idempotency_request_in_progress`를 반환합니다. 이전에는 이 경로들이 `idempotency_conflict`를 반환했습니다. 다른 본문으로 키를 재사용하면 여전히 `idempotency_conflict`가 반환됩니다. [오류와 재시도](/integration/errors#idempotency-request-in-progress)를 참고하세요.
+- 은행 입금 견적은 일반적인 실패 대신 구체적인 오류를 반환합니다: `400 quote_amount_out_of_range`, `400 quote_volume_limit_exceeded`, `400 quote_destination_network_unsupported`, `503 quote_temporarily_unavailable`(재시도 가능) 또는 `502 quote_failed`.
+- 은행 검토 중인 신청이 문서에 의존하는 동안 `DELETE /v3/customers/{customerId}/documents/{documentId}`는 `409 document_in_use`를 반환합니다. 검토가 끝나거나 신청이 취소된 후에 보관하세요.
+- 정산 지갑이 USDT인 USD 이외의 은행 계좌는 이제 명시적인 `settlement.currency`가 없어도 생성 및 업데이트 시 `400 invalid_settlement_target`을 반환합니다. [정산 통화 선택](/ko/integration/issue-bank-account#choose-the-settlement-currency)을 참고하세요.
+- 대시보드의 지급 검토에서 외화 수령 금액을 추정치로 표시합니다.
+- 대시보드와 공개 추적 페이지에서 은행이 반환하거나 취소한 완료된 전송에 알림이 표시됩니다. 상태는 Completed로 유지됩니다.
+
+### 수정
+- 발급 은행 계좌는 준비되면 `account.status_changed`를 보냅니다. [웹훅](/ko/integration/webhooks)을 참고하세요.
+- 같은 멱등 키와 파일로 멀티파트 문서 업로드를 재시도해도 더 이상 `409`가 반환되지 않습니다.
+- 대시보드 거래 필터는 은행 지급을 은행 레일별로 매칭하고 모든 암호화폐 네트워크를 지원합니다. 정확한 ID로 검색하면 소액 입금도 찾을 수 있습니다.
+
+</Update>
+
+<Update label="2026-11-04" description="v3" tags={["추가"]}>
+
+### 추가
+- Lead Bank(`lead_bank`) `swift_named` 케이퍼빌리티가 준비된 고객은 AUD, CAD, CHF, CZK, DKK, EUR, GBP, HKD, HUF, JPY, MXN, NOK, NZD, PLN, SEK, SGD, ZAR로 SWIFT 지급을 보낼 수 있습니다. 은행이 고객에게 활성화하지 않은 통화는 `422 bank_not_supported_for_customer`를 반환합니다. 정확한 USDC `in.amount`로 견적을 만들면 Swipelux가 그 금액에서 수수료를 USD로 차감합니다. 견적의 `out.amount`는 새로운 `out.amountEstimated: true`로 표시되는 추정치이고, `out.amount`를 보내면 `422 validation_error`가 반환되며, 지급이 완료되면 전송에 실제 전달 금액이 기록됩니다. EUR, GBP, CHF, CZK, DKK, HUF, NOK, PLN, SEK에는 유효한 IBAN이 필요합니다. 다른 통화는 유효한 IBAN이나 현지 계좌 번호를 허용하며, MXN의 경우 18자리 CLABE입니다. 예금주 주소에는 우편번호가 필요합니다. 반환된 지급은 자동 환불 대신 Swipelux 검토로 넘어갑니다. [자금 지급](/ko/integration/send-funds#foreign-currency-swift-payouts)을 참고하세요.
+
+</Update>
+
+<Update label="2026-11-02" description="v3" tags={["추가","변경","수정"]}>
+
+### 추가
+- 대시보드에 AI 에이전트를 Swipelux에 연결하는 **Agents** 페이지가 추가되었습니다. **Your agents**는 Sandbox와 Live에서 연결된 에이전트를 나열하며 연결을 해제할 수 있습니다. [AI 에이전트에서 Swipelux 사용](/integration/ai-agents)을 참고하세요.
+- 대시보드 고객 목록에 **Shared methods**, **Bank accounts**, **Opened bank account** 필터가 추가되었습니다.
+
+### 변경
+- Swipelux는 저장된 웹훅 목적지를 매일 다시 확인합니다. 엔드포인트의 호스트 이름이 이제 거부되거나 거부된 주소로 확인되면 Swipelux는 엔드포인트를 일시 중지하고 `disabled: true`를 설정합니다. 일시 중지된 엔드포인트는 `url`만 변경하면 계속 일시 중지 상태로 유지되며, 재개하려면 통과하는 `url`과 함께 `disabled: false`를 보내세요. [웹훅](/ko/integration/webhooks#use-a-public-destination-url)을 참고하세요.
+- 규칙 생성 시 다른 네트워크의 대상 지갑이나 은행 목적지는 `400 rule_target_invalid`로 거부됩니다. [오류와 재시도](/integration/errors#rule-target-invalid)를 참고하세요.
+- 문서 다운로드 응답에 `Cache-Control: private, no-store`가 포함됩니다.
+- 패스키 복구 후 대시보드가 이메일을 보내고, 지급, 출금, 시크릿 키 생성, 에이전트 연결, 팀 초대를 24시간 동안 일시 중지합니다.
+
+### 수정
+- 이제 다른 Swipelux 지갑에서 보낸 자금이 트리거 지갑에 도착하면 규칙이 실행됩니다.
+- 발급되지 않은 은행 계좌 때문에 고객 보관이 더 이상 차단되지 않습니다.
+- `include=capabilities`가 일부 고객에 대해 더 이상 빈 목록을 반환하지 않습니다.
+- 샌드박스 계좌 잔액에 더 이상 부동 소수점 반올림 오류가 표시되지 않습니다.
+- 경로에서 청구할 수 없는 개발자 수수료가 포함된 은행 지급 견적은 실행 시 실패하는 대신 견적 시점에 `400 validation_error`로 거부됩니다.
+- 첫 번째 카드 결제가 아직 처리 중일 때 견적이 만료되어도 카드 결제 링크가 더 이상 두 번째 결제 창을 열지 않습니다.
+- 완료된 카드 입금은 법정화폐 원천 금액을 유지합니다.
+- Lead Bank의 경우 대시보드의 **Open bank account** 드로어가 더 이상 은행이 지원하지 않는 USDT 네트워크를 제공하지 않으며, Solana의 USDT를 제공합니다.
+
+</Update>
+
 <Update label="2026-11-01" description="v3" tags={["추가"]}>
 
 ### 추가
 - [`GET /v3/customers/{customerId}/capabilities/supported`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-supported)의 모든 항목에는 `unavailableInstitutions`가 포함돼요. 케이퍼빌리티 변형을 제공하지만 이 고객을 받지 않는 은행 목록이며, 각 은행에는 `id`, `name`, 그리고 `statusReason` 형태의 `reasons`가 있어요. 현재 사유 코드는 `jurisdiction_unsupported`, `legal_form_unsupported`, `customer_type_unsupported`예요. 이 필드는 풀 계좌 및 비은행 항목에서 `[]`이며, 한 은행이 `institutions`와 `unavailableInstitutions`에 동시에 나타나는 일은 없어요. 케이퍼빌리티 요청에서 사용할 수 없는 은행을 지정하면 여전히 `422 capability_institutions_unsupported`가 반환돼요. [기능 및 요구 사항](/ko/integration/onboarding/capabilities-and-requirements#show-why-a-bank-is-unavailable)을 참고하세요.
+- Lead Bank(`lead_bank`) `swift_named` 케이퍼빌리티가 준비된 고객은 AUD, CAD, CHF, CZK, DKK, EUR, GBP, HKD, HUF, JPY, MXN, NOK, NZD, PLN, SEK, SGD, ZAR로 발급 SWIFT 계좌를 통화별로 하나씩 열 수 있어요. 지원 케이퍼빌리티 응답은 `swift_named`의 `lead_bank` 항목에 `institution: "bmo"`로 이 통화를 나열해요. 통화와 함께 그 `institution`을 보내세요. BMO Bank N.A.(`bmo`, BIC `HATRUS44`)는 이 계좌에 표시되는 은행이며, `GET /v3/institutions`에도 나열돼요. 각 고객이 열 수 있는 통화는 은행이 결정하며, 은행이 제공하지 않는 통화의 계좌는 `statusReason.code: currency_unavailable`과 함께 `rejected`로 끝나요. 이 통화 중 하나로 `lead_bank`를 지정하면 `bmo`를 알려주는 `400 validation_error`가 반환돼요. USD나 `swift` 이외의 방법으로 `bmo`를 지정하면 `400 validation_error`가 반환돼요. `bmo`를 지정한 케이퍼빌리티 요청이나 태스크 미리보기는 `422 capability_institutions_unsupported`를 반환해요. [은행 계좌 발급](/ko/integration/issue-bank-account#choose-the-bank)을 참고하세요.
 
 </Update>
 
-<Update label="2026-10-30" description="v3" tags={["추가"]}>
+<Update label="2026-10-30" description="v3" tags={["추가","변경"]}>
 
 ### 추가
-- 인증된 요청에는 API 키별, 연동 사업자별, 클라이언트 IP 주소별로 요청 수 제한이 적용돼요. 제한을 넘은 요청은 `retryable: true`와 `Retry-After` 헤더와 함께 `429 rate_limited`를 반환해요. 이 헤더는 다시 시도하기 전에 기다려야 할 초 수를 알려줘요. 아직 승인되지 않은 연동 사업자는 제한이 더 낮아요. API 레퍼런스의 모든 인증된 작업에는 `429` 응답이 나와 있어요. 한 IP 주소에서 반복된 인증 실패도 제한을 넘으면 `429`를 반환하지만, 그 주소에서 보낸 유효한 API 키는 계속 작동해요.
+- 인증된 요청은 API 키별, 연동 사업자별, 클라이언트 IP 주소별로 속도 제한이 적용됩니다. 한도를 초과한 요청은 `retryable: true`와 재시도 전에 기다릴 초를 알려 주는 `Retry-After` 헤더와 함께 `429 rate_limited`를 반환합니다. 아직 승인되지 않은 연동 사업자에게는 더 낮은 한도가 적용됩니다. API 레퍼런스에서 인증이 필요한 모든 작업에는 `429` 응답이 나열되어 있습니다. 한 IP 주소에서 반복된 인증 실패도 한도를 넘으면 `429`를 반환하며, 해당 주소에서 보낸 유효한 API 키도 한도가 회복될 때까지 같은 응답을 받을 수 있으므로 `Retry-After` 지연 후에 재시도하세요. [오류와 재시도](/integration/errors#rate-limited)를 참고하세요.
+
+### 변경
+- Swipelux는 점이 없는 키처럼 공개 부분이 없는 레거시 API 키를 비활성화했습니다. 이러한 키를 사용한 요청은 `401 unauthorized`를 반환합니다.
+
+</Update>
+
+<Update label="2026-10-29" description="v3" tags={["변경"]}>
+
+### 변경
+- 연동 사업자의 KYB가 승인될 때까지 Swipelux는 모든 스페이스에 걸쳐 임의의 연속 24시간 동안 생성 수를 제한합니다: API 키 10개, 웹훅 엔드포인트 10개, 규칙 10개, 고객 250명, `sumsub_share_token` 내보내기 20건, 신원 확인 가져오기 10건. 이는 라이브 스페이스당 활성 API 키 10개 제한을 대체하며, 키를 폐기해도 자리가 비지 않습니다. 한도를 초과한 생성은 `422 merchant_kyb_not_approved`를 반환하고, 대시보드는 일반 `422`를 반환합니다. 실패한 생성과 멱등 재전송은 계산되지 않습니다. 이 한도와 시간당 웹훅 URL 변경 20회 한도는 승인되었거나 KYB가 필요 없는 라이브 스페이스가 없는 한 샌드박스 스페이스에도 적용됩니다. [일일 생성 한도](/ko/integration/go-live#daily-creation-limits)를 참고하세요.
 
 </Update>
 
 <Update label="2026-10-28" description="v3" tags={["추가","변경"]}>
 
 ### 추가
-- 웹훅 엔드포인트에는 `disabled`가 포함되며, 엔드포인트로의 전송이 일시 중지된 동안 `true`예요. Swipelux는 전송 실패가 반복되면 엔드포인트를 일시 중지하기도 해요. 전송을 일시 중지하려면 [`PATCH /v3/webhooks/{webhookId}`](/api-reference/webhooks/patch-v3-webhooks-by-webhook-id)에서 `disabled: true`를 보내고, 재개하려면 `disabled: false`를 보내세요. 재개할 때 대상 URL을 다시 확인하며, 더 이상 통과하지 못하면 `400`을 반환하므로 엔드포인트는 일시 중지 상태로 유지돼요.
+- `GET /v3/customers`는 각각 `pending`, `ready`, `restricted`, `rejected`, `canceled`로 설정하는 `pooledCapabilityStatus` 및 `namedCapabilityStatus` 필터를 허용합니다. 또한 `ready` 명의 계좌가 있거나 없는 고객을 나열하는 `hasReadyNamedAccount=true|false`도 허용합니다. 필터는 서로, 그리고 다른 목록 필터와 결합할 수 있으며 Swipelux는 페이지 나누기 전에 이를 적용합니다. 사용하려면 API 키에 `accounts:read` 또는 `rails:read`가 필요합니다. 잘못된 값은 `400 validation_error`를 반환합니다. 예를 들어 `namedCapabilityStatus=ready&hasReadyNamedAccount=false`는 은행이 승인했지만 아직 준비된 명의 계좌가 없는 고객을 찾습니다. [고객](/ko/integration/onboarding/customers#filter-customers-by-capability-readiness)을 참고하세요.
+- `PATCH /v3/customers/{customerId}` 및 `PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}`는 인식하지 못하는 본문 필드를 무시할 때 `Swipelux-Ignored-Fields` 응답 헤더를 반환합니다. 헤더는 무시된 필드의 JSON Pointer를 쉼표로 구분하고 정렬하여 나열하며, 최대 20개 포인터와 4096자까지이고 잘린 경우 끝에 `...`가 붙습니다. `metadata` 안의 필드는 보고되지 않으며, 멱등 재전송은 헤더를 생략합니다. 잘못된 필드 이름으로 보낸 생년월일처럼 데이터를 모르게 잃지 않도록 매번 업데이트 후에 확인하세요. [고객](/ko/integration/onboarding/customers#check-ignored-fields-on-updates)을 참고하세요.
+- 웹훅 엔드포인트에 `disabled`가 포함되며, 엔드포인트로의 전달이 일시 중지된 동안 `true`입니다. Swipelux는 전달 실패가 반복된 후에도 엔드포인트를 일시 중지합니다. 전달을 일시 중지하려면 [`PATCH /v3/webhooks/{webhookId}`](/api-reference/webhooks/patch-v3-webhooks-by-webhook-id)에서 `disabled: true`를, 재개하려면 `disabled: false`를 보내세요. 재개 시 목적지 URL을 다시 확인하며, 더 이상 통과하지 못하면 `400`을 반환하므로 엔드포인트는 일시 중지 상태로 유지됩니다.
+- Swipelux는 연동 사업자를 정지할 수 있습니다. 정지된 동안 해당 사업자의 API 키로 보낸 모든 요청은 `retryable: false`와 함께 `403 merchant_suspended`를 반환하며, Swipelux는 웹훅 전달, 규칙 실행, 은행 신청을 보류합니다. 아무것도 삭제되거나 폐기되지 않으므로 Swipelux가 정지를 해제하면 API 키, 웹훅 엔드포인트, 규칙이 다시 작동합니다. 정지를 해결하려면 Swipelux 지원팀에 문의하세요. [오류와 재시도](/integration/errors#merchant-suspended)를 참고하세요.
 
 ### 변경
-- 신원 인증 제공업체가 share token 생성을 거부하면(예: 알 수 없는 `forClientId`), `format: sumsub_share_token`을 사용한 `POST /v3/customers/{customerId}/export`는 `502 request_failed` 대신 `retryable: false`와 함께 `422 kyc_provider_rejected`를 반환해요. 응답에는 고정된 Swipelux 메시지가 포함되며 제공업체의 오류 텍스트를 반복하지 않으므로, 재시도하기 전에 요청을 확인하세요. 다른 제공업체 실패는 여전히 재시도 가능한 `502 request_failed`를 반환해요.
-- `GET /v3/webhooks/portal`의 포털은 더 이상 엔드포인트를 생성, 편집, 일시 중지 또는 삭제하지 않아요. `webhooks:write` 권한이 있는 API 키를 사용하면 여전히 엔드포인트 서명 시크릿을 표시하고 교체하며, 전송을 재시도하고 재생할 수 있어요. 엔드포인트는 `POST /v3/webhooks`로 생성하고, `PATCH /v3/webhooks/{webhookId}`로 변경하거나 일시 중지하고, `DELETE /v3/webhooks/{webhookId}`로 삭제하세요. [웹훅](/ko/integration/webhooks)을 참고하세요.
+- `format: sumsub_share_token`을 사용한 `POST /v3/customers/{customerId}/export`는 알 수 없는 `forClientId` 등의 이유로 신원 확인 제공업체가 공유 토큰 생성을 거부하면 `502 request_failed` 대신 `retryable: false`와 함께 `422 kyc_provider_rejected`를 반환합니다. 응답에는 고정된 Swipelux 메시지가 담기며 제공업체의 오류 텍스트를 반복하지 않으므로, 재시도하기 전에 요청을 확인하세요. 그 밖의 제공업체 오류는 여전히 재시도 가능한 `502 request_failed`를 반환합니다.
+- `GET /v3/webhooks/portal`의 포털은 더 이상 엔드포인트를 생성, 편집, 일시 중지 또는 삭제하지 않습니다. `webhooks:write`가 있는 API 키를 사용하면 여전히 엔드포인트 서명 시크릿을 표시하고 교체하며, 전달을 재시도하고 재생합니다. 엔드포인트는 `POST /v3/webhooks`로 생성하고, `PATCH /v3/webhooks/{webhookId}`로 변경하거나 일시 중지하며, `DELETE /v3/webhooks/{webhookId}`로 삭제하세요. [웹훅](/ko/integration/webhooks)을 참고하세요.
+- `POST /v3/webhooks` 및 `PATCH /v3/webhooks/{webhookId}`는 확인된 모든 주소가 전역 라우팅 가능한 유니캐스트인 목적지만 허용합니다. IANA 특수 목적 범위의 주소, 멀티캐스트 주소, 거부된 IPv4 주소를 담은 IPv6 전환 형식, 확인되지 않는 호스트 이름, `localhost`, 단일 레이블 호스트 이름, `.localhost`, `.local`, `.localdomain`, `.internal`, `.home.arpa`로 끝나는 호스트 이름에 대해 `400 validation_error`를 반환합니다.
 
 </Update>
 
-<Update label="2026-10-25" description="v3" tags={["변경"]}>
+<Update label="2026-10-26" description="v3" tags={["추가","변경","수정"]}>
+
+### 추가
+- 판매자 패널의 **Settings** > **Customer pages**에서 소유자와 관리자는 회사 로고(PNG, JPG 또는 WebP, 최대 512 KB)를 업로드하고 스페이스마다 `https://` 반환 URL을 설정할 수 있습니다. 라이브 스페이스에서는 이 로고가 고객의 호스팅 약관 페이지에 있는 Swipelux 워드마크를 대체합니다. 스페이스에 반환 URL이 있으면 완료된 약관 페이지에 **Return to the app**이 표시됩니다.
+
+### 변경
+- 호스팅 약관 페이지의 디자인이 새로워졌습니다. 샌드박스 흐름의 모든 페이지에 **Sandbox** 배지가 표시됩니다.
+- KYB가 필요한 라이브 스페이스에서는 KYB가 승인될 때까지 판매자 패널의 **Customers**, **Balances**, **Transactions**가 잠긴 상태로 유지됩니다. 홈에는 라이브 전환 단계가 표시되고, 고객의 **Bank accounts** 섹션은 은행마다 한 행씩 통화와 함께 나열하며 은행이 승인하면 은행 계좌 정보를 표시합니다.
+- 케이퍼빌리티를 제공하는 은행 중 입금 견적을 제공하는 은행이 없으면(예: Lead Bank(`lead_bank`)의 `ach_named` 및 `wire_named`), 입금용 `POST /v3/quotes`는 재시도 가능한 `503 rail_temporarily_unavailable` 대신 `retryable: false`와 함께 `422 capability_direction_unsupported`를 반환합니다. 같은 `Idempotency-Key`로 재시도하면 `422`가 재생됩니다.
+- `DELETE /v3/customers/{customerId}`는 회사의 KYB 고객에 대해 `retryable: false`와 함께 `409 merchant_kyb_subject_archive_refused`를 반환합니다. 먼저 Swipelux 지원팀에 KYB를 다른 고객으로 옮겨 달라고 요청하세요.
+
+### 수정
+- 호스팅된 확인이 검토에 들어가고 그것이 태스크의 마지막 열린 항목이었다면, 케이퍼빌리티는 `statusReason.code: information_in_review`와 함께 `pending`이 되고, `action_required`였던 신청은 `in_review`가 됩니다. Swipelux는 이러한 변경에 대해 `capability.status_changed`와 `application.status_changed`를 보냅니다. 이전에는 둘 다 이전 상태를 유지했고 Swipelux는 웹훅을 보내지 않았습니다.
+- 태스크 제출에서 주소, 사업자 등록, 소유 구조 같은 객체 답변은 저장된 값과 병합되지 않고 이를 대체하므로, 새 답변에서 빠진 `state`나 `streetLine2` 같은 필드는 제거됩니다. 고객과 관련 당사자에 대한 `PATCH` 요청은 여전히 병합됩니다.
+- 첫 웹훅 엔드포인트, 포털 세션 또는 이벤트가 생기기 전에도 `GET /v3/webhooks`는 `502 request_failed` 대신 빈 `data` 배열과 함께 `200`을 반환합니다.
+- 저장된 오류 응답을 재생하는, 같은 `Idempotency-Key`를 사용한 재시도에 이제 재시도 자체의 요청 ID로 설정된 `X-Request-Id`가 포함됩니다. 본문은 첫 요청의 `correlationId`를 유지합니다.
+- `card` 케이퍼빌리티를 취소한 후 다시 요청하면 `500` 대신 `retryable: false`와 함께 `409 capability_not_reopenable`을 반환합니다.
+
+</Update>
+
+<Update label="2026-10-25" description="v3" tags={["추가","변경"]}>
+
+### 추가
+- 이제 고객의 `swift_named` 케이퍼빌리티로 Lead Bank(`lead_bank`)에서 발급 SWIFT 계좌를 열 수 있어요.
+- `GET /v3/customers/{customerId}/capabilities/supported`는 명의 케이퍼빌리티에 대해 `institutions[].currencies`를 반환해요. 각 항목은 통화 `code`와 계좌를 열 때 보낼 `institution`이에요. `ach_named`, `wire_named`, `rtp_named`, `swift_named`는 USD, `sepa_named`는 EUR, `faster_payments_named`는 GBP, `ipp_named`는 AED예요. 풀링 케이퍼빌리티는 `currencies`를 생략해요. [케이퍼빌리티와 태스크](/ko/integration/onboarding/capabilities-and-requirements#discover-supported-capabilities)를 참고하세요.
 
 ### 변경
 - 통합하는 기업의 KYB가 승인될 때까지 KYB가 필요한 라이브 스페이스의 모든 엔드포인트를 합쳐 시간당 총 20회까지 웹훅 URL을 변경할 수 있어요. 샌드박스 스페이스의 변경은 집계되지 않아요. 웹훅 URL 한도를 초과하면 `422 merchant_kyb_not_approved`를 반환해요. 엔드포인트의 `events`만 변경하거나 현재 URL을 그대로 저장하는 것은 URL 변경으로 집계되지 않아요. 대시보드에서 Swipelux는 KYB가 필요한 라이브 스페이스당 10개를 초과하는 활성 API 키를 일반 `422` 응답으로 거부해요. 또한 라이브 스페이스가 하나 이상 있고, 모든 라이브 스페이스에 KYB가 필요하며, 승인된 스페이스가 없는 동안에는 머천트당 5개를 초과하는 스페이스도 일반 `422` 응답으로 거부해요. 스페이스 한도에는 샌드박스 스페이스와 라이브 스페이스가 모두 포함되며, KYB가 필요하지 않은 라이브 스페이스가 하나라도 있으면 적용되지 않아요. 샌드박스 스페이스는 쓰기 차단, 웹훅 URL 한도, 키 한도에서 제외돼요. [프로덕션 전환](/ko/integration/go-live#activate-your-production-space)을 참고하세요.
+- 발급 ACH 계좌와 wire 계좌는 USD만 허용하며, `lead_bank`의 SWIFT 계좌도 마찬가지예요. 다른 통화로 요청하면 `400 validation_error`가 반환돼요. 이전에는 요청이 수락된 뒤 USD로 발급되었거나 끝내 프로비저닝되지 않았어요.
+- 고객의 준비된 은행 중 요청한 통화를 발급하는 은행이 없으면 `POST /v3/customers/{customerId}/accounts`가 `reason: "no_issuable_route"`와 함께 `409 capability_not_ready`를 반환해요. 재시도하지 말고 다른 통화나 기관을 선택하세요.
 
 </Update>
 
@@ -50,7 +167,7 @@ description: "Swipelux API의 날짜별 변경 사항을 나열하고, 항목마
 <Update label="2026-10-23" description="v3" tags={["추가"]}>
 
 ### 추가
-- 케이퍼빌리티는 상태 `restricted` 및 `resolution: contact_support`와 함께 `statusReason.code: offer_unavailable`을 보고할 수 있어요. Swipelux는 승인된 신청서가 케이퍼빌리티를 포함하지만 현재 어떤 오퍼도 이를 허용하지 않을 때 이 코드를 반환해요. 이 경우 승인된 신청서를 기다려도 아무것도 바뀌지 않으므로 `resolution: wait`가 포함된 `related_application_action_required`를 대신해요. 기다리지 말고 Swipelux 지원팀에 문의하세요. [기능 및 요구 사항](/ko/integration/onboarding/capabilities-and-requirements#continue-when-the-capability-is-ready)를 참고하세요.
+- 케이퍼빌리티는 상태 `restricted` 및 `resolution: contact_support`와 함께 `statusReason.code: offer_unavailable`을 보고할 수 있어요. Swipelux는 승인된 신청서가 케이퍼빌리티를 포함하지만 현재 어떤 오퍼도 이를 허용하지 않을 때 이 코드를 반환해요. 이 경우 승인된 신청서를 기다려도 아무것도 바뀌지 않으므로 `resolution: wait`가 포함된 `related_application_action_required`를 대신해요. 기다리지 말고 Swipelux 지원팀에 문의하세요. [기능 및 요구 사항](/ko/integration/onboarding/capabilities-and-requirements#continue-when-the-capability-is-ready)을 참고하세요.
 
 </Update>
 
@@ -64,7 +181,35 @@ description: "Swipelux API의 날짜별 변경 사항을 나열하고, 항목마
 <Update label="2026-10-20" description="v3" tags={["추가"]}>
 
 ### 추가
-- `GET /v3/customers/{customerId}/transfer-totals`는 고객의 완료된 수취 및 송금 금액을 USD로 반환해요. USD, USDC, USDT는 1:1로 계산되며, 자기 계좌 간 송금과 기타 통화는 제외돼요. 이 엔드포인트에는 `customers:read`가 필요해요. [고객](/ko/integration/onboarding/customers#read-customer-transfer-volume)를 참고하세요.
+- `GET /v3/customers/{customerId}/transfer-totals`는 고객의 완료된 수취 및 송금 금액을 USD로 반환해요. USD, USDC, USDT는 1:1로 계산되며, 자기 계좌 간 송금과 기타 통화는 제외돼요. 이 엔드포인트에는 `customers:read`가 필요해요. [고객](/ko/integration/onboarding/customers#read-customer-transfer-volume)을 참고하세요.
+
+</Update>
+
+<Update label="2026-10-19" description="v3" tags={["추가","변경","수정"]}>
+
+### 추가
+- Swipelux가 은행에 전달하는 문서 요청에는 `request.constraints.maxSizeBytes`에 은행의 파일당 한도가 포함될 수 있습니다. 판매자 패널과 호스팅된 정보 요청 페이지는 JPEG, PNG, WebP 사진을 한도에 맞게 축소하고, 그래도 한도를 초과하는 파일은 거부합니다. [문서 업로드](/ko/integration/onboarding/capabilities-and-requirements#upload-documents)를 참고하세요.
+- KYB가 필요한 라이브 스페이스에서 Swipelux가 사업자 인증(KYB)에 대한 열린 요청을 가지고 있으면, 판매자 패널은 브라우저 탭에서 처음 로드할 때 KYB 페이지를 엽니다. 헤더의 **Action needed** 버튼으로도 이동할 수 있습니다.
+
+### 변경
+- 취소된 은행 케이퍼빌리티를 다시 요청하면 요청이 새 신청을 열 때는 `201`, 고객이 이미 가진 신청에 합류할 때는 `200`을 반환합니다. [케이퍼빌리티와 태스크](/ko/integration/onboarding/capabilities-and-requirements#shared-applications-per-bank)를 참고하세요.
+- `/financialProfile/accountPurposes`를 요청하는 새 풀링 접수 태스크는 `/financialProfile/accountPurposeDescription`도 요청합니다. 설명은 목적에 `other`가 포함된 경우에만 필수이며, 설명이 없으면 제출은 해당 포인터에 대해 `400 validation_error`를 반환합니다. 판매자 패널은 **Something else**가 선택된 동안에만 설명 필드를 표시합니다.
+- 개인 고객을 위한 명의 JPMorgan Chase(`jpmorgan`) 케이퍼빌리티에는 `employment.occupation`이 필요합니다. 직업이 없는 고용 답변은 `400 validation_error`를 반환합니다. 아직 은행에 전송되지 않은 신청에는 이 요구 사항이 적용됩니다. 열린 접수 태스크에는 요구 사항이 추가되고, 완료된 접수 태스크에는 후속 태스크가 생성됩니다. 풀링 케이퍼빌리티와 다른 은행은 변경되지 않습니다.
+- `GET /v3/customers`는 거주지 주소에 국가가 없을 때 개인의 거주 국가를 `country`로 보고합니다. `country` 필터는 같은 값과 일치합니다. [고객](/ko/integration/onboarding/customers)을 참고하세요.
+- `POST /v3/sandbox/tasks/{taskId}/review`는 열린 모든 제출 라운드와 검토 대기 중인 재사용 증빙에 걸쳐 태스크의 결정되지 않은 모든 답변을 결정합니다. [샌드박스 테스트](/ko/integration/sandbox#test-an-open-task)를 참고하세요.
+- 호스팅된 정보 요청 페이지는 하나의 상태 요약을 표시하며, 요청된 각 수정 사항은 해당 항목 옆에 표시됩니다.
+- 판매자 패널은 신고 항목을 **Terms of Service** 아래가 아닌 요청된 항목과 함께 나열하고, 지급의 은행 목적지를 **Destination Account**로 표시하며, 대기 중인 지급을 **Processing**으로 표시합니다.
+
+### 수정
+- 남은 태스크 답변이 모두 승인되었거나 검토 중인 케이퍼빌리티(Swipelux가 고객의 기존 프로필과 문서에서 채운 답변 포함)는 이제 `tasks_due`와 함께 `restricted`로 남지 않고 `statusReason.code: information_in_review`와 함께 `pending`을 보고합니다. [케이퍼빌리티와 태스크](/ko/integration/onboarding/capabilities-and-requirements#continue-when-the-capability-is-ready)를 참고하세요.
+- 승인된 신청이 케이퍼빌리티를 포함하지만 요청하지는 않은 은행에서의 `allowPending` 계좌 요청은 `500` 대신 `reason: no_ready_route`와 함께 `409 capability_not_ready`를 반환합니다. 케이퍼빌리티가 `ready`가 되면 같은 요청이 성공합니다. [은행 계좌 발급](/ko/integration/issue-bank-account#save-the-request-before-bank-approval)을 참고하세요.
+- 은행이 거절한 Lead Bank(`lead_bank`) 신청은 `in_review`로 남지 않고 `rejected`가 됩니다.
+- Swipelux는 이제 첫 접수 태스크 이후 요청된 자금 출처 문서와 같은 후속 접수 태스크의 답변을 검토하므로, 해당 신청은 `requested`로 남지 않고 은행에 제출됩니다.
+- 약관 세션이 아직 열려 있는 동안 Swipelux가 접수 태스크의 모든 답변을 승인하거나, 사용자가 `POST /v3/sandbox/tasks/{taskId}/review`로 승인해도 검토가 더 이상 `409 kyc_process_conflict`로 실패하지 않습니다. 고객이 약관에 동의하면 태스크는 `satisfied`, 케이퍼빌리티는 `ready`가 됩니다. 이러한 검토 후 취소된 `ach_named` 또는 `wire_named` 케이퍼빌리티를 다시 요청해도 성공합니다.
+- 태스크 제출에서 `documentMetadata[].issuedOn`은 제출의 UTC 날짜보다 최대 하루 뒤의 날짜를 허용하므로, UTC보다 앞선 시간대에서 오늘 발급된 문서가 허용됩니다. `maxIssueAgeDays`는 여전히 UTC 날짜부터 계산합니다.
+- 판매자 패널에서 새 수취인을 추가할 때 계좌 양식은 준비된 결제 방법만 제공합니다.
+- 판매자 패널은 양식의 나머지 부분이 제출되는 동안 이미 전송된 양식 섹션의 상태를 유지하고, 고객 시간대 기준 오늘 날짜를 문서 발급일로 허용하며, KYB 응답을 보낸 후 빈 요청을 잠깐 표시하지 않고, 웹사이트 답변과 문서 답변 사이를 전환할 때 업로드한 파일을 유지합니다.
+- 판매자 패널의 거래 상세 패널이 더 이상 잘린 상태로 열리지 않습니다.
 
 </Update>
 
@@ -86,6 +231,34 @@ description: "Swipelux API의 날짜별 변경 사항을 나열하고, 항목마
 
 </Update>
 
+<Update label="2026-10-12" description="v3" tags={["추가","변경","수정"]}>
+
+### 추가
+- `POST /v3/customers/{customerId}/tasks/{taskId}/submissions`는 선택 사항인 `allowPartial: true`를 허용합니다. 이 경우 Swipelux는 유효한 답변을 저장하고 `refusedAnswers`와 함께 `201`을 반환하며, 각 항목에는 `requirementId`, `code`, `pointer`, `message`가 있습니다. `code`는 `invalid`, `absence_conflicts_with_profile`, `invalid_document_reference`, `depends_on_refused_answer` 중 하나이며, 코드가 추가될 수 있습니다. 유지할 수 있는 답변이 없으면 응답은 `400 validation_error`이고 아무것도 저장되지 않습니다. `allowPartial`은 제출이 답해야 하는 요구 사항을 바꾸지 않으며, 지정하지 않으면 동작은 변경되지 않습니다. [`allowPartial`로 유효한 답변 유지](/ko/integration/onboarding/capabilities-and-requirements#keep-valid-answers-with-allowpartial)를 참고하세요.
+- `POST /v3/customers/{customerId}/tasks/{taskId}/withdrawals`는 검토 대기 중인 제출을 철회하여 고객이 수정할 수 있게 합니다. `Idempotency-Key`가 필요합니다. 제출의 답변은 `action_required`로 돌아가고, 다음 제출은 새 `remediationRound`를 시작합니다. 검토 대기 중인 제출이 정확히 하나가 아니거나 태스크의 기한이 지난 경우 철회는 `409 task_not_in_review`를 반환하고, 은행이 태스크를 직접 검토하거나 Swipelux가 이미 제출을 검토로 넘긴 경우 `409 submission_already_forwarded`를 반환합니다. [검토 대기 중인 제출 철회](/ko/integration/onboarding/capabilities-and-requirements#withdraw-a-submission-awaiting-review)를 참고하세요.
+- 문서 리소스에 `contentSha256`이 포함됩니다. 이는 저장된 파일의 SHA-256 다이제스트로, `sha256:` 뒤에 소문자 16진수 다이제스트가 오는 형식이며, 다이제스트 기록 이전에 저장된 문서는 `null`입니다. 파일의 다이제스트와 비교하여 이미 저장된 파일의 재업로드를 감지할 수 있습니다. [문서 업로드](/ko/integration/onboarding/capabilities-and-requirements#upload-documents)를 참고하세요.
+- 판매자 패널의 수취인 양식은 고객의 해당 액세스가 준비되면 SPEI(멕시코, MXN), Pix, Pix Safe 계좌를 추가하며, **Pay out** 드로어에서 SPEI 계좌로 지급할 수 있습니다. [수취인과 목적지](/ko/integration/recipients)를 참고하세요.
+- 공개 태스크 양식에서 검토 중인 사람에게 **Edit details**가 표시됩니다. 이를 사용하면 해당 사람을 검토에서 되돌려 다시 추가하는 대신 정보를 수정할 수 있습니다. 해당 사람의 답변과 문서는 다시 입력해야 합니다.
+
+### 변경
+- 제출 `outcome`에 고객이 검토 결정 전에 철회한 제출을 나타내는 `withdrawn`이 추가됩니다. 알 수 없는 결과를 거부하는 클라이언트를 업데이트하세요.
+- 승인되었거나 검토 중인 문서는 이제 은행마다 요청 문구가 다르더라도 다른 은행 신청의 일치하는 문서 요청에 답변합니다. 고객이 같은 파일을 업로드하는 횟수가 줄어듭니다. 90일이 지난 주소 증명처럼 요청의 `maxIssueAgeDays`보다 오래된 파일은 재사용되지 않습니다.
+- 법정화폐 수취인 목적지는 이제 해당 방법에 대한 `ready` 케이퍼빌리티가 필요하며, 케이퍼빌리티 도입 전에 은행 액세스가 설정된 고객도 마찬가지입니다. 그렇지 않으면 `POST /v3/customers/{customerId}/recipients/{recipientId}/destinations`가 `409 rail_not_ready`를 반환합니다. 지갑 목적지는 변경되지 않습니다. [수취인과 목적지](/ko/integration/recipients)를 참고하세요.
+- 고객이 케이퍼빌리티를 가지지 않은 방법으로 은행 계좌를 발급하면 `409 capability_not_ready`를 반환하며, 요청에서 `institution`을 생략하면 사유는 `route_selection_required`, 은행을 지정하면 `no_ready_route`입니다. 두 경우 모두 계좌를 발급할 수 있는 케이퍼빌리티를 `capabilities`에 나열합니다. `ambiguous_route_scope` 및 `rail_not_ready` 사유는 더 이상 반환되지 않습니다. [은행 계좌 발급](/ko/integration/issue-bank-account)을 참고하세요.
+- 이전 경로를 더 이상 진행할 수 없는 `Idempotency-Key`로 재시도한 견적 또는 계좌 요청은 `retryable: true`와 함께 `409 capability_not_ready`를 반환합니다. 새 `Idempotency-Key`로 다시 보내세요.
+- 공개 태스크 양식은 일부 답변이 거부되어도 유효한 답변을 유지하고, 거부된 각 답변 옆에 사유를 표시합니다. 검토 중인 사람은 상태와 함께 목록에 남습니다.
+- 공개 태스크 양식은 개인의 신원 확인을 양식 안에서 진행합니다. 판매자 패널에서 호스팅된 확인을 제공하는 개인의 태스크는 해당 확인으로만 연결되며, **Documents** 섹션은 더 이상 개인 고객에게 업로드를 제공하지 않습니다.
+- 판매자 패널의 고객 **Profile** 탭은 한 번에 한 섹션씩 저장하며, 필드를 비우면 이제 실제로 지워집니다.
+
+### 수정
+- 은행이 거절한 Lead Bank 지급 견적은 `500` 대신 `400 quote_failed`를 반환하고, 은행이 응답할 수 없는 견적은 재시도할 수 있는 `503 quote_temporarily_unavailable`을 반환합니다. [견적과 전송](/ko/integration/quotes-and-transfers)을 참고하세요.
+- 다른 은행이 같은 주소를 검토하는 동안 Lead Bank 소유자 태스크 제출이 더 이상 `500`을 반환하지 않습니다.
+- 개인의 경우 신원 확인이 완료된 후 요청된 문서는 새로운 호스팅 확인 세션을 엽니다.
+- 브라우저가 페이지를 번역해도 판매자 패널 양식이 계속 작동하며, Swipelux 릴리스 후 고객 탭이 복구됩니다.
+- KYB 양식 필드는 필드를 벗어난 후에만 오류를 표시합니다.
+
+</Update>
+
 <Update label="2026-10-08" description="v3" tags={["추가","변경","수정"]}>
 
 ### 추가
@@ -97,6 +270,8 @@ description: "Swipelux API의 날짜별 변경 사항을 나열하고, 항목마
 - Citi(`citibank`)는 법인 고객에게만 제공됩니다. 모든 법인은 풀링 Citi를 계속 사용할 수 있으며, 명의 Citi는 미국 외 지역에 등록된 법인에게만 제공됩니다. 고객에게 Citi가 제공되지 않으면 지원 목록에서 Citi가 제외되고, Citi를 지정하면 `422 capability_institutions_unsupported`를 반환하며, Citi만 제공하는 방법은 `disabled`로 표시됩니다. `institutions`가 없는 요청은 나머지 은행 중에서 선택합니다. 기존 신청과 계좌는 변경되지 않습니다.
 - 명의 CFSB(`cfsb`) 기능은 미국 고객, 즉 미국에 등록된 법인과 미국에 거주하는 개인에게만 제공됩니다. 그 외 고객의 경우 지원 목록에서 명의 CFSB가 제외되고, 이를 지정하면 `422 capability_institutions_unsupported`를 반환합니다. `institutions`가 없는 요청은 나머지 은행 중에서 선택합니다. 풀링 CFSB, 국가를 알 수 없는 고객, 기존 신청은 변경되지 않습니다.
 - Lead Bank(`lead_bank`) 명의 ACH, Wire, SWIFT 기능은 법적 형태와 국가를 기준으로 Lead Bank가 온보딩할 수 있는 고객에게만 제공됩니다. 그 외 고객의 경우 지원 목록에서 `lead_bank`가 제외되고, 이를 지정하면 `422 capability_institutions_unsupported`를 반환합니다. Lead Bank가 이미 온보딩한 고객과 진행 중인 요청에서 이미 `lead_bank`를 지정한 기능은 이를 유지합니다. 기존 신청과 계좌는 변경되지 않습니다.
+- 라이브 모드에서 `institutions`를 생략한 `ach_named` 또는 `wire_named` 케이퍼빌리티 요청은 이제 Lead Bank가 신규 고객을 받고 해당 고객을 온보딩할 수 있을 때 기본적으로 Lead Bank(`lead_bank`)를 사용합니다. 조건은 프로필에 국가가 하나 이상 있고 Lead Bank가 그 모든 국가를 허용하며, 법인 프로필에 Lead Bank가 허용하는 법적 형태가 있고, 고객이 다른 은행에 명의 또는 풀링 여부와 관계없이 `ready` 신청이 없는 것입니다. 다른 고객은 `ach_named`에서 이미 그랬던 것처럼 기본적으로 JPMorgan Chase(`jpmorgan`)를 사용합니다. `wire_named`에는 이전에 기본 은행이 없었습니다. 고객이 이미 가진 현재 신청은 여전히 우선합니다. `GET /v3/customers/{customerId}/capabilities/supported`의 `isDefault`는 고객마다 Lead Bank 규칙을 적용하므로, 표시되는 은행은 고객마다 다를 수 있고 시간이 지나면서 바뀔 수 있습니다. [케이퍼빌리티와 태스크](/ko/integration/onboarding/capabilities-and-requirements#discover-supported-capabilities)를 참고하세요.
+- `institutions`를 생략한 `wire_pooled` 요청은 이제 기본적으로 JPMorgan Chase(`jpmorgan`)를 사용하며, 지원 목록은 이 은행을 `isDefault`로 표시합니다. 이전에는 CFSB(`cfsb`)를 선택했습니다.
 - RTP는 풀링 방식만 제공됩니다. 새 요청에 `rtp_named`를 제공하는 은행이 없으므로 지원 목록에서 `disabled`로 표시됩니다. `rtp_named`를 보유하지 않은 고객의 경우, 은행을 지정한 기능 요청 또는 작업 미리보기는 `422 capability_institutions_unsupported`를 반환하고, `institutions`가 없는 요청은 `422 capability_variant_unavailable`을 반환합니다. 풀링 RTP(`rtp_pooled`)는 Citi에서 제공되므로 법인 고객만 요청할 수 있습니다.
 - 개인 및 실소유자에 대한 새 신분증 문서 요청은 `constraints.identityMetadataRequired: true`를 설정할 수 있으며, 이 경우 각 파일의 `documentMetadata`에 ID 번호와 발급 국가가 필요합니다. 법인 주소 증명 및 소유자 거주 증명에 대한 새 요청은 `constraints.maxIssueAgeDays: 90`을 설정할 수 있으며, 이 경우 각 파일에 발급일이 필요합니다. 기존 작업은 요구 사항을 유지하므로 각 작업 요청의 제약 조건을 확인하세요.
 - `profilePointer`가 `/business/registration`인 법인 등록 요청에 대한 작업 답변에는 관할 국가, 등록 번호, 제출일 이전의 설립일이 모두 함께 필요합니다. 요청의 `valueSchema`가 이 규칙을 게시하며, 일부만 포함된 답변은 `400 validation_error`를 반환합니다.
@@ -109,6 +284,7 @@ description: "Swipelux API의 날짜별 변경 사항을 나열하고, 항목마
 - 프로필 값이나 작업 답변에 RFI, 고객 요청, 송금 추적 링크와 같은 Swipelux 양식 링크가 포함되어 있으면 `POST /v3/customers`, `PATCH /v3/customers/{customerId}`, `POST /v3/customers/{customerId}/related-parties`, `PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}` 및 `POST /v3/customers/{customerId}/tasks/{taskId}/submissions`은 `400 validation_error`를 반환합니다. 이는 `externalId` 또는 `metadata`에는 적용되지 않습니다. 거부된 각 값은 `code: public_form_link` 및 해당 JSON Pointer와 함께 `errors[]`에 표시되며, 응답은 링크를 절대 반복하지 않습니다. 대신 정보 자체를 보내세요. [오류 및 재시도](/integration/errors#validation-error)를 참조하세요.
 
 ### 수정
+- `institutions`를 생략한 `ach_pooled` 요청은 이제 지원 목록이 `isDefault`로 표시하는 은행인 JPMorgan Chase(`jpmorgan`)를 선택합니다. 이전에는 Citi(`citibank`)를 선택할 수 있었습니다. 기존 신청과 계좌는 변경되지 않습니다.
 - 지급 견적 및 전송 응답은 USDC 또는 USDT 출금 금액을 소수점 이하 6자리로 유지합니다(예: `4009.71` 대신 `4009.711365`). 법정화폐 금액은 소수점 이하 2자리를 유지합니다. 스테이블코인 출금 금액이 소수점 이하 2자리를 넘는 지급을 생성하거나 조회해도 더 이상 `500`을 반환하지 않습니다.
 - [`POST /v3/customers/{customerId}/capabilities/{capabilityId}/cancel`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id-cancel) 레퍼런스가 이제 실제 동작대로 취소를 설명합니다. `ready` 상태의 기능은 취소할 수 있고, `stablecoin_transfers` 기능은 취소할 수 없으며, 취소는 해당 기능만 종료하고 그 신청의 상태, 작업, 승인은 유지됩니다.
 - `institutions`에 공개 기관 ID 대신 은행 코드(예: `citibank` 대신 `citi`)를 나열한 기능 요청 또는 작업 미리보기는 `503 kyc_configuration_unavailable` 대신 사용 가능한 ID를 알려주는 `422 capability_institutions_unsupported`를 반환합니다.

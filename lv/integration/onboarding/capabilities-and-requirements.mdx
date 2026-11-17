@@ -46,11 +46,27 @@ Katrs iestādes ieraksts ietver `logoUrl` un karodziņu `isDefault`. Izmantojiet
       "bic": "CHASUS33",
       "logoUrl": "https://wallet.swipelux.com/bank-logos/jpmorgan.png",
       "countries": ["US"],
-      "isDefault": true
+      "isDefault": true,
+      "currencies": [
+        { "code": "USD", "institution": "jpmorgan" }
+      ]
     }
   ]
 }
 ```
+
+Katrai nosauktajai iespējai katrs iestādes ieraksts uzskaita arī `currencies`. Katrs elements norāda valūtas `code`, ko izsniegts konts var saņemt, un `institution`, kas jānosūta, kad [atverat šo kontu](/lv/integration/issue-bank-account#choose-the-bank). `ach_named`, `wire_named` un `rtp_named` uzskaita USD. `sepa_named` uzskaita EUR, `faster_payments_named` uzskaita GBP, un `ipp_named` uzskaita AED. `swift_named` uzskaita katru valūtu, kurā banka izsniedz SWIFT kontus. Valūta var norādīt citu iestādi nekā pats ieraksts. Piemēram, SWIFT valūtas, kas nav USD, bankā `lead_bank` norāda `bmo`. Apkopotās iespējas izlaiž `currencies`.
+
+Iespējai `swift_named` banka nosaka, kuras no šīm valūtām katrs klients var atvērt. Konts valūtā, ko banka šim klientam nepiedāvā, beidzas ar `rejected` un `statusReason.code: currency_unavailable`.
+
+Sūtiet `bmo` tikai tad, kad atverat kontu. Iespējas pieprasījums vai uzdevuma priekšskatījums, kas laukā `institutions` norāda `bmo`, atgriež `422 capability_institutions_unsupported`. Tā vietā pieprasiet `swift_named` bankā `lead_bank`.
+
+Ja izlaižat `institutions`, Swipelux izvēlas šim klientam piemērojamo noklusējuma banku. Noklusējums tiek noteikts katram klientam atsevišķi un laika gaitā var mainīties, piemēram, ja mainās klienta profils vai bankas piesaiste tiek atvērta vai slēgta. Katru reizi nolasiet `isDefault` no atbalstīto iespēju atbildes, nevis saglabājiet to. Dzīvajā režīmā:
+
+- `ach_named` un `wire_named` pēc noklusējuma izmanto Lead Bank (`lead_bank`), ja Lead Bank pieņem jaunus klientus un var piesaistīt šo klientu: profilā ir norādīta vismaz viena valsts un Lead Bank pieņem katru tajā norādīto valsti, uzņēmuma profilā ir norādīta juridiskā forma, ko Lead Bank pieņem, un klientam nav `ready` pieteikuma citā bankā, ne nosauktā, ne apkopotā. Pretējā gadījumā tie pēc noklusējuma izmanto JPMorgan Chase (`jpmorgan`).
+- `ach_pooled` un `wire_pooled` pēc noklusējuma izmanto JPMorgan Chase (`jpmorgan`).
+
+Noklusējums attiecas tikai uz jaunu izvēli. Apstiprinātam (`ready`) pieteikumam, kas klientam jau ir, vai pašreizējam pieteikumam citā bankā joprojām ir prioritāte pār noklusējumu un pār banku, kas atzīmēta ar `isDefault`. Lai nostiprinātu banku, nosūtiet tās ID laukā `institutions`. Smilšu kastē ACH, Wire un SWIFT iespējas tiek nodrošinātas tikai JPMorgan Chase (`jpmorgan`). Skatiet [Smilšu kastes testēšana](/lv/integration/sandbox).
 
 Saglabājiet izvēlēto `data[].id` kā `CAPABILITY_ID`. Nekad nekopējiet iespējas ID no cita klienta vai vides.
 
@@ -128,7 +144,7 @@ Nosauktajām bankas iespējām katram klientam ir viena pieteikuma lieta katrā 
 Pieprasījuma atbilde norāda, kuru lietu Swipelux izmantoja:
 
 - `201` nozīmē, ka pieprasījums atvēra jaunu pieteikuma lietu.
-- `200` nozīmē, ka pieprasījums tika piesaistīts pieteikuma lietai, kas klientam jau bija, piemēram, atkārtots pieprasījums bankas iespējai, kas klientam jau ir, vai pieprasījums atceltai iespējai. Atkārtots pieprasījums iespējām `card` vai `stablecoin_transfers` joprojām atgriež [`409 capability_already_exists`](/integration/errors#capability-already-exists).
+- `200` nozīmē, ka pieprasījums tika piesaistīts pieteikuma lietai, kas klientam jau bija, piemēram, atkārtots pieprasījums bankas iespējai, kas klientam jau ir, vai pieprasījums atceltai bankas iespējai, kas pievienojas tās esošajam pieteikumam. Atkārtots pieprasījums iespējām `card` vai `stablecoin_transfers` joprojām atgriež [`409 capability_already_exists`](/integration/errors#capability-already-exists), un pieprasījums atceltai iespējai `card` atgriež [`409 capability_not_reopenable`](/integration/errors#capability-not-reopenable).
 - `selectedApplicationId` ir augstākā līmeņa lauks blakus `data`, kas satur pieprasījuma izvēlētās vai atvērtās lietas ID. Swipelux to izlaiž, ja pieprasījums neizvēlējās lietu. Idempotenta atkārtošana atgriež to pašu vērtību.
 
 Saīsināta atbilde:
@@ -352,6 +368,8 @@ curl --request POST \
 
 Saglabājiet atgriezto `data.id` kā `DOCUMENT_ID`, pirms iesniedzat atbildi, kas uz to atsaucas.
 
+Katrs v3 dokumenta resurss ietver `contentSha256`, saglabātā faila SHA-256 kontrolsummu formā `sha256:`, kam seko heksadecimālā kontrolsumma mazajiem burtiem. Divi dokumenti ar vienādu kontrolsummu ir baitu ziņā identiski. Lai pārbaudītu, vai klients failu jau ir augšupielādējis, piemēram, failu, kura aizstāšanu pieprasīja pārskatītājs, aprēķiniet tā SHA-256 pirms augšupielādes un salīdziniet to ar `contentSha256` dokumentiem, uz kuriem iepriekšējā iesnieguma atbildes atsaucas laukā `documentIds`. Lauks ir `null` dokumentiem, kas saglabāti, pirms Swipelux sāka reģistrēt kontrolsummas.
+
 Lai vēlāk izgūtu saglabātu failu, izsauciet [`GET /v3/customers/{customerId}/documents/{documentId}/download`](/api-reference/documents/get-v3-customers-by-customer-id-documents-by-document-id-download). Swipelux atgriež `url`, kas lejupielādē failu kā pielikumu un kura derīgums beidzas pēc vienas stundas. Arhivēti dokumenti atgriež `404`.
 
 ### API atbildes {#api-answers}
@@ -381,6 +399,78 @@ JSON
 ```
 
 Ņemiet katru prasības ID un atbildes veidu no jaunākā uzdevuma. Ja API ziņo, ka uzdevums ir mainījies, atkārtoti ielādējiet to un pārveidojiet iesniegumu no jaunās versijas.
+
+#### Saglabājiet derīgās atbildes ar `allowPartial` {#keep-valid-answers-with-allowpartial}
+
+Pēc noklusējuma viena noraidīta atbilde liek visam pieprasījumam neizdoties, un Swipelux neko nesaglabā. Atbilde ir `400 validation_error`, `400 invalid_document_reference` vai `409 absence_conflicts_with_profile`. Pievienojiet `"allowPartial": true`, ja vēlaties, lai Swipelux saglabā derīgās atbildes un noraida tikai nederīgās:
+
+```json Partial submission request
+{
+  "taskRevision": 3,
+  "allowPartial": true,
+  "answers": [
+    { "requirementId": "req_a", "answer": { "type": "text", "value": "Salary" } },
+    { "requirementId": "req_b", "answer": { "type": "document", "documentIds": ["doc_unknown"] } }
+  ]
+}
+```
+
+Swipelux atgriež `201` ar saglabāto iesniegumu laukā `data`, kurā ir tikai saglabātās atbildes, un pārējās uzskaita laukā `refusedAnswers`:
+
+```json Partial submission response
+{
+  "data": { "id": "sub_000000000000000001", "outcome": "in_review", "answers": [{ "requirementId": "req_a" }] },
+  "refusedAnswers": [
+    {
+      "requirementId": "req_b",
+      "code": "invalid_document_reference",
+      "pointer": "/answers/1/answer",
+      "message": "A referenced document is invalid."
+    }
+  ]
+}
+```
+
+Katrai noraidītajai atbildei ir viens no šiem kodiem:
+
+| `code` | Nozīme |
+| --- | --- |
+| `invalid` | Atbilde neatbilst pieprasījuma formai, formātam vai ierobežojumiem, vai klienta profils nepieņem vērtību. |
+| `absence_conflicts_with_profile` | Prombūtne tika nosūtīta vērtībai, kas ir profilā. |
+| `invalid_document_reference` | Atsauces dokumentu nevar izmantot šim klientam un šim pieprasījumam. |
+| `depends_on_refused_answer` | Atbilde pati par sevi ir derīga, bet tiek vērtēta kopā ar noraidītu atbildi. Nosacījuma atbilde un atbilde, kas to kontrolē, tiek saglabātas vai noraidītas kopā. |
+
+Var tikt pievienoti citi kodi. Nezināmu kodu apstrādājiet kā `invalid`. `message` nekad neatkārto iesniegto vērtību.
+
+`allowPartial` neatvieglo citus noteikumus:
+
+- Pieprasījumam joprojām jāatbild uz katru prasību, uz kuru tam būtu jāatbild bez šī lauka. Neatbildētas atvērtās prasības joprojām atgriež `422 task_submission_incomplete`.
+- Pamatteksts, kas neatbilst pašai pieprasījuma shēmai, piemēram, nezināma lauka vai nepareiza tipa dēļ, joprojām atgriež `400 validation_error`.
+- Ja nevienu atbildi nevar saglabāt, Swipelux atgriež `400 validation_error`, neko nesaglabā un katru noraidīto atbildi uzskaita laukā `errors[]`.
+- `refusedAnswers` ir klāt, iespējams, tukšs, tieši tad, ja pieprasījums nosūtīja `"allowPartial": true`. Atkārtojums ar to pašu `Idempotency-Key` atgriež tos pašus `refusedAnswers`.
+
+Pirms labojat noraidītu atbildi, nolasiet uzdevumu vēlreiz. Noraidīta prasība parasti joprojām ir `action_required`, bet uz dokumenta pieprasījumu jau var būt atbildējis reģistrēts fails. Iesniedziet labojumus ar jauno `taskRevision` un jaunu `Idempotency-Key`. Nosūtiet nosacījuma atbildi kopā ar atbildi, kas to kontrolē.
+
+#### Atsauciet iesniegumu, kas gaida pārskatīšanu {#withdraw-a-submission-awaiting-review}
+
+Lai labotu iesniegumu, kas joprojām ir `in_review`, atsauciet to ar `POST /v3/customers/{customerId}/tasks/{taskId}/withdrawals`. Pieprasījumam nav pamatteksta, un tam nepieciešams `Idempotency-Key`. API atslēgām nepieciešams `accounts:write`, `customers:read` un `customers:write`, tāpat kā iesniegumiem:
+
+```bash Withdraw task submission
+curl --request POST \
+  "${API_BASE}/v3/customers/${CUSTOMER_ID}/tasks/${TASK_ID}/withdrawals" \
+  --header "X-API-Key: ${SWIPELUX_API_KEY}" \
+  --header "Idempotency-Key: task-withdrawal-001"
+```
+
+Swipelux atgriež `200` ar iesniegumu laukā `data`. Tā `outcome` kļūst `withdrawn`, tā atbildes atgriežas statusā `action_required` bez `reviewFeedback`, un nākamais iesniegums sāk jaunu `remediationRound`. Jau pieņemtās prasības un klienta profils paliek nemainīgi. Atbildes, ko Swipelux aizpildīja no profila vai reģistrētiem failiem, paliek pārskatīšanā. Atsaukt varat tik reižu, cik nepieciešams. Nolasiet uzdevumu vēlreiz un pēc tam iesniedziet labotās atbildes.
+
+Swipelux noraida atsaukšanu šādos gadījumos:
+
+- `404 task_not_found`: šim klientam uzdevums neeksistē.
+- `409 task_not_in_review`: pārskatīšanu negaida tieši viens iesniegums (neviens vai vairāk nekā viens, piemēram, daļējs iesniegums un tā labojums), vai uzdevuma termiņš ir beidzies.
+- `409 submission_already_forwarded`: banka šo uzdevumu pārskata tieši, vai Swipelux jau ir nosūtījis iesniegumu pārskatīšanai. To atgriež arī uzdevumi, kas izveidoti ar `POST /v3/sandbox/tasks`.
+
+Iesnieguma `outcome` tagad var būt `withdrawn`. Atjauniniet katru klientu, kas pārbauda `outcome` pret fiksētu sarakstu.
 
 ### Patiesā labuma guvēja priekšnosacījums uzņēmumiem {#beneficial-owner-prerequisite-for-businesses}
 

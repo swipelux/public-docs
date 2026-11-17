@@ -52,7 +52,7 @@ JSON
 - 新しい購読には v3 のイベント名を使用する必要があります。
 - エンドポイントがすでに購読しているレガシーイベント名は維持できます。新しいレガシー名を追加すると `400 validation_error` が返されます。
 
-インテグレーション事業者の KYB が承認されるまで、KYB が必要な本番スペース内のすべてのエンドポイントを合計して、1 時間あたり 20 回まで Webhook URL を変更できます。サンドボックススペースでの変更はカウントされません。エンドポイントの作成や `url` の変更は変更としてカウントされます。`events` のみの変更や、現在の URL をそのまま保存する場合はカウントされません。上限を超えると `422 merchant_kyb_not_approved` が返されます。[本番リリース](/jp/integration/go-live#activate-your-production-space)を参照してください。
+インテグレーション事業者の KYB が承認されるまで、エンドポイントの作成と URL の変更には上限があります。[本番リリース](/jp/integration/go-live#daily-creation-limits) を参照してください。
 
 次のボディは URL を維持し、選択を置き換えます。
 
@@ -61,6 +61,12 @@ JSON
   "events": ["transfer.state_changed", "capability.status_changed"]
 }
 ```
+
+## 公開された送信先 URL を使用する {#use-a-public-destination-url}
+
+URL を保存すると、ホスト名の解決先アドレスのいずれかがプライベート、ループバック、リンクローカル、予約済み、マルチキャストである場合、ホスト名が解決できない場合、またはホスト名が `localhost`、単一ラベルの名前である場合や `.localhost`、`.local`、`.localdomain`、`.internal`、`.home.arpa` で終わる場合に `400 validation_error` が返されます。
+
+Swipelux は保存済みの URL を毎日再確認し、ホスト名またはアドレスが拒否されるようになったエンドポイントを一時停止します (`disabled: true`)。再開するには、確認を通過する `url` を `disabled: false` とともに送信してください。
 
 ## パース前に検証する
 
@@ -72,18 +78,21 @@ Swipelux は、新しい Webhook インテグレーションを Svix 経由で�
 
 検証が成功する前に JSON をパースしたり副作用を発生させたりしないでください。
 
-```javascript Verify signature
+<CodeGroup>
+
+```javascript JavaScript
 import { Webhook } from "svix";
 
 const verifier = new Webhook(process.env.SWIPELUX_WEBHOOK_SECRET);
 
 export async function handleSwipeluxWebhook(request) {
   const rawBody = await request.text();
-  const event = verifier.verify(rawBody, {
+  verifier.verify(rawBody, {
     "svix-id": request.headers.get("svix-id"),
     "svix-timestamp": request.headers.get("svix-timestamp"),
     "svix-signature": request.headers.get("svix-signature"),
   });
+  const event = JSON.parse(rawBody);
 
   await webhookInbox.insertIfAbsent({
     id: event.id,
@@ -94,6 +103,27 @@ export async function handleSwipeluxWebhook(request) {
   return new Response(null, { status: 204 });
 }
 ```
+
+```java Java
+import com.svix.Webhook;
+import com.svix.exceptions.WebhookVerificationException;
+import java.util.List;
+import java.util.Map;
+
+class SwipeluxSignature {
+  // Pass the unmodified request body and every request header.
+  static boolean valid(String secret, String rawBody, Map<String, List<String>> headers) throws Exception {
+    try {
+      new Webhook(secret).verify(rawBody, headers);
+      return true;
+    } catch (WebhookVerificationException e) {
+      return false;
+    }
+  }
+}
+```
+
+</CodeGroup>
 
 署名がないか無効なリクエストは拒否してください。検証が完了するまで、生のボディを利用可能な状態に保ってください。
 

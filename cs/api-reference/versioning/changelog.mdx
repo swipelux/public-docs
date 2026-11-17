@@ -8,35 +8,152 @@ Tato stránka uvádí datované změny ve Swipelux API. Každá položka pozname
 
 Pro upgrade existující integrace z dřívější verze viz [Migrace na v3](/cs/api-reference/versioning/migrate-to-v3).
 
+<Update label="2026-11-16" description="v3" tags={["Přidáno","Změněno","Opraveno"]}>
+
+### Přidáno
+- `GET /v3/customers` přijímá `pooledCapabilityIncludeWait`, `pooledCapabilityExcludeWait`, `namedCapabilityIncludeWait` a `namedCapabilityExcludeWait`. Každý z nich používejte s odpovídajícím filtrem `pooledCapabilityStatus` nebo `namedCapabilityStatus`. `IncludeWait` přidává omezené capabilities, jejichž řešení je `wait`, a `ExcludeWait` odebírá capabilities, jejichž řešení je `wait`. Když jsou oba `true`, má přednost `ExcludeWait`. Filtry vyžadují `accounts:read` nebo `rails:read`. Viz [Zákazníci](/cs/integration/onboarding/customers#filter-customers-by-capability-readiness).
+- Souhrny capabilities vrácené s `include=capabilities` mohou obsahovat `statusReason.resolution`: `wait`, `contact_support` nebo `none`. U důvodu, který závisí na úkolech, načtěte capability.
+- Požadavek na dokument může vrátit `constraints.idNumber` s délkou 3 až 50 znaků. Když je jeho `required` `true`, uveďte číslo dokladu v `documentMetadata`. Dashboard se ptá na číslo dokladu a vydávající zemi, když je dokument potřebuje.
+- `PATCH /v3/customers/{customerId}/accounts/{accountId}` přijímá `bankAddress` (až 105 znaků), `bankCity` a `bankPostalCode` u externího účtu SWIFT, který není v USD. Výplaty SWIFT v cizí měně vyžadují `bankAddress` a `bankCity`. Změna těchto polí u účtu v USD vrátí `409 conflict`. Dokud čekající quote nebo výplata používá účet, změna vrátí `409 account_has_active_transfers`, kterou můžete zopakovat.
+- V dashboardu KYB přijímá dokumenty WebP, HEIF a HEIC.
+
+### Změněno
+- Swipelux odešle [`account.details_changed`](/api-reference/webhooks/account-details-changed), když se změní kód SWIFT, směrovací číslo nebo číslo účtu vydaného účtu. `data.object` je aktuální účet a `data.previous` obsahuje pouze `routingVersion`. Viz [Vydat bankovní účet](/cs/integration/issue-bank-account).
+- Archivace účtu peněženky, který je vypořádací peněženkou nearchivovaného bankovního účtu, vrátí `409 account_has_dependent_accounts`. Přesuňte vypořádání bankovního účtu na jinou peněženku pomocí `PATCH`, nebo nejprve archivujte bankovní účet.
+- `PATCH /v3/customers/{customerId}/recipients/{recipientId}` odmítá pole druhého typu příjemce s `400 validation_error` a chybou `invalid_field` pro každé z nich: `companyName` a `businessIndustry` u fyzické osoby, `firstName` a `lastName` u firmy.
+- `POST /v3/customers/{customerId}/tasks/{taskId}/withdrawals` také vrací `409 idempotency_request_in_progress` s `retryable: true`, dokud stále běží totožný požadavek.
+- V dashboardu odmítnuté smazání zákazníka uvádí zdroje, které jej blokují, země příjemce používá výběr země a textová pole profilu jsou omezena na 256 znaků. Po vytvoření výplaty ze stránky zákazníka nebo z Balances se otevřou její podrobnosti.
+
+### Opraveno
+- Swipelux již neposílá dvě události `capability.status_changed` pro jednu capability v jedné aktualizaci a neposílá žádnou, když stav skončí tam, kde začal.
+- Když je účet zamítnut, zatímco se ještě zřizuje, `account.status_changed` hlásí `previous.state: "provisioning"` místo `"in_review"`.
+
+</Update>
+
+<Update label="2026-11-09" description="v3" tags={["Přidáno","Změněno","Opraveno"]}>
+
+### Přidáno
+- Když banka u výplaty SWIFT v USD třetí straně požádá o podpůrný dokument, Swipelux u převodu otevře úkol s `category: "transaction_rfi"`. Požaduje jeden dokument a jeho referenci. Odpovězte na něj pomocí stávajících endpointů pro odeslání úkolů a Swipelux odpověď předá bance. Swipelux úkol zruší, pokud se výplata dokončí bez schválení banky, selže nebo je vrácena. Viz [Quotes a převody](/cs/integration/quotes-and-transfers#supporting-documents-for-swift-payouts).
+- Vydané účty SWIFT u všech bank vracejí poštovní adresu příjemce v `details.accountHolderAddress`. Dříve ji vracely jen účty u Lead Bank a BMO. Liší se od `details.bankAddress`, adresy přijímající banky. Viz [Vydat bankovní účet](/cs/integration/issue-bank-account).
+- Vklad na účet SWIFT, který není v USD, v měně účtu se vypořádá do vypořádací peněženky jako USDC. `amounts.in` převodu zobrazuje částku přijatou v měně účtu a `amounts.out` zobrazuje doručené USDC. Dříve byly tyto vklady zadrženy k posouzení bez převodu nebo webhooku.
+- Požadavek na dokument může vrátit `constraints.issuingCountryRequired: true`. Každý dokument odeslaný k tomuto požadavku musí obsahovat `issuingCountry` v `documentMetadata`.
+
+### Změněno
+- Opakování, které dorazí, zatímco první totožný požadavek stále běží, vrací `409 idempotency_request_in_progress` s `retryable: true` u požadavků na capabilities, dokumentů, příjemců a jejich cílů, pravidel, webhooků, quotes, převodů, zrušení převodů a sdílecích tokenů ověřovacích relací. Dříve tyto trasy vracely `idempotency_conflict`. Opětovné použití klíče s jiným tělem stále vrací `idempotency_conflict`. Viz [Chyby a opakování](/integration/errors#idempotency-request-in-progress).
+- Quotes bankovních pay-inů vracejí místo obecného selhání konkrétní chyby: `400 quote_amount_out_of_range`, `400 quote_volume_limit_exceeded`, `400 quote_destination_network_unsupported`, `503 quote_temporarily_unavailable` (opakovatelná) nebo `502 quote_failed`.
+- `DELETE /v3/customers/{customerId}/documents/{documentId}` vrací `409 document_in_use`, dokud na dokumentu závisí aplikace v bankovním posuzování. Archivujte jej po dokončení posuzování nebo po zrušení aplikace.
+- Bankovní účet, který není v USD a jehož vypořádací peněženka je USDT, nyní při vytvoření i aktualizaci vrací `400 invalid_settlement_target`, a to i bez explicitního `settlement.currency`. Viz [Zvolte měnu vypořádání](/cs/integration/issue-bank-account#choose-the-settlement-currency).
+- V dashboardu kontrola výplaty označuje přijímanou částku v cizí měně jako odhad.
+- V dashboardu a na veřejné sledovací stránce zobrazuje dokončený převod, který banka vrátila nebo stornovala, upozornění. Jeho stav zůstává Completed.
+
+### Opraveno
+- Vydané bankovní účty odesílají `account.status_changed`, když se stanou připravenými. Viz [Webhooky](/cs/integration/webhooks).
+- Opakování vícedílného nahrání dokumentu se stejným idempotentním klíčem a souborem již nevrací `409`.
+- Filtry transakcí v dashboardu přiřazují bankovní výplaty k jejich bankovnímu railu a pokrývají všechny kryptoměnové sítě. Vyhledávání podle přesného ID najde malé pay-iny.
+
+</Update>
+
+<Update label="2026-11-04" description="v3" tags={["Přidáno"]}>
+
+### Přidáno
+- Zákazníci s připravenou capability `swift_named` u Lead Bank (`lead_bank`) mohou posílat výplaty SWIFT v AUD, CAD, CHF, CZK, DKK, EUR, GBP, HKD, HUF, JPY, MXN, NOK, NZD, PLN, SEK, SGD a ZAR. Měna, kterou banka pro zákazníka nepovolí, vrátí `422 bank_not_supported_for_customer`. Vytvořte quote s přesnou částkou USDC v `in.amount`, ze které si Swipelux strhne poplatek v USD. `out.amount` v quote je odhad označený novým `out.amountEstimated: true`, odeslání `out.amount` vrátí `422 validation_error` a převod po dokončení výplaty zaznamená doručenou částku. EUR, GBP, CHF, CZK, DKK, HUF, NOK, PLN a SEK vyžadují platný IBAN. Ostatní měny přijímají platný IBAN nebo místní číslo účtu, které je pro MXN 18místný CLABE. Adresa majitele musí obsahovat PSČ. Vrácená výplata jde k posouzení Swipelux místo automatického vrácení. Viz [Odesílat prostředky](/cs/integration/send-funds#foreign-currency-swift-payouts).
+
+</Update>
+
+<Update label="2026-11-02" description="v3" tags={["Přidáno","Změněno","Opraveno"]}>
+
+### Přidáno
+- Dashboard má stránku **Agents** pro připojení agentů AI ke Swipelux. **Your agents** uvádí agenty připojené v Sandboxu a Live a umožňuje je odpojit. Viz [Používejte Swipelux ze svého agenta AI](/integration/ai-agents).
+- Seznam zákazníků v dashboardu přidává filtry **Shared methods**, **Bank accounts** a **Opened bank account**.
+
+### Změněno
+- Swipelux denně znovu kontroluje uložené cíle webhooků. Pokud je název hostitele endpointu nyní odmítnut nebo se překládá na odmítnutou adresu, Swipelux endpoint pozastaví a nastaví `disabled: true`. Pozastavený endpoint zůstane pozastavený, když změníte pouze jeho `url`; pro obnovení odešlete platnou `url` s `disabled: false`. Viz [Webhooky](/cs/integration/webhooks#use-a-public-destination-url).
+- Vytvoření pravidla odmítne cílovou peněženku v jiné síti nebo bankovní cíl s `400 rule_target_invalid`. Viz [Chyby a opakování](/integration/errors#rule-target-invalid).
+- Odpovědi na stažení dokumentů obsahují `Cache-Control: private, no-store`.
+- Po obnovení passkey vám dashboard pošle e-mail a na 24 hodin pozastaví výplaty, výběry, vytváření tajných klíčů, připojení agentů a pozvánky do týmu.
+
+### Opraveno
+- Pravidla se nyní spouštějí, když prostředky odeslané z jiné peněženky Swipelux dorazí do spouštěcí peněženky.
+- Archivaci zákazníka již neblokují bankovní účty, které nikdy nebyly vydány.
+- `include=capabilities` již u některých zákazníků nevrací prázdný seznam.
+- Zůstatky sandboxových účtů již nezobrazují chyby zaokrouhlení s plovoucí čárkou.
+- Quotes bankovních výplat s vývojářským poplatkem, který trasa nemůže účtovat, se odmítají již při quote s `400 validation_error`, místo aby selhaly při provedení.
+- Odkaz pro platbu kartou již neotevírá druhý checkout, když jeho quote vyprší, zatímco se první platba kartou ještě zpracovává.
+- Dokončené pay-iny kartou si zachovávají svou fiat zdrojovou částku.
+- U Lead Bank již postranní panel **Open bank account** v dashboardu nenabízí sítě USDT, které banka nepodporuje, a nabízí USDT na Solaně.
+
+</Update>
+
 <Update label="2026-11-01" description="v3" tags={["Přidáno"]}>
 
 ### Přidáno
 - Každá položka z [`GET /v3/customers/{customerId}/capabilities/supported`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-supported) obsahuje `unavailableInstitutions`. Uvádí banky, které variantu capability nabízejí, ale tohoto zákazníka nepřijímají, každou s `id`, `name` a `reasons` ve tvaru `statusReason`. Aktuální kódy důvodů jsou `jurisdiction_unsupported`, `legal_form_unsupported` a `customer_type_unsupported`. U sdružených a nebankovních položek je pole `[]` a banka se nikdy neobjeví zároveň v `institutions` i v `unavailableInstitutions`. Uvedení nedostupné banky v žádosti o capability stále vrací `422 capability_institutions_unsupported`. Viz [Schopnosti a požadavky](/cs/integration/onboarding/capabilities-and-requirements#show-why-a-bank-is-unavailable).
+- Zákazníci s připravenou capability `swift_named` u Lead Bank (`lead_bank`) mohou otevírat vydané účty SWIFT v AUD, CAD, CHF, CZK, DKK, EUR, GBP, HKD, HUF, JPY, MXN, NOK, NZD, PLN, SEK, SGD a ZAR, jeden účet na měnu. Odpověď s podporovanými capabilities je uvádí v položce `lead_bank` u `swift_named` s `institution: "bmo"`. Tuto `institution` odešlete spolu s měnou. BMO Bank N.A. (`bmo`, BIC `HATRUS44`) je banka uváděná u těchto účtů a `GET /v3/institutions` ji uvádí. Banka rozhoduje, které měny může každý zákazník otevřít, a účet v měně, kterou nenabízí, skončí jako `rejected` s `statusReason.code: currency_unavailable`. Uvedení `lead_bank` s jednou z těchto měn vrátí `400 validation_error`, která odkazuje na `bmo`. Uvedení `bmo` s USD nebo s jinou metodou než `swift` vrátí `400 validation_error`. Požadavek na capability nebo náhled úkolu, který uvádí `bmo`, vrátí `422 capability_institutions_unsupported`. Viz [Vydat bankovní účet](/cs/integration/issue-bank-account#choose-the-bank).
 
 </Update>
 
-<Update label="2026-10-30" description="v3" tags={["Přidáno"]}>
+<Update label="2026-10-30" description="v3" tags={["Přidáno","Změněno"]}>
 
 ### Přidáno
-- Ověřené požadavky mají omezenou četnost podle API klíče, podle integrující firmy a podle IP adresy klienta. Požadavek, který překročí limit, vrátí `429 rate_limited` s `retryable: true` a hlavičkou `Retry-After`, která udává počet sekund, jež je třeba počkat před opakováním. Integrující firmy, které ještě nejsou schválené, mají nižší limity. Každá ověřená operace v referenci API uvádí odpověď `429`. Opakovaná neúspěšná ověření z jedné IP adresy po překročení svého limitu také vracejí `429`, zatímco platné API klíče odeslané z této adresy dál fungují.
+- Autentizované požadavky mají omezenou četnost na klíč API, na integrující firmu a na IP adresu klienta. Požadavek nad limitem vrátí `429 rate_limited` s `retryable: true` a hlavičkou `Retry-After`, která udává počet sekund, které je třeba počkat před opakováním. Integrující firmy, které ještě nejsou schválené, mají nižší limity. Každá autentizovaná operace v referenci API uvádí odpověď `429`. Opakovaná neúspěšná ověření z jedné IP adresy po překročení limitu také vracejí `429` a platný klíč API odeslaný z této adresy může dostávat stejnou odpověď, dokud se limit neobnoví, proto požadavek zopakujte po uplynutí doby `Retry-After`. Viz [Chyby a opakování](/integration/errors#rate-limited).
+
+### Změněno
+- Swipelux deaktivoval starší klíče API bez veřejné části, například klíče bez teček. Požadavky s nimi vracejí `401 unauthorized`.
+
+</Update>
+
+<Update label="2026-10-29" description="v3" tags={["Změněno"]}>
+
+### Změněno
+- Dokud není KYB vaší integrující firmy schváleno, Swipelux omezuje vytváření v libovolném klouzavém 24hodinovém období napříč všemi vašimi prostory: 10 klíčů API, 10 webhookových endpointů, 10 pravidel, 250 zákazníků, 20 exportů `sumsub_share_token` a 10 importů ověření identity. Tím se nahrazuje limit 10 aktivních klíčů API na živý prostor; zrušení klíče neuvolní místo. Vytvoření nad limit vrátí `422 merchant_kyb_not_approved`; dashboard vrátí prosté `422`. Neúspěšná vytvoření a idempotentní opakování se nezapočítávají. Tyto limity a limit 20 změn URL webhooků za hodinu platí i v sandboxových prostorech, pokud nemáte živý prostor, který je schválený nebo nevyžaduje KYB. Viz [Denní limity vytváření](/cs/integration/go-live#daily-creation-limits).
 
 </Update>
 
 <Update label="2026-10-28" description="v3" tags={["Přidáno","Změněno"]}>
 
 ### Přidáno
-- Webhook endpointy obsahují `disabled`, které má hodnotu `true`, dokud jsou doručování na endpoint pozastavena. Swipelux také pozastaví endpoint po opakovaných selháních doručení. Pošlete `disabled: true` v [`PATCH /v3/webhooks/{webhookId}`](/api-reference/webhooks/patch-v3-webhooks-by-webhook-id) pro pozastavení doručování a `disabled: false` pro jeho obnovení. Obnovení znovu zkontroluje cílovou URL a vrátí `400`, pokud již kontrolou neprojde, takže endpoint zůstane pozastavený.
+- `GET /v3/customers` přijímá filtry `pooledCapabilityStatus` a `namedCapabilityStatus`, každý nastavený na `pending`, `ready`, `restricted`, `rejected` nebo `canceled`. Přijímá také `hasReadyNamedAccount=true|false` pro výpis zákazníků s pojmenovaným účtem `ready` nebo bez něj. Filtry lze kombinovat navzájem i s ostatními filtry seznamu a Swipelux je uplatní před stránkováním. Klíče API k jejich použití potřebují `accounts:read` nebo `rails:read`. Neplatná hodnota vrátí `400 validation_error`. Například `namedCapabilityStatus=ready&hasReadyNamedAccount=false` najde zákazníky, které banka schválila a kteří zatím nemají připravený pojmenovaný účet. Viz [Zákazníci](/cs/integration/onboarding/customers#filter-customers-by-capability-readiness).
+- `PATCH /v3/customers/{customerId}` a `PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}` vracejí hlavičku odpovědi `Swipelux-Ignored-Fields`, když ignorují pole těla, která nerozpoznají. Hlavička uvádí JSON Pointery ignorovaných polí oddělené čárkami a seřazené, nejvýše 20 ukazatelů a 4096 znaků, s koncovým `...` při zkrácení. Pole uvnitř `metadata` se nikdy nehlásí a idempotentní opakování hlavičku vynechávají. Kontrolujte ji po každé aktualizaci, abyste nepozorovaně nepřišli o data, například o datum narození odeslané pod nesprávným názvem pole. Viz [Zákazníci](/cs/integration/onboarding/customers#check-ignored-fields-on-updates).
+- Webhookové endpointy obsahují `disabled`, které je `true`, dokud jsou doručování na endpoint pozastavena. Swipelux endpoint pozastaví také po opakovaných selháních doručení. Odešlete `disabled: true` v [`PATCH /v3/webhooks/{webhookId}`](/api-reference/webhooks/patch-v3-webhooks-by-webhook-id) pro pozastavení doručování a `disabled: false` pro jeho obnovení. Obnovení znovu zkontroluje cílovou URL a vrátí `400`, pokud již nevyhovuje, takže endpoint zůstane pozastavený.
+- Swipelux může pozastavit integrující firmu. Během pozastavení vrací každý požadavek s kterýmkoli z jejích klíčů API `403 merchant_suspended` s `retryable: false` a Swipelux zadržuje její doručování webhooků, spouštění pravidel a aplikace u bank. Nic se neodstraní ani nezruší, takže klíče API, webhookové endpointy a pravidla znovu fungují, jakmile Swipelux pozastavení zruší. Pro vyřešení pozastavení kontaktujte podporu Swipelux. Viz [Chyby a opakování](/integration/errors#merchant-suspended).
 
 ### Změněno
-- `POST /v3/customers/{customerId}/export` s `format: sumsub_share_token` vrací `422 kyc_provider_rejected` s `retryable: false` místo `502 request_failed`, když poskytovatel ověření identity odmítne vytvořit share token, například pro neznámé `forClientId`. Odpověď obsahuje pevnou zprávu Swipelux a nikdy neopakuje text chyby poskytovatele, proto před opakováním zkontrolujte požadavek. Ostatní selhání poskytovatele stále vracejí `502 request_failed`, který lze opakovat.
-- Portál z `GET /v3/webhooks/portal` již nevytváří, neupravuje, nepozastavuje ani nemaže endpointy. S API klíčem, který má `webhooks:write`, stále zobrazuje a rotuje podpisový secret endpointu, opakuje doručení a přehrává je. Endpointy vytvářejte pomocí `POST /v3/webhooks`, měňte nebo pozastavujte pomocí `PATCH /v3/webhooks/{webhookId}` a mažte pomocí `DELETE /v3/webhooks/{webhookId}`. Viz [Webhooky](/cs/integration/webhooks).
+- `POST /v3/customers/{customerId}/export` s `format: sumsub_share_token` vrací `422 kyc_provider_rejected` s `retryable: false` místo `502 request_failed`, když poskytovatel ověření identity odmítne vytvořit sdílecí token, například pro neznámé `forClientId`. Odpověď obsahuje pevnou zprávu Swipelux a nikdy neopakuje chybový text poskytovatele, proto před opakováním zkontrolujte požadavek. Ostatní selhání poskytovatele stále vracejí `502 request_failed`, které lze opakovat.
+- Portál z `GET /v3/webhooks/portal` již nevytváří, neupravuje, nepozastavuje ani nemaže endpointy. S klíčem API, který má `webhooks:write`, stále zobrazuje a rotuje podpisový tajný klíč endpointu, opakuje doručení a přehrává je. Endpointy vytvářejte pomocí `POST /v3/webhooks`, měňte nebo pozastavujte je pomocí `PATCH /v3/webhooks/{webhookId}` a mažte je pomocí `DELETE /v3/webhooks/{webhookId}`. Viz [Webhooky](/cs/integration/webhooks).
+- `POST /v3/webhooks` a `PATCH /v3/webhooks/{webhookId}` přijímají pouze cíle, jejichž všechny přeložené adresy jsou globálně směrovatelné unicastové. Vracejí `400 validation_error` pro adresy v rozsazích IANA pro zvláštní účely, multicastové adresy, přechodové formy IPv6 obsahující odmítnutou adresu IPv4, názvy hostitelů, které se nepřekládají, `localhost`, jednoúrovňové názvy hostitelů a názvy hostitelů končící na `.localhost`, `.local`, `.localdomain`, `.internal` nebo `.home.arpa`.
 
 </Update>
 
-<Update label="2026-10-25" description="v3" tags={["Změněno"]}>
+<Update label="2026-10-26" description="v3" tags={["Přidáno","Změněno","Opraveno"]}>
+
+### Přidáno
+- V panelu obchodníka umožňuje **Settings** > **Customer pages** vlastníkům a správcům nahrát logo firmy (PNG, JPG nebo WebP, až 512 KB) a nastavit pro každý prostor návratovou URL `https://`. Logo nahrazuje logotyp Swipelux na hostovaných stránkách podmínek vašich zákazníků v živých prostorech. Pokud má prostor návratovou URL, dokončená stránka podmínek nabízí **Return to the app**.
+
+### Změněno
+- Hostovaná stránka podmínek má nový design. Každá stránka sandboxového průchodu zobrazuje odznak **Sandbox**.
+- V živém prostoru, který vyžaduje KYB, ponechává panel obchodníka sekce **Customers**, **Balances** a **Transactions** uzamčené, dokud není vaše KYB schváleno. Úvodní stránka zobrazuje kroky ke spuštění a sekce **Bank accounts** zákazníka uvádí jeden řádek na banku s jejími měnami a po schválení bankou zobrazí bankovní údaje.
+- `POST /v3/quotes` pro pay-in vrací `422 capability_direction_unsupported` s `retryable: false` místo opakovatelného `503 rail_temporarily_unavailable`, když žádná banka obsluhující capability nenabízí quotes pro pay-in, jako u `ach_named` a `wire_named` u Lead Bank (`lead_bank`). Opakování se stejným `Idempotency-Key` znovu vrátí `422`.
+- `DELETE /v3/customers/{customerId}` vrací `409 merchant_kyb_subject_archive_refused` s `retryable: false` pro KYB zákazníka vaší firmy. Nejprve požádejte podporu Swipelux o přesunutí vašeho KYB na jiného zákazníka.
+
+### Opraveno
+- Když hostované ověření přejde do posuzování a bylo poslední otevřenou položkou úkolu, capability přejde do `pending` s `statusReason.code: information_in_review` a aplikace, která byla `action_required`, přejde do `in_review`. Swipelux pro tyto změny odešle `capability.status_changed` a `application.status_changed`. Dříve si obě ponechaly předchozí stav a Swipelux neodeslal žádný webhook.
+- V odeslání úkolu nahrazuje objektová odpověď, například adresa, registrace firmy nebo vlastnická struktura, uloženou hodnotu místo sloučení s ní, takže pole vynechaná v nové odpovědi, například `state` nebo `streetLine2`, jsou odstraněna. Požadavky `PATCH` na zákazníky a propojené strany nadále slučují.
+- `GET /v3/webhooks` vrací `200` s prázdným polem `data` místo `502 request_failed` předtím, než existuje váš první webhookový endpoint, relace portálu nebo událost.
+- Opakování se stejným `Idempotency-Key`, které znovu vrací uloženou chybovou odpověď, nyní obsahuje `X-Request-Id` nastavené na vlastní ID požadavku tohoto opakování. Tělo si ponechává `correlationId` prvního požadavku.
+- Opětovný požadavek na capability `card` po jejím zrušení vrací `409 capability_not_reopenable` s `retryable: false` místo `500`.
+
+</Update>
+
+<Update label="2026-10-25" description="v3" tags={["Přidáno","Změněno"]}>
+
+### Přidáno
+- Vydané účty SWIFT lze otevřít u Lead Bank (`lead_bank`) v rámci capability `swift_named` zákazníka.
+- `GET /v3/customers/{customerId}/capabilities/supported` vrací pro pojmenované capabilities `institutions[].currencies`. Každá položka je `code` měny a `institution`, kterou odešlete při otevírání účtu: USD pro `ach_named`, `wire_named`, `rtp_named` a `swift_named`, EUR pro `sepa_named`, GBP pro `faster_payments_named` a AED pro `ipp_named`. Sdružené capabilities `currencies` vynechávají. Viz [Capabilities a úkoly](/cs/integration/onboarding/capabilities-and-requirements#discover-supported-capabilities).
 
 ### Změněno
 - Dokud není KYB vaší integrující firmy schváleno, můžete provést celkem 20 změn URL webhooku za hodinu napříč všemi endpointy ve vašich živých prostorech, které vyžadují KYB. Změny v sandboxových prostorech se nezapočítávají. Překročení limitu změn URL webhooku vrací `422 merchant_kyb_not_approved`. Změna pouze `events` endpointu nebo uložení jeho aktuální URL se jako změna URL nepočítá. V Dashboardu Swipelux odmítne více než 10 aktivních API klíčů na živý prostor, který vyžaduje KYB, prostou odpovědí `422`. Swipelux také odmítne více než 5 prostorů na obchodníka prostou odpovědí `422`, pokud máte alespoň jeden živý prostor, všechny vaše živé prostory vyžadují KYB a žádný není schválen. Limit prostorů započítává sandboxové i živé prostory; neplatí, pokud některý živý prostor KYB nevyžaduje. Sandboxové prostory jsou vyňaty z blokace zápisů, limitu změn URL webhooku i limitu klíčů. Viz [Uvedení do provozu](/cs/integration/go-live#activate-your-production-space).
+- Vydané účty ACH a wire přijímají pouze USD, stejně jako účty SWIFT u `lead_bank`. Požadavek v jiné měně vrátí `400 validation_error`. Dříve byl přijat a poté vydán v USD, nebo nebyl nikdy zřízen.
+- Když žádná z připravených bank zákazníka nevydává požadovanou měnu, `POST /v3/customers/{customerId}/accounts` vrátí `409 capability_not_ready` s `reason: "no_issuable_route"`. Místo opakování zvolte jinou měnu nebo instituci.
 
 </Update>
 
@@ -68,6 +185,34 @@ Pro upgrade existující integrace z dřívější verze viz [Migrace na v3](/cs
 
 </Update>
 
+<Update label="2026-10-19" description="v3" tags={["Přidáno","Změněno","Opraveno"]}>
+
+### Přidáno
+- Požadavky na dokumenty, které Swipelux předává bance, mohou v `request.constraints.maxSizeBytes` obsahovat limit banky na jeden soubor. Panel obchodníka a hostovaná stránka žádosti o informace zmenšují fotografie JPEG, PNG a WebP tak, aby se do limitu vešly, a odmítají soubory, které jej stále překračují. Viz [Nahrání dokumentů](/cs/integration/onboarding/capabilities-and-requirements#upload-documents).
+- Pokud má Swipelux otevřený požadavek k ověření vaší firmy (KYB) v živém prostoru, který KYB vyžaduje, panel obchodníka otevře stránku KYB při prvním načtení v kartě prohlížeče. Vede tam také tlačítko **Action needed** v záhlaví.
+
+### Změněno
+- Opětovný požadavek na zrušenou bankovní capability vrací `201`, když požadavek otevře novou aplikaci, a `200`, když se připojí k aplikaci, kterou zákazník již má. Viz [Capabilities a úkoly](/cs/integration/onboarding/capabilities-and-requirements#shared-applications-per-bank).
+- Nové sdílené úkoly intake, které se ptají na `/financialProfile/accountPurposes`, se ptají také na `/financialProfile/accountPurposeDescription`. Popis je povinný pouze tehdy, když účely obsahují `other`; bez něj odeslání vrátí `400 validation_error` pro tento ukazatel. Panel obchodníka zobrazuje pole popisu pouze, dokud je vybrána možnost **Something else**.
+- Pojmenované capabilities JPMorgan Chase (`jpmorgan`) pro fyzické osoby vyžadují `employment.occupation`. Odpověď o zaměstnání bez povolání vrátí `400 validation_error`. Aplikace, které ještě nebyly odeslány do banky, požadavek převezmou: otevřené úkoly intake jej získají a dokončený intake dostane navazující úkol. Sdílené capabilities a ostatní banky se nemění.
+- `GET /v3/customers` uvádí zemi pobytu fyzické osoby jako `country`, když adresa bydliště nemá zemi. Filtr `country` odpovídá stejné hodnotě. Viz [Zákazníci](/cs/integration/onboarding/customers).
+- `POST /v3/sandbox/tasks/{taskId}/review` rozhodne o každé nerozhodnuté odpovědi na úkolu, napříč všemi otevřenými koly odeslání i opakovaně použitými doklady čekajícími na posouzení. Viz [Testování v sandboxu](/cs/integration/sandbox#test-an-open-task).
+- Hostovaná stránka žádosti o informace zobrazuje jediný souhrn stavu a každou požadovanou opravu u příslušné položky.
+- Panel obchodníka uvádí prohlášení u požadovaných položek místo pod **Terms of Service**, označuje bankovní cíl výplaty jako **Destination Account** a čekající výplaty zobrazuje jako **Processing**.
+
+### Opraveno
+- Capability, jejíž zbývající odpovědi na úkoly jsou všechny přijaté nebo v posuzování, včetně odpovědí, které Swipelux vyplnil z existujícího profilu a dokumentů zákazníka, nyní hlásí `pending` s `statusReason.code: information_in_review` místo toho, aby zůstala `restricted` s `tasks_due`. Viz [Capabilities a úkoly](/cs/integration/onboarding/capabilities-and-requirements#continue-when-the-capability-is-ready).
+- Požadavek na účet `allowPending` u banky, jejíž schválená aplikace capability pokrývá, ale nepožádala o ni, vrací `409 capability_not_ready` s `reason: no_ready_route` místo `500`. Stejný požadavek uspěje, jakmile je capability `ready`. Viz [Vydat bankovní účet](/cs/integration/issue-bank-account#save-the-request-before-bank-approval).
+- Aplikace u Lead Bank (`lead_bank`), kterou banka zamítne, přejde do stavu `rejected` místo toho, aby zůstala `in_review`.
+- Swipelux nyní posuzuje odpovědi na navazující úkoly intake, například doklad o původu prostředků vyžádaný po prvním úkolu intake, takže jejich aplikace jsou odeslány do banky místo toho, aby zůstaly `requested`.
+- Když Swipelux přijme všechny odpovědi na úkolu intake, zatímco je jeho relace podmínek stále otevřená, nebo to uděláte vy pomocí `POST /v3/sandbox/tasks/{taskId}/review`, posouzení již neselže s `409 kyc_process_conflict`. Úkol přejde do stavu `satisfied` a capability do `ready`, jakmile zákazník přijme podmínky. Po takovém posouzení uspěje také opětovný požadavek na zrušenou capability `ach_named` nebo `wire_named`.
+- V odesláních úkolů přijímá `documentMetadata[].issuedOn` datum až jeden den po datu odeslání v UTC, takže dokument vydaný dnes v časovém pásmu před UTC je přijat. `maxIssueAgeDays` se stále počítá od data v UTC.
+- Při přidávání nového příjemce v panelu obchodníka nabízí formulář účtu pouze platební metody, které jsou připravené.
+- Panel obchodníka zachovává stav již odeslaných částí formuláře, zatímco se odesílá zbytek formuláře, přijímá dnešní datum vydání dokumentu v časovém pásmu zákazníka, po odeslání odpovědi KYB již na okamžik nezobrazuje prázdný požadavek a zachovává nahrané soubory, když přepínáte mezi odpovědí webovou stránkou a dokumentem.
+- Panel s podrobnostmi transakce v panelu obchodníka se již neotevírá oříznutý.
+
+</Update>
+
 <Update label="2026-10-15" description="v3" tags={["Změněno"]}>
 
 ### Změněno
@@ -86,6 +231,34 @@ Pro upgrade existující integrace z dřívější verze viz [Migrace na v3](/cs
 
 </Update>
 
+<Update label="2026-10-12" description="v3" tags={["Přidáno","Změněno","Opraveno"]}>
+
+### Přidáno
+- `POST /v3/customers/{customerId}/tasks/{taskId}/submissions` přijímá volitelné `allowPartial: true`. Swipelux pak uloží platné odpovědi a vrátí `201` s `refusedAnswers`, kde každá položka obsahuje `requirementId`, `code`, `pointer` a `message`. `code` je `invalid`, `absence_conflicts_with_profile`, `invalid_document_reference` nebo `depends_on_refused_answer` a mohou přibýt další kódy. Pokud nelze ponechat žádnou odpověď, odpovědí je `400 validation_error` a nic se neuloží. `allowPartial` nemění, na které požadavky musí odeslání odpovědět, a bez něj se chování nemění. Viz [Ponechání platných odpovědí pomocí `allowPartial`](/cs/integration/onboarding/capabilities-and-requirements#keep-valid-answers-with-allowpartial).
+- `POST /v3/customers/{customerId}/tasks/{taskId}/withdrawals` stáhne odeslání čekající na posouzení, aby ho zákazník mohl opravit. Vyžaduje `Idempotency-Key`. Odpovědi z odeslání se vrátí do stavu `action_required` a další odeslání zahájí nové `remediationRound`. Stažení vrátí `409 task_not_in_review`, když na posouzení nečeká právě jedno odeslání nebo úkol překročil termín, a `409 submission_already_forwarded`, když úkol posuzuje přímo banka nebo Swipelux již odeslání předal k posouzení. Viz [Stažení odeslání čekajícího na posouzení](/cs/integration/onboarding/capabilities-and-requirements#withdraw-a-submission-awaiting-review).
+- Zdroje dokumentů obsahují `contentSha256`, otisk SHA-256 uloženého souboru ve tvaru `sha256:` následovaném hexadecimálním otiskem malými písmeny, nebo `null` u dokumentů uložených předtím, než se otisky začaly zaznamenávat. Porovnejte jej s otiskem souboru, abyste odhalili opětovné nahrání již uloženého souboru. Viz [Nahrání dokumentů](/cs/integration/onboarding/capabilities-and-requirements#upload-documents).
+- Formulář příjemců v panelu obchodníka přidává účty SPEI (Mexiko, MXN), Pix a Pix Safe, jakmile je odpovídající přístup zákazníka připravený, a postranní panel **Pay out** může platit na účty SPEI. Viz [Příjemci a cíle](/cs/integration/recipients).
+- Ve veřejném formuláři úkolu má osoba v posuzování možnost **Edit details**. Ta osobu vrátí z posuzování, aby bylo možné její údaje opravit místo jejich opětovného přidání. Její odpovědi a dokumenty je nutné zadat znovu.
+
+### Změněno
+- `outcome` odeslání přidává `withdrawn` pro odeslání, které zákazník stáhl před jakýmkoli rozhodnutím o posouzení. Aktualizujte každého klienta, který odmítá neznámé výsledky.
+- Přijatý dokument nebo dokument v posuzování nyní odpovídá na odpovídající požadavek na dokument v aplikaci jiné banky, i když banky požadavek formulují jinak. Zákazníci nahrávají stejný soubor méněkrát. Soubor starší než `maxIssueAgeDays` požadavku, například doklad o adrese starší než 90 dní, se znovu nepoužije.
+- Fiat cíle příjemců nyní vyžadují capability ve stavu `ready` pro svou metodu, a to i u zákazníků, jejichž bankovní přístup byl nastaven před zavedením capabilities. Jinak `POST /v3/customers/{customerId}/recipients/{recipientId}/destinations` vrátí `409 rail_not_ready`. Cíle peněženek se nemění. Viz [Příjemci a cíle](/cs/integration/recipients).
+- Vydání bankovního účtu pro metodu, pro kterou zákazník nemá capability, vrátí `409 capability_not_ready`, s důvodem `route_selection_required`, když požadavek vynechá `institution`, a `no_ready_route`, když ji uvede. Oba v `capabilities` uvádějí capabilities, které mohou účet vydat. Důvody `ambiguous_route_scope` a `rail_not_ready` se již nevracejí. Viz [Vydat bankovní účet](/cs/integration/issue-bank-account).
+- Požadavek na quote nebo účet opakovaný s `Idempotency-Key`, jehož dřívější trasa už nemůže pokračovat, vrátí `409 capability_not_ready` s `retryable: true`. Odešlete ho znovu s novým `Idempotency-Key`.
+- Veřejné formuláře úkolů zachovávají platné odpovědi, když jsou některé odmítnuty, a u každé odmítnuté odpovědi zobrazují důvod. Osoby v posuzování zůstávají uvedeny se svým stavem.
+- Veřejné formuláře úkolů provádějí ověření identity fyzických osob přímo ve formuláři. V panelu obchodníka odkazuje úkol fyzické osoby, který nabízí hostované ověření, pouze na toto ověření, a sekce **Documents** již u fyzických osob nenabízí nahrávání.
+- Karta **Profile** zákazníka v panelu obchodníka ukládá vždy jednu sekci a vymazání pole jej nyní skutečně vymaže.
+
+### Opraveno
+- Quote výplaty Lead Bank, kterou banka odmítne, vrací `400 quote_failed` místo `500`, a quote, na kterou banka nedokáže odpovědět, vrací `503 quote_temporarily_unavailable`, kterou můžete zopakovat. Viz [Quotes a převody](/cs/integration/quotes-and-transfers).
+- Odeslání úkolu vlastníka u Lead Bank již nevrací `500`, zatímco jiná banka posuzuje stejnou adresu.
+- U fyzických osob dokumenty vyžádané po dokončení ověření identity otevírají novou relaci hostovaného ověření.
+- Formuláře v panelu obchodníka fungují i tehdy, když prohlížeč stránku překládá, a karty zákazníků se po vydání Swipelux obnoví.
+- Pole formuláře KYB zobrazují chyby až po opuštění pole.
+
+</Update>
+
 <Update label="2026-10-08" description="v3" tags={["Přidáno","Změněno","Opraveno"]}>
 
 ### Přidáno
@@ -97,6 +270,8 @@ Pro upgrade existující integrace z dřívější verze viz [Migrace na v3](/cs
 - Citi (`citibank`) je nabízena pouze firemním zákazníkům. Každá firma si ponechává sdílenou Citi a pojmenovaná Citi je nabízena pouze firmám registrovaným mimo USA. Pokud zákazníkovi Citi nabízena není, seznam podporovaných bank ji vynechává, její uvedení vrací `422 capability_institutions_unsupported` a metoda, kterou nabízí pouze Citi, je uvedena jako `disabled`. Požadavek bez `institutions` vybírá ze zbývajících bank. Stávající žádosti a účty se nemění.
 - Pojmenované capabilities CFSB (`cfsb`) jsou nabízeny pouze zákazníkům z USA: firmám registrovaným v USA a fyzickým osobám, které tam mají bydliště. U ostatních zákazníků seznam podporovaných bank pojmenovanou CFSB vynechává a její uvedení vrací `422 capability_institutions_unsupported`. Požadavek bez `institutions` vybírá ze zbývajících bank. Sdílená CFSB, zákazníci s neznámou zemí a stávající žádosti se nemění.
 - Pojmenované capabilities ACH, Wire a SWIFT u Lead Bank (`lead_bank`) jsou nabízeny pouze zákazníkům, které Lead Bank může onboardovat na základě jejich právní formy a zemí. U ostatních zákazníků seznam podporovaných bank vynechává `lead_bank` a její uvedení vrací `422 capability_institutions_unsupported`. Zákazníci, které Lead Bank již onboardovala, a capabilities, jejichž otevřený požadavek již uvádí `lead_bank`, si ji ponechávají. Stávající žádosti a účty se nemění.
+- V živém režimu nyní požadavek na capability `ach_named` nebo `wire_named` bez `institutions` ve výchozím nastavení použije Lead Bank (`lead_bank`), pokud Lead Bank přijímá nové zákazníky a může zákazníka zapojit: profil uvádí alespoň jednu zemi a Lead Bank přijímá každou zemi v něm, profil firmy uvádí právní formu, kterou Lead Bank přijímá, a zákazník nemá žádnou aplikaci ve stavu `ready` u jiné banky, pojmenovanou ani sdruženou. Ostatní zákazníci ve výchozím nastavení použijí JPMorgan Chase (`jpmorgan`), jak to již dělala `ach_named`. `wire_named` dříve výchozí banku neměla. Aktuální aplikace, kterou zákazník již má, má stále přednost. `isDefault` v `GET /v3/customers/{customerId}/capabilities/supported` uplatňuje pravidlo Lead Bank pro každého zákazníka, takže označená banka se může mezi zákazníky lišit a v čase měnit. Viz [Capabilities a úkoly](/cs/integration/onboarding/capabilities-and-requirements#discover-supported-capabilities).
+- Požadavky `wire_pooled` bez `institutions` nyní ve výchozím nastavení použijí JPMorgan Chase (`jpmorgan`), kterou seznam podporovaných capabilities označuje pomocí `isDefault`. Dříve vybíraly CFSB (`cfsb`).
 - RTP je pouze sdílená. Žádná banka nenabízí `rtp_named` novým požadavkům, proto ji seznam podporovaných bank uvádí jako `disabled`. U zákazníka, který `rtp_named` nemá, vrací požadavek na capability nebo náhled úloh, který uvádí banku, `422 capability_institutions_unsupported` a požadavek bez `institutions` vrací `422 capability_variant_unavailable`. Sdílená RTP (`rtp_pooled`) je nabízena u Citi, proto o ni mohou žádat pouze firemní zákazníci.
 - Nové požadavky na doklady totožnosti pro fyzické osoby a skutečné majitele mohou nastavit `constraints.identityMetadataRequired: true`, takže každý soubor vyžaduje číslo dokladu a zemi vydání v `documentMetadata`. Nové požadavky na doklad o adrese firmy a doklad o bydlišti vlastníka mohou nastavit `constraints.maxIssueAgeDays: 90`, takže každý soubor vyžaduje datum vydání. Stávající úkoly si ponechávají své požadavky, proto u každého požadavku úkolu čtěte jeho omezení.
 - Odpověď na úkol k požadavku na registraci firmy, jehož `profilePointer` je `/business/registration`, vyžaduje současně zemi jurisdikce, registrační číslo a datum založení před datem odeslání. Toto pravidlo zveřejňuje `valueSchema` požadavku a neúplná odpověď vrací `400 validation_error`.
@@ -109,6 +284,7 @@ Pro upgrade existující integrace z dřívější verze viz [Migrace na v3](/cs
 - `POST /v3/customers`, `PATCH /v3/customers/{customerId}`, `POST /v3/customers/{customerId}/related-parties`, `PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}` a `POST /v3/customers/{customerId}/tasks/{taskId}/submissions` vracejí `400 validation_error`, když hodnota profilu nebo odpověď na úkol obsahuje odkaz na formulář Swipelux, například odkaz na RFI, žádost zákazníka nebo sledování převodu. To se netýká `externalId` ani `metadata`. Každá odmítnutá hodnota se objeví v `errors[]` s `code: public_form_link` a svým JSON Pointerem a odpověď odkaz nikdy nezopakuje. Místo toho odešlete samotné informace. Viz [Chyby a opakování](/integration/errors#validation-error).
 
 ### Opraveno
+- Požadavky `ach_pooled` bez `institutions` nyní vybírají JPMorgan Chase (`jpmorgan`), banku, kterou seznam podporovaných capabilities označuje pomocí `isDefault`. Dříve mohly vybrat Citi (`citibank`). Existující aplikace a účty se nemění.
 - Odpovědi s quotes a převody výplat zachovávají zdrojovou částku v USDC nebo USDT na šest desetinných míst, například `4009.711365` místo `4009.71`. Fiat částky si ponechávají dvě desetinná místa. Vytvoření nebo čtení výplaty, jejíž zdrojová částka ve stablecoinu má více než dvě desetinná místa, již nevrací `500`.
 - Reference [`POST /v3/customers/{customerId}/capabilities/{capabilityId}/cancel`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id-cancel) nyní popisuje zrušení tak, jak skutečně funguje. Capability ve stavu `ready` můžete zrušit, capability `stablecoin_transfers` zrušit nelze a zrušení ukončí pouze danou capability, zatímco její žádosti si ponechají svůj stav, úkoly a schválení.
 - Požadavek na capability nebo náhled úloh, který v `institutions` uvádí kód banky místo veřejného ID instituce, například `citi` místo `citibank`, vrací `422 capability_institutions_unsupported` s uvedením dostupných ID místo `503 kyc_configuration_unavailable`.

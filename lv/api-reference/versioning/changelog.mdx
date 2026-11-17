@@ -8,35 +8,152 @@ description: "Datēts žurnāls par papildinājumiem, nesaderīgām izmaiņām u
 
 Lai atjauninātu esošu integrāciju no agrākas versijas, skati [Migrācija uz v3](/lv/api-reference/versioning/migrate-to-v3).
 
+<Update label="2026-11-16" description="v3" tags={["Pievienots","Mainīts","Labots"]}>
+
+### Pievienots
+- `GET /v3/customers` pieņem `pooledCapabilityIncludeWait`, `pooledCapabilityExcludeWait`, `namedCapabilityIncludeWait` un `namedCapabilityExcludeWait`. Izmantojiet katru kopā ar atbilstošo filtru `pooledCapabilityStatus` vai `namedCapabilityStatus`. `IncludeWait` pievieno ierobežotas iespējas, kuru risinājums ir `wait`, un `ExcludeWait` noņem iespējas, kuru risinājums ir `wait`. Ja abi ir `true`, priekšroka ir `ExcludeWait`. Filtriem nepieciešams `accounts:read` vai `rails:read`. Skatiet [Klienti](/lv/integration/onboarding/customers#filter-customers-by-capability-readiness).
+- Iespēju kopsavilkumi, kas atgriezti ar `include=capabilities`, var ietvert `statusReason.resolution`: `wait`, `contact_support` vai `none`. Ja iemesls ir atkarīgs no uzdevumiem, nolasiet iespēju.
+- Dokumenta prasība var atgriezt `constraints.idNumber` ar garumu no 3 līdz 50 rakstzīmēm. Ja šī ierobežojuma `required` ir `true`, iekļaujiet identifikācijas numuru `documentMetadata`. Vadības panelis prasa identifikācijas numuru un izdevējvalsti, ja dokumentam tie ir nepieciešami.
+- `PATCH /v3/customers/{customerId}/accounts/{accountId}` pieņem `bankAddress` (līdz 105 rakstzīmēm), `bankCity` un `bankPostalCode` ārējam SWIFT kontam, kas nav USD. SWIFT izmaksām ārvalstu valūtā nepieciešams `bankAddress` un `bankCity`. Šo lauku mainīšana USD kontā atgriež `409 conflict`. Kamēr gaidoša kotācija vai izmaksa izmanto kontu, izmaiņa atgriež `409 account_has_active_transfers`, ko var mēģināt atkārtoti.
+- Vadības panelī KYB pieņem WebP, HEIF un HEIC dokumentus.
+
+### Mainīts
+- Swipelux nosūta [`account.details_changed`](/api-reference/webhooks/account-details-changed), ja mainās izsniegta konta SWIFT kods, maršrutēšanas numurs vai konta numurs. `data.object` ir pašreizējais konts, un `data.previous` satur tikai `routingVersion`. Skatiet [Izsniegt bankas kontu](/lv/integration/issue-bank-account).
+- Tāda maka konta arhivēšana, kas ir nearhivēta bankas konta norēķinu maks, atgriež `409 account_has_dependent_accounts`. Pārvietojiet bankas konta norēķinus uz citu maku ar `PATCH` vai vispirms arhivējiet bankas kontu.
+- `PATCH /v3/customers/{customerId}/recipients/{recipientId}` noraida otra saņēmēja tipa laukus ar `400 validation_error` un `invalid_field` kļūdu katram laukam: `companyName` un `businessIndustry` fiziskai personai, `firstName` un `lastName` uzņēmumam.
+- `POST /v3/customers/{customerId}/tasks/{taskId}/withdrawals` arī atgriež `409 idempotency_request_in_progress` ar `retryable: true`, kamēr identisks pieprasījums vēl tiek izpildīts.
+- Vadības panelī noraidīta klienta dzēšana uzskaita resursus, kas to bloķē, saņēmēja valstij tiek izmantots valsts atlasītājs, un profila teksta lauki ir ierobežoti līdz 256 rakstzīmēm. Pēc izmaksas izveides no klienta lapas vai Balances atveras tās informācija.
+
+### Labots
+- Swipelux vairs nesūta divus `capability.status_changed` notikumus vienai iespējai vienā atjauninājumā un nesūta nevienu, ja statuss beidzas tur, kur sākās.
+- Ja konts tiek noraidīts, kamēr tas vēl tiek nodrošināts, `account.status_changed` ziņo `previous.state: "provisioning"`, nevis `"in_review"`.
+
+</Update>
+
+<Update label="2026-11-09" description="v3" tags={["Pievienots","Mainīts","Labots"]}>
+
+### Pievienots
+- Ja banka pieprasa pamatojošu dokumentu USD SWIFT izmaksai trešajai pusei, Swipelux pārvedumā atver uzdevumu ar `category: "transaction_rfi"`. Tas pieprasa vienu dokumentu un tā atsauci. Atbildiet uz to ar esošajiem uzdevumu iesniegšanas galapunktiem, un Swipelux pārsūta atbildi bankai. Swipelux atceļ uzdevumu, ja izmaksa tiek pabeigta bez bankas apstiprinājuma, neizdodas vai tiek atmaksāta. Skatiet [Kotācijas un pārvedumi](/lv/integration/quotes-and-transfers#supporting-documents-for-swift-payouts).
+- Izsniegtie SWIFT konti visās bankās atgriež saņēmēja pasta adresi laukā `details.accountHolderAddress`. Iepriekš to atgrieza tikai Lead Bank un BMO konti. Tā atšķiras no `details.bankAddress`, kas ir saņēmējbankas adrese. Skatiet [Izsniegt bankas kontu](/lv/integration/issue-bank-account).
+- Iemaksa SWIFT kontā, kas nav USD, konta valūtā tiek norēķināta uz norēķinu maku kā USDC. Pārveduma `amounts.in` rāda konta valūtā saņemto summu, un `amounts.out` rāda piegādātos USDC. Iepriekš šīs iemaksas tika aizturētas pārskatīšanai bez pārveduma vai webhook.
+- Dokumenta prasība var atgriezt `constraints.issuingCountryRequired: true`. Katram tai iesniegtajam dokumentam `documentMetadata` jāietver `issuingCountry`.
+
+### Mainīts
+- Atkārtots mēģinājums, kas pienāk, kamēr pirmais identiskais pieprasījums vēl tiek izpildīts, atgriež `409 idempotency_request_in_progress` ar `retryable: true` iespēju pieprasījumiem, dokumentiem, saņēmējiem un to galamērķiem, noteikumiem, webhook, kotācijām, pārvedumiem, pārvedumu atcelšanai un verifikācijas sesiju kopīgošanas marķieriem. Iepriekš šie maršruti atgrieza `idempotency_conflict`. Atslēgas atkārtota izmantošana ar citu pamattekstu joprojām atgriež `idempotency_conflict`. Skatiet [Kļūdas un atkārtoti mēģinājumi](/integration/errors#idempotency-request-in-progress).
+- Bankas pay-in kotācijas vispārīgas kļūmes vietā atgriež konkrētas kļūdas: `400 quote_amount_out_of_range`, `400 quote_volume_limit_exceeded`, `400 quote_destination_network_unsupported`, `503 quote_temporarily_unavailable` (var mēģināt atkārtoti) vai `502 quote_failed`.
+- `DELETE /v3/customers/{customerId}/documents/{documentId}` atgriež `409 document_in_use`, kamēr bankas pārskatīšanā esošs pieteikums ir atkarīgs no dokumenta. Arhivējiet to pēc pārskatīšanas beigām vai pieteikuma atcelšanas.
+- Bankas konts, kas nav USD un kura norēķinu maks ir USDT, tagad izveidošanas un atjaunināšanas laikā atgriež `400 invalid_settlement_target`, arī bez skaidri norādīta `settlement.currency`. Skatiet [Izvēlieties norēķinu valūtu](/lv/integration/issue-bank-account#choose-the-settlement-currency).
+- Vadības panelī izmaksas pārskatā saņemamā summa ārvalstu valūtā tiek atzīmēta kā aplēse.
+- Vadības panelī un publiskajā izsekošanas lapā pabeigts pārvedums, ko banka atgrieza vai stornēja, rāda paziņojumu. Tā statuss paliek Completed.
+
+### Labots
+- Izsniegtie bankas konti nosūta `account.status_changed`, kad kļūst gatavi. Skatiet [Webhook izsaukumi](/lv/integration/webhooks).
+- Daudzdaļīgas dokumenta augšupielādes atkārtošana ar to pašu idempotences atslēgu un failu vairs neatgriež `409`.
+- Vadības paneļa darījumu filtri saista bankas izmaksas ar to bankas railu un aptver visus kripto tīklus. Meklēšana pēc precīza ID atrod nelielas iemaksas.
+
+</Update>
+
+<Update label="2026-11-04" description="v3" tags={["Pievienots"]}>
+
+### Pievienots
+- Klienti ar gatavu Lead Bank (`lead_bank`) `swift_named` iespēju var sūtīt SWIFT izmaksas valūtās AUD, CAD, CHF, CZK, DKK, EUR, GBP, HKD, HUF, JPY, MXN, NOK, NZD, PLN, SEK, SGD un ZAR. Valūta, ko banka klientam neiespējo, atgriež `422 bank_not_supported_for_customer`. Pieprasiet kotāciju ar precīzu USDC `in.amount`, no kura Swipelux ietur savu maksu USD. Kotācijas `out.amount` ir aplēse, kas atzīmēta ar jauno `out.amountEstimated: true`, `out.amount` nosūtīšana atgriež `422 validation_error`, un pārvedums reģistrē piegādāto summu, kad izmaksa ir pabeigta. Valūtām EUR, GBP, CHF, CZK, DKK, HUF, NOK, PLN un SEK nepieciešams derīgs IBAN. Citas valūtas pieņem derīgu IBAN vai vietējo konta numuru, kas MXN gadījumā ir 18 ciparu CLABE. Turētāja adresē jābūt pasta indeksam. Atgriezta izmaksa nonāk Swipelux pārskatīšanā, nevis tiek automātiski atmaksāta. Skatiet [Sūtīt līdzekļus](/lv/integration/send-funds#foreign-currency-swift-payouts).
+
+</Update>
+
+<Update label="2026-11-02" description="v3" tags={["Pievienots","Mainīts","Labots"]}>
+
+### Pievienots
+- Vadības panelī ir lapa **Agents**, lai savienotu MI aģentus ar Swipelux. **Your agents** uzskaita Sandbox un Live savienotos aģentus un ļauj tos atvienot. Skatiet [Izmantojiet Swipelux no sava MI aģenta](/integration/ai-agents).
+- Vadības paneļa klientu sarakstam pievienoti filtri **Shared methods**, **Bank accounts** un **Opened bank account**.
+
+### Mainīts
+- Swipelux katru dienu atkārtoti pārbauda saglabātos webhook galamērķus. Ja galapunkta resursdatora nosaukums tagad tiek noraidīts vai atrisinās uz noraidītu adresi, Swipelux aptur galapunktu un iestata `disabled: true`. Apturēts galapunkts paliek apturēts, ja maināt tikai tā `url`; lai to atsāktu, nosūtiet derīgu `url` ar `disabled: false`. Skatiet [Webhook izsaukumi](/lv/integration/webhooks#use-a-public-destination-url).
+- Noteikuma izveide noraida mērķa maku citā tīklā vai bankas galamērķi ar `400 rule_target_invalid`. Skatiet [Kļūdas un atkārtoti mēģinājumi](/integration/errors#rule-target-invalid).
+- Dokumentu lejupielādes atbildes satur `Cache-Control: private, no-store`.
+- Pēc passkey atjaunošanas vadības panelis nosūta jums e-pastu un uz 24 stundām aptur izmaksas, izņemšanu, slepeno atslēgu izveidi, aģentu savienojumus un komandas ielūgumus.
+
+### Labots
+- Noteikumi tagad tiek izpildīti, kad līdzekļi, kas nosūtīti no cita Swipelux maka, nonāk trigera makā.
+- Klienta arhivēšanu vairs nebloķē bankas konti, kas nekad netika izsniegti.
+- `include=capabilities` dažiem klientiem vairs neatgriež tukšu sarakstu.
+- Smilšu kastes kontu atlikumos vairs netiek rādītas peldošā punkta noapaļošanas kļūdas.
+- Bankas izmaksu kotācijas ar izstrādātāja maksu, ko maršruts nevar iekasēt, tiek noraidītas jau kotācijas brīdī ar `400 validation_error`, nevis neizdodas izpildes laikā.
+- Kartes maksājuma saite vairs neatver otru apmaksas lapu, kad tās kotācijai beidzas derīgums, kamēr pirmais kartes maksājums vēl tiek apstrādāts.
+- Pabeigtie kartes pay-in saglabā savu fiat avota summu.
+- Lead Bank gadījumā vadības paneļa panelis **Open bank account** vairs nepiedāvā USDT tīklus, ko banka neatbalsta, un piedāvā USDT tīklā Solana.
+
+</Update>
+
 <Update label="2026-11-01" description="v3" tags={["Pievienots"]}>
 
 ### Pievienots
 - Katrs ieraksts no [`GET /v3/customers/{customerId}/capabilities/supported`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-supported) ietver `unavailableInstitutions`. Tas uzskaita bankas, kas piedāvā iespējas variantu, bet nepieņem šo klientu, katru ar `id`, `name` un `reasons` tādā pašā struktūrā kā `statusReason`. Pašreizējie iemeslu kodi ir `jurisdiction_unsupported`, `legal_form_unsupported` un `customer_type_unsupported`. Lauks ir `[]` apkopotajos un ne-bankas ierakstos, un banka nekad neparādās gan `institutions`, gan `unavailableInstitutions`. Ja iespējas pieprasījumā norādāt nepieejamu banku, joprojām tiek atgriezts `422 capability_institutions_unsupported`. Skatiet [Iespējas un prasības](/lv/integration/onboarding/capabilities-and-requirements#show-why-a-bank-is-unavailable).
+- Klienti ar gatavu Lead Bank (`lead_bank`) `swift_named` iespēju var atvērt izsniegtus SWIFT kontus valūtās AUD, CAD, CHF, CZK, DKK, EUR, GBP, HKD, HUF, JPY, MXN, NOK, NZD, PLN, SEK, SGD un ZAR, vienu kontu katrai valūtai. Atbalstīto iespēju atbilde šīs valūtas uzskaita `swift_named` ierakstā `lead_bank` ar `institution: "bmo"`. Nosūtiet šo `institution` kopā ar valūtu. BMO Bank N.A. (`bmo`, BIC `HATRUS44`) ir banka, kas norādīta šiem kontiem, un `GET /v3/institutions` to uzskaita. Banka nosaka, kuras valūtas katrs klients var atvērt, un konts valūtā, ko tā nepiedāvā, beidzas ar `rejected` un `statusReason.code: currency_unavailable`. Norādot `lead_bank` ar kādu no šīm valūtām, tiek atgriezts `400 validation_error`, kas min `bmo`. Norādot `bmo` ar USD vai citu metodi, nevis `swift`, tiek atgriezts `400 validation_error`. Iespējas pieprasījums vai uzdevuma priekšskatījums, kas norāda `bmo`, atgriež `422 capability_institutions_unsupported`. Skatiet [Izsniegt bankas kontu](/lv/integration/issue-bank-account#choose-the-bank).
 
 </Update>
 
-<Update label="2026-10-30" description="v3" tags={["Pievienots"]}>
+<Update label="2026-10-30" description="v3" tags={["Pievienots","Mainīts"]}>
 
 ### Pievienots
-- Autentificētajiem pieprasījumiem ir ātruma ierobežojums katrai API atslēgai, katram integrējošajam uzņēmumam un katrai klienta IP adresei. Pieprasījums, kas pārsniedz ierobežojumu, atgriež `429 rate_limited` ar `retryable: true` un `Retry-After` galveni, kas norāda, cik sekundes jāgaida pirms atkārtota mēģinājuma. Integrējošajiem uzņēmumiem, kas vēl nav apstiprināti, ir zemāki ierobežojumi. Katrā API atsauces autentificētajā operācijā ir norādīta `429` atbilde. Atkārtotas neveiksmīgas autentifikācijas no vienas IP adreses pēc ierobežojuma pārsniegšanas arī atgriež `429`, bet derīgas API atslēgas, kas nosūtītas no šīs adreses, turpina darboties.
+- Autentificētiem pieprasījumiem ir ātruma ierobežojums katrai API atslēgai, katram integrējošajam uzņēmumam un katrai klienta IP adresei. Pieprasījums, kas pārsniedz ierobežojumu, atgriež `429 rate_limited` ar `retryable: true` un galveni `Retry-After`, kas norāda, cik sekundes jāgaida pirms atkārtota mēģinājuma. Integrējošajiem uzņēmumiem, kas vēl nav apstiprināti, ir zemāki ierobežojumi. Katra autentificētā darbība API atsaucē uzskaita atbildi `429`. Atkārtotas neveiksmīgas autentifikācijas no vienas IP adreses pēc ierobežojuma pārsniegšanas arī atgriež `429`, un derīga API atslēga, kas nosūtīta no šīs adreses, var saņemt to pašu atbildi, līdz ierobežojums atjaunojas, tāpēc mēģiniet vēlreiz pēc `Retry-After` aizkaves. Skatiet [Kļūdas un atkārtoti mēģinājumi](/integration/errors#rate-limited).
+
+### Mainīts
+- Swipelux deaktivizēja mantotās API atslēgas bez publiskās daļas, piemēram, atslēgas bez punktiem. Pieprasījumi ar tām atgriež `401 unauthorized`.
+
+</Update>
+
+<Update label="2026-10-29" description="v3" tags={["Mainīts"]}>
+
+### Mainīts
+- Kamēr jūsu integrējošā uzņēmuma KYB nav apstiprināts, Swipelux ierobežo izveidi jebkurā slīdošā 24 stundu periodā visās jūsu telpās: 10 API atslēgas, 10 webhook galapunkti, 10 noteikumi, 250 klienti, 20 `sumsub_share_token` eksporti un 10 identitātes verifikācijas importi. Tas aizstāj ierobežojumu ar 10 aktīvām API atslēgām katrā dzīvajā telpā; atslēgas atsaukšana neatbrīvo vietu. Izveide virs ierobežojuma atgriež `422 merchant_kyb_not_approved`; vadības panelis atgriež vienkāršu `422`. Neveiksmīgas izveides un idempotenti atkārtojumi netiek ieskaitīti. Šie ierobežojumi un ierobežojums ar 20 webhook URL izmaiņām stundā attiecas arī uz smilšu kastes telpām, ja vien jums nav dzīvās telpas, kas ir apstiprināta vai kurai nav nepieciešams KYB. Skatiet [Ikdienas izveides ierobežojumi](/lv/integration/go-live#daily-creation-limits).
 
 </Update>
 
 <Update label="2026-10-28" description="v3" tags={["Pievienots","Mainīts"]}>
 
 ### Pievienots
-- Webhook galapunkti ietver `disabled`, kas ir `true`, kamēr piegādes uz galapunktu ir apturētas. Swipelux aptur galapunktu arī pēc atkārtotām piegādes kļūmēm. Nosūtiet `disabled: true` pieprasījumā [`PATCH /v3/webhooks/{webhookId}`](/api-reference/webhooks/patch-v3-webhooks-by-webhook-id), lai apturētu piegādes, un `disabled: false`, lai tās atsāktu. Atsākot galamērķa URL tiek pārbaudīts vēlreiz, un, ja tas vairs neiztur pārbaudi, tiek atgriezts `400`, tāpēc galapunkts paliek apturēts.
+- `GET /v3/customers` pieņem filtrus `pooledCapabilityStatus` un `namedCapabilityStatus`, katru iestatītu uz `pending`, `ready`, `restricted`, `rejected` vai `canceled`. Tas pieņem arī `hasReadyNamedAccount=true|false`, lai uzskaitītu klientus ar `ready` nosauktu kontu vai bez tā. Filtrus var kombinēt savā starpā un ar citiem saraksta filtriem, un Swipelux tos piemēro pirms lapošanas. API atslēgām to lietošanai nepieciešams `accounts:read` vai `rails:read`. Nederīga vērtība atgriež `400 validation_error`. Piemēram, `namedCapabilityStatus=ready&hasReadyNamedAccount=false` atrod klientus, kurus banka ir apstiprinājusi, bet kuriem vēl nav gatava nosaukta konta. Skatiet [Klienti](/lv/integration/onboarding/customers#filter-customers-by-capability-readiness).
+- `PATCH /v3/customers/{customerId}` un `PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}` atgriež atbildes galveni `Swipelux-Ignored-Fields`, ja tie ignorē pamatteksta laukus, ko neatpazīst. Galvene uzskaita ignorēto lauku JSON Pointers, atdalītus ar komatiem un sakārtotus, ne vairāk kā 20 rādītājus un 4096 rakstzīmes, ar noslēdzošu `...`, ja saīsināts. Lauki `metadata` iekšienē nekad netiek ziņoti, un idempotenti atkārtojumi izlaiž galveni. Pārbaudiet to pēc katras atjaunināšanas, lai nepamanīti nezaudētu datus, piemēram, dzimšanas datumu, kas nosūtīts ar nepareizu lauka nosaukumu. Skatiet [Klienti](/lv/integration/onboarding/customers#check-ignored-fields-on-updates).
+- Webhook galapunkti ietver `disabled`, kas ir `true`, kamēr piegādes galapunktam ir apturētas. Swipelux aptur galapunktu arī pēc atkārtotām piegādes kļūmēm. Nosūtiet `disabled: true` pieprasījumā [`PATCH /v3/webhooks/{webhookId}`](/api-reference/webhooks/patch-v3-webhooks-by-webhook-id), lai apturētu piegādes, un `disabled: false`, lai tās atsāktu. Atsākšana atkārtoti pārbauda galamērķa URL un atgriež `400`, ja tas vairs neatbilst, tāpēc galapunkts paliek apturēts.
+- Swipelux var apturēt integrējošā uzņēmuma darbību. Kamēr tā ir apturēta, katrs pieprasījums ar jebkuru tā API atslēgu atgriež `403 merchant_suspended` ar `retryable: false`, un Swipelux aiztur tā webhook piegādes, noteikumu izpildi un pieteikumus bankām. Nekas netiek dzēsts vai atsaukts, tāpēc API atslēgas, webhook galapunkti un noteikumi atkal darbojas, tiklīdz Swipelux atceļ apturēšanu. Lai atrisinātu apturēšanu, sazinieties ar Swipelux atbalstu. Skatiet [Kļūdas un atkārtoti mēģinājumi](/integration/errors#merchant-suspended).
 
 ### Mainīts
-- `POST /v3/customers/{customerId}/export` ar `format: sumsub_share_token` atgriež `422 kyc_provider_rejected` ar `retryable: false` `502 request_failed` vietā, ja identitātes verifikācijas pakalpojumu sniedzējs atsakās izveidot share token, piemēram, nezināma `forClientId` gadījumā. Atbilde satur fiksētu Swipelux ziņojumu un nekad neatkārto pakalpojumu sniedzēja kļūdas tekstu, tāpēc pirms atkārtota mēģinājuma pārbaudiet pieprasījumu. Citas pakalpojumu sniedzēja kļūmes joprojām atgriež `502 request_failed`, ko var mēģināt atkārtoti.
-- Portāls no `GET /v3/webhooks/portal` vairs neveido, nerediģē, neaptur un nedzēš galapunktus. Ar API atslēgu, kurai ir `webhooks:write`, tas joprojām parāda un rotē galapunkta parakstīšanas noslēpumu, atkārto piegādes un atskaņo tās vēlreiz. Veidojiet galapunktus ar `POST /v3/webhooks`, mainiet vai apturiet tos ar `PATCH /v3/webhooks/{webhookId}` un dzēsiet tos ar `DELETE /v3/webhooks/{webhookId}`. Skatiet [Webhook izsaukumi](/lv/integration/webhooks).
+- `POST /v3/customers/{customerId}/export` ar `format: sumsub_share_token` atgriež `422 kyc_provider_rejected` ar `retryable: false`, nevis `502 request_failed`, ja identitātes verifikācijas pakalpojumu sniedzējs atsakās izveidot kopīgošanas marķieri, piemēram, nezināmam `forClientId`. Atbilde satur fiksētu Swipelux ziņojumu un nekad neatkārto pakalpojumu sniedzēja kļūdas tekstu, tāpēc pirms atkārtota mēģinājuma pārbaudiet pieprasījumu. Citas pakalpojumu sniedzēja kļūmes joprojām atgriež `502 request_failed`, ko var mēģināt atkārtoti.
+- Portāls no `GET /v3/webhooks/portal` vairs neveido, nerediģē, neaptur un nedzēš galapunktus. Ar API atslēgu, kurai ir `webhooks:write`, tas joprojām rāda un rotē galapunkta parakstīšanas noslēpumu, atkārto piegādes un atskaņo tās vēlreiz. Veidojiet galapunktus ar `POST /v3/webhooks`, mainiet vai apturiet tos ar `PATCH /v3/webhooks/{webhookId}` un dzēsiet tos ar `DELETE /v3/webhooks/{webhookId}`. Skatiet [Webhook izsaukumi](/lv/integration/webhooks).
+- `POST /v3/webhooks` un `PATCH /v3/webhooks/{webhookId}` pieņem tikai galamērķus, kuru visas atrisinātās adreses ir globāli maršrutējamas unicast adreses. Tie atgriež `400 validation_error` adresēm IANA īpašas nozīmes diapazonos, multicast adresēm, IPv6 pārejas formām, kas satur noraidītu IPv4 adresi, resursdatoru nosaukumiem, kas neatrisinās, `localhost`, vienas daļas resursdatoru nosaukumiem un resursdatoru nosaukumiem, kas beidzas ar `.localhost`, `.local`, `.localdomain`, `.internal` vai `.home.arpa`.
 
 </Update>
 
-<Update label="2026-10-25" description="v3" tags={["Mainīts"]}>
+<Update label="2026-10-26" description="v3" tags={["Pievienots","Mainīts","Labots"]}>
+
+### Pievienots
+- Tirgotāja panelī **Settings** > **Customer pages** ļauj īpašniekiem un administratoriem augšupielādēt uzņēmuma logotipu (PNG, JPG vai WebP, līdz 512 KB) un katrai telpai iestatīt `https://` atgriešanās URL. Logotips aizstāj Swipelux vārdzīmi jūsu klientu mitinātajās noteikumu lapās dzīvajās telpās. Ja telpai ir atgriešanās URL, pabeigtā noteikumu lapa piedāvā **Return to the app**.
+
+### Mainīts
+- Mitinātajai noteikumu lapai ir jauns dizains. Katrā smilšu kastes ceļa lapā tiek rādīta **Sandbox** emblēma.
+- Dzīvajā telpā, kurā nepieciešams KYB, tirgotāja panelis tur **Customers**, **Balances** un **Transactions** bloķētas, līdz jūsu KYB tiek apstiprināts. Sākumlapa rāda darbības, lai sāktu darbu dzīvajā režīmā, un klienta sadaļa **Bank accounts** uzskaita pa vienai rindai katrai bankai ar tās valūtām un parāda bankas datus, tiklīdz banka apstiprina.
+- `POST /v3/quotes` pay-in darījumam atgriež `422 capability_direction_unsupported` ar `retryable: false`, nevis atkārtojamu `503 rail_temporarily_unavailable`, ja neviena banka, kas apkalpo šo iespēju, nepiedāvā pay-in kotācijas, kā tas ir ar `ach_named` un `wire_named` bankā Lead Bank (`lead_bank`). Atkārtojums ar to pašu `Idempotency-Key` atkārto `422`.
+- `DELETE /v3/customers/{customerId}` atgriež `409 merchant_kyb_subject_archive_refused` ar `retryable: false` jūsu uzņēmuma KYB klientam. Vispirms lūdziet Swipelux atbalstu pārvietot jūsu KYB uz citu klientu.
+
+### Labots
+- Ja mitināta verifikācija nonāk pārskatīšanā un tā bija uzdevuma pēdējais atvērtais vienums, iespēja kļūst `pending` ar `statusReason.code: information_in_review`, un pieteikums, kas bija `action_required`, kļūst `in_review`. Swipelux par šīm izmaiņām nosūta `capability.status_changed` un `application.status_changed`. Iepriekš abi saglabāja iepriekšējo statusu, un Swipelux nesūtīja nevienu webhook.
+- Uzdevuma iesniegumā objekta atbilde, piemēram, adrese, uzņēmuma reģistrācija vai īpašumtiesību struktūra, aizstāj saglabāto vērtību, nevis apvienojas ar to, tāpēc lauki, kas jaunajā atbildē nav norādīti, piemēram, `state` vai `streetLine2`, tiek noņemti. `PATCH` pieprasījumi klientiem un saistītajām pusēm joprojām apvieno vērtības.
+- `GET /v3/webhooks` atgriež `200` ar tukšu `data` masīvu, nevis `502 request_failed`, pirms eksistē jūsu pirmais webhook galapunkts, portāla sesija vai notikums.
+- Atkārtojums ar to pašu `Idempotency-Key`, kas atkārto saglabātu kļūdas atbildi, tagad ietver `X-Request-Id`, kas iestatīts uz paša atkārtojuma pieprasījuma ID. Pamatteksts saglabā pirmā pieprasījuma `correlationId`.
+- Atkārtots `card` iespējas pieprasījums pēc tās atcelšanas atgriež `409 capability_not_reopenable` ar `retryable: false`, nevis `500`.
+
+</Update>
+
+<Update label="2026-10-25" description="v3" tags={["Pievienots","Mainīts"]}>
+
+### Pievienots
+- Izsniegtus SWIFT kontus var atvērt bankā Lead Bank (`lead_bank`) ar klienta `swift_named` iespēju.
+- `GET /v3/customers/{customerId}/capabilities/supported` nosauktajām iespējām atgriež `institutions[].currencies`. Katrs elements ir valūtas `code` un `institution`, kas jānosūta, atverot kontu: USD iespējām `ach_named`, `wire_named`, `rtp_named` un `swift_named`, EUR iespējai `sepa_named`, GBP iespējai `faster_payments_named` un AED iespējai `ipp_named`. Apkopotās iespējas izlaiž `currencies`. Skatiet [Iespējas un uzdevumi](/lv/integration/onboarding/capabilities-and-requirements#discover-supported-capabilities).
 
 ### Mainīts
 - Kamēr jūsu integrējošā uzņēmuma KYB nav apstiprināts, varat veikt kopā 20 webhook URL izmaiņas stundā visos galapunktos jūsu dzīvajās telpās, kurām nepieciešams KYB. Izmaiņas smilšu kastes telpās netiek skaitītas. Webhook URL ierobežojuma pārsniegšana atgriež `422 merchant_kyb_not_approved`. Tikai galapunkta `events` maiņa vai tā pašreizējā URL saglabāšana netiek uzskatīta par URL izmaiņu. Vadības panelī Swipelux ar vienkāršu `422` atbildi atsaka vairāk nekā 10 aktīvas API atslēgas katrā dzīvajā telpā, kurai nepieciešams KYB. Swipelux arī ar vienkāršu `422` atbildi atsaka vairāk nekā 5 telpas vienam tirgotājam, kamēr jums ir vismaz viena dzīvā telpa, visām jūsu dzīvajām telpām nepieciešams KYB un neviena nav apstiprināta. Telpu ierobežojumā tiek skaitītas gan smilšu kastes, gan dzīvās telpas; tas netiek piemērots, ja kādai dzīvajai telpai KYB nav nepieciešams. Smilšu kastes telpām neattiecas rakstīšanas bloķēšana, webhook URL ierobežojums un atslēgu ierobežojums. Skatiet [Doties tiešraidē](/lv/integration/go-live#activate-your-production-space).
+- Izsniegtie ACH un wire konti pieņem tikai USD, tāpat kā SWIFT konti bankā `lead_bank`. Pieprasījums citā valūtā atgriež `400 validation_error`. Iepriekš tas tika pieņemts un pēc tam izsniegts USD vai nekad netika nodrošināts.
+- Ja neviena no klienta gatavajām bankām neizsniedz pieprasīto valūtu, `POST /v3/customers/{customerId}/accounts` atgriež `409 capability_not_ready` ar `reason: "no_issuable_route"`. Atkārtota mēģinājuma vietā izvēlieties citu valūtu vai iestādi.
 
 </Update>
 
@@ -68,6 +185,34 @@ Lai atjauninātu esošu integrāciju no agrākas versijas, skati [Migrācija uz 
 
 </Update>
 
+<Update label="2026-10-19" description="v3" tags={["Pievienots","Mainīts","Labots"]}>
+
+### Pievienots
+- Dokumentu pieprasījumi, ko Swipelux pārsūta bankai, laukā `request.constraints.maxSizeBytes` var ietvert bankas ierobežojumu vienam failam. Tirgotāja panelis un mitinātā informācijas pieprasījuma lapa samazina JPEG, PNG un WebP fotoattēlus, lai tie atbilstu ierobežojumam, un noraida failus, kas to joprojām pārsniedz. Skatiet [Augšupielādējiet dokumentus](/lv/integration/onboarding/capabilities-and-requirements#upload-documents).
+- Ja Swipelux ir atvērts pieprasījums par jūsu uzņēmuma verifikāciju (KYB) dzīvajā telpā, kurā nepieciešams KYB, tirgotāja panelis atver KYB lapu, kad pirmo reizi to ielādējat pārlūka cilnē. Uz turieni ved arī poga **Action needed** galvenē.
+
+### Mainīts
+- Atkārtots pieprasījums atceltai bankas iespējai atgriež `201`, ja pieprasījums atver jaunu pieteikumu, un `200`, ja tas pievienojas pieteikumam, kas klientam jau ir. Skatiet [Iespējas un uzdevumi](/lv/integration/onboarding/capabilities-and-requirements#shared-applications-per-bank).
+- Jauni kopīgie intake uzdevumi, kas prasa `/financialProfile/accountPurposes`, prasa arī `/financialProfile/accountPurposeDescription`. Apraksts ir obligāts tikai tad, ja mērķi ietver `other`; bez tā iesniegums atgriež `400 validation_error` šim rādītājam. Tirgotāja panelis rāda apraksta lauku tikai tad, kamēr ir atlasīts **Something else**.
+- Nosauktām JPMorgan Chase (`jpmorgan`) iespējām fiziskām personām ir nepieciešams `employment.occupation`. Nodarbinātības atbilde bez profesijas atgriež `400 validation_error`. Pieteikumi, kas vēl nav nosūtīti bankai, pārņem šo prasību: atvērtiem intake uzdevumiem tā tiek pievienota, un pabeigtam intake tiek izveidots papildu uzdevums. Kopīgās iespējas un citas bankas nemainās.
+- `GET /v3/customers` norāda fiziskas personas dzīvesvietas valsti kā `country`, ja dzīvesvietas adresē nav valsts. Filtrs `country` atbilst tai pašai vērtībai. Skatiet [Klienti](/lv/integration/onboarding/customers).
+- `POST /v3/sandbox/tasks/{taskId}/review` izlemj par katru vēl neizlemto uzdevuma atbildi visās atvērtajās iesniegšanas kārtās, kā arī par atkārtoti izmantotiem pierādījumiem, kas gaida pārskatīšanu. Skatiet [Smilšu kastes testēšana](/lv/integration/sandbox#test-an-open-task).
+- Mitinātā informācijas pieprasījuma lapa rāda vienu statusa kopsavilkumu, katru pieprasīto labojumu blakus tā vienumam.
+- Tirgotāja panelis uzskaita deklarācijas kopā ar pieprasītajiem vienumiem, nevis zem **Terms of Service**, apzīmē izmaksas bankas galamērķi kā **Destination Account** un rāda gaidošās izmaksas kā **Processing**.
+
+### Labots
+- Iespēja, kuras visas atlikušās uzdevumu atbildes ir pieņemtas vai tiek pārskatītas, ieskaitot atbildes, ko Swipelux aizpildīja no klienta esošā profila un dokumentiem, tagad ziņo `pending` ar `statusReason.code: information_in_review`, nevis paliek `restricted` ar `tasks_due`. Skatiet [Iespējas un uzdevumi](/lv/integration/onboarding/capabilities-and-requirements#continue-when-the-capability-is-ready).
+- `allowPending` konta pieprasījums bankā, kuras apstiprinātais pieteikums aptver iespēju, bet to nepieprasīja, atgriež `409 capability_not_ready` ar `reason: no_ready_route`, nevis `500`. Tas pats pieprasījums izdodas, tiklīdz iespēja ir `ready`. Skatiet [Izsniegt bankas kontu](/lv/integration/issue-bank-account#save-the-request-before-bank-approval).
+- Lead Bank (`lead_bank`) pieteikums, ko banka noraida, kļūst `rejected`, nevis paliek `in_review`.
+- Swipelux tagad pārskata atbildes uz papildu intake uzdevumiem, piemēram, līdzekļu izcelsmes dokumentu, kas pieprasīts pēc pirmā intake uzdevuma, tāpēc to pieteikumi tiek iesniegti bankai, nevis paliek `requested`.
+- Ja Swipelux pieņem katru intake uzdevuma atbildi, kamēr tā noteikumu sesija vēl ir atvērta, vai jūs to darāt ar `POST /v3/sandbox/tasks/{taskId}/review`, pārskatīšana vairs neizdodas ar `409 kyc_process_conflict`. Uzdevums kļūst `satisfied` un iespēja `ready`, tiklīdz klients pieņem noteikumus. Arī atceltas `ach_named` vai `wire_named` iespējas atkārtots pieprasījums pēc šādas pārskatīšanas izdodas.
+- Uzdevumu iesniegumos `documentMetadata[].issuedOn` pieņem datumu līdz vienai dienai pēc iesnieguma UTC datuma, tāpēc tiek pieņemts dokuments, kas izsniegts šodien laika joslā, kas ir priekšā UTC. `maxIssueAgeDays` joprojām skaita no UTC datuma.
+- Pievienojot jaunu saņēmēju tirgotāja panelī, konta veidlapa piedāvā tikai tās maksājumu metodes, kas ir gatavas.
+- Tirgotāja panelis saglabā jau nosūtīto veidlapas sadaļu statusu, kamēr tiek iesniegta pārējā veidlapa, pieņem dokumenta izsniegšanas datumu šodien klienta laika joslā, pēc KYB atbildes nosūtīšanas vairs uz brīdi nerāda tukšu pieprasījumu un saglabā augšupielādētos failus, kad pārslēdzaties starp vietnes un dokumenta atbildi.
+- Darījuma informācijas panelis tirgotāja panelī vairs neatveras apgriezts.
+
+</Update>
+
 <Update label="2026-10-15" description="v3" tags={["Mainīts"]}>
 
 ### Mainīts
@@ -86,6 +231,34 @@ Lai atjauninātu esošu integrāciju no agrākas versijas, skati [Migrācija uz 
 
 </Update>
 
+<Update label="2026-10-12" description="v3" tags={["Pievienots","Mainīts","Labots"]}>
+
+### Pievienots
+- `POST /v3/customers/{customerId}/tasks/{taskId}/submissions` pieņem neobligātu `allowPartial: true`. Tad Swipelux saglabā derīgās atbildes un atgriež `201` ar `refusedAnswers`, kur katrā ierakstā ir `requirementId`, `code`, `pointer` un `message`. `code` ir `invalid`, `absence_conflicts_with_profile`, `invalid_document_reference` vai `depends_on_refused_answer`, un var tikt pievienoti citi kodi. Ja nevienu atbildi nevar saglabāt, atbilde ir `400 validation_error` un nekas netiek saglabāts. `allowPartial` nemaina to, uz kurām prasībām iesniegumam jāatbild, un bez tā darbība nemainās. Skatiet [Saglabājiet derīgās atbildes ar `allowPartial`](/lv/integration/onboarding/capabilities-and-requirements#keep-valid-answers-with-allowpartial).
+- `POST /v3/customers/{customerId}/tasks/{taskId}/withdrawals` atsauc iesniegumu, kas gaida pārskatīšanu, lai klients to varētu labot. Nepieciešams `Idempotency-Key`. Iesnieguma atbildes atgriežas statusā `action_required`, un nākamais iesniegums sāk jaunu `remediationRound`. Atsaukšana atgriež `409 task_not_in_review`, ja pārskatīšanu negaida tieši viens iesniegums vai uzdevuma termiņš ir beidzies, un `409 submission_already_forwarded`, ja banka uzdevumu pārskata tieši vai Swipelux jau ir nosūtījis iesniegumu pārskatīšanai. Skatiet [Atsauciet iesniegumu, kas gaida pārskatīšanu](/lv/integration/onboarding/capabilities-and-requirements#withdraw-a-submission-awaiting-review).
+- Dokumentu resursi ietver `contentSha256`, saglabātā faila SHA-256 kontrolsummu formā `sha256:`, kam seko heksadecimālā kontrolsumma mazajiem burtiem, vai `null` dokumentiem, kas saglabāti, pirms kontrolsummas tika reģistrētas. Salīdziniet to ar faila kontrolsummu, lai atklātu jau saglabāta faila atkārtotu augšupielādi. Skatiet [Augšupielādējiet dokumentus](/lv/integration/onboarding/capabilities-and-requirements#upload-documents).
+- Tirgotāja paneļa saņēmēju veidlapa pievieno SPEI (Meksika, MXN), Pix un Pix Safe kontus, tiklīdz klienta atbilstošā piekļuve ir gatava, un **Pay out** panelis var veikt maksājumus uz SPEI kontiem. Skatiet [Saņēmēji un galamērķi](/lv/integration/recipients).
+- Publiskā uzdevuma veidlapā personai, kas tiek pārskatīta, ir pieejams **Edit details**. Tas izņem personu no pārskatīšanas, lai tās datus varētu labot, nevis pievienot no jauna. Tās atbildes un dokumenti jāievada vēlreiz.
+
+### Mainīts
+- Iesnieguma `outcome` pievieno `withdrawn` iesniegumam, ko klients atsauca pirms jebkāda pārskatīšanas lēmuma. Atjauniniet katru klientu, kas noraida nezināmus rezultātus.
+- Pieņemts vai pārskatīšanā esošs dokuments tagad atbild uz atbilstošu dokumenta pieprasījumu citas bankas pieteikumā, pat ja bankas pieprasījumu formulē atšķirīgi. Klienti to pašu failu augšupielādē retāk. Fails, kas ir vecāks par pieprasījuma `maxIssueAgeDays`, piemēram, adreses apliecinājums, kas vecāks par 90 dienām, netiek izmantots atkārtoti.
+- Fiat saņēmēju galamērķiem tagad nepieciešama `ready` iespēja to metodei, arī klientiem, kuru bankas piekļuve tika iestatīta pirms iespējām. Pretējā gadījumā `POST /v3/customers/{customerId}/recipients/{recipientId}/destinations` atgriež `409 rail_not_ready`. Maku galamērķi nemainās. Skatiet [Saņēmēji un galamērķi](/lv/integration/recipients).
+- Bankas konta izsniegšana metodei, kurai klientam nav iespējas, atgriež `409 capability_not_ready` ar iemeslu `route_selection_required`, ja pieprasījumā nav `institution`, un `no_ready_route`, ja tajā ir norādīta banka. Abi laukā `capabilities` uzskaita iespējas, kas var izsniegt kontu. Iemesli `ambiguous_route_scope` un `rail_not_ready` vairs netiek atgriezti. Skatiet [Izsniegt bankas kontu](/lv/integration/issue-bank-account).
+- Kotācijas vai konta pieprasījums, kas atkārtots ar `Idempotency-Key`, kura iepriekšējais maršruts vairs nevar turpināties, atgriež `409 capability_not_ready` ar `retryable: true`. Nosūtiet to vēlreiz ar jaunu `Idempotency-Key`.
+- Publiskās uzdevumu veidlapas saglabā derīgās atbildes, ja dažas tiek noraidītas, un blakus katrai noraidītajai atbildei parāda iemeslu. Pārskatīšanā esošās personas paliek sarakstā ar savu statusu.
+- Publiskās uzdevumu veidlapas veic fizisku personu identitātes verifikāciju veidlapas iekšienē. Tirgotāja panelī fiziskas personas uzdevums, kas piedāvā mitinātu verifikāciju, saista tikai uz šo verifikāciju, un sadaļa **Documents** vairs nepiedāvā augšupielādi fiziskām personām.
+- Klienta cilne **Profile** tirgotāja panelī saglabā pa vienai sadaļai, un lauka notīrīšana tagad to patiešām notīra.
+
+### Labots
+- Lead Bank izmaksas kotācija, ko banka noraida, atgriež `400 quote_failed`, nevis `500`, un kotācija, uz kuru banka nevar atbildēt, atgriež `503 quote_temporarily_unavailable`, ko varat mēģināt atkārtoti. Skatiet [Kotācijas un pārvedumi](/lv/integration/quotes-and-transfers).
+- Lead Bank īpašnieka uzdevuma iesniegums vairs neatgriež `500`, kamēr cita banka pārskata to pašu adresi.
+- Fiziskām personām dokumenti, kas pieprasīti pēc identitātes verifikācijas pabeigšanas, atver jaunu mitinātas verifikācijas sesiju.
+- Tirgotāja paneļa veidlapas turpina darboties, kad pārlūks tulko lapu, un klientu cilnes atjaunojas pēc Swipelux laidiena.
+- KYB veidlapas lauki rāda kļūdas tikai pēc tam, kad esat atstājis lauku.
+
+</Update>
+
 <Update label="2026-10-08" description="v3" tags={["Pievienots","Mainīts","Labots"]}>
 
 ### Pievienots
@@ -97,6 +270,8 @@ Lai atjauninātu esošu integrāciju no agrākas versijas, skati [Migrācija uz 
 - Citi (`citibank`) tiek piedāvāta tikai biznesa klientiem. Katrs bizness saglabā kopīgo Citi, un nosaukta Citi tiek piedāvāta tikai biznesiem, kas reģistrēti ārpus ASV. Ja klientam Citi netiek piedāvāta, atbalstīto iespēju saraksts to izlaiž, tās norādīšana atgriež `422 capability_institutions_unsupported`, un metode, ko piedāvā tikai Citi, tiek uzskaitīta kā `disabled`. Pieprasījums bez `institutions` izvēlas starp atlikušajām bankām. Esošie pieteikumi un konti nemainās.
 - Nosauktas CFSB (`cfsb`) iespējas tiek piedāvātas tikai ASV klientiem: biznesiem, kas reģistrēti ASV, un fiziskām personām, kas tur dzīvo. Citiem klientiem atbalstīto iespēju saraksts izlaiž nosaukto CFSB, un tās norādīšana atgriež `422 capability_institutions_unsupported`. Pieprasījums bez `institutions` izvēlas starp atlikušajām bankām. Kopīgā CFSB, klienti, kuru valsts nav zināma, un esošie pieteikumi nemainās.
 - Lead Bank (`lead_bank`) nosauktās ACH, Wire un SWIFT iespējas tiek piedāvātas tikai klientiem, kurus Lead Bank var uzņemt, pamatojoties uz to juridisko formu un valstīm. Citiem klientiem atbalstīto iespēju saraksts izlaiž `lead_bank`, un tās norādīšana atgriež `422 capability_institutions_unsupported`. Klienti, kurus Lead Bank jau ir uzņēmusi, un iespējas, kuru atvērtais pieprasījums jau norāda `lead_bank`, to saglabā. Esošie pieteikumi un konti nemainās.
+- Dzīvajā režīmā `ach_named` vai `wire_named` iespējas pieprasījums bez `institutions` tagad pēc noklusējuma izmanto Lead Bank (`lead_bank`), ja Lead Bank pieņem jaunus klientus un var piesaistīt klientu: profilā ir norādīta vismaz viena valsts un Lead Bank pieņem katru tajā norādīto valsti, uzņēmuma profilā ir norādīta juridiskā forma, ko Lead Bank pieņem, un klientam nav `ready` pieteikuma citā bankā, ne nosauktā, ne apkopotā. Citi klienti pēc noklusējuma izmanto JPMorgan Chase (`jpmorgan`), kā to jau darīja `ach_named`. `wire_named` iepriekš nebija noklusējuma bankas. Pašreizējam pieteikumam, kas klientam jau ir, joprojām ir prioritāte. `isDefault` atbildē `GET /v3/customers/{customerId}/capabilities/supported` piemēro Lead Bank noteikumu katram klientam, tāpēc atzīmētā banka var atšķirties starp klientiem un laika gaitā mainīties. Skatiet [Iespējas un uzdevumi](/lv/integration/onboarding/capabilities-and-requirements#discover-supported-capabilities).
+- `wire_pooled` pieprasījumi bez `institutions` tagad pēc noklusējuma izmanto JPMorgan Chase (`jpmorgan`), ko atbalstīto iespēju saraksts atzīmē ar `isDefault`. Iepriekš tie izvēlējās CFSB (`cfsb`).
 - RTP ir tikai kopīgs. Neviena banka nepiedāvā `rtp_named` jauniem pieprasījumiem, tāpēc atbalstīto iespēju saraksts to rāda kā `disabled`. Klientam, kuram nav `rtp_named`, šīs iespējas pieprasījums vai uzdevuma priekšskatījums, kas norāda banku, atgriež `422 capability_institutions_unsupported`, un pieprasījums bez `institutions` atgriež `422 capability_variant_unavailable`. Kopīgā RTP (`rtp_pooled`) tiek piedāvāta Citi, tāpēc to var pieprasīt tikai biznesa klienti.
 - Jauni identitātes dokumentu pieprasījumi fiziskām personām un patiesajiem labuma guvējiem var iestatīt `constraints.identityMetadataRequired: true`, tāpēc katram failam laukā `documentMetadata` ir nepieciešams tā ID numurs un izdevējvalsts. Jauni biznesa adreses apliecinājuma un īpašnieka dzīvesvietas apliecinājuma pieprasījumi var iestatīt `constraints.maxIssueAgeDays: 90`, tāpēc katram failam ir nepieciešams tā izdošanas datums. Esošie uzdevumi saglabā savas prasības, tāpēc nolasiet ierobežojumus katra uzdevuma pieprasījumā.
 - Uzdevuma atbildei uz biznesa reģistrācijas pieprasījumu, kura `profilePointer` ir `/business/registration`, ir nepieciešama jurisdikcijas valsts, reģistrācijas numurs un dibināšanas datums pirms iesniegšanas datuma, visi kopā. Pieprasījuma `valueSchema` publicē šo noteikumu, un daļēja atbilde atgriež `400 validation_error`.
@@ -109,6 +284,7 @@ Lai atjauninātu esošu integrāciju no agrākas versijas, skati [Migrācija uz 
 - `POST /v3/customers`, `PATCH /v3/customers/{customerId}`, `POST /v3/customers/{customerId}/related-parties`, `PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}` un `POST /v3/customers/{customerId}/tasks/{taskId}/submissions` atgriež `400 validation_error`, ja profila vērtība vai uzdevuma atbilde satur Swipelux veidlapas saiti, piemēram, RFI, klienta pieprasījuma vai pārskaitījuma izsekošanas saiti. Tas neattiecas uz `externalId` vai `metadata`. Katra noraidītā vērtība parādās `errors[]` ar `code: public_form_link` un tās JSON Pointer, un atbilde nekad neatkārto saiti. Tā vietā nosūtiet pašu informāciju. Skatiet [Kļūdas un atkārtoti mēģinājumi](/integration/errors#validation-error).
 
 ### Labots
+- `ach_pooled` pieprasījumi bez `institutions` tagad izvēlas JPMorgan Chase (`jpmorgan`), banku, ko atbalstīto iespēju saraksts atzīmē ar `isDefault`. Iepriekš tie varēja izvēlēties Citi (`citibank`). Esošie pieteikumi un konti nemainās.
 - Izmaksas kotāciju un pārvedumu atbildes saglabā USDC vai USDT avota summu ar sešām decimāldaļām, piemēram, `4009.711365`, nevis `4009.71`. Fiat summas saglabā divas decimāldaļas. Izmaksas izveide vai nolasīšana, kuras stabilās monētas avota summai ir vairāk nekā divas decimāldaļas, vairs neatgriež `500`.
 - [`POST /v3/customers/{customerId}/capabilities/{capabilityId}/cancel`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id-cancel) reference tagad apraksta atcelšanu tā, kā tā darbojas. Varat atcelt `ready` iespēju, iespēju `stablecoin_transfers` nevar atcelt, un atcelšana izbeidz tikai šo iespēju, kamēr tās pieteikumi saglabā savu statusu, uzdevumus un apstiprinājumus.
 - Iespējas pieprasījums vai uzdevuma priekšskatījums, kas laukā `institutions` norāda bankas kodu publiska iestādes ID vietā, piemēram, `citi`, nevis `citibank`, atgriež `422 capability_institutions_unsupported`, nosaucot pieejamos ID, nevis `503 kyc_configuration_unavailable`.

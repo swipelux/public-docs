@@ -52,7 +52,7 @@ Atjauniniet galapunktu ar [`PATCH /v3/webhooks/{webhookId}`](/api-reference/webh
 - Jauniem abonementiem jāizmanto v3 notikumu nosaukumi.
 - Varat saglabāt mantota notikuma nosaukumu, ja galapunkts to jau abonē. Jauna mantota nosaukuma pievienošana atgriež `400 validation_error`.
 
-Kamēr jūsu integrējošā uzņēmuma KYB nav apstiprināts, varat veikt kopā 20 webhook URL izmaiņas stundā visos galapunktos jūsu dzīvajās telpās, kurām nepieciešams KYB. Izmaiņas smilšu kastes telpās netiek skaitītas. Galapunkta izveide vai tā `url` maiņa tiek uzskatīta par izmaiņu. Tikai `events` maiņa vai pašreizējā URL saglabāšana netiek uzskatīta. Ierobežojuma pārsniegšana atgriež `422 merchant_kyb_not_approved`. Skatiet [Doties tiešraidē](/lv/integration/go-live#activate-your-production-space).
+Kamēr jūsu integrējošā uzņēmuma KYB nav apstiprināts, galapunktu izveide un URL izmaiņas ir ierobežotas. Skatiet [Doties tiešraidē](/lv/integration/go-live#daily-creation-limits).
 
 Šis pamatteksts saglabā URL un aizstāj izvēli:
 
@@ -61,6 +61,12 @@ Kamēr jūsu integrējošā uzņēmuma KYB nav apstiprināts, varat veikt kopā 
   "events": ["transfer.state_changed", "capability.status_changed"]
 }
 ```
+
+## Izmantojiet publisku galamērķa URL {#use-a-public-destination-url}
+
+URL saglabāšana atgriež `400 validation_error`, ja kāda adrese, uz kuru atrisinās tā resursdatora nosaukums, ir privāta, loopback, link-local, rezervēta vai multicast, ja resursdatora nosaukums neatrisinās, vai ja tas ir `localhost`, vienas daļas nosaukums vai beidzas ar `.localhost`, `.local`, `.localdomain`, `.internal` vai `.home.arpa`.
+
+Swipelux katru dienu atkārtoti pārbauda saglabātos URL un aptur galapunktu, kura resursdatora nosaukums vai adrese tagad tiek noraidīta (`disabled: true`). Lai to atsāktu, nosūtiet derīgu `url` ar `disabled: false`.
 
 ## Pārbaudiet pirms parsēšanas
 
@@ -72,18 +78,21 @@ Swipelux piegādā jaunas webhook integrācijas caur Svix. Pārbaudiet neapstrā
 
 Neparsējiet JSON un neradiet blakusefektus, pirms verifikācija ir veiksmīga.
 
-```javascript Verify signature
+<CodeGroup>
+
+```javascript JavaScript
 import { Webhook } from "svix";
 
 const verifier = new Webhook(process.env.SWIPELUX_WEBHOOK_SECRET);
 
 export async function handleSwipeluxWebhook(request) {
   const rawBody = await request.text();
-  const event = verifier.verify(rawBody, {
+  verifier.verify(rawBody, {
     "svix-id": request.headers.get("svix-id"),
     "svix-timestamp": request.headers.get("svix-timestamp"),
     "svix-signature": request.headers.get("svix-signature"),
   });
+  const event = JSON.parse(rawBody);
 
   await webhookInbox.insertIfAbsent({
     id: event.id,
@@ -94,6 +103,27 @@ export async function handleSwipeluxWebhook(request) {
   return new Response(null, { status: 204 });
 }
 ```
+
+```java Java
+import com.svix.Webhook;
+import com.svix.exceptions.WebhookVerificationException;
+import java.util.List;
+import java.util.Map;
+
+class SwipeluxSignature {
+  // Pass the unmodified request body and every request header.
+  static boolean valid(String secret, String rawBody, Map<String, List<String>> headers) throws Exception {
+    try {
+      new Webhook(secret).verify(rawBody, headers);
+      return true;
+    } catch (WebhookVerificationException e) {
+      return false;
+    }
+  }
+}
+```
+
+</CodeGroup>
 
 Noraidiet pieprasījumus ar trūkstošiem vai nederīgiem parakstiem. Uzturiet neapstrādāto pamattekstu pieejamu, līdz verifikācija ir pabeigta.
 

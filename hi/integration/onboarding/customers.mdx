@@ -90,6 +90,21 @@ JSON
 
 Portability-token format के लिए, Swipelux `customerId` नहीं बल्कि receiving KYC project की client ID को `forClientId` के रूप में भेजें। लौटाए गए `data.token` का उपयोग `data.expiresAt` से पहले करें। वही `Idempotency-Key` और body दोबारा उपयोग करने पर वही token result replay होता है; दूसरा token जारी करने के लिए नई key का उपयोग करें।
 
+## Updates पर ignored fields check करें {#check-ignored-fields-on-updates}
+
+[`PATCH /v3/customers/{customerId}`](/api-reference/customers/patch-v3-customers-by-customer-id) और `PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}` उन body fields को ignore करते हैं जिन्हें वे नहीं पहचानते। जब वे कोई field ignore करते हैं, तो successful response में `Swipelux-Ignored-Fields` header शामिल होता है। Header ignored fields के JSON Pointers को comma-separated और sorted रूप में list करता है। Creates यह header नहीं लौटाते।
+
+हर update के बाद यह header check करें। अन्यथा गलत नाम वाला या गलत जगह रखा field बिना error के drop हो जाता है। उदाहरण के लिए, `individual.birthDate` के बजाय `individual.dateOfBirth` भेजने पर date of birth unset रह जाती है।
+
+```http Ignored fields response header
+Swipelux-Ignored-Fields: /individual/dateOfBirth,/nickname
+```
+
+- Header अधिकतम 20 pointers और 4096 characters list करता है, और जब Swipelux list को cap करता है तो `...` पर समाप्त होता है। Pointer segments percent-encoded होते हैं।
+- `metadata` के अंदर के fields free-form होते हैं और कभी report नहीं होते।
+- Idempotent replays header छोड़ देते हैं, इसलिए इसे पहले response से पढ़ें।
+- किसी future version में unknown fields को `400` के साथ reject किया जा सकता है।
+
 ## Capabilities से readiness पढ़ें
 
 API में एक customer की verification या readiness status नहीं होती। वर्तमान profile data के लिए customer को [`GET /v3/customers/{customerId}`](/api-reference/customers/get-v3-customers-by-customer-id) के साथ पढ़ें, फिर यह तय करने के लिए कि customer आगे क्या कर सकता है, capabilities और उनके `openTaskIds` का उपयोग करें।
@@ -97,6 +112,30 @@ API में एक customer की verification या readiness status नह
 ```bash Get customer
 curl --request GET \
   "${API_BASE}/v3/customers/${CUSTOMER_ID}" \
+  --header "X-API-Key: ${SWIPELUX_API_KEY}"
+```
+
+### Capability readiness के अनुसार customers filter करें {#filter-customers-by-capability-readiness}
+
+किसी खास onboarding stage पर customers खोजने के लिए, [`GET /v3/customers`](/api-reference/customers/get-v3-customers) को इन query parameters से filter करें:
+
+- `pooledCapabilityStatus`: customer के पास इस status में pooled capability है।
+- `namedCapabilityStatus`: customer के पास इस status में named capability है।
+- `hasReadyNamedAccount`: `true` उन customers को लौटाता है जिनके पास `ready` named account है। `false` उन customers को लौटाता है जिनके पास नहीं है।
+
+Status filters `pending`, `ready`, `restricted`, `rejected` या `canceled` स्वीकार करते हैं। Swipelux statuses को उसी तरह पढ़ता है जैसे `include=capabilities`। [Pooled बनाम named account types](/hi/integration/onboarding/capabilities-and-requirements#pooled-vs-named-account-types) देखें।
+
+केवल प्रतीक्षा कर रही capabilities को बाहर रखने के लिए, `namedCapabilityExcludeWait=true` या `pooledCapabilityExcludeWait=true` जोड़ें; यह उन matches को हटाता है जिनका `statusReason.resolution` `wait` है। `namedCapabilityIncludeWait=true` या `pooledCapabilityIncludeWait=true` उस resolution वाली `restricted` capabilities को भी match करता है। हर flag केवल अपने status filter के साथ काम करता है, और दोनों set होने पर `ExcludeWait` लागू होता है।
+
+Filters एक-दूसरे के साथ और अन्य list filters के साथ combine होते हैं। Swipelux उन्हें paging से पहले लागू करता है, इसलिए हर page में केवल matching customers होते हैं। इन्हें उपयोग करने के लिए API keys को `accounts:read` या `rails:read` चाहिए। Invalid value `400 validation_error` लौटाती है।
+
+उदाहरण के लिए, उन customers को खोजने के लिए जिन्हें bank ने named capability के लिए approve किया है लेकिन जिनके पास अभी ready named account नहीं है:
+
+```bash Filter customers awaiting a named account
+curl --request GET \
+  --get "${API_BASE}/v3/customers" \
+  --data-urlencode "namedCapabilityStatus=ready" \
+  --data-urlencode "hasReadyNamedAccount=false" \
   --header "X-API-Key: ${SWIPELUX_API_KEY}"
 ```
 

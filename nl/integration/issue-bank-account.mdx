@@ -14,17 +14,17 @@ flowchart LR
   D --> E["Volledige bankgegevens tonen"]
 ```
 
-## Voordat je begint
+## Voordat je begint {#before-you-start}
 
 Je hebt een klant-ID, een ready bank-capability voor de beoogde methode en valuta en een ready uitgegeven wallet in bezit van dezelfde klant nodig. Met `allowPending` kun je het request opslaan terwijl de geselecteerde bank de klant nog beoordeelt. Voltooi open werk via [Capabilities en tasks](/nl/integration/onboarding/capabilities-and-requirements).
 
-## 1. Maak of selecteer de settlement-wallet
+## 1. Maak of selecteer de settlement-wallet {#1-create-or-select-the-settlement-wallet}
 
 Maak een uitgegeven wallet via [Accounts en wallets](/nl/integration/accounts#create-the-account) en lees hem daarna opnieuw. Ga alleen verder wanneer de huidige status settlement toestaat.
 
 Bewaar de `data.id` uit de respons als `SETTLEMENT_WALLET_ID`. Gebruik geen externe wallet voor `settlement.accountId`.
 
-## 2. Maak de uitgegeven bankrekening
+## 2. Maak de uitgegeven bankrekening {#2-create-the-issued-bank-account}
 
 Gebruik [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) met deze headers:
 
@@ -64,6 +64,23 @@ Optionele requestvelden:
 
 Verstuur `institution` wanneer de klant bankgegevens van een specifieke bank nodig heeft. Swipelux reserveert één uitgegeven rekening per klant, methode, valuta en institution. Een request zonder `institution` retourneert `409 conflict` als de klant bij welke bank dan ook al een uitgegeven rekening voor die methode en valuta heeft. Een request met `institution` retourneert `409 conflict` alleen als er al een rekening bij die bank bestaat.
 
+Voor een SWIFT-rekening in een andere valuta dan USD stuur je de `institution` die het [antwoord met ondersteunde capabilities](/nl/integration/onboarding/capabilities-and-requirements#discover-supported-capabilities) voor die valuta vermeldt:
+
+```json Request body for a EUR SWIFT account
+{
+  "origin": "issued",
+  "type": "bank",
+  "method": "swift",
+  "country": "US",
+  "currency": "EUR",
+  "institution": "bmo",
+  "settlement": {
+    "accountId": "${SETTLEMENT_WALLET_ID}"
+  },
+  "label": "EUR SWIFT account"
+}
+```
+
 Rekeningreads retourneren de geselecteerde bank als `institution` met `id`, `name` en `bic`. `bic` kan `null` zijn.
 
 Idempotency geldt voor de geselecteerde bank. Het opnieuw versturen van hetzelfde request retourneert de oorspronkelijke rekening. Het wijzigen van `institution` onder dezelfde `Idempotency-Key` retourneert `409 idempotency_conflict`.
@@ -94,6 +111,8 @@ Het opgeslagen request behoudt zijn rekening-ID, settlement-wallet en rekeningsl
 
 Zolang het opgeslagen request wacht, houdt het het rekeningslot vast. Een ander `allowPending`-request voor hetzelfde slot met een andere `Idempotency-Key` retourneert `409 conflict`. De `holder.accountId` van het probleem noemt de wachtende rekening. Lees die rekening in plaats van opnieuw te proberen.
 
+De bank heeft een application nodig die deze capability heeft aangevraagd. Als de application bij de bank de capability alleen dekt zonder hem te hebben aangevraagd, retourneert een `allowPending`-request `409 capability_not_ready` met `reason: no_ready_route` totdat de capability `ready` is.
+
 Als de aanvraag eerst wordt afgewezen, geannuleerd of gearchiveerd, wordt de rekening `rejected`. Hij houdt het rekeningslot dan niet meer vast.
 
 ### Kies de settlement-valuta {#choose-the-settlement-currency}
@@ -113,22 +132,22 @@ Standaard worden stortingen afgewikkeld in de valuta van de settlement-wallet. S
 
 De bankrekening-ID en wallet-ID hebben verschillende rollen. Lees provisioning en bankgegevens via de bankrekening-ID. Gebruik de settlement-wallet-ID om aan te geven waar stortingen worden gecrediteerd.
 
-## 3. Monitor de provisioning
+## 3. Monitor de provisioning {#3-monitor-provisioning}
 
 Lees [`GET /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts-by-account-id) na het aanmaken en na elke relevante webhook.
 
 Houd de klantinterface in behandeling terwijl `details` afwezig is. Als `openTaskIds` niet leeg is, voltooi je de nieuwste taken en refetch je de rekening. Leid readiness niet af uit verstreken tijd.
 
-Als de rekening is opgeslagen met `allowPending: true`, blijft hij `in_review` met `statusReason.code` ingesteld op `waiting_for_approval` totdat de bank de aanvraag goedkeurt.
-
 Als de nieuwste `statusReason.code` gelijk is aan `awaiting_assignment`, maak dan de eerste pay-in aan voor dezelfde klant, capability en settlement-wallet via [Geld ontvangen](/nl/integration/receive-funds) en lees de bankrekening daarna opnieuw. Volg deze branch alleen wanneer de huidige rekening erom vraagt.
 
-## 4. Toon bankgegevens veilig
+## 4. Toon bankgegevens veilig {#4-present-bank-details-safely}
 
 Toon alleen de volledige gegevens die de nieuwste rekeninglees retourneert. Wanneer `details.referenceRequired` true is, toon je de exacte `details.reference` en maak je die kopieerbaar. Wanneer die false is, verzin je geen referentie.
 
 Toon voor uitgegeven `swift`-rekeningen `details.bankName`, `details.swiftCode` (de BIC van de ontvangende bank), `details.accountNumber`, `details.accountHolderName` en `details.accountHolderAddress` wanneer die worden geretourneerd. Verzenders moeten het adres van de begunstigde exact overnemen in de internationale overboeking. Toon ook `details.bankAddress` en eventuele velden voor intermediaire banken die de rekening retourneert.
 
 Deze bankgegevens zijn herbruikbaar. Vervang ze niet door funding-coördinaten van een gequote pay-in, die alleen bij die transfer horen.
+
+Wanneer de SWIFT-code, het routingnummer of het rekeningnummer van een uitgegeven rekening verandert, stuurt Swipelux `account.details_changed`. Haal de rekening opnieuw op en toon de huidige `details`.
 
 Voeg vervolgens [Webhooks](/nl/integration/webhooks) toe zodat provisioning-updates je applicatie bereiken zonder de klant op een polling-scherm te houden.

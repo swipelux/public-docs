@@ -113,6 +113,10 @@ sequenceDiagram
   else rejected
     SLX-->>You: task rejected, parent statusReason says what is next
   end
+  opt correct before review
+    You->>SLX: POST .../tasks/{taskId}/withdrawals
+    SLX-->>You: submission withdrawn, answers back to action_required
+  end
 ```
 
 关键特性：
@@ -121,6 +125,8 @@ sequenceDiagram
 - 提交是**受审核约束的**：提交本身绝不会直接改变 capability 或 account 的状态，只有被接受才会。有一个例外：`profile` 类答案在提交时会直接写入客户档案（见 2.3）。提交后，请轮询 task 或其父资源。
 - `taskRevision`（对 task `revision` 的回显）是并发保护：如果自您读取以来 task 已发生变化，需重新读取并重建答案。
 - `absence` 是一等公民的答案（「我没有这个，因为……」），请使用它，而不要让 requirement 悬空。
+- 在 submission 上设置 `allowPartial: true` 会保存有效的回答，并在 `refusedAnswers` 中返回无效的回答，而不是让整个请求失败（2.3）。
+- 仍处于 `in_review` 的 submission 可以在任何审核决定之前撤回并更正（2.3）。
 - `rejected` 通常意味着 task 结束。如果是托管验证拒绝了它，且该决定后来被撤销，task 可能会变为 `satisfied`，或变为 `action_required` 并重新开放新决定未回答的 requirement。请针对新的 `revision` 重新提交这些答案。
 
 ### 1.5 资金流动
@@ -152,7 +158,7 @@ sequenceDiagram
 | Capability | `pending`、`restricted`、`ready`、`rejected`、`canceled` |
 | Application（capability 下每次请求的尝试，见 2.2） | `requested`、`in_review`、`action_required`、`ready`、`rejected`、`disabled`、`canceled` |
 | Task | `action_required`、`in_review`、`satisfied`、`rejected`、`canceled` |
-| Submission | `in_review`、`accepted`、`changes_requested`、`rejected` |
+| Submission | `in_review`、`accepted`、`changes_requested`、`rejected`、`withdrawn` |
 | Account | `provisioning`、`in_review`、`ready`、`action_required`、`suspended`、`rejected`、`archived` |
 | Quote | `active`、`executed`、`expired`、`failed` |
 | Transfer | `awaiting_funds`、`processing`、`action_required`、`completed`、`failed`、`canceled` |
@@ -314,7 +320,7 @@ flowchart LR
 
 围绕这个循环还有：
 
-- **原始文件存储**：`POST/GET/DELETE /v3/customers/{customerId}/documents`（以及 `/{documentId}` 和 `GET .../{documentId}/download`），使用您的 API key 一次性上传，然后在 submission 答案中引用 document id。它取代了所有的 upload-token 和 direct-upload 上传入口。`POST .../documents` 还接受一个 JSON 请求体（`storageKey`、`fileName`、`type`），用于消费来自 `POST /v2/documents/direct-upload` 的仍然新鲜的客户范围引用，因此已暂存的上传无需重新发送字节即可完成迁移。
+- **原始文件存储**：`POST/GET/DELETE /v3/customers/{customerId}/documents`（以及 `/{documentId}` 和 `GET .../{documentId}/download`），使用您的 API key 一次性上传，然后在 submission 答案中引用 document id。它取代了所有的 upload-token 和 direct-upload 上传入口。`POST .../documents` 还接受一个 JSON 请求体（`storageKey`、`fileName`、`type`），用于消费来自 `POST /v2/documents/direct-upload` 的仍然新鲜的客户范围引用，因此已暂存的上传无需重新发送字节即可完成迁移。每个 v3 文件资源都带有 `contentSha256`（`sha256:<hex>`，对于在记录摘要之前存储的文件为 `null`），因此您可以发现对字节完全相同的文件的重复上传。
 - **全新的读取**：`GET /v3/tasks`（商户级收件箱）、`GET /v3/transfers/{transferId}/tasks`、`GET .../tasks/{taskId}/history`、`GET .../tasks/{taskId}/submissions`（以及 `/{submissionId}`）。
 
 Submission 示例：
@@ -332,10 +338,12 @@ Submission 示例：
 ```
 
 - 答案类型：`profile`、`text`、`date`、`single_select`、`multi_select`、`boolean`、`attestation`、`document`、`resource_reference`、`absence`。每个 requirement 的 `request` 对象会告诉您它期望的类型。
-- 一次 submission 必须回答当前轮次中**每一个可作答的 requirement**，且携带您所读取的准确 `taskRevision`。部分回答将被拒绝。
+- 一次 submission 必须回答当前轮次中**每一个可作答的 requirement**，且携带您所读取的准确 `taskRevision`。遗漏任何一个都会返回 `422 task_submission_incomplete`。部分面向个人的身份验证任务接受只回答其中一部分。
+- 默认情况下，一个被拒绝的回答会使整个请求失败，且不会保存任何内容。响应为 `400 validation_error`、`400 invalid_document_reference` 或 `409 absence_conflicts_with_profile`。发送 `"allowPartial": true` 可保留有效的回答：`201` 响应会在 `refusedAnswers`（`requirementId`、`code`、`pointer`、`message`）中列出其余回答，`code` 为 `invalid`、`absence_conflicts_with_profile`、`invalid_document_reference` 或 `depends_on_refused_answer` 之一。请将未知代码视为 `invalid`。当没有任何回答可以保留时，响应为 `400 validation_error`，且不会保存任何内容。请参阅[API 答案](/cn/integration/onboarding/capabilities-and-requirements#keep-valid-answers-with-allowpartial)。
 - `profile` 类答案**直写生效**：它们通过常规校验路径更新客户档案，并立即重新评估引用相同 intake 工作的每个 capability。所有 requirement 都已满足的同级 intake task 会自动关闭。
 - Requirement 可能构成互斥分组（`alternativeKey`）：请仅在该组中提交其中之一。
 - `changes_requested` 会递增 `remediationRound` 并携带 `reviewFeedback`。请重新读取 task，并**用一个新的幂等性 key**再次提交。
+- `POST /v3/customers/{customerId}/tasks/{taskId}/withdrawals`（需带 `Idempotency-Key`）会撤回唯一一个正在等待审核的 submission，以便客户进行更正。其回答会回到 `action_required` 且不带 `reviewFeedback`，其结果变为 `withdrawn`，`remediationRound` 会递增。已被接受的 requirement 不受影响，撤回次数不受限制。对于未知任务返回 `404 task_not_found`；当等待审核的 submission 不是恰好一个（没有，或不止一个，例如一个部分 submission 及其更正），或任务已过截止日期时，返回 `409 task_not_in_review`；当银行直接审核此任务，或 Swipelux 已将 submission 转交审核时，返回 `409 submission_already_forwarded`。通过 `POST /v3/sandbox/tasks` 创建的任务也会返回该错误。
 - 托管验证 URL **仅**出现在客户维度的 task 详情（`GET /v3/customers/{customerId}/tasks/{taskId}`）上，且仅在会话可作答时出现；列表和 `GET /v3/tasks/{taskId}` 有意不含 URL。
 - 服务条款也是一个 task：`openTaskIds` 可能包含 `category: "terms_of_service"` 的 task，其托管接受页以同样方式提供（仅客户维度详情）。普通 submission 不能用来接受条款，KYC 通过也永远不代表接受条款。
 - Task 是按 capability 划分的，因此「相同」的问询（例如地址证明）可能每个 capability 都会出现一次。请在 UI 中按 requirement `key` 去重。
@@ -525,6 +533,7 @@ v3 沙箱端到端地模拟审核循环：创建一个 task，向其提交，`re
 - [ ] submission 受审核约束（提交并不等于解锁），且必须以准确的 `taskRevision` 回答**每一个**可作答的 requirement。不匹配时请重新读取并重建。
 - [ ] 没有 `task.*` webhook，每次提交后请轮询 task（或其父资源）。
 - [ ] `changes_requested` 的重试意味着重新读取 task、给出新答案，**并使用新的幂等性 key**。
+- [ ] 接受 submission 结果 `withdrawn`，并将未知的 `refusedAnswers[].code` 视为 `invalid`。
 - [ ] 向 `/v1/documents` 发送内容永远不会解锁 v3 capability，一旦客户切到 task 上，请通过 task 驱动每一个问询。
 - [ ] 即便一个 capability 已是 `ready`，仍可能出现新的 task，请在入驻之后依然保持 task 循环运转，而不仅仅是在入驻期间。
 - [ ] capability 的 `cancel` 仅可在 `pending` 或 `restricted` 且无阻塞资源时使用（`409 capability_not_cancelable`）；取消后如需再次请求，需用新的幂等性 key 全新创建。

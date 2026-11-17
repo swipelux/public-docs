@@ -90,6 +90,21 @@ Jos sinun täytyy viedä asiakkaan tiedot, käytä toimintoa [`POST /v3/customer
 
 Siirrettävyystunnusmuotoa varten lähetä vastaanottavan KYC-projektin asiakas-ID kentässä `forClientId`, ei Swipeluxin `customerId`-arvoa. Käytä palautettua `data.token`-arvoa ennen `data.expiresAt`-ajankohtaa. Saman `Idempotency-Key`-avaimen ja rungon uudelleenkäyttö toistaa kyseisen tunnustuloksen; käytä uutta avainta uuden tunnuksen myöntämiseen.
 
+## Tarkista ohitetut kentät päivityksissä {#check-ignored-fields-on-updates}
+
+[`PATCH /v3/customers/{customerId}`](/api-reference/customers/patch-v3-customers-by-customer-id) ja `PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}` ohittavat rungon kentät, joita ne eivät tunnista. Kun ne ohittavat kentän, onnistunut vastaus sisältää otsakkeen `Swipelux-Ignored-Fields`. Otsake listaa ohitettujen kenttien JSON Pointerit pilkuilla erotettuina ja lajiteltuina. Luontipyynnöt eivät palauta tätä otsaketta.
+
+Tarkista tämä otsake jokaisen päivityksen jälkeen. Muuten väärin nimetty tai väärään kohtaan sijoitettu kenttä hylätään ilman virhettä. Jos esimerkiksi lähetät `individual.dateOfBirth` kentän `individual.birthDate` sijaan, syntymäaika jää asettamatta.
+
+```http Ignored fields response header
+Swipelux-Ignored-Fields: /individual/dateOfBirth,/nickname
+```
+
+- Otsake listaa enintään 20 osoitinta ja 4096 merkkiä, ja se päättyy `...`, kun Swipelux lyhentää luetteloa. Osoittimien osat ovat prosenttikoodattuja.
+- `metadata`-kentän sisäiset kentät ovat vapaamuotoisia, eikä niitä koskaan ilmoiteta.
+- Idempotentit toistot jättävät otsakkeen pois, joten lue se ensimmäisestä vastauksesta.
+- Tuntemattomat kentät saatetaan tulevassa versiossa hylätä virheellä `400`.
+
 ## Lue valmius kyvyistä
 
 Asiakkaalla ei ole vahvistus- tai valmiustilaa API:ssa. Lue asiakas [`GET /v3/customers/{customerId}`](/api-reference/customers/get-v3-customers-by-customer-id) -toiminnolla nykyisten profiilitietojen saamiseksi, käytä sitten kykyjä ja niiden `openTaskIds`-kenttiä päättämään, mitä asiakas voi tehdä seuraavaksi.
@@ -97,6 +112,30 @@ Asiakkaalla ei ole vahvistus- tai valmiustilaa API:ssa. Lue asiakas [`GET /v3/cu
 ```bash Get customer
 curl --request GET \
   "${API_BASE}/v3/customers/${CUSTOMER_ID}" \
+  --header "X-API-Key: ${SWIPELUX_API_KEY}"
+```
+
+### Suodata asiakkaita kykyjen valmiuden mukaan {#filter-customers-by-capability-readiness}
+
+Löydät tietyssä käyttöönottovaiheessa olevat asiakkaat suodattamalla [`GET /v3/customers`](/api-reference/customers/get-v3-customers) näillä kyselyparametreilla:
+
+- `pooledCapabilityStatus`: asiakkaalla on yhteinen kyky tässä tilassa.
+- `namedCapabilityStatus`: asiakkaalla on nimetty kyky tässä tilassa.
+- `hasReadyNamedAccount`: `true` palauttaa asiakkaat, joilla on `ready`-tilassa oleva nimetty tili. `false` palauttaa asiakkaat, joilla sitä ei ole.
+
+Tilasuodattimet hyväksyvät arvot `pending`, `ready`, `restricted`, `rejected` ja `canceled`. Swipelux lukee tilat samalla tavalla kuin `include=capabilities`. Katso [Jaetut ja nimelliset tilityypit](/fi/integration/onboarding/capabilities-and-requirements#pooled-vs-named-account-types).
+
+Jos haluat jättää pois kyvyt, jotka vain odottavat, lisää `namedCapabilityExcludeWait=true` tai `pooledCapabilityExcludeWait=true`; se poistaa osumat, joiden `statusReason.resolution` on `wait`. `namedCapabilityIncludeWait=true` tai `pooledCapabilityIncludeWait=true` sisällyttää myös `restricted`-kyvyt, joilla on tämä ratkaisu. Kukin lippu toimii vain oman tilasuodattimensa kanssa, ja `ExcludeWait` voittaa, kun molemmat on asetettu.
+
+Suodattimia voi yhdistää keskenään ja muiden luettelosuodattimien kanssa. Swipelux soveltaa niitä ennen sivutusta, joten jokainen sivu sisältää vain vastaavia asiakkaita. API-avaimet tarvitsevat niiden käyttöön oikeuden `accounts:read` tai `rails:read`. Virheellinen arvo palauttaa `400 validation_error`.
+
+Esimerkiksi löytääksesi asiakkaat, jotka pankki on hyväksynyt nimettyyn kykyyn mutta joilla ei vielä ole valmista nimettyä tiliä:
+
+```bash Filter customers awaiting a named account
+curl --request GET \
+  --get "${API_BASE}/v3/customers" \
+  --data-urlencode "namedCapabilityStatus=ready" \
+  --data-urlencode "hasReadyNamedAccount=false" \
   --header "X-API-Key: ${SWIPELUX_API_KEY}"
 ```
 

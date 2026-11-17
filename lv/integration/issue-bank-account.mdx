@@ -14,17 +14,17 @@ flowchart LR
   D --> E["Parādīt pilnus bankas rekvizītus"]
 ```
 
-## Pirms sākat
+## Pirms sākat {#before-you-start}
 
 Jums nepieciešams klienta ID, gatava bankas iespēja paredzētajai metodei un valūtai, kā arī gatavs izsniegts maks, kas pieder tam pašam klientam. Ar `allowPending` varat saglabāt pieprasījumu, kamēr atlasītā banka vēl izskata klientu. Pabeidziet atvērtos darbus sadaļā [Iespējas un uzdevumi](/lv/integration/onboarding/capabilities-and-requirements).
 
-## 1. Izveidojiet vai atlasiet norēķinu maku
+## 1. Izveidojiet vai atlasiet norēķinu maku {#1-create-or-select-the-settlement-wallet}
 
 Izveidojiet izsniegtu maku sadaļā [Konti un maki](/lv/integration/accounts#create-the-account), pēc tam nolasiet to vēlreiz. Turpiniet tikai tad, kad tā pašreizējais statuss atļauj norēķinu.
 
 Saglabājiet no atbildes iegūto `data.id` kā `SETTLEMENT_WALLET_ID`. Neizmantojiet ārējo maku laukam `settlement.accountId`.
 
-## 2. Izveidojiet izsniegtu bankas kontu
+## 2. Izveidojiet izsniegtu bankas kontu {#2-create-the-issued-bank-account}
 
 Izmantojiet [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) ar šīm galvenēm:
 
@@ -64,6 +64,23 @@ Neobligātie pieprasījuma lauki:
 
 Nosūtiet `institution`, kad klientam nepieciešami konkrētas bankas rekvizīti. Swipelux rezervē vienu izsniegtu kontu katram klientam, metodei, valūtai un iestādei. Pieprasījums bez `institution` atgriež `409 conflict`, ja klientam jau ir izsniegts konts šai metodei un valūtai jebkurā bankā. Pieprasījums ar `institution` atgriež `409 conflict` tikai tad, ja konts šajā bankā jau pastāv.
 
+SWIFT kontam valūtā, kas nav USD, nosūtiet `institution`, ko [atbalstīto iespēju atbilde](/lv/integration/onboarding/capabilities-and-requirements#discover-supported-capabilities) norāda šai valūtai:
+
+```json Request body for a EUR SWIFT account
+{
+  "origin": "issued",
+  "type": "bank",
+  "method": "swift",
+  "country": "US",
+  "currency": "EUR",
+  "institution": "bmo",
+  "settlement": {
+    "accountId": "${SETTLEMENT_WALLET_ID}"
+  },
+  "label": "EUR SWIFT account"
+}
+```
+
 Konta lasīšana atgriež atlasīto banku kā `institution` ar `id`, `name` un `bic`. `bic` var būt `null`.
 
 Idempotence attiecas uz atlasīto banku. Atkārtojot to pašu pieprasījumu, tiek atgriezts sākotnējais konts. Mainot `institution` ar to pašu `Idempotency-Key`, tiek atgriezts `409 idempotency_conflict`.
@@ -94,6 +111,8 @@ Saglabātais pieprasījums saglabā savu konta ID, norēķinu maku un konta viet
 
 Kamēr saglabātais pieprasījums gaida, tas aizņem konta vietu. Cits `allowPending` pieprasījums tai pašai vietai ar citu `Idempotency-Key` atgriež `409 conflict`. Problēmas lauks `holder.accountId` norāda gaidošo kontu. Atkārtota mēģinājuma vietā nolasiet šo kontu.
 
+Bankai ir nepieciešams pieteikums, kurā šī iespēja tika pieprasīta. Ja bankas pieteikums tikai aptver iespēju, to nepieprasot, `allowPending` pieprasījums atgriež `409 capability_not_ready` ar `reason: no_ready_route`, līdz iespēja ir `ready`.
+
 Ja pieteikums vispirms tiek noraidīts, atcelts vai arhivēts, konts kļūst `rejected`. Tas vairs neaizņem konta vietu.
 
 ### Izvēlieties norēķinu valūtu {#choose-the-settlement-currency}
@@ -113,22 +132,22 @@ Pēc noklusējuma iemaksas tiek norēķinātas norēķinu maka valūtā. Iestati
 
 Bankas konta ID un maka ID ir dažādas lomas. Nolasiet nodrošinājumu un bankas rekvizītus caur bankas konta ID. Izmantojiet norēķinu maka ID, lai identificētu, kur iemaksas tiek kreditētas.
 
-## 3. Uzraugiet nodrošinājumu
+## 3. Uzraugiet nodrošinājumu {#3-monitor-provisioning}
 
 Pēc izveides un pēc katra attiecīgā webhook izsauciena nolasiet [`GET /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts-by-account-id).
 
 Uzturiet klienta saskarni gaidīšanas režīmā, kamēr `details` nav pieejams. Ja `openTaskIds` nav tukšs, pabeidziet jaunākos uzdevumus un atkārtoti nolasiet kontu. Nesniedziet secinājumus par gatavību pēc pagājušā laika.
 
-Ja konts tika saglabāts ar `allowPending: true`, tas paliek `in_review` ar `statusReason.code` vērtību `waiting_for_approval`, līdz banka apstiprina pieteikumu.
-
 Ja jaunākais `statusReason.code` ir `awaiting_assignment`, izveidojiet pirmo iemaksu tam pašam klientam, iespējai un norēķinu makam sadaļā [Saņemt līdzekļus](/lv/integration/receive-funds), pēc tam vēlreiz nolasiet bankas kontu. Sekojiet šim zaram tikai tad, kad pašreizējais konts to pieprasa.
 
-## 4. Droši parādiet bankas rekvizītus
+## 4. Droši parādiet bankas rekvizītus {#4-present-bank-details-safely}
 
 Rādiet tikai pilnas detaļas, kas atgrieztas jaunākajā konta lasīšanā. Ja `details.referenceRequired` ir true, parādiet precīzu `details.reference` un padariet to kopējamu. Ja tas ir false, neizdomājiet atsauci.
 
 Izsniegtiem `swift` kontiem parādiet `details.bankName`, `details.swiftCode` (saņēmējbankas BIC), `details.accountNumber`, `details.accountHolderName` un `details.accountHolderAddress`, ja tie ir atgriezti. Sūtītājiem saņēmēja adrese starptautiskajā pārvedumā jānokopē precīzi. Parādiet arī `details.bankAddress` un visus starpniekbankas laukus, ko atgriež konts.
 
 Šie bankas rekvizīti ir atkārtoti izmantojami. Neaizstājiet tos ar finansēšanas koordinātām no kotētas iemaksas, kas pieder tikai šim pārvedumam.
+
+Ja izsniegta konta SWIFT kods, maršrutēšanas numurs vai konta numurs mainās, Swipelux nosūta `account.details_changed`. Atkārtoti iegūstiet kontu un parādiet tā pašreizējos `details`.
 
 Tālāk pievienojiet [Webhook izsaukumus](/lv/integration/webhooks), lai nodrošinājuma atjauninājumi sasniegtu jūsu lietojumprogrammu, neaizturot klientu uz aptaujas ekrāna.

@@ -14,17 +14,17 @@ flowchart LR
   D --> E["पूर्ण bank details दिखाएँ"]
 ```
 
-## शुरू करने से पहले
+## शुरू करने से पहले {#before-you-start}
 
 आपको एक customer ID, इच्छित method और currency के लिए एक ready bank capability, और उसी customer के स्वामित्व वाला एक ready issued wallet चाहिए। `allowPending` के साथ, आप request तब save कर सकते हैं जब चयनित bank अभी भी customer को review कर रहा हो। [Capabilities और tasks](/hi/integration/onboarding/capabilities-and-requirements) के माध्यम से open work पूरा करें।
 
-## 1. Settlement wallet बनाएँ या चुनें
+## 1. Settlement wallet बनाएँ या चुनें {#1-create-or-select-the-settlement-wallet}
 
 [Accounts और wallets](/hi/integration/accounts#create-the-account) के माध्यम से एक issued wallet बनाएँ, फिर इसे फिर से पढ़ें। केवल तब जारी रखें जब इसकी वर्तमान status settlement की अनुमति देती है।
 
 इसके response से प्राप्त `data.id` को `SETTLEMENT_WALLET_ID` के रूप में संग्रहीत करें। `settlement.accountId` के लिए एक external wallet का उपयोग न करें।
 
-## 2. Issued bank account बनाएँ
+## 2. Issued bank account बनाएँ {#2-create-the-issued-bank-account}
 
 इन headers के साथ [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts) का उपयोग करें:
 
@@ -64,6 +64,23 @@ Content-Type: application/json
 
 जब customer को किसी विशिष्ट bank से bank details चाहिए, तब `institution` भेजें। Swipelux प्रति customer, method, currency, और institution एक issued account reserve करता है। यदि customer के पास उस method और currency के लिए किसी भी bank में पहले से एक issued account है, तो `institution` के बिना request `409 conflict` लौटाता है। `institution` के साथ request केवल तभी `409 conflict` लौटाता है जब उस bank के लिए account पहले से मौजूद हो।
 
+USD के अलावा किसी अन्य currency में SWIFT account के लिए, वह `institution` भेजें जिसे [supported-capability response](/hi/integration/onboarding/capabilities-and-requirements#discover-supported-capabilities) उस currency के लिए सूचीबद्ध करता है:
+
+```json Request body for a EUR SWIFT account
+{
+  "origin": "issued",
+  "type": "bank",
+  "method": "swift",
+  "country": "US",
+  "currency": "EUR",
+  "institution": "bmo",
+  "settlement": {
+    "accountId": "${SETTLEMENT_WALLET_ID}"
+  },
+  "label": "EUR SWIFT account"
+}
+```
+
 Account reads चयनित bank को `institution` के रूप में `id`, `name`, और `bic` के साथ लौटाते हैं। `bic` `null` हो सकता है।
 
 Idempotency चयनित bank पर लागू होती है। उसी request को replay करने पर मूल account लौटता है। उसी `Idempotency-Key` के तहत `institution` बदलने पर `409 idempotency_conflict` लौटता है।
@@ -94,6 +111,8 @@ Saved request अपना account ID, settlement wallet, और account slot �
 
 जब तक saved request प्रतीक्षा में है, वह account slot को hold करता है। उसी slot के लिए किसी अलग `Idempotency-Key` के साथ भेजा गया दूसरा `allowPending` request `409 conflict` लौटाता है। Problem का `holder.accountId` प्रतीक्षारत account को दर्शाता है। Retry करने के बजाय उस account को पढ़ें।
 
+Bank को ऐसे application की आवश्यकता है जिसने यह capability request की हो। यदि bank का application इस capability को request किए बिना केवल cover करता है, तो capability के `ready` होने तक `allowPending` request `reason: no_ready_route` के साथ `409 capability_not_ready` लौटाता है।
+
 यदि application पहले reject, cancel, या archive हो जाता है, तो account `rejected` हो जाता है। यह अब account slot को hold नहीं करता।
 
 ### Settlement currency चुनें {#choose-the-settlement-currency}
@@ -113,22 +132,22 @@ Default रूप से, deposits settlement wallet की currency में s
 
 Bank account ID और wallet ID की अलग-अलग भूमिकाएँ हैं। Provisioning और bank details को bank account ID के माध्यम से पढ़ें। यह पहचानने के लिए settlement wallet ID का उपयोग करें कि deposits कहाँ credit होते हैं।
 
-## 3. Provisioning की निगरानी करें
+## 3. Provisioning की निगरानी करें {#3-monitor-provisioning}
 
 Creation के बाद और प्रत्येक संबंधित webhook के बाद [`GET /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts-by-account-id) पढ़ें।
 
 जब तक `details` अनुपस्थित है, customer interface को pending रखें। यदि `openTaskIds` खाली नहीं है, तो नवीनतम tasks पूरे करें और account को पुन: प्राप्त करें। बीते समय से readiness का अनुमान न लगाएँ।
 
-यदि account को `allowPending: true` के साथ save किया गया था, तो bank द्वारा application approve किए जाने तक यह `in_review` रहता है, जिसमें `statusReason.code` `waiting_for_approval` पर set होता है।
-
 यदि नवीनतम `statusReason.code` `awaiting_assignment` है, तो [Receive funds](/hi/integration/receive-funds) के माध्यम से उसी customer, capability, और settlement wallet के लिए पहला pay-in बनाएँ, फिर bank account को फिर से पढ़ें। इस शाखा का पालन केवल तब करें जब वर्तमान account इसका अनुरोध करता है।
 
-## 4. Bank details को सुरक्षित रूप से प्रस्तुत करें
+## 4. Bank details को सुरक्षित रूप से प्रस्तुत करें {#4-present-bank-details-safely}
 
 केवल नवीनतम account read द्वारा लौटाए गए पूर्ण details प्रदर्शित करें। जब `details.referenceRequired` true है, तो सटीक `details.reference` दिखाएँ और इसे copyable बनाएँ। जब यह false है, तो एक reference का आविष्कार न करें।
 
 Issued `swift` accounts के लिए, लौटाए जाने पर `details.bankName`, `details.swiftCode` (receiving bank का BIC), `details.accountNumber`, `details.accountHolderName`, और `details.accountHolderAddress` प्रदर्शित करें। Senders को beneficiary address को international wire में ठीक वैसा ही copy करना होगा। `details.bankAddress` और account द्वारा लौटाए गए कोई भी intermediary bank fields भी दिखाएँ।
 
 ये bank details पुन: उपयोग करने योग्य हैं। इन्हें एक quoted pay-in के funding coordinates से न बदलें, जो केवल उस transfer से संबंधित हैं।
+
+जब किसी issued account का SWIFT code, routing number या account number बदलता है, तो Swipelux `account.details_changed` भेजता है। Account को फिर से fetch करें और उसके current `details` दिखाएँ।
 
 आगे, [Webhooks](/hi/integration/webhooks) जोड़ें ताकि provisioning updates आपके application तक बिना customer को polling screen पर रखे पहुँच सकें।

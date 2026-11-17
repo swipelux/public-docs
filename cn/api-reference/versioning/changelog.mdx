@@ -8,35 +8,152 @@ description: "按日期记录 Swipelux API 各版本的新增功能、重大变�
 
 如需将现有集成从较早版本升级，请参阅 [迁移到 v3](/cn/api-reference/versioning/migrate-to-v3)。
 
+<Update label="2026-11-16" description="v3" tags={["新增","变更","修复"]}>
+
+### 新增
+- `GET /v3/customers` 接受 `pooledCapabilityIncludeWait`、`pooledCapabilityExcludeWait`、`namedCapabilityIncludeWait` 和 `namedCapabilityExcludeWait`。请将每个参数与对应的 `pooledCapabilityStatus` 或 `namedCapabilityStatus` 筛选条件一起使用。`IncludeWait` 会加入处理方式为 `wait` 的受限能力，`ExcludeWait` 会移除处理方式为 `wait` 的能力。两者都为 `true` 时以 `ExcludeWait` 为准。这些筛选条件需要 `accounts:read` 或 `rails:read`。请参阅[客户](/cn/integration/onboarding/customers#filter-customers-by-capability-readiness)。
+- 通过 `include=capabilities` 返回的能力摘要可能带有 `statusReason.resolution`：`wait`、`contact_support` 或 `none`。对于依赖任务的原因，请读取该能力。
+- 文件要求可能返回长度为 3 到 50 个字符的 `constraints.idNumber`。当其 `required` 为 `true` 时，请在 `documentMetadata` 中包含证件号码。当文件需要时，控制台会要求填写证件号码和签发国家。
+- `PATCH /v3/customers/{customerId}/accounts/{accountId}` 在非 USD 的外部 SWIFT 账户上接受 `bankAddress`（最多 105 个字符）、`bankCity` 和 `bankPostalCode`。外币 SWIFT 出金需要 `bankAddress` 和 `bankCity`。在 USD 账户上更改这些字段会返回 `409 conflict`。当有待处理的报价或出金正在使用该账户时，更改会返回 `409 account_has_active_transfers`，您可以重试。
+- 在控制台中，KYB 支持 WebP、HEIF 和 HEIC 文件。
+
+### 变更
+- 当发行账户的 SWIFT 代码、路由号码或账号发生变化时，Swipelux 会发送 [`account.details_changed`](/api-reference/webhooks/account-details-changed)。`data.object` 是当前账户，`data.previous` 仅包含 `routingVersion`。请参阅[发行银行账户](/cn/integration/issue-bank-account)。
+- 如果某个钱包账户是未归档银行账户的结算钱包，归档该钱包账户会返回 `409 account_has_dependent_accounts`。请先使用 `PATCH` 将该银行账户的结算移到另一个钱包，或先归档该银行账户。
+- `PATCH /v3/customers/{customerId}/recipients/{recipientId}` 会以 `400 validation_error` 拒绝另一种收款方类型的字段，并为每个字段返回一个 `invalid_field` 错误：个人上的 `companyName` 和 `businessIndustry`，企业上的 `firstName` 和 `lastName`。
+- 当相同请求仍在处理中时，`POST /v3/customers/{customerId}/tasks/{taskId}/withdrawals` 也会返回带有 `retryable: true` 的 `409 idempotency_request_in_progress`。
+- 在控制台中，被拒绝的客户删除会列出阻止删除的资源，收款方国家使用国家选择器，资料文本输入限制为 256 个字符。从客户页面或 Balances 创建出金后，会打开其详情。
+
+### 修复
+- Swipelux 不再在一次更新中为同一个能力发送两个 `capability.status_changed` 事件，并且在状态最终回到起始状态时不再发送任何事件。
+- 当账户在开通过程中被拒绝时，`account.status_changed` 会报告 `previous.state: "provisioning"`，而不是 `"in_review"`。
+
+</Update>
+
+<Update label="2026-11-09" description="v3" tags={["新增","变更","修复"]}>
+
+### 新增
+- 当银行要求为向第三方发起的 USD SWIFT 出金提供证明文件时，Swipelux 会在该转账上开启一个 `category: "transaction_rfi"` 的任务。该任务要求提供一份文件及其参考号。请使用现有的任务提交端点回答，Swipelux 会将回答转交给银行。如果出金在未获银行批准的情况下完成、失败或被退款，Swipelux 会取消该任务。请参阅[报价与转账](/cn/integration/quotes-and-transfers#supporting-documents-for-swift-payouts)。
+- 所有银行的发行 SWIFT 账户都会在 `details.accountHolderAddress` 中返回受益人的邮寄地址。此前只有 Lead Bank 和 BMO 的账户返回该地址。它不同于 `details.bankAddress`，后者是收款银行的地址。请参阅[发行银行账户](/cn/integration/issue-bank-account)。
+- 以账户币种存入非 USD SWIFT 账户的款项会以 USDC 结算到结算钱包。转账的 `amounts.in` 显示以账户币种收到的金额，`amounts.out` 显示交付的 USDC。此前，这些存款会被暂扣审核，且没有转账或 webhook。
+- 文件要求可能返回 `constraints.issuingCountryRequired: true`。为其提交的每份文件都必须在 `documentMetadata` 中包含 `issuingCountry`。
+
+### 变更
+- 在第一个相同请求仍在处理中时到达的重试，会在能力请求、文件、收款方及其目的地、规则、webhooks、报价、转账、转账取消和验证会话共享令牌上返回带有 `retryable: true` 的 `409 idempotency_request_in_progress`。此前这些路由返回 `idempotency_conflict`。以不同的请求体重用幂等键仍会返回 `idempotency_conflict`。请参阅[错误与重试](/integration/errors#idempotency-request-in-progress)。
+- 银行入金报价现在返回具体错误，而不是通用失败：`400 quote_amount_out_of_range`、`400 quote_volume_limit_exceeded`、`400 quote_destination_network_unsupported`、`503 quote_temporarily_unavailable`（可重试）或 `502 quote_failed`。
+- 当银行审核中的申请依赖某份文件时，`DELETE /v3/customers/{customerId}/documents/{documentId}` 会返回 `409 document_in_use`。请在审核结束或申请取消后再归档该文件。
+- 结算钱包为 USDT 的非 USD 银行账户现在在创建和更新时会返回 `400 invalid_settlement_target`，即使没有显式的 `settlement.currency`。请参阅[选择结算币种](/cn/integration/issue-bank-account#choose-the-settlement-currency)。
+- 在控制台中，出金审核会将外币到账金额标记为估算值。
+- 在控制台和公开跟踪页面上，被银行退回或撤销的已完成转账会显示提示。其状态仍为 Completed。
+
+### 修复
+- 发行银行账户在变为就绪时会发送 `account.status_changed`。请参阅[Webhook](/cn/integration/webhooks)。
+- 使用相同的幂等键和文件重试分段文件上传时，不再返回 `409`。
+- 控制台的交易筛选条件会按银行通道匹配银行出金，并覆盖所有加密网络。按精确 ID 搜索可以找到小额入金。
+
+</Update>
+
+<Update label="2026-11-04" description="v3" tags={["新增"]}>
+
+### 新增
+- 拥有就绪的 Lead Bank（`lead_bank`）`swift_named` 能力的客户可以发送 AUD、CAD、CHF、CZK、DKK、EUR、GBP、HKD、HUF、JPY、MXN、NOK、NZD、PLN、SEK、SGD 和 ZAR 的 SWIFT 出金。银行未为该客户启用的币种会返回 `422 bank_not_supported_for_customer`。请使用精确的 USDC `in.amount` 报价，Swipelux 会从中以 USD 收取费用。报价的 `out.amount` 是由新的 `out.amountEstimated: true` 标记的估算值，发送 `out.amount` 会返回 `422 validation_error`，出金完成时转账会记录实际到账金额。EUR、GBP、CHF、CZK、DKK、HUF、NOK、PLN 和 SEK 需要有效的 IBAN。其他币种接受有效的 IBAN 或本地账号，MXN 的本地账号为 18 位 CLABE。持有人地址需要包含邮政编码。被退回的出金会转入 Swipelux 审核，而不是自动退款。请参阅[发送资金](/cn/integration/send-funds#foreign-currency-swift-payouts)。
+
+</Update>
+
+<Update label="2026-11-02" description="v3" tags={["新增","变更","修复"]}>
+
+### 新增
+- 控制台新增 **Agents** 页面，用于将 AI 代理连接到 Swipelux。**Your agents** 列出在 Sandbox 和 Live 中连接的代理，并允许您断开它们。请参阅[通过您的 AI 代理使用 Swipelux](/integration/ai-agents)。
+- 控制台的客户列表新增 **Shared methods**、**Bank accounts** 和 **Opened bank account** 筛选条件。
+
+### 变更
+- Swipelux 每天都会重新检查已保存的 webhook 目标地址。如果某个端点的主机名现在被拒绝，或解析到被拒绝的地址，Swipelux 会暂停该端点并设置 `disabled: true`。仅更改 `url` 时，已暂停的端点仍保持暂停；如需恢复，请发送一个可通过检查的 `url` 并附带 `disabled: false`。请参阅[Webhook](/cn/integration/webhooks#use-a-public-destination-url)。
+- 创建规则时，如果目标钱包位于其他网络上，或目标为银行目的地，会以 `400 rule_target_invalid` 拒绝。请参阅[错误与重试](/integration/errors#rule-target-invalid)。
+- 文件下载响应带有 `Cache-Control: private, no-store`。
+- 完成通行密钥恢复后，控制台会向您发送电子邮件，并在 24 小时内暂停出金、提现、密钥创建、代理连接和团队邀请。
+
+### 修复
+- 当从另一个 Swipelux 钱包发送的资金到达触发钱包时，规则现在会运行。
+- 从未发行的银行账户不再阻止归档客户。
+- `include=capabilities` 不再对部分客户返回空列表。
+- 沙盒账户余额不再显示浮点舍入误差。
+- 带有路线无法收取的开发者费用的银行出金报价，现在会在报价时以 `400 validation_error` 被拒绝，而不是在执行时失败。
+- 当第一笔银行卡付款仍在处理中而报价过期时，银行卡付款链接不再打开第二个结账页面。
+- 已完成的银行卡入金会保留其法币来源金额。
+- 对于 Lead Bank，控制台的 **Open bank account** 抽屉不再提供该银行不支持的 USDT 网络，并提供 Solana 上的 USDT。
+
+</Update>
+
 <Update label="2026-11-01" description="v3" tags={["新增"]}>
 
 ### 新增
 - [`GET /v3/customers/{customerId}/capabilities/supported`](/api-reference/capabilities/get-v3-customers-by-customer-id-capabilities-supported) 返回的每个条目都包含 `unavailableInstitutions`。它列出提供该能力变体但不接受此客户的银行，每家银行都带有 `id`、`name` 以及结构与 `statusReason` 相同的 `reasons`。当前的原因代码为 `jurisdiction_unsupported`、`legal_form_unsupported` 和 `customer_type_unsupported`。该字段在共享账户条目和非银行条目上为 `[]`，且同一家银行绝不会同时出现在 `institutions` 和 `unavailableInstitutions` 中。在能力申请中指定不可用的银行仍会返回 `422 capability_institutions_unsupported`。请参阅 [能力与要求](/cn/integration/onboarding/capabilities-and-requirements#show-why-a-bank-is-unavailable)。
+- 拥有就绪的 Lead Bank（`lead_bank`）`swift_named` 能力的客户可以开立 AUD、CAD、CHF、CZK、DKK、EUR、GBP、HKD、HUF、JPY、MXN、NOK、NZD、PLN、SEK、SGD 和 ZAR 的发行 SWIFT 账户，每个币种一个账户。支持能力响应会在 `swift_named` 的 `lead_bank` 条目中以 `institution: "bmo"` 列出这些币种。请将该 `institution` 与币种一起发送。BMO Bank N.A.（`bmo`，BIC `HATRUS44`）是这些账户上显示的银行，`GET /v3/institutions` 会列出它。由银行决定每个客户可以开立哪些币种，币种不在银行提供范围内的账户最终会变为 `rejected`，并带有 `statusReason.code: currency_unavailable`。对这些币种指定 `lead_bank` 会返回提及 `bmo` 的 `400 validation_error`。对 USD 或 `swift` 以外的方式指定 `bmo` 会返回 `400 validation_error`。指定 `bmo` 的能力请求或任务预览会返回 `422 capability_institutions_unsupported`。请参阅[发行银行账户](/cn/integration/issue-bank-account#choose-the-bank)。
 
 </Update>
 
-<Update label="2026-10-30" description="v3" tags={["新增"]}>
+<Update label="2026-10-30" description="v3" tags={["新增","变更"]}>
 
 ### 新增
-- 经过身份验证的请求会按 API 密钥、按集成企业以及按客户端 IP 地址进行速率限制。超出限制的请求会返回 `429 rate_limited`，并带有 `retryable: true` 以及 `Retry-After` 标头，该标头给出重试前需要等待的秒数。尚未获批的集成企业限制更低。API 参考中的每个需要身份验证的操作都列出了 `429` 响应。来自同一 IP 地址的重复身份验证失败在超出其限制后也会返回 `429`，而从该地址发送的有效 API 密钥仍可正常使用。
+- 经过身份验证的请求按 API 密钥、按接入企业以及按客户端 IP 地址进行速率限制。超出限制的请求会返回 `429 rate_limited`，带有 `retryable: true` 和 `Retry-After` 标头，后者给出重试前需要等待的秒数。尚未获批的接入企业限制更低。API 参考中的每个需身份验证的操作都列出了 `429` 响应。来自同一 IP 地址的重复失败身份验证在超出其限制后也会返回 `429`，从该地址发送的有效 API 密钥在限制恢复之前也可能收到相同的响应，因此请在 `Retry-After` 延迟之后重试。请参阅[错误与重试](/integration/errors#rate-limited)。
+
+### 变更
+- Swipelux 已停用没有公开部分的旧版 API 密钥，例如不含点号的密钥。使用这些密钥的请求会返回 `401 unauthorized`。
+
+</Update>
+
+<Update label="2026-10-29" description="v3" tags={["变更"]}>
+
+### 变更
+- 在您的接入企业 KYB 获批之前，Swipelux 会在任意滚动 24 小时内、跨您的所有空间限制创建数量：10 个 API 密钥、10 个 webhook 端点、10 条规则、250 个客户、20 次 `sumsub_share_token` 导出以及 10 次身份验证导入。这取代了每个生产空间 10 个有效 API 密钥的限制；撤销密钥不会释放名额。超出限制的创建会返回 `422 merchant_kyb_not_approved`；控制台会返回普通的 `422`。失败的创建和幂等重放不计入。这些限制以及每小时 20 次 webhook URL 变更的限制也适用于沙盒空间，除非您有一个已获批或不要求 KYB 的生产空间。请参阅[每日创建限制](/cn/integration/go-live#daily-creation-limits)。
 
 </Update>
 
 <Update label="2026-10-28" description="v3" tags={["新增","变更"]}>
 
 ### 新增
-- Webhook 端点包含 `disabled`，当向该端点的投递暂停时其值为 `true`。在多次投递失败后，Swipelux 也会暂停端点。在 [`PATCH /v3/webhooks/{webhookId}`](/api-reference/webhooks/patch-v3-webhooks-by-webhook-id) 中发送 `disabled: true` 可暂停投递，发送 `disabled: false` 可恢复投递。恢复时会再次检查目标 URL，如果它不再通过检查，则返回 `400`，端点保持暂停状态。
+- `GET /v3/customers` 接受 `pooledCapabilityStatus` 和 `namedCapabilityStatus` 筛选条件，取值为 `pending`、`ready`、`restricted`、`rejected` 或 `canceled`。它还接受 `hasReadyNamedAccount=true|false`，用于列出拥有或没有 `ready` 具名账户的客户。这些筛选条件可以相互组合，也可与其他列表筛选条件组合，Swipelux 会在分页之前应用它们。API 密钥需要 `accounts:read` 或 `rails:read` 才能使用它们。无效值会返回 `400 validation_error`。例如，`namedCapabilityStatus=ready&hasReadyNamedAccount=false` 可以找到已获银行批准但尚无就绪具名账户的客户。请参阅[客户](/cn/integration/onboarding/customers#filter-customers-by-capability-readiness)。
+- 当 `PATCH /v3/customers/{customerId}` 和 `PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}` 忽略其无法识别的请求体字段时，会返回 `Swipelux-Ignored-Fields` 响应标头。该标头以逗号分隔并排序列出被忽略字段的 JSON Pointer，最多 20 个指针、4096 个字符，截断时以 `...` 结尾。`metadata` 内的字段从不报告，幂等重放会省略该标头。请在每次更新后检查该标头，以免在不知情的情况下丢失数据，例如以错误字段名发送的出生日期。请参阅[客户](/cn/integration/onboarding/customers#check-ignored-fields-on-updates)。
+- Webhook 端点包含 `disabled`，在向该端点的投递暂停期间其值为 `true`。在多次投递失败后，Swipelux 也会暂停端点。在 [`PATCH /v3/webhooks/{webhookId}`](/api-reference/webhooks/patch-v3-webhooks-by-webhook-id) 中发送 `disabled: true` 可暂停投递，发送 `disabled: false` 可恢复投递。恢复时会重新检查目标 URL，如果不再通过检查则返回 `400`，端点保持暂停。
+- Swipelux 可以暂停接入企业。暂停期间，使用其任何 API 密钥发出的每个请求都会返回带有 `retryable: false` 的 `403 merchant_suspended`，Swipelux 会暂缓其 webhook 投递、规则执行和向银行提交的申请。不会删除或撤销任何内容，因此在 Swipelux 解除暂停后，API 密钥、webhook 端点和规则会恢复正常。如需解决暂停问题，请联系 Swipelux 支持团队。请参阅[错误与重试](/integration/errors#merchant-suspended)。
 
 ### 变更
-- 当身份验证提供商拒绝创建 share token 时（例如 `forClientId` 未知），使用 `format: sumsub_share_token` 的 `POST /v3/customers/{customerId}/export` 会返回带有 `retryable: false` 的 `422 kyc_provider_rejected`，而不是 `502 request_failed`。响应包含固定的 Swipelux 消息，绝不会重复提供商的错误文本，因此请在重试前检查请求。其他提供商故障仍返回 `502 request_failed`，该错误可以重试。
-- `GET /v3/webhooks/portal` 提供的门户不再创建、编辑、暂停或删除端点。使用具有 `webhooks:write` 的 API 密钥时，它仍会显示并轮换端点签名密钥、重试投递以及重放投递。使用 `POST /v3/webhooks` 创建端点，使用 `PATCH /v3/webhooks/{webhookId}` 更改或暂停端点，使用 `DELETE /v3/webhooks/{webhookId}` 删除端点。请参阅[Webhook](/cn/integration/webhooks)。
+- 当身份验证服务提供商拒绝创建共享令牌时（例如针对未知的 `forClientId`），带有 `format: sumsub_share_token` 的 `POST /v3/customers/{customerId}/export` 会返回带有 `retryable: false` 的 `422 kyc_provider_rejected`，而不是 `502 request_failed`。响应包含固定的 Swipelux 消息，从不重复提供商的错误文本，因此请在重试之前检查请求。其他提供商故障仍返回可重试的 `502 request_failed`。
+- `GET /v3/webhooks/portal` 的门户不再创建、编辑、暂停或删除端点。使用具有 `webhooks:write` 的 API 密钥时，它仍会显示并轮换端点签名密钥、重试投递并重放投递。请使用 `POST /v3/webhooks` 创建端点，使用 `PATCH /v3/webhooks/{webhookId}` 更改或暂停端点，并使用 `DELETE /v3/webhooks/{webhookId}` 删除端点。请参阅[Webhook](/cn/integration/webhooks)。
+- `POST /v3/webhooks` 和 `PATCH /v3/webhooks/{webhookId}` 只接受所有解析地址均为全局可路由单播地址的目标。对于 IANA 特殊用途地址段中的地址、组播地址、携带被拒绝 IPv4 地址的 IPv6 过渡形式、无法解析的主机名、`localhost`、单标签主机名，以及以 `.localhost`、`.local`、`.localdomain`、`.internal` 或 `.home.arpa` 结尾的主机名，它们会返回 `400 validation_error`。
 
 </Update>
 
-<Update label="2026-10-25" description="v3" tags={["变更"]}>
+<Update label="2026-10-26" description="v3" tags={["新增","变更","修复"]}>
+
+### 新增
+- 在商户面板中，所有者和管理员可以通过 **Settings** > **Customer pages** 上传公司徽标（PNG、JPG 或 WebP，最大 512 KB），并为每个空间设置 `https://` 返回 URL。在生产空间中，该徽标会替换您客户的托管条款页面上的 Swipelux 文字标识。当空间设置了返回 URL 时，完成后的条款页面会提供 **Return to the app**。
+
+### 变更
+- 托管条款页面采用了新设计。沙盒流程的每个页面都会显示 **Sandbox** 标记。
+- 在要求 KYB 的生产空间中，商户面板会在您的 KYB 获批之前锁定 **Customers**、**Balances** 和 **Transactions**。首页会显示上线步骤，客户的 **Bank accounts** 部分按银行每行列出一家银行及其币种，并在银行批准后显示银行账户详情。
+- 当服务该能力的银行均不提供入金报价时（例如 Lead Bank（`lead_bank`）的 `ach_named` 和 `wire_named`），针对入金的 `POST /v3/quotes` 会返回带有 `retryable: false` 的 `422 capability_direction_unsupported`，而不是可重试的 `503 rail_temporarily_unavailable`。使用相同 `Idempotency-Key` 的重试会重放该 `422`。
+- 对于您企业的 KYB 客户，`DELETE /v3/customers/{customerId}` 会返回带有 `retryable: false` 的 `409 merchant_kyb_subject_archive_refused`。请先联系 Swipelux 支持团队，将您的 KYB 转移到其他客户。
+
+### 修复
+- 当托管验证进入审核且它是任务的最后一个未完成项时，能力会变为 `pending` 并带有 `statusReason.code: information_in_review`，原本为 `action_required` 的申请会变为 `in_review`。Swipelux 会为这些变更发送 `capability.status_changed` 和 `application.status_changed`。此前两者都会保持原来的状态，Swipelux 也不会发送任何 webhook。
+- 在任务提交中，对象类型的回答（例如地址、企业注册信息或股权结构）会替换已存储的值，而不是与之合并，因此新回答中省略的字段（例如 `state` 或 `streetLine2`）会被删除。针对客户和关联方的 `PATCH` 请求仍会合并。
+- 在您的第一个 webhook 端点、门户会话或事件存在之前，`GET /v3/webhooks` 会返回 `200` 和空的 `data` 数组，而不是 `502 request_failed`。
+- 使用相同 `Idempotency-Key` 重放已存储错误响应的重试，现在会包含 `X-Request-Id`，其值为该重试自身的请求 ID。响应体保留第一次请求的 `correlationId`。
+- 在取消 `card` 能力后再次请求该能力，会返回带有 `retryable: false` 的 `409 capability_not_reopenable`，而不是 `500`。
+
+</Update>
+
+<Update label="2026-10-25" description="v3" tags={["新增","变更"]}>
+
+### 新增
+- 现在可以在 Lead Bank（`lead_bank`）通过客户的 `swift_named` 能力开立发行 SWIFT 账户。
+- `GET /v3/customers/{customerId}/capabilities/supported` 会为具名能力返回 `institutions[].currencies`。每一项包含一个币种 `code` 以及开立账户时要发送的 `institution`：`ach_named`、`wire_named`、`rtp_named` 和 `swift_named` 为 USD，`sepa_named` 为 EUR，`faster_payments_named` 为 GBP，`ipp_named` 为 AED。共享能力不包含 `currencies`。请参阅[能力与任务](/cn/integration/onboarding/capabilities-and-requirements#discover-supported-capabilities)。
 
 ### 变更
 - 在您的接入方企业 KYB 获得批准之前，您在所有需要 KYB 的生产空间中的全部端点上，每小时总共可以进行 20 次 Webhook URL 更改。沙盒空间中的更改不计入。超出 Webhook URL 限制会返回 `422 merchant_kyb_not_approved`。仅更改端点的 `events` 或保存其当前 URL 不算作 URL 更改。在控制台中，对于每个需要 KYB 的生产空间，Swipelux 会以普通的 `422` 响应拒绝超过 10 个有效 API 密钥。当您至少有一个生产空间、所有生产空间都需要 KYB 且均未获批准时，Swipelux 还会以普通的 `422` 响应拒绝每个商户超过 5 个空间。空间限制同时计入沙盒空间和生产空间；如果有任何生产空间不需要 KYB，则不适用该限制。沙盒空间不受写入限制、Webhook URL 限制和密钥限制的约束。请参阅[上线](/cn/integration/go-live#activate-your-production-space)。
+- 发行的 ACH 和 wire 账户只接受 USD，`lead_bank` 的 SWIFT 账户也是如此。使用其他币种的请求会返回 `400 validation_error`。此前这类请求会被接受，然后以 USD 发行或从未开通。
+- 当客户已就绪的银行都不发行所请求的币种时，`POST /v3/customers/{customerId}/accounts` 会返回带有 `reason: "no_issuable_route"` 的 `409 capability_not_ready`。请改选其他币种或机构，而不要重试。
 
 </Update>
 
@@ -68,6 +185,34 @@ description: "按日期记录 Swipelux API 各版本的新增功能、重大变�
 
 </Update>
 
+<Update label="2026-10-19" description="v3" tags={["新增","变更","修复"]}>
+
+### 新增
+- Swipelux 转发给银行的文件请求可以在 `request.constraints.maxSizeBytes` 中携带银行的单文件大小上限。商户面板和托管信息请求页面会将 JPEG、PNG 和 WebP 照片压缩到上限以内，并拒绝压缩后仍超出上限的文件。请参阅[上传文件](/cn/integration/onboarding/capabilities-and-requirements#upload-documents)。
+- 当 Swipelux 在要求 KYB 的生产空间中对您的企业验证（KYB）有未完成的请求时，商户面板会在您首次于浏览器标签页中加载它时打开 KYB 页面。页眉中的 **Action needed** 按钮也会跳转到该页面。
+
+### 变更
+- 再次请求已取消的银行能力时，如果请求开启了新的申请，则返回 `201`；如果请求加入了客户已有的申请，则返回 `200`。请参阅[能力与任务](/cn/integration/onboarding/capabilities-and-requirements#shared-applications-per-bank)。
+- 要求提供 `/financialProfile/accountPurposes` 的新共享信息采集任务也会要求提供 `/financialProfile/accountPurposeDescription`。仅当用途包含 `other` 时才需要提供该描述；缺少描述时，提交会针对该指针返回 `400 validation_error`。商户面板仅在选中 **Something else** 时显示描述字段。
+- 面向个人客户的具名 JPMorgan Chase（`jpmorgan`）能力要求提供 `employment.occupation`。缺少职业的就业信息回答会返回 `400 validation_error`。尚未发送给银行的申请会采用该要求：未完成的信息采集任务会新增该项，已完成的信息采集任务会收到一个后续任务。共享能力和其他银行不受影响。
+- 当居住地址中没有国家时，`GET /v3/customers` 会将个人的居住国家报告为 `country`。`country` 筛选条件匹配相同的值。请参阅[客户](/cn/integration/onboarding/customers)。
+- `POST /v3/sandbox/tasks/{taskId}/review` 会对任务中所有尚未决定的回答作出决定，涵盖所有未结束的提交轮次以及等待审核的复用证明材料。请参阅[沙盒测试](/cn/integration/sandbox#test-an-open-task)。
+- 托管信息请求页面只显示一个状态摘要，每项要求的更正显示在对应条目旁边。
+- 商户面板将声明与所请求的条目一起列出，而不再放在 **Terms of Service** 下；将出金的银行目的地标记为 **Destination Account**；并将待处理的出金显示为 **Processing**。
+
+### 修复
+- 如果某个能力剩余的任务回答全部已被接受或正在审核中（包括 Swipelux 根据客户现有资料和文件填写的回答），该能力现在会报告 `pending` 并带有 `statusReason.code: information_in_review`，而不再停留在带有 `tasks_due` 的 `restricted`。请参阅[能力与任务](/cn/integration/onboarding/capabilities-and-requirements#continue-when-the-capability-is-ready)。
+- 在某家银行发起的 `allowPending` 账户请求，如果该银行已批准的申请覆盖了该能力但并未请求该能力，现在会返回带有 `reason: no_ready_route` 的 `409 capability_not_ready`，而不是 `500`。能力变为 `ready` 后，同一请求即可成功。请参阅[发行银行账户](/cn/integration/issue-bank-account#save-the-request-before-bank-approval)。
+- 被银行拒绝的 Lead Bank（`lead_bank`）申请会变为 `rejected`，而不再停留在 `in_review`。
+- Swipelux 现在会审核后续信息采集任务中的回答（例如在第一个信息采集任务之后请求的资金来源文件），因此相关申请会提交给银行，而不再停留在 `requested`。
+- 当 Swipelux 在条款会话仍未结束时接受信息采集任务的所有回答，或者您使用 `POST /v3/sandbox/tasks/{taskId}/review` 这样做时，审核不再因 `409 kyc_process_conflict` 而失败。客户接受条款后，任务变为 `satisfied`，能力变为 `ready`。在此类审核之后再次请求已取消的 `ach_named` 或 `wire_named` 能力也会成功。
+- 在任务提交中，`documentMetadata[].issuedOn` 接受最晚比提交的 UTC 日期晚一天的日期，因此在领先于 UTC 的时区中今天签发的文件会被接受。`maxIssueAgeDays` 仍从 UTC 日期开始计算。
+- 在商户面板中添加新收款方时，账户表单只提供已就绪的支付方式。
+- 商户面板在表单其余部分提交期间会保留已发送表单部分的状态，接受以客户所在时区的今天作为文件签发日期，在您发送 KYB 回复后不再短暂显示空请求，并且在您于网站回答和文件回答之间切换时保留已上传的文件。
+- 商户面板中的交易详情面板打开时不再被截断。
+
+</Update>
+
 <Update label="2026-10-15" description="v3" tags={["变更"]}>
 
 ### 变更
@@ -86,6 +231,34 @@ description: "按日期记录 Swipelux API 各版本的新增功能、重大变�
 
 </Update>
 
+<Update label="2026-10-12" description="v3" tags={["新增","变更","修复"]}>
+
+### 新增
+- `POST /v3/customers/{customerId}/tasks/{taskId}/submissions` 接受可选的 `allowPartial: true`。此时 Swipelux 会保存有效的回答，并返回 `201` 和 `refusedAnswers`，其中每个条目包含 `requirementId`、`code`、`pointer` 和 `message`。`code` 为 `invalid`、`absence_conflicts_with_profile`、`invalid_document_reference` 或 `depends_on_refused_answer`，今后还可能新增代码。当没有任何回答可以保留时，响应为 `400 validation_error`，且不会保存任何内容。`allowPartial` 不会改变提交必须回答的要求，不使用该字段时行为保持不变。请参阅[使用 `allowPartial` 保留有效回答](/cn/integration/onboarding/capabilities-and-requirements#keep-valid-answers-with-allowpartial)。
+- `POST /v3/customers/{customerId}/tasks/{taskId}/withdrawals` 会撤回一个正在等待审核的提交，以便客户进行更正。该请求需要 `Idempotency-Key`。提交中的回答会回到 `action_required`，下一次提交会开始新的 `remediationRound`。当等待审核的提交不是恰好一个，或任务已过截止日期时，撤回会返回 `409 task_not_in_review`；当银行直接审核该任务，或 Swipelux 已将提交转交审核时，返回 `409 submission_already_forwarded`。请参阅[撤回等待审核的提交](/cn/integration/onboarding/capabilities-and-requirements#withdraw-a-submission-awaiting-review)。
+- 文件资源包含 `contentSha256`，即已存储文件的 SHA-256 摘要，格式为 `sha256:` 后跟小写十六进制摘要；对于在记录摘要之前存储的文件，该值为 `null`。将其与文件的摘要进行比较，即可发现对已存储文件的重复上传。请参阅[上传文件](/cn/integration/onboarding/capabilities-and-requirements#upload-documents)。
+- 当客户对应的访问权限就绪后，商户面板的收款方表单会新增 SPEI（墨西哥，MXN）、Pix 和 Pix Safe 账户，**Pay out** 抽屉也可以向 SPEI 账户付款。请参阅[收款方与目的地](/cn/integration/recipients)。
+- 在公开任务表单中，正在审核中的人员会显示 **Edit details**。它会将该人员撤出审核，以便更正其信息，而不必重新添加。该人员的回答和文件需要重新填写。
+
+### 变更
+- 提交的 `outcome` 新增 `withdrawn`，用于客户在任何审核决定之前撤回的提交。请更新任何会拒绝未知结果的客户端。
+- 已接受或正在审核的文件现在可以回答另一家银行申请中的匹配文件请求，即使各银行对该请求的措辞不同。客户上传同一文件的次数会减少。早于请求 `maxIssueAgeDays` 的文件（例如超过 90 天的地址证明）不会被复用。
+- 法币收款方目的地现在需要其支付方式对应的 `ready` 能力，银行访问权限在能力机制之前设置的客户也是如此。否则 `POST /v3/customers/{customerId}/recipients/{recipientId}/destinations` 会返回 `409 rail_not_ready`。钱包目的地不受影响。请参阅[收款方与目的地](/cn/integration/recipients)。
+- 为客户没有相应能力的支付方式发行银行账户时，会返回 `409 capability_not_ready`：请求省略 `institution` 时原因为 `route_selection_required`，指定了银行时原因为 `no_ready_route`。两者都会在 `capabilities` 中列出可以发行该账户的能力。不再返回 `ambiguous_route_scope` 和 `rail_not_ready` 原因。请参阅[发行银行账户](/cn/integration/issue-bank-account)。
+- 使用 `Idempotency-Key` 重试的报价或账户请求，如果其先前的路线已无法继续，会返回带有 `retryable: true` 的 `409 capability_not_ready`。请使用新的 `Idempotency-Key` 重新发送。
+- 当部分回答被拒绝时，公开任务表单会保留有效的回答，并在每个被拒绝的回答旁显示原因。正在审核中的人员会连同其状态继续显示在列表中。
+- 公开任务表单会在表单内为个人完成身份验证。在商户面板中，提供托管验证的个人任务只链接到该验证，**Documents** 部分也不再为个人客户提供上传。
+- 商户面板中客户的 **Profile** 标签页一次保存一个部分，清空字段现在会真正清除该字段。
+
+### 修复
+- 银行拒绝的 Lead Bank 出金报价现在返回 `400 quote_failed` 而不是 `500`，银行无法响应的报价返回 `503 quote_temporarily_unavailable`，您可以重试。请参阅[报价与转账](/cn/integration/quotes-and-transfers)。
+- 当另一家银行正在审核同一地址时，Lead Bank 所有者任务的提交不再返回 `500`。
+- 对于个人，在身份验证完成后请求的文件会开启新的托管验证会话。
+- 浏览器翻译页面时，商户面板表单仍可正常使用，客户标签页也会在 Swipelux 发布后恢复。
+- KYB 表单字段仅在您离开字段后才显示错误。
+
+</Update>
+
 <Update label="2026-10-08" description="v3" tags={["新增","变更","修复"]}>
 
 ### 新增
@@ -97,6 +270,8 @@ description: "按日期记录 Swipelux API 各版本的新增功能、重大变�
 - Citi（`citibank`）仅向企业客户提供。所有企业都保留共享 Citi，具名 Citi 仅向在美国境外注册的企业提供。当某客户不提供 Citi 时，支持列表会省略它，指定它会返回 `422 capability_institutions_unsupported`，仅由 Citi 提供的方式会被列为 `disabled`。未指定 `institutions` 的请求会在其余银行中进行选择。现有申请和账户保持不变。
 - 具名 CFSB（`cfsb`）能力仅向美国客户提供：在美国注册的企业以及居住在美国的个人。对于其他客户，支持列表会省略具名 CFSB，指定它会返回 `422 capability_institutions_unsupported`。未指定 `institutions` 的请求会在其余银行中进行选择。共享 CFSB、国家未知的客户以及现有申请保持不变。
 - Lead Bank（`lead_bank`）的具名 ACH、Wire 和 SWIFT 能力仅向 Lead Bank 能够根据其法律形式和所在国家完成入驻的客户提供。对于其他客户，支持列表会省略 `lead_bank`，指定它会返回 `422 capability_institutions_unsupported`。Lead Bank 已完成入驻的客户，以及未完成请求中已指定 `lead_bank` 的能力，会保留它。现有申请和账户保持不变。
+- 在正式模式下，省略 `institutions` 的 `ach_named` 或 `wire_named` 能力请求，现在会在 Lead Bank 接受新客户且能够为该客户开户时默认使用 Lead Bank（`lead_bank`）：资料中至少列出一个国家且 Lead Bank 接受其中的每个国家，企业资料中列出的法律形式为 Lead Bank 所接受，且客户在其他银行没有 `ready` 的申请（无论具名还是共享）。其他客户默认使用 JPMorgan Chase（`jpmorgan`），与 `ach_named` 此前的行为一致。`wire_named` 此前没有默认银行。客户已有的当前申请仍然优先。`GET /v3/customers/{customerId}/capabilities/supported` 中的 `isDefault` 会对每个客户应用 Lead Bank 规则，因此被标记的银行可能因客户而异，并可能随时间变化。请参阅[能力与任务](/cn/integration/onboarding/capabilities-and-requirements#discover-supported-capabilities)。
+- 省略 `institutions` 的 `wire_pooled` 请求现在默认使用 JPMorgan Chase（`jpmorgan`），支持列表会用 `isDefault` 标记该银行。此前这类请求会选择 CFSB（`cfsb`）。
 - RTP 仅提供共享方式。没有任何银行向新请求提供 `rtp_named`，因此支持列表会将其显示为 `disabled`。对于未持有 `rtp_named` 的客户，针对它且指定了银行的能力请求或任务预览会返回 `422 capability_institutions_unsupported`，未指定 `institutions` 的则返回 `422 capability_variant_unavailable`。共享 RTP（`rtp_pooled`）由 Citi 提供，因此只有企业客户可以申请。
 - 针对个人和最终受益人的新身份证件请求可以设置 `constraints.identityMetadataRequired: true`，此时每个文件都需要在 `documentMetadata` 中提供其证件号码和签发国家。针对企业地址证明和所有者居住证明的新请求可以设置 `constraints.maxIssueAgeDays: 90`，此时每个文件都需要提供其签发日期。现有任务保留其原有要求，因此请读取每个任务请求上的约束条件。
 - 针对企业注册请求（其 `profilePointer` 为 `/business/registration`）的任务答案需要同时提供管辖国家、注册号码以及早于提交日期的成立日期。该请求的 `valueSchema` 公布了此规则，部分答案会返回 `400 validation_error`。
@@ -109,6 +284,7 @@ description: "按日期记录 Swipelux API 各版本的新增功能、重大变�
 - 当资料值或任务答案包含 Swipelux 表单链接（例如 RFI、客户请求或转账追踪链接）时，`POST /v3/customers`, `PATCH /v3/customers/{customerId}`, `POST /v3/customers/{customerId}/related-parties`, `PATCH /v3/customers/{customerId}/related-parties/{relatedPartyId}` 和 `POST /v3/customers/{customerId}/tasks/{taskId}/submissions` 返回 `400 validation_error`。这不适用于 `externalId` 或 `metadata`。每个被拒绝的值都会出现在 `errors[]` 中，带有 `code: public_form_link` 及其 JSON Pointer，且响应绝不会重复该链接。请改为直接发送信息本身。请参阅[错误与重试](/integration/errors#validation-error)。
 
 ### 修复
+- 省略 `institutions` 的 `ach_pooled` 请求现在会选择 JPMorgan Chase（`jpmorgan`），即支持列表用 `isDefault` 标记的银行。此前它们可能会选择 Citi（`citibank`）。现有申请和账户不受影响。
 - 出金报价和转账响应会将 USDC 或 USDT 源金额保留到小数点后六位，例如 `4009.711365` 而不是 `4009.71`。法币金额保留两位小数。创建或读取稳定币源金额超过两位小数的出金时，不再返回 `500`。
 - [`POST /v3/customers/{customerId}/capabilities/{capabilityId}/cancel`](/api-reference/capabilities/post-v3-customers-by-customer-id-capabilities-by-capability-id-cancel) 参考现在按实际行为描述取消操作。您可以取消处于 `ready` 的能力，`stablecoin_transfers` 能力无法取消，取消只会终止该能力本身，其申请会保留各自的状态、任务和审批。
 - 在 `institutions` 中列出银行代码而非公开机构 ID（例如用 `citi` 代替 `citibank`）的能力请求或任务预览，会返回列出可用 ID 的 `422 capability_institutions_unsupported`，而不是 `503 kyc_configuration_unavailable`。

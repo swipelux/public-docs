@@ -14,17 +14,17 @@ flowchart LR
   D --> E["呈現完整銀行資料"]
 ```
 
-## 開始前
+## 開始前 {#before-you-start}
 
 您需要一個客戶 ID、對應方法與幣別已就緒的銀行能力,以及同一客戶名下已就緒的發行錢包。透過 `allowPending`,您可以在所選銀行仍在審核客戶期間先儲存請求。請透過[能力與任務](/zh-Hant/integration/onboarding/capabilities-and-requirements) 完成待辦事項。
 
-## 1. 建立或選擇結算錢包
+## 1. 建立或選擇結算錢包 {#1-create-or-select-the-settlement-wallet}
 
 透過[帳戶與錢包](/zh-Hant/integration/accounts#create-the-account) 建立一個發行錢包,然後再次讀取。僅在其當前狀態允許結算時繼續。
 
 將回應取得的 `data.id` 儲存為 `SETTLEMENT_WALLET_ID`。不要將外部錢包用於 `settlement.accountId`。
 
-## 2. 建立發行的銀行帳戶
+## 2. 建立發行的銀行帳戶 {#2-create-the-issued-bank-account}
 
 使用 [`POST /v3/customers/{customerId}/accounts`](/api-reference/accounts/post-v3-customers-by-customer-id-accounts),並搭配以下標頭:
 
@@ -64,6 +64,23 @@ Content-Type: application/json
 
 當客戶需要特定銀行的銀行資料時,請傳送 `institution`。Swipelux 會為每個客戶、方法、幣別與機構的組合保留一個發行帳戶。未包含 `institution` 的請求,若客戶已在任何銀行擁有該方法與幣別的發行帳戶,則會回傳 `409 conflict`。包含 `institution` 的請求,僅在該銀行的帳戶已存在時才會回傳 `409 conflict`。
 
+若要開立 USD 以外幣別的 SWIFT 帳戶,請傳送[支援能力回應](/zh-Hant/integration/onboarding/capabilities-and-requirements#discover-supported-capabilities)中為該幣別列出的 `institution`:
+
+```json Request body for a EUR SWIFT account
+{
+  "origin": "issued",
+  "type": "bank",
+  "method": "swift",
+  "country": "US",
+  "currency": "EUR",
+  "institution": "bmo",
+  "settlement": {
+    "accountId": "${SETTLEMENT_WALLET_ID}"
+  },
+  "label": "EUR SWIFT account"
+}
+```
+
 帳戶讀取會以 `institution` 回傳所選銀行,其中包含 `id`、`name` 與 `bic`。`bic` 可能為 `null`。
 
 冪等性適用於所選銀行。重送相同請求會回傳原本的帳戶。在相同的 `Idempotency-Key` 下變更 `institution` 會回傳 `409 idempotency_conflict`。
@@ -94,6 +111,8 @@ Content-Type: application/json
 
 已儲存的請求在等待期間會佔用帳戶名額。針對同一名額、使用不同 `Idempotency-Key` 的另一個 `allowPending` 請求會回傳 `409 conflict`。問題回應中的 `holder.accountId` 會指出正在等待的帳戶。請讀取該帳戶,而非重試。
 
+銀行需要一個已申請此能力的申請案件。若銀行的申請只涵蓋此能力而未申請它,則在能力變為 `ready` 之前,`allowPending` 請求會傳回附有 `reason: no_ready_route` 的 `409 capability_not_ready`。
+
 若申請先遭到拒絕、取消或封存,帳戶會變為 `rejected`。該帳戶不再佔用帳戶名額。
 
 ### 選擇結算幣別 {#choose-the-settlement-currency}
@@ -113,22 +132,22 @@ Content-Type: application/json
 
 銀行帳戶 ID 與錢包 ID 具有不同的角色。透過銀行帳戶 ID 讀取佈建狀態與銀行資料;使用結算錢包 ID 標識存款所要記入的位置。
 
-## 3. 監控佈建進度
+## 3. 監控佈建進度 {#3-monitor-provisioning}
 
 於建立後及每次相關 webhook 後,讀取 [`GET /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts-by-account-id)。
 
 在 `details` 尚未提供時,請將客戶介面維持在等待狀態。若 `openTaskIds` 不為空,請完成最新的任務並重新讀取帳戶。切勿以經過時間推論就緒狀態。
 
-若帳戶是以 `allowPending: true` 儲存,在銀行核准申請之前,帳戶會維持 `in_review`,且 `statusReason.code` 為 `waiting_for_approval`。
-
 若最新的 `statusReason.code` 為 `awaiting_assignment`,請透過[接收資金](/zh-Hant/integration/receive-funds) 為同一位客戶、同一能力與同一結算錢包建立第一筆入金,然後再次讀取該銀行帳戶。僅在當前帳戶要求時才走這條分支。
 
-## 4. 安全地呈現銀行資料
+## 4. 安全地呈現銀行資料 {#4-present-bank-details-safely}
 
 僅顯示最新一次帳戶讀取所回傳的完整資料。當 `details.referenceRequired` 為 true 時,請顯示完整的 `details.reference` 並使其可複製。當其為 false 時,切勿自行編造參考編號。
 
 對於發行的 `swift` 帳戶,若有回傳,請顯示 `details.bankName`、`details.swiftCode`(收款銀行的 BIC)、`details.accountNumber`、`details.accountHolderName` 與 `details.accountHolderAddress`。匯款人必須將受益人地址完整複製到國際電匯中。同時也請顯示 `details.bankAddress` 以及帳戶回傳的任何中介銀行欄位。
 
 這些銀行資料可重複使用。請勿以已報價入金中的入金座標取代它們,因為那些座標僅屬於該筆轉帳。
+
+當發行帳戶的 SWIFT 代碼、路由號碼或帳號變更時,Swipelux 會傳送 `account.details_changed`。請重新取得該帳戶並顯示其目前的 `details`。
 
 接下來,請加入 [Webhooks](/zh-Hant/integration/webhooks),讓佈建更新能夠送達您的應用程式,而不必讓客戶停留在輪詢畫面。

@@ -113,6 +113,10 @@ sequenceDiagram
   else rejected
     SLX-->>You: task rejected, parent statusReason says what is next
   end
+  opt correct before review
+    You->>SLX: POST .../tasks/{taskId}/withdrawals
+    SLX-->>You: submission withdrawn, answers back to action_required
+  end
 ```
 
 Klíčové vlastnosti:
@@ -121,6 +125,8 @@ Klíčové vlastnosti:
 - Odesílání je **řízené kontrolou**: nikdy přímo nemění stav capability ani accountu, to dělá až akceptace. Jedna výjimka: odpovědi typu `profile` se při odeslání propisují do profilu customera (2.3). Po odeslání polluj task nebo rodičovský zdroj.
 - `taskRevision` (ozvěna hodnoty `revision` u tasku) je ochrana konkurence: pokud se task od doby, co jste jej četli, změnil, přečtěte jej znovu a znovu sestavte své odpovědi.
 - `absence` je plnohodnotná odpověď („Toto nemám, protože…"), použijte ji místo ponechávání požadavků nevyřešených.
+- `allowPartial: true` u submission uloží platné odpovědi a neplatné vrátí v `refusedAnswers`, místo aby selhal celý požadavek (2.3).
+- Submission, která je stále `in_review`, lze před jakýmkoli rozhodnutím o posouzení stáhnout a opravit (2.3).
 - `rejected` obvykle task ukončuje. Pokud jej zamítlo hostované ověření a toto rozhodnutí je později zvráceno, task může přejít do stavu `satisfied`, nebo do `action_required` se znovu otevřenými požadavky, na které nové rozhodnutí neodpovídá. Odešlete je znovu proti nové `revision`.
 
 ### 1.5 Pohyb peněz
@@ -314,7 +320,7 @@ Každé legacy document rozhraní se mapuje na tutéž náhradu: čtěte `GET /v
 
 Kolem té smyčky:
 
-- **Úložiště surových souborů**: `POST/GET/DELETE /v3/customers/{customerId}/documents` (plus `/{documentId}` a `GET .../{documentId}/download`), nahrajte jednou se svým API klíčem, poté odkazujte na document ids v odpovědích submission. Toto nahrazuje každý upload-token a direct-upload intake. `POST .../documents` přijímá také JSON tělo (`storageKey`, `fileName`, `type`), které spotřebuje stále čerstvou referenci v rozsahu zákazníka z `POST /v2/documents/direct-upload`, takže zaparkovaná nahrání se migrují bez opětovného posílání bajtů.
+- **Úložiště surových souborů**: `POST/GET/DELETE /v3/customers/{customerId}/documents` (plus `/{documentId}` a `GET .../{documentId}/download`), nahrajte jednou se svým API klíčem, poté odkazujte na document ids v odpovědích submission. Toto nahrazuje každý upload-token a direct-upload intake. `POST .../documents` přijímá také JSON tělo (`storageKey`, `fileName`, `type`), které spotřebuje stále čerstvou referenci v rozsahu zákazníka z `POST /v2/documents/direct-upload`, takže zaparkovaná nahrání se migrují bez opětovného posílání bajtů. Každý zdroj dokumentu v3 obsahuje `contentSha256` (`sha256:<hex>`, nebo `null` u dokumentů uložených předtím, než se otisky začaly zaznamenávat), takže můžete odhalit opětovné nahrání bajtově identického souboru.
 - **Zcela nová čtení**: `GET /v3/tasks` (merchant-wide schránka), `GET /v3/transfers/{transferId}/tasks`, `GET .../tasks/{taskId}/history`, `GET .../tasks/{taskId}/submissions` (plus `/{submissionId}`).
 
 Submission (ilustrativní):
@@ -332,10 +338,12 @@ Submission (ilustrativní):
 ```
 
 - Typy odpovědí: `profile`, `text`, `date`, `single_select`, `multi_select`, `boolean`, `attestation`, `document`, `resource_reference`, `absence`. Objekt `request` každého požadavku vám řekne, jaký typ očekává.
-- Submission musí odpovědět **na každý akční požadavek v aktuálním kole**, s přesnou hodnotou `taskRevision`, kterou jste přečetli. Částečná submissiona jsou odmítána.
+- Submission musí odpovědět **na každý akční požadavek v aktuálním kole**, s přesnou hodnotou `taskRevision`, kterou jste přečetli. Vynechání některého vrátí `422 task_submission_incomplete`. Některé úkoly ověření identity fyzických osob přijímají podmnožinu.
+- Ve výchozím nastavení jedna odmítnutá odpověď způsobí selhání celého požadavku a nic se neuloží. Odpovědí je `400 validation_error`, `400 invalid_document_reference` nebo `409 absence_conflicts_with_profile`. Pošlete `"allowPartial": true`, abyste ponechali platné odpovědi: odpověď `201` uvede ostatní v `refusedAnswers` (`requirementId`, `code`, `pointer`, `message`), kde `code` je jeden z `invalid`, `absence_conflicts_with_profile`, `invalid_document_reference` nebo `depends_on_refused_answer`. Neznámý kód považujte za `invalid`. Pokud nelze ponechat žádnou odpověď, odpovědí je `400 validation_error` a nic se neuloží. Viz [API odpovědi](/cs/integration/onboarding/capabilities-and-requirements#keep-valid-answers-with-allowpartial).
 - Odpovědi typu `profile` **propisují**: aktualizují profil customera přes běžnou validační cestu a okamžitě přehodnotí každou capability odkazující na stejnou intake práci. Sourozenecké intake tasky, jejichž požadavky jsou všechny splněny, se automaticky uzavírají.
 - Požadavky mohou tvořit alternativní skupiny (`alternativeKey`): odešlete přesně jeden ze skupiny.
 - `changes_requested` inkrementuje `remediationRound` a nese `reviewFeedback`. Přečtěte task znovu, znovu odešlete **s čerstvým idempotency klíčem**.
+- `POST /v3/customers/{customerId}/tasks/{taskId}/withdrawals` (s `Idempotency-Key`) stáhne jedinou submission čekající na posouzení, aby ji zákazník mohl opravit. Její odpovědi se vrátí do `action_required` bez `reviewFeedback`, její výsledek se změní na `withdrawn` a `remediationRound` se zvýší. Již přijaté požadavky zůstanou nedotčené a počet stažení není omezen. Vrací `404 task_not_found` pro neznámý úkol, `409 task_not_in_review`, když na posouzení nečeká právě jedna submission (žádná, nebo více než jedna, například částečná submission a její oprava) nebo úkol překročil termín, a `409 submission_already_forwarded`, když tento úkol posuzuje přímo banka nebo Swipelux již submission předal k posouzení. Vracejí ho také úkoly vytvořené pomocí `POST /v3/sandbox/tasks`.
 - URL hostované verifikace se objevují **jen** v detailu tasku scoped na customera (`GET /v3/customers/{customerId}/tasks/{taskId}`) a jen dokud je session akční; seznamy a `GET /v3/tasks/{taskId}` jsou záměrně bez URL.
 - Podmínky služby jsou také task: `openTaskIds` může obsahovat task s `category: "terms_of_service"`, jehož hostovaná stránka akceptace je odkazována stejně (jen v detailu scoped na customera). Obecná submissiona nemohou akceptovat podmínky a schválení KYC nikdy neimplikuje akceptaci podmínek.
 - Tasks jsou scoped per capability, takže „stejný" požadavek (například doklad o adrese) se může objevit jednou per capability. Deduplikujte ve svém UI podle `key` požadavku.
@@ -525,6 +533,7 @@ Každý krok jde nasadit nezávisle; v1 nebo v2 a v3 běží vedle sebe proti st
 - [ ] Submissions jsou řízené kontrolou (odeslání není totéž co odblokování) a musí odpovědět na **každý** akční požadavek s přesným `taskRevision`. Při neshodě přečtěte znovu a přebudujte.
 - [ ] Neexistuje webhook `task.*`, po každém odeslání polluj task (nebo jeho rodiče).
 - [ ] Opakování při `changes_requested` se rovná přečtení tasku znovu, čerstvé odpovědi, **čerstvý idempotency klíč**.
+- [ ] Přijímejte výsledek submission `withdrawn` a neznámý `refusedAnswers[].code` považujte za `invalid`.
 - [ ] Postování na `/v1/documents` nikdy neodblokuje v3 capability, jakmile je customer na tascích, veďte všechny požadavky přes tasky.
 - [ ] Nové tasky se mohou objevit na už `ready` capability, držte task smyčku zapojenou i po onboardingu, ne jen během něj.
 - [ ] `cancel` capability funguje jen z `pending` nebo `restricted` bez blokujících zdrojů (`409 capability_not_cancelable`); nové vyžádání po zrušení je čerstvé vytvoření s čerstvým idempotency klíčem.
