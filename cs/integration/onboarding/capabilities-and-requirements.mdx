@@ -103,6 +103,48 @@ Aktuální kódy důvodů:
 
 Neznámé kódy zpracujte bez změn v kódu, protože Swipelux může přidávat nové kódy. Banka se nikdy neobjeví zároveň v `institutions` i v `unavailableInstitutions`. `unavailableInstitutions` je vždy přítomno a u sdružených a nebankovních položek je `[]`. Banka, která není v žádném ze seznamů, je vynechána z důvodu, který s tímto zákazníkem nesouvisí. Uvedení nedostupné banky v žádosti o capability stále vrací [`422 capability_institutions_unsupported`](/integration/errors#capability-institutions-unsupported).
 
+### Ověřte, kde lze otevřít účet {#check-where-an-account-can-open}
+
+Každá položka obsahuje také `banks`. U pojmenovaných položek uvádí každou banku z `institutions` nebo `unavailableInstitutions` a navíc každou banku, u které má zákazník aplikaci pro tuto variantu. U ostatních položek je `[]`. Každá banka má stejné `id`, `name`, `bic` a `logoUrl` jako položka instituce a přidává postavení zákazníka u této banky:
+
+```json Bank entry
+{
+  "banks": [
+    {
+      "id": "jpmorgan",
+      "name": "JPMorgan Chase",
+      "bic": "CHASUS33",
+      "logoUrl": null,
+      "status": "approved",
+      "applicationId": "apl_000000000000000005",
+      "accountOpening": "now",
+      "currencies": [
+        { "code": "USD", "institution": "jpmorgan" }
+      ]
+    }
+  ]
+}
+```
+
+`status` má jednu z těchto hodnot:
+
+- `approved`: tuto variantu pokrývá připravená aplikace u banky.
+- `pending`: aplikace u banky o ni požádala a banka ji zatím neschválila.
+- `refused`: banka zákazníka odmítla.
+- `not_requested`: žádná aplikace u banky o ni nežádá. Žádost o capability může tuto banku vybrat.
+- `not_offered`: banka tohoto zákazníka pro tuto variantu nepřijímá.
+
+`applicationId` uvádí aplikaci, která určuje `status`, nebo je `null`. `accountOpening` vám říká, co nyní udělá [požadavek na vydaný účet](/cs/integration/issue-bank-account#choose-the-bank), který uvádí tuto banku:
+
+- `now`: požadavek je přijat a účet je vydán.
+- `after_approval`: požadavek je přijat s `allowPending: true` a čeká na schválení bankou.
+- `application`: nejprve požádejte o capability s touto bankou v `institutions`.
+- `none`: u této banky nyní není přijat žádný požadavek na účet.
+
+U `now` a `after_approval` uvádí `currencies` jen měny, ve kterých je požadavek přijat. Měna, ve které už zákazník u této banky účet má, proto chybí. Jinak uvádí každou měnu, ve které banka tuto variantu otevírá. Každá položka uvádí `institution`, kterou máte odeslat, stejně jako v `institutions[].currencies`.
+
+O tom, zda u banky nabídnout otevření účtu, rozhodujte pouze podle `accountOpening`. `institutions` odpovídá na jinou otázku: kam může směřovat nová žádost o capability. Může uvádět jedinou výchozí banku, zatímco jiná banka už zákazníka schválila.
+
 ### Sdružené vs. pojmenované typy účtů {#pooled-vs-named-account-types}
 
 Bankovní capabilities přicházejí ve dvou variantách, kódovaných jako pole `accountType` a přípona ID capability (například `ach_pooled`, `wire_named`):
@@ -370,6 +412,8 @@ Uložte vrácené `data.id` jako `DOCUMENT_ID` předtím, než odešlete odpově
 
 Každý zdroj dokumentu v3 obsahuje `contentSha256`, otisk SHA-256 uloženého souboru ve tvaru `sha256:` následovaném hexadecimálním otiskem malými písmeny. Dva dokumenty se stejným otiskem jsou bajtově identické. Chcete-li ověřit, zda zákazník soubor již nahrál, například soubor, jehož náhradu si vyžádal posuzovatel, vypočítejte před nahráním jeho SHA-256 a porovnejte ho s `contentSha256` u dokumentů, na které odkazují odpovědi předchozího odeslání v `documentIds`. Pole je `null` u dokumentů uložených předtím, než Swipelux začal otisky zaznamenávat.
 
+Odpověď s dokumentem musí obsahovat alespoň jeden soubor, který pro daný požadavek ještě nebyl vrácen. Pokud byl každý soubor v odpovědi vrácen při dřívějším posouzení, Swipelux odpověď odmítne s `documents_already_returned`. Dřívější soubory můžete znovu odeslat spolu s novým. Pokud byl soubor vrácen omylem, nahrajte ho znovu a získáte nové ID dokumentu. Posuzovatel stále vidí dřívější rozhodnutí.
+
 Pro pozdější načtení uloženého souboru zavolejte [`GET /v3/customers/{customerId}/documents/{documentId}/download`](/api-reference/documents/get-v3-customers-by-customer-id-documents-by-document-id-download). Swipelux vrátí `url`, která stáhne soubor jako přílohu a vyprší po jedné hodině. Archivované dokumenty vracejí `404`.
 
 ### API odpovědi {#api-answers}
@@ -402,7 +446,7 @@ Každé ID požadavku a typ odpovědi vezměte z nejnovějšího úkolu. Pokud A
 
 #### Ponechání platných odpovědí pomocí `allowPartial` {#keep-valid-answers-with-allowpartial}
 
-Ve výchozím nastavení jedna odmítnutá odpověď způsobí selhání celého požadavku a Swipelux nic neuloží. Odpovědí je `400 validation_error`, `400 invalid_document_reference` nebo `409 absence_conflicts_with_profile`. Přidejte `"allowPartial": true`, pokud chcete, aby Swipelux uložil platné odpovědi a odmítl jen ty neplatné:
+Ve výchozím nastavení jedna odmítnutá odpověď způsobí selhání celého požadavku a Swipelux nic neuloží. Odpovědí je `400 validation_error`, `400 invalid_document_reference`, `400 documents_already_returned` nebo `409 absence_conflicts_with_profile`. Přidejte `"allowPartial": true`, pokud chcete, aby Swipelux uložil platné odpovědi a odmítl jen ty neplatné:
 
 ```json Partial submission request
 {
@@ -438,6 +482,7 @@ Každá odmítnutá odpověď má jeden z těchto kódů:
 | `invalid` | Odpověď nesplňuje tvar, formát nebo omezení požadavku, nebo profil zákazníka hodnotu nepřijímá. |
 | `absence_conflicts_with_profile` | Byla odeslána absence pro hodnotu, kterou profil obsahuje. |
 | `invalid_document_reference` | Odkazovaný dokument nelze použít pro tohoto zákazníka a tento požadavek. |
+| `documents_already_returned` | Každý soubor v odpovědi s dokumentem už byl pro tento požadavek vrácen. Odešlete nový soubor, samostatně nebo s dřívějšími. |
 | `depends_on_refused_answer` | Odpověď je sama o sobě platná, ale posuzuje se společně s odmítnutou odpovědí. Podmíněná odpověď a odpověď, která ji řídí, se ponechávají nebo odmítají společně. |
 
 Mohou přibýt další kódy. Neznámý kód považujte za `invalid`. `message` nikdy neopakuje odeslanou hodnotu.
