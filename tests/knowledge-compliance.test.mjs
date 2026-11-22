@@ -286,13 +286,13 @@ const LIMIT_TABLES = [
 
 const LIABILITY_TABLE = [
   [
-    ["Responsibility", "Swipelux (VASP)", "Sub-Merchant"],
+    ["Responsibility", "Swipelux", "Sub-Merchant"],
     ["Crypto Custody", "Responsible", "Not permitted"],
     ["Blockchain Execution", "Responsible", "Not permitted"],
     ["User Verification (KYC)", "Responsible (Direct or Reliance)", "Responsible for UX Handoff"],
     ["Sanctions Screening", "Responsible (All Users)", "Responsible for own staff"],
     ["Geoblocking", "Enforces via IP/KYC", "Must implement at UI level"],
-    ["Licensing", "VASP License only", "Sector License (e.g., Gaming)"],
+    ["Licensing", "Licensed third-party providers", "Sector License (e.g., Gaming)"],
   ],
 ];
 
@@ -324,7 +324,7 @@ const JURISDICTION_EXACT_LINES = [
   "2. Card scheme and acquiring-bank restrictions",
   "3. Sanctions and AML/CTF obligations",
   "4. Swipelux's internal risk appetite",
-  "Crypto Rails refer to pay-in and payout activity performed by Swipelux as a regulated VASP, including custody, conversion, and blockchain transfers initiated or executed by Swipelux.",
+  "Crypto Rails refer to crypto pay-in and payout activity on Swipelux, including custody and blockchain transfers initiated or executed by Swipelux. Conversion is performed by licensed third-party providers in the relevant country.",
   "  - Geo-blocking of certain end-users",
   "  - Rail-specific restrictions (e.g., cards disabled, crypto disabled)",
   "  - Enhanced due diligence",
@@ -766,7 +766,7 @@ test("overview separates onboarding policy topics from implementation workflows"
   assertContainsExactLines("overview", text, [
     "- KYC, sanctions, PEP screening",
     "- Wallet screening, blockchain execution",
-    "- Crypto custody and exchange",
+    "- Crypto custody",
     "- Travel Rule compliance",
     "- Marketing compliance",
     "- UX geoblocking",
@@ -778,10 +778,11 @@ test("overview separates onboarding policy topics from implementation workflows"
 test("preserves the regulatory perimeter and source responsibility split", (t) => {
   if (!requirePages(t)) return;
   const text = readPage("knowledge-base/compliance/regulatory-perimeter");
-  assert.match(text, /Swipelux OU is an EU-licensed Virtual Asset Service Provider \(VASP\)/i);
+  assert.match(text, /Swipelux Inc is a technology company\./);
+  assert.doesNotMatch(text, /EU-licensed|regulated entity|Swipelux OU/i);
   assert.match(
     text,
-    /regulated crypto activity[\s\S]{0,160}wallet creation[\s\S]{0,80}crypto custody[\s\S]{0,80}exchange[\s\S]{0,80}blockchain execution/i,
+    /wallet creation[\s\S]{0,80}crypto custody[\s\S]{0,80}blockchain execution[\s\S]{0,80}exchange of virtual assets is performed by licensed third-party providers/i,
   );
   assertContainsExactLines("regulatory perimeter", text, [
     "- control UX/UI and user acquisition",
@@ -793,7 +794,7 @@ test("preserves the regulatory perimeter and source responsibility split", (t) =
   ]);
   assert.match(
     text,
-    /not required to obtain VASP\/CASP licenses[\s\S]{0,160}unless their own local sector licensing requires it[\s\S]{0,100}gambling or CFD licensing/i,
+    /remain responsible for determining whether their own activities require a license or registration[\s\S]{0,100}gambling or CFD licensing/i,
   );
 });
 
@@ -1028,7 +1029,7 @@ Final onboarding decisions are made at Swipelux's sole discretion.`;
     "Driver's licences and paper IDs may be accepted with increased manual review.",
     "End-users from these jurisdictions may be accepted with additional KYC steps, stricter document rules, and potential video verification based on transaction thresholds.",
     "Swipelux does not onboard end-users from jurisdictions classified as:",
-    "Crypto Rails refer to pay-in and payout activity performed by Swipelux as a regulated VASP, including custody, conversion, and blockchain transfers initiated or executed by Swipelux.",
+    "Crypto Rails refer to crypto pay-in and payout activity on Swipelux, including custody and blockchain transfers initiated or executed by Swipelux. Conversion is performed by licensed third-party providers in the relevant country.",
   ];
   const jurisdictionFixture = jurisdictionSubstantiveLines.join("\n");
   assertContainsExactLines(
