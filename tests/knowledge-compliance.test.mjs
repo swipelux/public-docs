@@ -292,7 +292,7 @@ const LIABILITY_TABLE = [
     ["User Verification (KYC)", "Responsible (Direct or Reliance)", "Responsible for UX Handoff"],
     ["Sanctions Screening", "Responsible (All Users)", "Responsible for own staff"],
     ["Geoblocking", "Enforces via IP/KYC", "Must implement at UI level"],
-    ["Licensing", "Licensed third-party providers", "Sector License (e.g., Gaming)"],
+    ["Licensing", "Exchange performed by licensed third-party providers", "Sector License (e.g., Gaming)"],
   ],
 ];
 
@@ -775,6 +775,21 @@ test("overview separates onboarding policy topics from implementation workflows"
   ]);
 });
 
+test("keeps licence claims about Swipelux out of every compliance page", (t) => {
+  if (!requirePages(t)) return;
+  for (const page of PAGES) {
+    assert.doesNotMatch(
+      readPage(page),
+      /EU-licensed|regulated entity|regulated crypto custodian|Swipelux O[UÜ]\b|VASP licen[cs]e|MLTFPA|VASP compliance model|VASP regulatory role/i,
+      page,
+    );
+  }
+  assert.match(
+    readPage("knowledge-base/compliance/overview"),
+    /Swipelux Inc is a technology company\. The exchange of virtual assets is performed by licensed third-party providers in the relevant country, in accordance with local law\./,
+  );
+});
+
 test("preserves the regulatory perimeter and source responsibility split", (t) => {
   if (!requirePages(t)) return;
   const text = readPage("knowledge-base/compliance/regulatory-perimeter");
@@ -841,7 +856,7 @@ test("preserves payment rails while scoping exact-name restrictions to direct-us
     "   - Users may deposit supported assets such as USDC directly into their segregated MPC wallet. Wallets are screened by a third-party service provider.",
     "3. **Third-Party Aggregators**",
     "   - Swipelux supports orchestrated settlement from licensed third-party partners. Swipelux acts as the wallet provider and final settlement agent in these flows.",
-    "- **Flow:** Stablecoin -> Swipelux Liquidity -> Fiat Conversion -> User Bank Account",
+    "- **Flow:** Stablecoin -> Licensed Third-Party Provider -> Fiat Conversion -> User Bank Account",
     "- **Rule:** Payouts can only be sent to a bank account in the exact legal name of the verified KYC user. Third-party payouts are not supported in this flow.",
   ]);
   assertDirectUserPayoutScope("payment methods", text);
