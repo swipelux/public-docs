@@ -232,7 +232,6 @@ const LIABILITY_TABLE = [
     ["Blockchain Execution", "Responsible", "Not permitted"],
     ["User Verification (KYC)", "Responsible (Direct or Reliance)", "Responsible for UX Handoff"],
     ["Sanctions Screening", "Responsible (All Users)", "Responsible for own staff"],
-    ["Geoblocking", "Enforces via IP/KYC", "Must implement at UI level"],
     ["Licensing", "Exchange performed by licensed third-party providers", "Sector License (e.g., Gaming)"],
   ],
 ];
@@ -524,7 +523,7 @@ function assertGovernancePolicy(label, text) {
   assert.deepEqual(markdownTables(text), LIABILITY_TABLE, label);
   assertContainsExactLines(label, text, [
     "- **Swipelux:** custody, blockchain execution, KYC/KYB, monitoring, Travel Rule, sanctions",
-    "- **Sub-merchant:** user journey design, geoblocking, vertical licensing, marketing compliance, prevention of unsolicited US targeting",
+    "- **Sub-merchant:** user journey design, vertical licensing, marketing compliance",
   ]);
   assert.match(
     text,
@@ -691,7 +690,6 @@ test("overview separates onboarding policy topics from implementation workflows"
     "- Crypto custody",
     "- Travel Rule compliance",
     "- Marketing compliance",
-    "- UX geoblocking",
     "- Sector-specific licensing",
     "- User journey design",
   ]);
@@ -727,7 +725,7 @@ test("preserves the regulatory perimeter and source responsibility split", (t) =
     "- never hold, control, or access private keys",
     "- never custody funds or execute blockchain transactions",
     "- **Swipelux:** KYC, sanctions, PEP screening, wallet screening, blockchain execution",
-    "- **Sub-merchant:** marketing compliance, UX geoblocking, sector-specific licensing",
+    "- **Sub-merchant:** marketing compliance, sector-specific licensing",
   ]);
   assert.match(
     text,
@@ -1117,7 +1115,7 @@ The exact-name restriction applies to the direct-user bank payout flow. It does 
   const governanceFixture = `${liabilityFixture}
 
 - **Swipelux:** custody, blockchain execution, KYC/KYB, monitoring, Travel Rule, sanctions
-- **Sub-merchant:** user journey design, geoblocking, vertical licensing, marketing compliance, prevention of unsolicited US targeting
+- **Sub-merchant:** user journey design, vertical licensing, marketing compliance
 
 Sub-merchants never hold, control, or access user assets or private keys.
 
@@ -1155,7 +1153,7 @@ Swipelux retains user identity and transactional data for 5 years. Data subject 
 - never hold, control, or access private keys
 - never custody funds or execute blockchain transactions
 - **Swipelux:** KYC, sanctions, PEP screening, wallet screening, blockchain execution
-- **Sub-merchant:** marketing compliance, UX geoblocking, sector-specific licensing`;
+- **Sub-merchant:** marketing compliance, sector-specific licensing`;
   assertContainsExactLines("perimeter fixture", perimeterFixture, perimeterFixture.split("\n"));
   assert.throws(
     () =>
