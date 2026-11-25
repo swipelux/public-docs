@@ -602,7 +602,7 @@ function assertGovernancePolicy(label, text) {
   assert.deepEqual(markdownTables(text), LIABILITY_TABLE, label);
   assertContainsExactLines(label, text, [
     "- **Swipelux:** custody, blockchain execution, KYC/KYB, monitoring, Travel Rule, sanctions",
-    "- **Sub-merchant:** user journey design, geoblocking, vertical licensing, marketing compliance, prevention of unsolicited US targeting",
+    "- **Sub-merchant:** user journey design, geoblocking, vertical licensing, marketing compliance",
   ]);
   assert.match(
     text,
@@ -1195,7 +1195,7 @@ The exact-name restriction applies to the direct-user bank payout flow. It does 
   const governanceFixture = `${liabilityFixture}
 
 - **Swipelux:** custody, blockchain execution, KYC/KYB, monitoring, Travel Rule, sanctions
-- **Sub-merchant:** user journey design, geoblocking, vertical licensing, marketing compliance, prevention of unsolicited US targeting
+- **Sub-merchant:** user journey design, geoblocking, vertical licensing, marketing compliance
 
 Sub-merchants never hold, control, or access user assets or private keys.
 
