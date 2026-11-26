@@ -16,13 +16,13 @@ flowchart LR
 
 ## Before you start
 
-You need a customer ID, a ready bank capability for the intended method and currency, and a ready issued wallet owned by the same customer. Complete open work through [Capabilities and tasks](/integration/onboarding/capabilities-and-requirements).
+You need a customer ID, a ready bank capability for the method and currency, and a ready issued wallet of the same customer. Complete open work through [Capabilities and tasks](/integration/onboarding/capabilities-and-requirements).
 
 ## 1. Create or select the settlement wallet
 
-Create an issued wallet through [Accounts and wallets](/integration/accounts#create-the-account), then read it again. Continue only when its current status permits settlement.
+Create an issued wallet through [Accounts and wallets](/integration/accounts#create-the-account). Continue when its current status permits settlement.
 
-Store its response-derived `data.id` as `SETTLEMENT_WALLET_ID`. Do not use an external wallet for `settlement.accountId`.
+Store its `data.id` as `SETTLEMENT_WALLET_ID`. Do not use an external wallet for `settlement.accountId`.
 
 ## 2. Create the issued bank account
 
@@ -50,21 +50,21 @@ Send this request body:
 }
 ```
 
-Store the returned `data.id` as `BANK_ACCOUNT_ID`. Also retain `data.status`, `data.openTaskIds`, `data.details`, and the settlement relationship.
+Store the returned `data.id` as `BANK_ACCOUNT_ID`, and retain `data.status`, `data.openTaskIds`, `data.details`, and the settlement relationship.
 
 Optional request fields:
 
-| Field | Applies to | Behavior |
-| --- | --- | --- |
-| `institution` | Issued bank accounts | Selects exactly this bank, with no fallback. Use an institution ID returned by the supported-capability response. |
-| `allowPending` | Issued bank accounts | Set to `true` to save the request while the selected bank's application waits for approval. Requires `institution`. |
-| `settlement.currency` | Issued bank accounts | `USDC` or `USDT`. Sets the stablecoin delivered to the settlement wallet. |
+| Field | Behavior |
+| --- | --- |
+| `institution` | Selects exactly this bank from the supported-capability response, with no fallback. |
+| `allowPending` | Set to `true` to save the request before the bank approves the customer. Requires `institution`. |
+| `settlement.currency` | `USDC` or `USDT`. Sets the stablecoin delivered to the settlement wallet. |
 
 ### Choose the bank
 
-Send `institution` when the customer needs bank details from a specific bank. Swipelux reserves one issued account per customer, method, currency, and institution. A request without `institution` returns `409 conflict` if the customer already has an issued account for that method and currency at any bank. A request with `institution` returns `409 conflict` only if an account for that bank already exists.
+Send `institution` for details from a specific bank. Swipelux reserves one issued account per customer, method, currency, and institution. Without `institution`, a request returns `409 conflict` if the customer has such an account at any bank. With it, only an account at that bank conflicts.
 
-For a SWIFT account in a currency other than USD, send the `institution` that the [supported-capability response](/integration/onboarding/capabilities-and-requirements#discover-supported-capabilities) lists for that currency:
+For a non-USD SWIFT account, send the `institution` the [supported-capability response](/integration/onboarding/capabilities-and-requirements#discover-supported-capabilities) lists for that currency:
 
 ```json Request body for a EUR SWIFT account
 {
@@ -81,15 +81,21 @@ For a SWIFT account in a currency other than USD, send the `institution` that th
 }
 ```
 
-A `sepa`, `faster_payments`, `ipp`, `npp`, `spei`, or `pix` request must name the institution its capability lists, such as `sepa_named` or `spei_pooled`, or it returns `422 account_method_not_supported`. Pix accounts use `pix_named` for customers resident in Brazil and `pix_pooled` for everyone else.
+A `sepa`, `faster_payments`, `ipp`, `fts`, `npp`, `spei`, `pix`, or `nip` request must name the institution its capability lists, such as `sepa_named` or `spei_pooled`, or it returns `422 account_method_not_supported`. Pix accounts use `pix_named` for customers resident in Brazil and `pix_pooled` for everyone else.
 
-Account reads return the selected bank as `institution` with `id`, `name`, and `bic`. `bic` can be `null`.
+One AED IBAN receives IPP and FTS, and one bank approval covers `ipp_named` and `fts_named`. Request `ipp` or `fts`: the account returns `methods: ["ipp", "fts"]` and the requested `method`. A second AED request there returns `409 conflict` with `holder.accountId`. FTS only receives, so AED payouts use `ipp_named`.
 
-Idempotency applies to the selected bank. Replaying the same request returns the original account. Changing `institution` under the same `Idempotency-Key` returns `409 idempotency_conflict`.
+An NGN `nip` account needs the customer's own BVN, individual or business: a `bvn` tax identifier with country `NG` and 11 digits, set on the customer or in a task submission. Otherwise the request returns `422 account_bvn_required`. Payouts need no BVN.
+
+GBP `faster_payments`, AUD `npp`, and `pix_named` accounts accept only first-party pay-ins: payments from a bank account in the customer's own name. Payments from anyone else are not accepted.
+
+Account reads return the bank as `institution` with `id`, `name`, and a nullable `bic`.
+
+Replaying the same request returns the original account. Changing `institution` under the same `Idempotency-Key` returns `409 idempotency_conflict`.
 
 ### Save the request before bank approval
 
-By default, Swipelux accepts an issued bank account request only after the bank capability is ready. To collect the customer's account setup earlier, send `allowPending: true` with `institution`:
+By default, Swipelux accepts the request only once the bank capability is ready. To save it earlier, send `allowPending: true` with `institution`:
 
 ```json Request body with allowPending
 {
@@ -107,19 +113,19 @@ By default, Swipelux accepts an issued bank account request only after the bank 
 }
 ```
 
-While the bank's application is under review, the account returns `status: "in_review"` with `statusReason.code` set to `waiting_for_approval`. The response also includes `applicationId` and the application's `openTaskIds`. Complete those tasks through [Capabilities and tasks](/integration/onboarding/capabilities-and-requirements).
+While the bank's application is under review, the account returns `status: "in_review"` with `statusReason.code` set to `waiting_for_approval`, plus `applicationId` and `openTaskIds`. Complete those tasks through [Capabilities and tasks](/integration/onboarding/capabilities-and-requirements).
 
-The saved request keeps its account ID, settlement wallet, and account slot. After the application and capability are ready, Swipelux provisions bank details under the same `BANK_ACCOUNT_ID`.
+The saved request keeps its account ID, settlement wallet, and account slot. Once the application and capability are ready, Swipelux provisions details under the same `BANK_ACCOUNT_ID`.
 
-Another `allowPending` request for the same slot under a different `Idempotency-Key` returns `409 conflict`. The problem's `holder.accountId` names the waiting account. Read that account instead of retrying.
+Another `allowPending` request for the same slot under a different `Idempotency-Key` returns `409 conflict`. Read the account its `holder.accountId` names instead of retrying.
 
-The bank needs an application that requested this capability. If the bank's application only covers the capability without having requested it, an `allowPending` request returns `409 capability_not_ready` with `reason: no_ready_route` until the capability is `ready`.
+If the bank's application covers the capability without having requested it, an `allowPending` request returns `409 capability_not_ready` with `reason: no_ready_route` until the capability is `ready`.
 
-If the application is rejected, canceled, or archived first, the account becomes `rejected`. It no longer holds the account slot.
+If the application is rejected, canceled, or archived first, the account becomes `rejected` and frees the slot.
 
 ### Choose the settlement currency
 
-By default, deposits settle in the settlement wallet's currency. Set `settlement.currency` to `USDC` or `USDT` to choose the delivered asset independently of the wallet's currency:
+By default, deposits settle in the settlement wallet's currency. Set `settlement.currency` to choose another stablecoin:
 
 ```json Request body with settlement currency
 {
@@ -130,13 +136,13 @@ By default, deposits settle in the settlement wallet's currency. Set `settlement
 }
 ```
 
-`USDT` requires a `USD` account and a settlement wallet on a network that supports USDT delivery. Otherwise the request returns `400 invalid_settlement_target`. Account reads return the saved choice.
+`USDT` requires a `USD` account and a settlement wallet on a network with USDT delivery. Otherwise the request returns `400 invalid_settlement_target`. Account reads return the saved choice.
 
 ## 3. Monitor provisioning
 
 Read [`GET /v3/customers/{customerId}/accounts/{accountId}`](/api-reference/accounts/get-v3-customers-by-customer-id-accounts-by-account-id) after creation and after each relevant webhook.
 
-Keep the customer interface pending while `details` is absent. If `openTaskIds` is not empty, complete the latest tasks and refetch the account. Do not infer readiness from elapsed time.
+Keep the customer interface pending while `details` is absent. If `openTaskIds` is not empty, complete the tasks and refetch. Do not infer readiness from elapsed time.
 
 If the latest `statusReason.code` is `awaiting_assignment`, create the first pay-in for the same customer, capability, and settlement wallet through [Receive funds](/integration/receive-funds), then read the bank account again.
 
@@ -144,12 +150,12 @@ If the latest `statusReason.code` is `awaiting_assignment`, create the first pay
 
 Display only the complete details returned by the latest account read. When `details.referenceRequired` is true, show the exact `details.reference` and make it copyable. When it is false, do not invent a reference.
 
-For issued `swift` accounts, display `details.bankName`, `details.swiftCode` (the receiving bank's BIC), `details.accountNumber`, `details.accountHolderName`, and `details.accountHolderAddress` when returned. Senders must copy the beneficiary address exactly into the international wire. Also show `details.bankAddress` and any intermediary bank fields that the account returns.
+For issued `swift` accounts, display `details.bankName`, `details.swiftCode` (the receiving bank's BIC), `details.accountNumber`, `details.accountHolderName`, `details.accountHolderAddress`, `details.bankAddress`, and any intermediary bank fields returned. Senders must copy the beneficiary address exactly.
 
-For other issued accounts, display `details.iban` and `details.bic` (`sepa`, `ipp`), `details.sortCode` and `details.accountNumber` (`faster_payments`), `details.bsb` and `details.accountNumber` (`npp`), `details.clabe` (`spei`), or `details.pixKey` and any `details.emv` (`pix`).
+For other issued accounts, display `details.iban` and `details.bic` (`sepa`, `ipp`, `fts`), `details.sortCode` and `details.accountNumber` (`faster_payments`), `details.bsb` and `details.accountNumber` (`npp`), `details.clabe` (`spei`), `details.pixKey` and any `details.emv` (`pix`), or `details.nuban`, `details.bankName`, and `details.accountHolderName` (`nip`).
 
-These bank details are reusable. Do not replace them with funding coordinates from a quoted pay-in, which belong only to that transfer.
+Do not replace these reusable details with a quoted pay-in's funding coordinates, which belong only to that transfer.
 
-When an issued account's SWIFT code, routing number, or account number changes, Swipelux sends `account.details_changed`. Refetch the account and show its current `details`.
+When an account's SWIFT code, routing number, or account number changes, Swipelux sends `account.details_changed`. Refetch and show the new `details`.
 
-Next, add [Webhooks](/integration/webhooks) so provisioning updates reach your application without keeping the customer on a polling screen.
+Next, add [Webhooks](/integration/webhooks) so provisioning updates reach your application without polling.
