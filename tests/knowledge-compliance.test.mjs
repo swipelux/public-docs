@@ -106,18 +106,12 @@ const EXPECTED_HEADINGS = new Map([
     "knowledge-base/compliance/jurisdictions-and-availability",
     [
       [2, "Jurisdiction Framework"],
-      [3, "End-User Eligibility Overview"],
-      [4, "A. Fully Supported (EEA + CH)"],
-      [4, "B. Global Coverage - Accepted With Enhanced Due Diligence"],
-      [4, "C. No-Go Jurisdictions (Prohibited)"],
-      [3, "Important"],
-      [3, "Simple Clarification Matrix"],
-      [3, "Sub-merchant Jurisdictional Matrix"],
-      [4, "1. EEA+UK+CH"],
-      [4, "2. APAC"],
-      [4, "3. LATAM"],
-      [4, "4. EMEA"],
-      [4, "5. Sanctioned / Not Supported"],
+      [3, "Whose country counts"],
+      [3, "Bank accounts by method"],
+      [3, "Country lists"],
+      [3, "Payout destinations"],
+      [3, "Cards and crypto"],
+      [3, "Screening"],
       [3, "Disclaimer"],
     ],
   ],
@@ -187,85 +181,32 @@ const RISK_TIER_ITEMS = Object.freeze({
 
 const JURISDICTION_TABLES = [
   [
-    ["Merchant Incorporation", "End-User Location", "Status", "Notes"],
-    ["USA", "USA", "Not Allowed", "We do not hold US Money Transmitter Licenses"],
-    ["USA", "Global* / EU / UK", "Allowed", "Sub-merchants must strictly geoblock US IP addresses"],
-    ["EU / EEA", "USA", "Not Allowed", "Swipelux cannot service US residents or citizens"],
-    ["EU / EEA", "Global* / EU / UK", "Allowed", "Standard flow"],
-    ["UK / Canada", "Global* / EU / UK", "Allowed", "Standard flow"],
-    ["APAC / LATAM", "Global* / EU / UK", "Allowed", "Standard flow (e.g. India, Brazil)"],
-    ["Any Jurisdiction", "Prohibited List", "Not Allowed", "Sanctions screening applies to all users"],
+    ["Method", "Bank", "Customers the Bank does not accept"],
+    ["USD ACH and Wire, named and pooled", "JPMorgan Chase", "Countries on List A"],
+    ["USD ACH and Wire, named and pooled; RTP, pooled", "Citi", "Countries on List A. Citi accepts businesses only, and opens named accounts only for businesses registered outside the US"],
+    ["USD ACH and Wire, named and pooled", "CFSB", "Countries on List A. Named accounts are only for businesses registered in the US and individuals who live there"],
+    ["USD ACH, Wire and SWIFT, named", "Lead Bank", "Countries on List B"],
+    ["USD ACH, Wire and SWIFT, named", "Zenus Bank", "Countries on List C"],
+    ["EUR SEPA, named", "ClearBank Europe", "No country list. The Bank decides on each application"],
+    ["GBP Faster Payments, named", "Banking Circle", "Countries on List D"],
+    ["AED IPP and FTS, named", "Zand", "Individuals who live in the UAE, and companies registered in mainland UAE. The Bank reviews free-zone companies one by one"],
+    ["AUD NPP, pooled", "The AUD Bank", "Countries on List D"],
+    ["MXN SPEI, pooled", "NVIO Pagos", "Countries on List A"],
+    ["MXN SPEI, pooled", "The second MXN Bank", "No country list"],
+    ["BRL Pix, named", "The BRL Bank", "Customers outside Brazil"],
+    ["BRL Pix, pooled", "The BRL Bank", "Customers in Brazil"],
+    ["BRL Pix, pooled", "Stark Bank", "Countries on List A"],
+    ["NGN NIP, pooled", "The NGN Bank", "No country list"],
+    ["COP Bre-B, pooled", "The COP Bank", "Not open to new customers at the moment"],
   ],
   [
-    ["End-User Region", "Open Banking", "Cards", "Crypto Rails", "Local Licensing Required?", "Final Status"],
-    ["EEA", "Yes", "Yes", "Yes", "No", "Fully Supported"],
-    ["UK", "Yes", "Yes", "Yes", "No", "Fully Supported"],
-    ["Switzerland", "N/A", "Yes", "Yes", "No", "Fully Supported"],
-  ],
-  [
-    ["Country (APAC End-User)", "Open Banking", "Cards", "Crypto Rails", "Local Licensing Impact", "Final Support"],
-    ["Taiwan", "N/A", "Yes", "Yes", "No", "Allowed"],
-    ["Bhutan", "N/A", "Yes", "Yes", "No", "Allowed"],
-    ["Maldives", "N/A", "Yes", "Yes", "No", "Allowed"],
-    ["India", "N/A", "Yes", "Yes", "No", "Allowed"],
-    ["Sri Lanka", "N/A", "Yes", "Yes", "No", "Allowed"],
-    ["Brunei", "N/A", "Yes", "Yes", "No", "Allowed"],
-    ["Cambodia", "N/A", "Yes", "Yes", "No", "Allowed"],
-    ["Indonesia", "N/A", "Yes", "Yes", "No", "Allowed"],
-    ["Malaysia", "N/A", "Yes", "Yes", "No", "Allowed"],
-    ["Philippines", "N/A", "Yes", "Yes", "No", "Allowed"],
-    ["Thailand", "N/A", "Yes", "Yes", "No", "Allowed"],
-    ["Singapore", "N/A", "Yes", "Yes", "No", "Fully Supported"],
-    ["Vietnam", "N/A", "Yes", "Yes", "No", "Allowed"],
-  ],
-  [
-    ["Country (LATAM End-User)", "Open Banking", "Cards", "Crypto Rails", "Licensing Required?", "Final Support"],
-    ["Argentina", "N/A", "Yes", "Yes", "No", "Allowed"],
-    ["Bolivia", "N/A", "Yes", "Yes", "No", "Allowed"],
-    ["Brazil", "N/A", "Yes", "Yes", "No", "Allowed"],
-    ["Chile", "N/A", "Yes", "Yes", "No", "Allowed"],
-    ["Colombia", "N/A", "Yes", "Yes", "No", "Allowed"],
-    ["Costa Rica", "N/A", "Yes", "Yes", "No", "Allowed"],
-    ["Dominican Republic", "N/A", "Yes", "Yes", "No", "Allowed"],
-    ["El Salvador", "N/A", "Yes", "Yes", "No", "Allowed"],
-    ["Guatemala", "N/A", "Yes", "Yes", "No", "Allowed"],
-    ["Honduras", "N/A", "Yes", "Yes", "No", "Allowed"],
-    ["Belize", "N/A", "Yes", "Yes", "No", "Allowed"],
-    ["Mexico", "N/A", "Yes", "Yes", "No", "Allowed"],
-    ["Panama*", "N/A", "Yes", "Yes", "No", "Allowed"],
-    ["Paraguay", "N/A", "Yes", "Yes", "No", "Allowed"],
-    ["Peru", "N/A", "Yes", "Yes", "No", "Allowed"],
-    ["Uruguay", "N/A", "Yes", "Yes", "No", "Allowed"],
-  ],
-  [
-    ["Country / Sub-Region", "Open Banking", "Cards", "Crypto Rails", "Local Licensing Required?", "Final Status"],
-    ["Albania", "N/A", "Yes", "Yes", "No", "Allowed"],
-    ["Andorra", "N/A", "Yes", "Yes", "No", "Allowed"],
-    ["Israel", "N/A", "Yes", "Yes", "No", "Allowed"],
-    ["Gibraltar", "N/A", "Yes", "Yes", "No", "Allowed"],
-    ["Georgia", "N/A", "Yes", "Yes", "No", "Allowed"],
-    ["UAE", "N/A", "Yes", "Yes", "No (VARA not triggered by orchestration)", "Allowed"],
-    ["Saudi Arabia", "N/A", "Yes", "Yes", "No", "Allowed"],
-    ["Qatar", "N/A", "No", "No (crypto banned)", "N/A", "Not Allowed"],
-    ["Jordan", "N/A", "Yes", "Yes", "No", "Allowed"],
-    ["Kenya", "N/A", "Yes", "Yes", "No", "Allowed"],
-    ["South Africa", "N/A", "Yes", "Yes", "No", "Allowed"],
-    ["Nigeria", "N/A", "Yes", "Yes", "No", "Allowed"],
-    ["Morocco", "N/A", "Yes", "Yes", "No", "Allowed"],
-    ["Algeria", "N/A", "Yes", "No (crypto restricted)", "Yes", "Allowed - No Crypto"],
-    ["Turkey", "N/A", "Yes", "Yes", "No", "Allowed"],
-  ],
-  [
-    ["Country", "OB", "Cards", "Crypto", "Final"],
-    ["Russia", "No", "No", "No", "Not Supported"],
-    ["Belarus", "No", "No", "No", "Not Supported"],
-    ["Iran", "No", "No", "No", "Not Supported"],
-    ["Syria", "No", "No", "No", "Not Supported"],
-    ["North Korea", "No", "No", "No", "Not Supported"],
-    ["Cuba", "No", "No", "No", "Not Supported"],
-    ["Venezuela", "No", "No", "No", "Not Supported"],
-    ["Yemen, Sudan, South Sudan", "No", "No", "No", "Not Supported"],
-    ["Haiti, Nicaragua", "No", "No", "No", "Not Supported"],
+    ["Payout", "Destination"],
+    ["AED", "A UAE IBAN"],
+    ["NGN", "A bank account in Nigeria"],
+    ["GBP", "A UK account with a sort code"],
+    ["AUD", "An Australian account with a BSB"],
+    ["EUR", "Any IBAN that receives EUR"],
+    ["USD by SWIFT", "A bank in any country except the US. Pay a US bank by Wire"],
   ],
 ];
 
@@ -291,44 +232,24 @@ const LIABILITY_TABLE = [
     ["Blockchain Execution", "Responsible", "Not permitted"],
     ["User Verification (KYC)", "Responsible (Direct or Reliance)", "Responsible for UX Handoff"],
     ["Sanctions Screening", "Responsible (All Users)", "Responsible for own staff"],
-    ["Geoblocking", "Enforces via IP/KYC", "Must implement at UI level"],
     ["Licensing", "Exchange performed by licensed third-party providers", "Sector License (e.g., Gaming)"],
   ],
 ];
 
 const JURISDICTION_EXACT_LINES = [
-  "End-users may onboard with a passport, national ID, or EU residence permit.",
-  "Driver's licences and paper IDs may be accepted with increased manual review.",
-  "EEA Countries (EU + EFTA): Austria, Belgium, Bulgaria, Croatia, Cyprus, Czech Republic, Denmark, Estonia, Finland, France, Germany, Greece, Hungary, Ireland, Italy, Latvia, Lithuania, Luxembourg, Malta, Netherlands, Poland, Portugal, Romania, Slovakia, Slovenia, Spain, Sweden, Iceland, Liechtenstein, Norway.",
-  "**Additionally accepted:** Switzerland (adequate AML/CTF regulatory environment).",
-  "End-users from these jurisdictions may be accepted with additional KYC steps, stricter document rules, and potential video verification based on transaction thresholds.",
-  "**Accepted:** Taiwan, India, Sri Lanka, Bhutan, Maldives, Indonesia, Malaysia, Brunei, Cambodia, Philippines*, Singapore, Thailand, Vietnam*, etc.",
-  "**Accepted:** Argentina, Bolivia, Brazil, Chile, Colombia, Costa Rica, Dominican Republic, El Salvador, Guatemala, Honduras, Belize, Mexico, Panama*, Paraguay, Peru, Uruguay.",
-  "**Accepted:** Albania*, Algeria, Andorra, Angola, Bahrain, Israel, Gibraltar*, Georgia, Kenya, Kuwait, Oman, Qatar*, Saudi Arabia, South Africa*, Turkiye*, UAE*, etc.",
-  "- Passport OR National ID (paper IDs require passport)",
-  "- Proof of Address: utility bill, bank statement, internet bill",
-  "- Proof of Address required",
-  "- High-risk jurisdictions flagged with (*) require EDD at onboarding",
-  "Swipelux does not onboard end-users from jurisdictions classified as:",
-  "- FATF Blacklist",
-  "- EU AMLD Article 9(2) high-risk third countries with inadequate AML/CTF measures",
-  "- OFAC-sanctioned countries",
-  "- Internal high-risk jurisdictions (Ecuador, Haiti, Nicaragua, certain overseas territories)",
-  "**List Includes:** Afghanistan, DPRK, Iran, Syria, Yemen, Uganda, Vanuatu, Guyana, Russia, Belarus, Cuba, Venezuela, Nicaragua, Somalia, Sudan, Zimbabwe, Burma, CAR, DRC, Ethiopia, Libya, Mali, Lebanon, etc.",
-  "**Reason:** Regulatory restrictions under EU AMLD, OFAC sanctions, and Swipelux risk appetite.",
-  "- Jurisdiction rules apply to end-users, not only to merchant incorporation",
-  "- Local verification rules, such as proof of address, video interview, and document type, depend on the user's country of nationality and residence",
-  "- Swipelux screens all users using sanctions, PEP lists, and risk-based AML controls",
-  "- Users from prohibited jurisdictions cannot access Swipelux services, even via VPN or offshore entities",
-  "1. Local regulations governing crypto transactions and fiat pay-in or payout activity",
-  "2. Card scheme and acquiring-bank restrictions",
-  "3. Sanctions and AML/CTF obligations",
-  "4. Swipelux's internal risk appetite",
-  "Crypto Rails refer to crypto pay-in and payout activity on Swipelux, including custody and blockchain transfers initiated or executed by Swipelux. Conversion is performed by licensed third-party providers in the relevant country.",
-  "  - Geo-blocking of certain end-users",
-  "  - Rail-specific restrictions (e.g., cards disabled, crypto disabled)",
-  "  - Enhanced due diligence",
-  "  - Legal opinions or regulatory confirmations",
+  "Swipelux has no single list of supported countries. Each Bank sets the countries it accepts for the accounts it holds, and its list applies only to accounts at that Bank.",
+  "- **Business:** the country where the business is registered.",
+  "- **Individual:** the country where the person lives.",
+  "- **Lead Bank** checks every country on the customer's profile, and accepts the customer only when it accepts all of them.",
+  "RTP is pooled only. No Bank opens named RTP accounts.",
+  "Payouts have no country list. The account format of each method sets where the money can go:",
+  "- **Card checkout** (card, Apple Pay, Google Pay, Cash App, SEPA and BLIK): Swipelux applies no country list. Card pay-ins are in EUR or USD. See [receive funds](/integration/receive-funds).",
+  "- **Crypto deposits and payouts:** Swipelux applies no country list.",
+  "US customers are accepted. Businesses registered in the US and individuals who live there can open USD accounts at JPMorgan Chase, CFSB and Lead Bank, and US businesses can open pooled accounts at Citi.",
+  "**List A** (JPMorgan Chase, Citi, CFSB, NVIO Pagos, Stark Bank): Afghanistan (`AF`), Belarus (`BY`), Central African Republic (`CF`), Cuba (`CU`), Democratic Republic of the Congo (`CD`), Guinea (`GN`), Iran (`IR`), Iraq (`IQ`), Libya (`LY`), Mali (`ML`), Myanmar (`MM`), Nigeria (`NG`), North Korea (`KP`), Palestinian territories (`PS`), Qatar (`QA`), Republic of the Congo (`CG`), Russia (`RU`), Somalia (`SO`), South Sudan (`SS`), Sudan (`SD`), Ukraine (`UA`), Venezuela (`VE`), Yemen (`YE`).",
+  "**List B** (Lead Bank): Afghanistan (`AF`), Algeria (`DZ`), Bangladesh (`BD`), Belarus (`BY`), Bhutan (`BT`), Burundi (`BI`), China (`CN`), Cuba (`CU`), Democratic Republic of the Congo (`CD`), Guinea-Bissau (`GW`), Haiti (`HT`), Iran (`IR`), Iraq (`IQ`), Kenya (`KE`), Kosovo (`XK`), Lebanon (`LB`), Libya (`LY`), Morocco (`MA`), Mozambique (`MZ`), Myanmar (`MM`), Nepal (`NP`), North Korea (`KP`), Pakistan (`PK`), Palestinian territories (`PS`), Qatar (`QA`), Russia (`RU`), Somalia (`SO`), South Sudan (`SS`), Sudan (`SD`), Syria (`SY`), Ukraine (`UA`), Venezuela (`VE`), Yemen (`YE`), Zimbabwe (`ZW`).",
+  "**List C** (Zenus Bank): Afghanistan (`AF`), Belarus (`BY`), Burundi (`BI`), Central African Republic (`CF`), Côte d'Ivoire (`CI`), Cuba (`CU`), Democratic Republic of the Congo (`CD`), Iran (`IR`), Iraq (`IQ`), Kazakhstan (`KZ`), Kosovo (`XK`), Kyrgyzstan (`KG`), Lebanon (`LB`), Libya (`LY`), Mali (`ML`), Nicaragua (`NI`), North Korea (`KP`), Pakistan (`PK`), Puerto Rico (`PR`), Russia (`RU`), Somalia (`SO`), South Sudan (`SS`), Sudan (`SD`), Syria (`SY`), Tajikistan (`TJ`), Turkmenistan (`TM`), Ukraine (`UA`), United States (`US`), Uzbekistan (`UZ`), Venezuela (`VE`), Yemen (`YE`), Zimbabwe (`ZW`). For individuals, also Antarctica (`AQ`).",
+  "**List D** (Banking Circle and the AUD Bank): Algeria (`DZ`), Bangladesh (`BD`), Egypt (`EG`), India (`IN`), Indonesia (`ID`), Kenya (`KE`), Morocco (`MA`), Nigeria (`NG`), Pakistan (`PK`).",
 ];
 
 const MONITORING_ITEMS = [
@@ -477,7 +398,7 @@ function assertJurisdictionDisclaimer(label, text) {
   );
   assert.match(
     disclaimer,
-    /may accept or decline any merchant or end-user[\s\S]{0,180}regulatory, technical, or risk-based considerations/i,
+    /may accept or decline any (?:customer|merchant) or end-user[\s\S]{0,180}regulatory, technical, or risk-based considerations/i,
     label,
   );
   assert.match(disclaimer, /Final onboarding decisions[\s\S]{0,120}sole discretion/i, label);
@@ -602,7 +523,7 @@ function assertGovernancePolicy(label, text) {
   assert.deepEqual(markdownTables(text), LIABILITY_TABLE, label);
   assertContainsExactLines(label, text, [
     "- **Swipelux:** custody, blockchain execution, KYC/KYB, monitoring, Travel Rule, sanctions",
-    "- **Sub-merchant:** user journey design, geoblocking, vertical licensing, marketing compliance, prevention of unsolicited US targeting",
+    "- **Sub-merchant:** user journey design, vertical licensing, marketing compliance",
   ]);
   assert.match(
     text,
@@ -769,7 +690,6 @@ test("overview separates onboarding policy topics from implementation workflows"
     "- Crypto custody",
     "- Travel Rule compliance",
     "- Marketing compliance",
-    "- UX geoblocking",
     "- Sector-specific licensing",
     "- User journey design",
   ]);
@@ -805,7 +725,7 @@ test("preserves the regulatory perimeter and source responsibility split", (t) =
     "- never hold, control, or access private keys",
     "- never custody funds or execute blockchain transactions",
     "- **Swipelux:** KYC, sanctions, PEP screening, wallet screening, blockchain execution",
-    "- **Sub-merchant:** marketing compliance, UX geoblocking, sector-specific licensing",
+    "- **Sub-merchant:** marketing compliance, sector-specific licensing",
   ]);
   assert.match(
     text,
@@ -1195,7 +1115,7 @@ The exact-name restriction applies to the direct-user bank payout flow. It does 
   const governanceFixture = `${liabilityFixture}
 
 - **Swipelux:** custody, blockchain execution, KYC/KYB, monitoring, Travel Rule, sanctions
-- **Sub-merchant:** user journey design, geoblocking, vertical licensing, marketing compliance, prevention of unsolicited US targeting
+- **Sub-merchant:** user journey design, vertical licensing, marketing compliance
 
 Sub-merchants never hold, control, or access user assets or private keys.
 
@@ -1233,7 +1153,7 @@ Swipelux retains user identity and transactional data for 5 years. Data subject 
 - never hold, control, or access private keys
 - never custody funds or execute blockchain transactions
 - **Swipelux:** KYC, sanctions, PEP screening, wallet screening, blockchain execution
-- **Sub-merchant:** marketing compliance, UX geoblocking, sector-specific licensing`;
+- **Sub-merchant:** marketing compliance, sector-specific licensing`;
   assertContainsExactLines("perimeter fixture", perimeterFixture, perimeterFixture.split("\n"));
   assert.throws(
     () =>
