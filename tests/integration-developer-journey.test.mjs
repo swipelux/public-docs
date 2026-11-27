@@ -39,6 +39,20 @@ const INTEGRATION_GROUPS = [
     ],
   },
   {
+    group: "Payment methods",
+    pages: [
+      "integration/payment-methods/overview",
+      "integration/payment-methods/usd",
+      "integration/payment-methods/eur",
+      "integration/payment-methods/gbp",
+      "integration/payment-methods/aed",
+      "integration/payment-methods/brl",
+      "integration/payment-methods/aud",
+      "integration/payment-methods/mxn",
+      "integration/payment-methods/ngn",
+    ],
+  },
+  {
     group: "Launch",
     pages: ["integration/webhooks", "integration/go-live"],
   },
@@ -64,7 +78,7 @@ function page(route) {
   return read(`${route}.mdx`);
 }
 
-test("publishes the approved 17-page Integration journey", () => {
+test("publishes the approved 26-page Integration journey", () => {
   const integration = getDefaultNavigation(config.navigation).tabs.find(
     ({ tab }) => tab === "Integration Docs",
   );
@@ -72,7 +86,7 @@ test("publishes the approved 17-page Integration journey", () => {
     integration?.groups.filter(({ hidden }) => !hidden),
     INTEGRATION_GROUPS,
   );
-  assert.equal(INTEGRATION_PAGES.length, 17);
+  assert.equal(INTEGRATION_PAGES.length, 26);
 
   for (const route of INTEGRATION_PAGES) {
     assert.equal(existsSync(`${route}.mdx`), true, `${route}.mdx must exist`);
