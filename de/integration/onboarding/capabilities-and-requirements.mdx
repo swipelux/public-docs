@@ -103,6 +103,48 @@ Aktuelle Grundcodes:
 
 Behandeln Sie unbekannte Codes ohne Codeänderungen, da Swipelux neue Codes hinzufügen kann. Eine Bank erscheint nie gleichzeitig in `institutions` und `unavailableInstitutions`. `unavailableInstitutions` ist immer vorhanden und bei pooled und Nicht-Bank-Einträgen `[]`. Eine Bank, die in keiner der beiden Listen steht, wird aus einem Grund ausgelassen, der nichts mit diesem Kunden zu tun hat. Wenn Sie eine nicht verfügbare Bank in einer Fähigkeitsanfrage angeben, wird weiterhin [`422 capability_institutions_unsupported`](/integration/errors#capability-institutions-unsupported) zurückgegeben.
 
+### Prüfen, wo ein Konto eröffnet werden kann {#check-where-an-account-can-open}
+
+Jeder Eintrag enthält außerdem `banks`. Bei named Einträgen listet das Feld jede Bank aus `institutions` oder `unavailableInstitutions` auf, dazu jede Bank, bei der der Kunde einen Antrag für diese Variante hat. Bei anderen Einträgen ist es `[]`. Jede Bank hat dieselben Felder `id`, `name`, `bic` und `logoUrl` wie ein Institutionseintrag und ergänzt den Stand des Kunden bei dieser Bank:
+
+```json Bank entry
+{
+  "banks": [
+    {
+      "id": "jpmorgan",
+      "name": "JPMorgan Chase",
+      "bic": "CHASUS33",
+      "logoUrl": null,
+      "status": "approved",
+      "applicationId": "apl_000000000000000005",
+      "accountOpening": "now",
+      "currencies": [
+        { "code": "USD", "institution": "jpmorgan" }
+      ]
+    }
+  ]
+}
+```
+
+`status` ist einer der folgenden Werte:
+
+- `approved`: Ein bereiter Antrag bei der Bank deckt diese Variante ab.
+- `pending`: Ein Antrag bei der Bank hat sie angefordert, und die Bank hat sie noch nicht genehmigt.
+- `refused`: Die Bank hat den Kunden abgelehnt.
+- `not_requested`: Kein Antrag bei der Bank fordert sie an. Eine Fähigkeitsanfrage kann diese Bank auswählen.
+- `not_offered`: Die Bank akzeptiert diesen Kunden für diese Variante nicht.
+
+`applicationId` nennt den Antrag, der `status` bestimmt, oder ist `null`. `accountOpening` gibt an, was eine [Anfrage für ein ausgegebenes Konto](/de/integration/issue-bank-account#choose-the-bank), die diese Bank nennt, aktuell bewirkt:
+
+- `now`: Die Anfrage wird akzeptiert und das Konto wird ausgegeben.
+- `after_approval`: Die Anfrage wird mit `allowPending: true` akzeptiert und wartet auf die Genehmigung der Bank.
+- `application`: Fordern Sie zuerst die Fähigkeit mit dieser Bank in `institutions` an.
+- `none`: Bei dieser Bank wird aktuell keine Kontoanfrage akzeptiert.
+
+Bei `now` und `after_approval` listet `currencies` nur die Währungen auf, in denen eine Anfrage akzeptiert wird. Eine Währung, in der der Kunde bei dieser Bank bereits ein Konto hat, fehlt deshalb. Andernfalls listet das Feld jede Währung auf, in der die Bank diese Variante eröffnet. Jedes Element nennt die zu sendende `institution`, wie in `institutions[].currencies`.
+
+Entscheiden Sie allein anhand von `accountOpening`, ob Sie die Kontoeröffnung bei einer Bank anbieten. `institutions` beantwortet eine andere Frage: wohin eine neue Fähigkeitsanfrage gehen kann. Das Feld kann eine einzige Standardbank auflisten, während eine andere Bank den Kunden bereits genehmigt hat.
+
 ### Pooled vs. named Kontotypen {#pooled-vs-named-account-types}
 
 Bank-Fähigkeiten gibt es in zwei Varianten, kodiert im Feld `accountType` und dem Fähigkeits-ID-Suffix (zum Beispiel `ach_pooled`, `wire_named`):
@@ -370,6 +412,8 @@ Speichern Sie die zurückgegebene `data.id` als `DOCUMENT_ID`, bevor Sie die Ant
 
 Jede v3-Dokumentressource enthält `contentSha256`, den SHA-256-Hash der gespeicherten Datei als `sha256:` gefolgt vom hexadezimalen Hash in Kleinbuchstaben. Zwei Dokumente mit demselben Hash sind byte-identisch. Um zu prüfen, ob eine Datei bereits vom Kunden hochgeladen wurde, zum Beispiel eine Datei, deren Ersetzung ein Prüfer angefordert hat, berechnen Sie ihren SHA-256 vor dem Hochladen und vergleichen Sie ihn mit `contentSha256` der Dokumente, auf die die Antworten der früheren Einreichung in `documentIds` verweisen. Das Feld ist `null` für Dokumente, die gespeichert wurden, bevor Swipelux Hashes erfasst hat.
 
+Eine Dokumentantwort muss mindestens eine Datei enthalten, die für diese Anforderung noch nicht zurückgegeben wurde. Wenn jede Datei in der Antwort bei einer früheren Prüfung zurückgegeben wurde, lehnt Swipelux die Antwort mit `documents_already_returned` ab. Sie können frühere Dateien zusammen mit einer neuen erneut senden. Wenn eine Datei versehentlich zurückgegeben wurde, laden Sie sie erneut hoch, um eine neue Dokument-ID zu erhalten. Der Prüfer sieht weiterhin die frühere Entscheidung.
+
 Um eine gespeicherte Datei später abzurufen, rufen Sie [`GET /v3/customers/{customerId}/documents/{documentId}/download`](/api-reference/documents/get-v3-customers-by-customer-id-documents-by-document-id-download) auf. Swipelux liefert eine `url`, die die Datei als Anhang herunterlädt und nach einer Stunde abläuft. Archivierte Dokumente liefern `404`.
 
 ### API-Antworten {#api-answers}
@@ -402,7 +446,7 @@ JSON
 
 #### Gültige Antworten mit `allowPartial` behalten {#keep-valid-answers-with-allowpartial}
 
-Standardmäßig lässt eine abgelehnte Antwort die gesamte Anfrage scheitern, und Swipelux speichert nichts. Die Antwort ist `400 validation_error`, `400 invalid_document_reference` oder `409 absence_conflicts_with_profile`. Fügen Sie `"allowPartial": true` hinzu, wenn Swipelux die gültigen Antworten speichern und nur die ungültigen ablehnen soll:
+Standardmäßig lässt eine abgelehnte Antwort die gesamte Anfrage scheitern, und Swipelux speichert nichts. Die Antwort ist `400 validation_error`, `400 invalid_document_reference`, `400 documents_already_returned` oder `409 absence_conflicts_with_profile`. Fügen Sie `"allowPartial": true` hinzu, wenn Swipelux die gültigen Antworten speichern und nur die ungültigen ablehnen soll:
 
 ```json Partial submission request
 {
@@ -438,6 +482,7 @@ Jede abgelehnte Antwort hat einen dieser Codes:
 | `invalid` | Die Antwort entspricht nicht der Form, dem Format oder den Einschränkungen der Anforderung, oder das Kundenprofil akzeptiert den Wert nicht. |
 | `absence_conflicts_with_profile` | Eine Abwesenheit wurde für einen Wert gesendet, den das Profil enthält. |
 | `invalid_document_reference` | Ein referenziertes Dokument kann für diesen Kunden und diese Anforderung nicht verwendet werden. |
+| `documents_already_returned` | Jede Datei in der Dokumentantwort wurde für diese Anforderung bereits zurückgegeben. Senden Sie eine neue Datei, allein oder zusammen mit früheren. |
 | `depends_on_refused_answer` | Die Antwort ist für sich gültig, wird aber zusammen mit einer abgelehnten beurteilt. Eine bedingte Antwort und die Antwort, die sie steuert, werden gemeinsam behalten oder abgelehnt. |
 
 Weitere Codes können hinzukommen. Behandeln Sie einen unbekannten Code als `invalid`. `message` wiederholt nie den übermittelten Wert.

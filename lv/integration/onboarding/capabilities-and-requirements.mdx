@@ -103,6 +103,48 @@ Pašreizējie iemeslu kodi:
 
 Apstrādājiet nezināmus kodus bez koda izmaiņām, jo Swipelux var pievienot jaunus kodus. Banka nekad neparādās gan `institutions`, gan `unavailableInstitutions`. `unavailableInstitutions` ir vienmēr klātesošs un ir `[]` apkopotajos un ne-bankas ierakstos. Banka, kas nav nevienā no sarakstiem, ir izlaista iemesla dēļ, kas nav saistīts ar šo klientu. Ja iespējas pieprasījumā norādāt nepieejamu banku, joprojām tiek atgriezts [`422 capability_institutions_unsupported`](/integration/errors#capability-institutions-unsupported).
 
+### Pārbaudiet, kur var atvērt kontu {#check-where-an-account-can-open}
+
+Katrs ieraksts ietver arī `banks`. Nosauktajos ierakstos tas uzskaita katru banku no `institutions` vai `unavailableInstitutions`, kā arī katru banku, kurā klientam ir pieteikums šim variantam. Citos ierakstos tas ir `[]`. Katrai bankai ir tie paši `id`, `name`, `bic` un `logoUrl` kā iestādes ierakstam, un tā papildus norāda klienta statusu šajā bankā:
+
+```json Bank entry
+{
+  "banks": [
+    {
+      "id": "jpmorgan",
+      "name": "JPMorgan Chase",
+      "bic": "CHASUS33",
+      "logoUrl": null,
+      "status": "approved",
+      "applicationId": "apl_000000000000000005",
+      "accountOpening": "now",
+      "currencies": [
+        { "code": "USD", "institution": "jpmorgan" }
+      ]
+    }
+  ]
+}
+```
+
+`status` ir viena no šīm vērtībām:
+
+- `approved`: gatavs pieteikums bankā aptver šo variantu.
+- `pending`: pieteikums bankā to pieprasīja, un banka to vēl nav apstiprinājusi.
+- `refused`: banka noraidīja klientu.
+- `not_requested`: neviens pieteikums bankā to nepieprasa. Iespējas pieprasījums var izvēlēties šo banku.
+- `not_offered`: banka nepieņem šo klientu šim variantam.
+
+`applicationId` norāda pieteikumu, kas nosaka `status`, vai ir `null`. `accountOpening` norāda, ko šobrīd dara [izsniegta konta pieprasījums](/lv/integration/issue-bank-account#choose-the-bank), kurā norādīta šī banka:
+
+- `now`: pieprasījums tiek pieņemts, un konts tiek izsniegts.
+- `after_approval`: pieprasījums tiek pieņemts ar `allowPending: true` un gaida bankas apstiprinājumu.
+- `application`: vispirms pieprasiet iespēju ar šo banku laukā `institutions`.
+- `none`: šajā bankā šobrīd netiek pieņemts neviens konta pieprasījums.
+
+Vērtībām `now` un `after_approval` `currencies` uzskaita tikai valūtas, kurās pieprasījums tiek pieņemts. Tāpēc valūta, kurā klientam šajā bankā jau ir konts, ir izlaista. Citos gadījumos tas uzskaita katru valūtu, kurā banka atver šo variantu. Katrs elements norāda nosūtāmo `institution`, tāpat kā `institutions[].currencies`.
+
+Lemjiet par konta atvēršanas piedāvāšanu bankā tikai pēc `accountOpening`. `institutions` atbild uz citu jautājumu: kur var nosūtīt jaunu iespējas pieprasījumu. Tas var uzskaitīt vienu noklusējuma banku, kamēr cita banka jau ir apstiprinājusi klientu.
+
 ### Apkopotais un nosauktais konta veids {#pooled-vs-named-account-types}
 
 Bankas iespējas ir divos variantos, kas kodēti kā lauks `accountType` un iespējas ID sufikss (piemēram, `ach_pooled`, `wire_named`):
@@ -370,6 +412,8 @@ Saglabājiet atgriezto `data.id` kā `DOCUMENT_ID`, pirms iesniedzat atbildi, ka
 
 Katrs v3 dokumenta resurss ietver `contentSha256`, saglabātā faila SHA-256 kontrolsummu formā `sha256:`, kam seko heksadecimālā kontrolsumma mazajiem burtiem. Divi dokumenti ar vienādu kontrolsummu ir baitu ziņā identiski. Lai pārbaudītu, vai klients failu jau ir augšupielādējis, piemēram, failu, kura aizstāšanu pieprasīja pārskatītājs, aprēķiniet tā SHA-256 pirms augšupielādes un salīdziniet to ar `contentSha256` dokumentiem, uz kuriem iepriekšējā iesnieguma atbildes atsaucas laukā `documentIds`. Lauks ir `null` dokumentiem, kas saglabāti, pirms Swipelux sāka reģistrēt kontrolsummas.
 
+Dokumenta atbildē jābūt vismaz vienam failam, kas šim pieprasījumam vēl nav atgriezts. Ja katrs atbildes fails tika atgriezts iepriekšējā pārskatīšanā, Swipelux noraida atbildi ar `documents_already_returned`. Iepriekšējos failus varat nosūtīt atkārtoti kopā ar jaunu. Ja fails tika atgriezts kļūdas pēc, augšupielādējiet to vēlreiz, lai iegūtu jaunu dokumenta ID. Pārskatītājs joprojām redz iepriekšējo lēmumu.
+
 Lai vēlāk izgūtu saglabātu failu, izsauciet [`GET /v3/customers/{customerId}/documents/{documentId}/download`](/api-reference/documents/get-v3-customers-by-customer-id-documents-by-document-id-download). Swipelux atgriež `url`, kas lejupielādē failu kā pielikumu un kura derīgums beidzas pēc vienas stundas. Arhivēti dokumenti atgriež `404`.
 
 ### API atbildes {#api-answers}
@@ -402,7 +446,7 @@ JSON
 
 #### Saglabājiet derīgās atbildes ar `allowPartial` {#keep-valid-answers-with-allowpartial}
 
-Pēc noklusējuma viena noraidīta atbilde liek visam pieprasījumam neizdoties, un Swipelux neko nesaglabā. Atbilde ir `400 validation_error`, `400 invalid_document_reference` vai `409 absence_conflicts_with_profile`. Pievienojiet `"allowPartial": true`, ja vēlaties, lai Swipelux saglabā derīgās atbildes un noraida tikai nederīgās:
+Pēc noklusējuma viena noraidīta atbilde liek visam pieprasījumam neizdoties, un Swipelux neko nesaglabā. Atbilde ir `400 validation_error`, `400 invalid_document_reference`, `400 documents_already_returned` vai `409 absence_conflicts_with_profile`. Pievienojiet `"allowPartial": true`, ja vēlaties, lai Swipelux saglabā derīgās atbildes un noraida tikai nederīgās:
 
 ```json Partial submission request
 {
@@ -438,6 +482,7 @@ Katrai noraidītajai atbildei ir viens no šiem kodiem:
 | `invalid` | Atbilde neatbilst pieprasījuma formai, formātam vai ierobežojumiem, vai klienta profils nepieņem vērtību. |
 | `absence_conflicts_with_profile` | Prombūtne tika nosūtīta vērtībai, kas ir profilā. |
 | `invalid_document_reference` | Atsauces dokumentu nevar izmantot šim klientam un šim pieprasījumam. |
+| `documents_already_returned` | Katrs dokumenta atbildes fails šim pieprasījumam jau ir atgriezts. Nosūtiet jaunu failu vienu pašu vai kopā ar iepriekšējiem. |
 | `depends_on_refused_answer` | Atbilde pati par sevi ir derīga, bet tiek vērtēta kopā ar noraidītu atbildi. Nosacījuma atbilde un atbilde, kas to kontrolē, tiek saglabātas vai noraidītas kopā. |
 
 Var tikt pievienoti citi kodi. Nezināmu kodu apstrādājiet kā `invalid`. `message` nekad neatkārto iesniegto vērtību.

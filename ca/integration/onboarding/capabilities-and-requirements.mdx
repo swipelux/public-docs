@@ -103,6 +103,48 @@ Codis de motiu actuals:
 
 Gestiona els codis desconeguts sense canviar el codi, perquè Swipelux pot afegir codis nous. Un banc mai apareix alhora a `institutions` i a `unavailableInstitutions`. `unavailableInstitutions` sempre és present i és `[]` a les entrades agrupades i no bancàries. Un banc que no és a cap de les dues llistes queda exclòs per un motiu no relacionat amb aquest client. Indicar un banc no disponible en una sol·licitud de capacitat continua retornant [`422 capability_institutions_unsupported`](/integration/errors#capability-institutions-unsupported).
 
+### Comprova on es pot obrir un compte {#check-where-an-account-can-open}
+
+Cada entrada també inclou `banks`. A les entrades nominatives, llista cada banc de `institutions` o `unavailableInstitutions`, a més de qualsevol banc on el client tingui una sol·licitud per a aquesta variant. A les altres entrades és `[]`. Cada banc té els mateixos `id`, `name`, `bic` i `logoUrl` que una entrada d'institució, i hi afegeix la situació del client en aquest banc:
+
+```json Bank entry
+{
+  "banks": [
+    {
+      "id": "jpmorgan",
+      "name": "JPMorgan Chase",
+      "bic": "CHASUS33",
+      "logoUrl": null,
+      "status": "approved",
+      "applicationId": "apl_000000000000000005",
+      "accountOpening": "now",
+      "currencies": [
+        { "code": "USD", "institution": "jpmorgan" }
+      ]
+    }
+  ]
+}
+```
+
+`status` és un d'aquests valors:
+
+- `approved`: una sol·licitud preparada al banc cobreix aquesta variant.
+- `pending`: una sol·licitud al banc l'ha demanada i el banc encara no l'ha aprovada.
+- `refused`: el banc ha rebutjat el client.
+- `not_requested`: cap sol·licitud al banc no la demana. Una sol·licitud de capacitat pot seleccionar aquest banc.
+- `not_offered`: el banc no accepta aquest client per a aquesta variant.
+
+`applicationId` indica la sol·licitud que determina `status`, o és `null`. `accountOpening` t'indica què fa ara una [sol·licitud de compte emès](/ca/integration/issue-bank-account#choose-the-bank) que indiqui aquest banc:
+
+- `now`: la sol·licitud s'accepta i el compte s'emet.
+- `after_approval`: la sol·licitud s'accepta amb `allowPending: true` i espera l'aprovació del banc.
+- `application`: primer sol·licita la capacitat amb aquest banc a `institutions`.
+- `none`: ara no s'accepta cap sol·licitud de compte en aquest banc.
+
+Per a `now` i `after_approval`, `currencies` llista només les divises en què s'accepta una sol·licitud. Per això s'omet una divisa en què el client ja té un compte en aquest banc. En els altres casos, llista totes les divises en què el banc obre aquesta variant. Cada element indica la `institution` que cal enviar, com a `institutions[].currencies`.
+
+Decideix si ofereixes l'obertura de compte en un banc només a partir de `accountOpening`. `institutions` respon a una altra pregunta: on pot anar una nova sol·licitud de capacitat. Pot llistar un únic banc predeterminat mentre un altre banc ja ha aprovat el client.
+
 ### Tipus de comptes agrupats vs nominatius {#pooled-vs-named-account-types}
 
 Les capacitats bancàries venen en dues variants, codificades al camp `accountType` i al sufix de l'ID de capacitat (per exemple `ach_pooled`, `wire_named`):
@@ -370,6 +412,8 @@ Emmagatzema el `data.id` retornat com a `DOCUMENT_ID` abans d'enviar la resposta
 
 Cada recurs de document v3 inclou `contentSha256`, el resum SHA-256 del fitxer desat com a `sha256:` seguit del resum hexadecimal en minúscules. Dos documents amb el mateix resum són idèntics byte a byte. Per comprovar si un fitxer ja l'ha pujat el client, per exemple un fitxer que un revisor ha demanat substituir, calcula'n el SHA-256 abans de pujar-lo i compara'l amb `contentSha256` als documents que les respostes de l'enviament anterior referencien a `documentIds`. El camp és `null` per als documents desats abans que Swipelux registrés els resums.
 
+Una resposta de document ha d'incloure almenys un fitxer que no s'hagi retornat ja per a aquesta sol·licitud. Quan tots els fitxers de la resposta es van retornar en una revisió anterior, Swipelux rebutja la resposta amb `documents_already_returned`. Pots tornar a enviar fitxers anteriors juntament amb un de nou. Si un fitxer es va retornar per error, torna'l a pujar per obtenir un ID de document nou. El revisor continua veient la decisió anterior.
+
 Per recuperar més tard un fitxer emmagatzemat, crida [`GET /v3/customers/{customerId}/documents/{documentId}/download`](/api-reference/documents/get-v3-customers-by-customer-id-documents-by-document-id-download). Swipelux retorna una `url` que descarrega el fitxer com a adjunt i que expira al cap d'una hora. Els documents arxivats retornen `404`.
 
 ### Respostes via API {#api-answers}
@@ -402,7 +446,7 @@ Extreu cada ID de requisit i tipus de resposta de la tasca més recent. Si l'API
 
 #### Conserva les respostes vàlides amb `allowPartial` {#keep-valid-answers-with-allowpartial}
 
-Per defecte, una resposta rebutjada fa fallar tota la petició i Swipelux no desa res. La resposta és `400 validation_error`, `400 invalid_document_reference` o `409 absence_conflicts_with_profile`. Afegeix `"allowPartial": true` quan vulguis que Swipelux desi les respostes vàlides i rebutgi només les no vàlides:
+Per defecte, una resposta rebutjada fa fallar tota la petició i Swipelux no desa res. La resposta és `400 validation_error`, `400 invalid_document_reference`, `400 documents_already_returned` o `409 absence_conflicts_with_profile`. Afegeix `"allowPartial": true` quan vulguis que Swipelux desi les respostes vàlides i rebutgi només les no vàlides:
 
 ```json Partial submission request
 {
@@ -438,6 +482,7 @@ Cada resposta rebutjada té un d'aquests codis:
 | `invalid` | La resposta no compleix la forma, el format o les restriccions de la sol·licitud, o el perfil del client no accepta el valor. |
 | `absence_conflicts_with_profile` | S'ha enviat una absència per a un valor que el perfil conté. |
 | `invalid_document_reference` | Un document referenciat no es pot utilitzar per a aquest client i aquesta sol·licitud. |
+| `documents_already_returned` | Tots els fitxers de la resposta de document ja es van retornar per a aquesta sol·licitud. Envia un fitxer nou, sol o amb fitxers anteriors. |
 | `depends_on_refused_answer` | La resposta és vàlida per si sola, però s'avalua juntament amb una de rebutjada. Una resposta condicional i la resposta que la controla es conserven o es rebutgen juntes. |
 
 Se'n poden afegir més codis. Tracta un codi desconegut com a `invalid`. `message` mai no repeteix el valor enviat.

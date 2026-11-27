@@ -103,6 +103,48 @@ Codici motivo attuali:
 
 Gestisci i codici sconosciuti senza dover modificare il tuo codice, perché Swipelux può aggiungere nuovi codici. Una banca non compare mai sia in `institutions` sia in `unavailableInstitutions`. `unavailableInstitutions` è sempre presente ed è `[]` nelle voci pooled e non bancarie. Una banca che non compare in nessuno dei due elenchi è esclusa per un motivo non legato a questo cliente. Indicare una banca non disponibile in una richiesta di capability restituisce comunque [`422 capability_institutions_unsupported`](/integration/errors#capability-institutions-unsupported).
 
+### Verifica dove si può aprire un conto {#check-where-an-account-can-open}
+
+Ogni voce include anche `banks`. Nelle voci named, elenca ogni banca presente in `institutions` o `unavailableInstitutions`, più qualsiasi banca presso cui il cliente ha una application per questa variante. Nelle altre voci è `[]`. Ogni banca ha gli stessi `id`, `name`, `bic` e `logoUrl` di una voce di istituto e aggiunge la situazione del cliente presso quella banca:
+
+```json Bank entry
+{
+  "banks": [
+    {
+      "id": "jpmorgan",
+      "name": "JPMorgan Chase",
+      "bic": "CHASUS33",
+      "logoUrl": null,
+      "status": "approved",
+      "applicationId": "apl_000000000000000005",
+      "accountOpening": "now",
+      "currencies": [
+        { "code": "USD", "institution": "jpmorgan" }
+      ]
+    }
+  ]
+}
+```
+
+`status` è uno dei seguenti valori:
+
+- `approved`: una application ready presso la banca copre questa variante.
+- `pending`: una application presso la banca l'ha richiesta e la banca non l'ha ancora approvata.
+- `refused`: la banca ha rifiutato il cliente.
+- `not_requested`: nessuna application presso la banca la richiede. Una richiesta di capability può selezionare questa banca.
+- `not_offered`: la banca non accetta questo cliente per questa variante.
+
+`applicationId` indica la application che determina `status`, oppure è `null`. `accountOpening` ti dice cosa fa ora una [richiesta di conto emesso](/it/integration/issue-bank-account#choose-the-bank) che indica questa banca:
+
+- `now`: la richiesta viene accettata e il conto viene emesso.
+- `after_approval`: la richiesta viene accettata con `allowPending: true` e attende l'approvazione della banca.
+- `application`: richiedi prima la capability con questa banca in `institutions`.
+- `none`: al momento nessuna richiesta di conto viene accettata presso questa banca.
+
+Per `now` e `after_approval`, `currencies` elenca solo le valute in cui una richiesta viene accettata. Per questo una valuta in cui il cliente ha già un conto presso questa banca viene omessa. Negli altri casi elenca tutte le valute in cui la banca apre questa variante. Ogni elemento indica l'`institution` da inviare, come in `institutions[].currencies`.
+
+Decidi se offrire l'apertura di un conto presso una banca solo in base a `accountOpening`. `institutions` risponde a un'altra domanda: dove può andare una nuova richiesta di capability. Può elencare una sola banca predefinita mentre un'altra banca ha già approvato il cliente.
+
 ### Tipi di conto pooled vs named {#pooled-vs-named-account-types}
 
 Le capability bancarie sono disponibili in due varianti, codificate nel campo `accountType` e nel suffisso dell'ID capability (ad esempio `ach_pooled`, `wire_named`):
@@ -370,6 +412,8 @@ Salva il `data.id` restituito come `DOCUMENT_ID` prima di inviare la risposta ch
 
 Ogni risorsa documento v3 include `contentSha256`, il digest SHA-256 del file salvato nel formato `sha256:` seguito dal digest esadecimale in minuscolo. Due documenti con lo stesso digest sono identici byte per byte. Per verificare se un file è già stato caricato dal cliente, ad esempio un file che un revisore ha chiesto di sostituire, calcola il suo SHA-256 prima di caricarlo e confrontalo con `contentSha256` dei documenti che le risposte della submission precedente referenziano in `documentIds`. Il campo è `null` per i documenti salvati prima che Swipelux registrasse i digest.
 
+Una risposta documento deve includere almeno un file non già restituito per quella richiesta. Quando ogni file nella risposta è stato restituito in una revisione precedente, Swipelux rifiuta la risposta con `documents_already_returned`. Puoi reinviare i file precedenti insieme a uno nuovo. Se un file è stato restituito per errore, caricalo di nuovo per ottenere un nuovo ID documento. Il revisore vede comunque la decisione precedente.
+
 Per recuperare in seguito un file memorizzato, chiama [`GET /v3/customers/{customerId}/documents/{documentId}/download`](/api-reference/documents/get-v3-customers-by-customer-id-documents-by-document-id-download). Swipelux restituisce un `url` che scarica il file come allegato e scade dopo un'ora. I documenti archiviati restituiscono `404`.
 
 ### Risposte via API {#api-answers}
@@ -402,7 +446,7 @@ Prendi ogni ID requisito e tipo di risposta dall'ultimo task. Se l'API segnala c
 
 #### Mantieni le risposte valide con `allowPartial` {#keep-valid-answers-with-allowpartial}
 
-Per impostazione predefinita, una risposta rifiutata fa fallire l'intera richiesta e Swipelux non salva nulla. La risposta è `400 validation_error`, `400 invalid_document_reference` o `409 absence_conflicts_with_profile`. Aggiungi `"allowPartial": true` quando vuoi che Swipelux salvi le risposte valide e rifiuti solo quelle non valide:
+Per impostazione predefinita, una risposta rifiutata fa fallire l'intera richiesta e Swipelux non salva nulla. La risposta è `400 validation_error`, `400 invalid_document_reference`, `400 documents_already_returned` o `409 absence_conflicts_with_profile`. Aggiungi `"allowPartial": true` quando vuoi che Swipelux salvi le risposte valide e rifiuti solo quelle non valide:
 
 ```json Partial submission request
 {
@@ -438,6 +482,7 @@ Ogni risposta rifiutata ha uno di questi codici:
 | `invalid` | La risposta non rispetta la forma, il formato o i vincoli della richiesta, oppure il profilo del cliente non accetta il valore. |
 | `absence_conflicts_with_profile` | È stata inviata un'assenza per un valore presente nel profilo. |
 | `invalid_document_reference` | Un documento referenziato non può essere usato per questo cliente e questa richiesta. |
+| `documents_already_returned` | Ogni file nella risposta documento è già stato restituito per questa richiesta. Invia un nuovo file, da solo o con quelli precedenti. |
 | `depends_on_refused_answer` | La risposta è valida di per sé, ma viene valutata insieme a una risposta rifiutata. Una risposta condizionale e la risposta che la controlla vengono mantenute o rifiutate insieme. |
 
 Possono essere aggiunti altri codici. Tratta un codice sconosciuto come `invalid`. `message` non ripete mai il valore inviato.

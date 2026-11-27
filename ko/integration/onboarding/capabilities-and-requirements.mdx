@@ -103,6 +103,48 @@ curl --request GET \
 
 Swipelux가 새 코드를 추가할 수 있으므로, 코드를 변경하지 않아도 알 수 없는 코드를 처리할 수 있게 하세요. 한 은행이 `institutions`와 `unavailableInstitutions`에 동시에 나타나는 일은 없어요. `unavailableInstitutions`는 항상 존재하며, 풀 계좌 및 비은행 항목에서는 `[]`예요. 두 목록 어디에도 없는 은행은 이 고객과 관련 없는 이유로 제외된 거예요. 케이퍼빌리티 요청에서 사용할 수 없는 은행을 지정하면 여전히 [`422 capability_institutions_unsupported`](/integration/errors#capability-institutions-unsupported)가 반환돼요.
 
+### 계좌를 열 수 있는 곳 확인 {#check-where-an-account-can-open}
+
+각 항목에는 `banks`도 포함돼요. 명명 항목에서는 `institutions` 또는 `unavailableInstitutions`에 있는 각 은행과, 고객이 이 변형에 대한 신청을 가진 모든 은행을 나열해요. 다른 항목에서는 `[]`예요. 각 은행은 기관 항목과 같은 `id`, `name`, `bic`, `logoUrl`을 가지며, 해당 은행에서의 고객 상태를 추가로 알려줘요:
+
+```json Bank entry
+{
+  "banks": [
+    {
+      "id": "jpmorgan",
+      "name": "JPMorgan Chase",
+      "bic": "CHASUS33",
+      "logoUrl": null,
+      "status": "approved",
+      "applicationId": "apl_000000000000000005",
+      "accountOpening": "now",
+      "currencies": [
+        { "code": "USD", "institution": "jpmorgan" }
+      ]
+    }
+  ]
+}
+```
+
+`status`는 다음 중 하나예요:
+
+- `approved`: 해당 은행의 준비된 신청이 이 변형을 포함해요.
+- `pending`: 해당 은행의 신청이 이 변형을 요청했고 은행이 아직 승인하지 않았어요.
+- `refused`: 은행이 고객을 거절했어요.
+- `not_requested`: 해당 은행의 어떤 신청도 이 변형을 요청하지 않아요. 케이퍼빌리티 요청에서 이 은행을 선택할 수 있어요.
+- `not_offered`: 은행이 이 변형에 대해 이 고객을 받지 않아요.
+
+`applicationId`는 `status`를 결정하는 신청을 가리키거나 `null`이에요. `accountOpening`은 이 은행을 지정한 [발급 계좌 요청](/ko/integration/issue-bank-account#choose-the-bank)이 현재 어떻게 처리되는지 알려줘요:
+
+- `now`: 요청이 수락되고 계좌가 발급돼요.
+- `after_approval`: 요청이 `allowPending: true`로 수락되고 은행의 승인을 기다려요.
+- `application`: 먼저 `institutions`에 이 은행을 넣어 케이퍼빌리티를 요청하세요.
+- `none`: 현재 이 은행에서는 계좌 요청이 수락되지 않아요.
+
+`now`와 `after_approval`의 경우 `currencies`는 요청이 수락되는 통화만 나열해요. 따라서 고객이 이 은행에 이미 계좌를 가진 통화는 제외돼요. 그 외의 경우에는 은행이 이 변형을 여는 모든 통화를 나열해요. 각 항목은 `institutions[].currencies`와 마찬가지로 보내야 하는 `institution`을 알려줘요.
+
+은행에서 계좌 개설을 제공할지는 `accountOpening`만 보고 결정하세요. `institutions`는 다른 질문, 즉 새 케이퍼빌리티 요청을 어디로 보낼 수 있는지에 답해요. 다른 은행이 이미 고객을 승인했더라도 기본 은행 하나만 나열할 수 있어요.
+
 ### 풀 계좌 대 명명 계좌 유형 {#pooled-vs-named-account-types}
 
 은행 케이퍼빌리티는 두 가지 변형으로 제공되며, `accountType` 필드와 케이퍼빌리티 ID 접미사로 인코딩돼요 (예: `ach_pooled`, `wire_named`):
@@ -370,6 +412,8 @@ curl --request POST \
 
 모든 v3 문서 리소스에는 `contentSha256`이 포함돼요. 이는 저장된 파일의 SHA-256 다이제스트로, `sha256:` 뒤에 소문자 16진수 다이제스트가 오는 형식이에요. 다이제스트가 같은 두 문서는 바이트 단위로 동일해요. 검토자가 교체를 요청한 파일처럼 고객이 이미 업로드한 파일인지 확인하려면, 업로드하기 전에 파일의 SHA-256을 계산하고 이전 제출의 답변이 `documentIds`에서 참조하는 문서의 `contentSha256`과 비교하세요. Swipelux가 다이제스트를 기록하기 전에 저장된 문서의 경우 이 필드는 `null`이에요.
 
+문서 답변에는 해당 요청에 대해 아직 반려되지 않은 파일이 하나 이상 포함되어야 해요. 답변의 모든 파일이 이전 검토에서 반려된 경우 Swipelux는 `documents_already_returned`로 답변을 거부해요. 이전 파일을 새 파일과 함께 다시 보낼 수 있어요. 파일이 실수로 반려되었다면 다시 업로드해 새 문서 ID를 받으세요. 검토자에게는 이전 결정이 그대로 보여요.
+
 저장된 파일을 나중에 가져오려면 [`GET /v3/customers/{customerId}/documents/{documentId}/download`](/api-reference/documents/get-v3-customers-by-customer-id-documents-by-document-id-download)를 호출하세요. Swipelux는 파일을 첨부 파일로 다운로드하는 `url`을 반환하며, 이 URL은 1시간 후에 만료돼요. 아카이브된 문서는 `404`를 반환해요.
 
 ### API 답변 {#api-answers}
@@ -402,7 +446,7 @@ JSON
 
 #### `allowPartial`로 유효한 답변 유지 {#keep-valid-answers-with-allowpartial}
 
-기본적으로 거부된 답변이 하나라도 있으면 전체 요청이 실패하고 Swipelux는 아무것도 저장하지 않아요. 응답은 `400 validation_error`, `400 invalid_document_reference`, `409 absence_conflicts_with_profile` 중 하나예요. Swipelux가 유효한 답변은 저장하고 유효하지 않은 답변만 거부하게 하려면 `"allowPartial": true`를 추가하세요:
+기본적으로 거부된 답변이 하나라도 있으면 전체 요청이 실패하고 Swipelux는 아무것도 저장하지 않아요. 응답은 `400 validation_error`, `400 invalid_document_reference`, `400 documents_already_returned`, `409 absence_conflicts_with_profile` 중 하나예요. Swipelux가 유효한 답변은 저장하고 유효하지 않은 답변만 거부하게 하려면 `"allowPartial": true`를 추가하세요:
 
 ```json Partial submission request
 {
@@ -438,6 +482,7 @@ Swipelux는 유지된 답변만 담긴 저장된 제출을 `data`에 담아 `201
 | `invalid` | 답변이 요청의 형태, 형식 또는 제약 조건을 충족하지 않거나, 고객 프로필이 해당 값을 허용하지 않아요. |
 | `absence_conflicts_with_profile` | 프로필에 값이 있는 항목에 대해 부재 답변을 보냈어요. |
 | `invalid_document_reference` | 참조된 문서를 이 고객과 이 요청에 사용할 수 없어요. |
+| `documents_already_returned` | 문서 답변의 모든 파일이 이 요청에 대해 이미 반려되었어요. 새 파일을 단독으로 또는 이전 파일과 함께 보내세요. |
 | `depends_on_refused_answer` | 답변 자체는 유효하지만 거부된 답변과 함께 판단돼요. 조건부 답변과 그것을 제어하는 답변은 함께 유지되거나 함께 거부돼요. |
 
 코드가 추가될 수 있어요. 알 수 없는 코드는 `invalid`로 처리하세요. `message`는 제출된 값을 절대 반복하지 않아요.

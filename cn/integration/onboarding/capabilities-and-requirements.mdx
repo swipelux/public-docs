@@ -103,6 +103,48 @@ curl --request GET \
 
 请在无需修改代码的情况下处理未知代码，因为 Swipelux 可能会新增代码。同一家银行绝不会同时出现在 `institutions` 和 `unavailableInstitutions` 中。`unavailableInstitutions` 始终存在，在共享账户条目和非银行条目上为 `[]`。不在这两个列表中的银行，是因与此客户无关的原因被排除。在能力申请中指定不可用的银行仍会返回 [`422 capability_institutions_unsupported`](/integration/errors#capability-institutions-unsupported)。
 
+### 查看可在哪里开立账户 {#check-where-an-account-can-open}
+
+每个条目还包含 `banks`。在专属条目上，它列出 `institutions` 或 `unavailableInstitutions` 中的每家银行，以及客户在其中拥有该变体申请的任何银行。在其他条目上它为 `[]`。每家银行都具有与机构条目相同的 `id`、`name`、`bic` 和 `logoUrl`，并补充客户在该银行的状态：
+
+```json Bank entry
+{
+  "banks": [
+    {
+      "id": "jpmorgan",
+      "name": "JPMorgan Chase",
+      "bic": "CHASUS33",
+      "logoUrl": null,
+      "status": "approved",
+      "applicationId": "apl_000000000000000005",
+      "accountOpening": "now",
+      "currencies": [
+        { "code": "USD", "institution": "jpmorgan" }
+      ]
+    }
+  ]
+}
+```
+
+`status` 为以下值之一：
+
+- `approved`：该银行的一个就绪申请涵盖此变体。
+- `pending`：该银行的一个申请已请求此变体，但银行尚未批准。
+- `refused`：银行拒绝了该客户。
+- `not_requested`：该银行没有申请请求此变体。能力申请可以选择这家银行。
+- `not_offered`：银行不接受此客户使用此变体。
+
+`applicationId` 指明决定 `status` 的申请，或为 `null`。`accountOpening` 告诉您指定这家银行的[发行账户请求](/cn/integration/issue-bank-account#choose-the-bank)当前会产生什么结果：
+
+- `now`：请求被接受，账户被发行。
+- `after_approval`：请求在 `allowPending: true` 下被接受，并等待银行批准。
+- `application`：请先申请能力，并在 `institutions` 中包含这家银行。
+- `none`：这家银行当前不接受任何账户请求。
+
+对于 `now` 和 `after_approval`，`currencies` 仅列出请求会被接受的币种。因此，客户在这家银行已持有账户的币种不会列出。其他情况下，它列出该银行开立此变体的所有币种。每一项都指明需要发送的 `institution`，与 `institutions[].currencies` 相同。
+
+请仅根据 `accountOpening` 决定是否在某家银行提供开户。`institutions` 回答的是另一个问题：新的能力申请可以提交到哪里。它可能只列出一家默认银行，而另一家银行已经批准了该客户。
+
 ### 共享账户 vs 专属账户 {#pooled-vs-named-account-types}
 
 银行类能力有两种变体,通过 `accountType` 字段以及能力 ID 后缀(例如 `ach_pooled`、`wire_named`)标识:
@@ -370,6 +412,8 @@ curl --request POST \
 
 每个 v3 文件资源都包含 `contentSha256`，即已存储文件的 SHA-256 摘要，格式为 `sha256:` 后跟小写十六进制摘要。摘要相同的两个文件在字节上完全相同。如需检查某个文件是否已由客户上传过（例如审核人员要求替换的文件），请在上传前计算其 SHA-256，并与上一次提交的回答在 `documentIds` 中引用的文件上的 `contentSha256` 进行比较。对于在 Swipelux 记录摘要之前存储的文件，该字段为 `null`。
 
+文件回答必须至少包含一个尚未针对该请求被退回的文件。当回答中的每个文件都已在之前的审核中被退回时，Swipelux 会以 `documents_already_returned` 拒绝该回答。您可以将之前的文件与新文件一起重新发送。如果某个文件被误退回，请重新上传以获取新的文件 ID。审核人员仍会看到之前的决定。
+
 如需之后取回已存储的文件,请调用 [`GET /v3/customers/{customerId}/documents/{documentId}/download`](/api-reference/documents/get-v3-customers-by-customer-id-documents-by-document-id-download)。Swipelux 会返回一个 `url`,该 `url` 以附件形式下载文件,并在一小时后过期。已归档的文件会返回 `404`。
 
 ### API 答案 {#api-answers}
@@ -402,7 +446,7 @@ JSON
 
 #### 使用 `allowPartial` 保留有效回答 {#keep-valid-answers-with-allowpartial}
 
-默认情况下，一个被拒绝的回答会使整个请求失败，Swipelux 不会保存任何内容。响应为 `400 validation_error`、`400 invalid_document_reference` 或 `409 absence_conflicts_with_profile`。如果您希望 Swipelux 保存有效的回答，只拒绝无效的回答，请添加 `"allowPartial": true`：
+默认情况下，一个被拒绝的回答会使整个请求失败，Swipelux 不会保存任何内容。响应为 `400 validation_error`、`400 invalid_document_reference`, `400 documents_already_returned` 或 `409 absence_conflicts_with_profile`。如果您希望 Swipelux 保存有效的回答，只拒绝无效的回答，请添加 `"allowPartial": true`：
 
 ```json Partial submission request
 {
@@ -438,6 +482,7 @@ Swipelux 会返回 `201`，`data` 中是已保存的提交，只包含保留的�
 | `invalid` | 回答不符合请求的结构、格式或约束，或者客户资料不接受该值。 |
 | `absence_conflicts_with_profile` | 对资料中已有的值发送了缺失说明。 |
 | `invalid_document_reference` | 引用的文件不能用于此客户和此请求。 |
+| `documents_already_returned` | 文件回答中的每个文件都已针对此请求被退回。请发送新文件，可单独发送，也可与之前的文件一起发送。 |
 | `depends_on_refused_answer` | 该回答本身有效，但需要与一个被拒绝的回答一起判断。条件回答和控制它的回答会一起保留或一起拒绝。 |
 
 今后还可能新增代码。请将未知代码视为 `invalid`。`message` 从不重复提交的值。

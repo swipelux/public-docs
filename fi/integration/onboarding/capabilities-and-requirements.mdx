@@ -103,6 +103,48 @@ Nykyiset syykoodit:
 
 Käsittele tuntemattomat koodit ilman koodimuutoksia, koska Swipelux voi lisätä uusia koodeja. Pankki ei koskaan esiinny sekä `institutions`- että `unavailableInstitutions`-kentässä. `unavailableInstitutions` on aina mukana, ja sen arvo on `[]` jaetuissa (pooled) ja muissa kuin pankkimerkinnöissä. Pankki, joka ei ole kummassakaan luettelossa, on jätetty pois syystä, joka ei liity tähän asiakkaaseen. Jos nimeät kykypyynnössä pankin, joka ei ole saatavilla, pyyntö palauttaa edelleen virheen [`422 capability_institutions_unsupported`](/integration/errors#capability-institutions-unsupported).
 
+### Tarkista, missä tilin voi avata {#check-where-an-account-can-open}
+
+Jokainen merkintä sisältää myös `banks`-kentän. Nimellisissä merkinnöissä se luettelee jokaisen pankin, joka on `institutions`- tai `unavailableInstitutions`-kentässä, sekä jokaisen pankin, jossa asiakkaalla on hakemus tälle muunnelmalle. Muissa merkinnöissä sen arvo on `[]`. Jokaisella pankilla on samat `id`, `name`, `bic` ja `logoUrl` kuin laitosmerkinnällä, ja lisäksi asiakkaan tilanne kyseisessä pankissa:
+
+```json Bank entry
+{
+  "banks": [
+    {
+      "id": "jpmorgan",
+      "name": "JPMorgan Chase",
+      "bic": "CHASUS33",
+      "logoUrl": null,
+      "status": "approved",
+      "applicationId": "apl_000000000000000005",
+      "accountOpening": "now",
+      "currencies": [
+        { "code": "USD", "institution": "jpmorgan" }
+      ]
+    }
+  ]
+}
+```
+
+`status` on jokin seuraavista:
+
+- `approved`: pankissa oleva valmis hakemus kattaa tämän muunnelman.
+- `pending`: pankissa oleva hakemus on pyytänyt sitä, eikä pankki ole vielä hyväksynyt sitä.
+- `refused`: pankki hylkäsi asiakkaan.
+- `not_requested`: mikään pankissa oleva hakemus ei pyydä sitä. Kykypyyntö voi valita tämän pankin.
+- `not_offered`: pankki ei hyväksy tätä asiakasta tälle muunnelmalle.
+
+`applicationId` nimeää hakemuksen, joka määrittää `status`-arvon, tai on `null`. `accountOpening` kertoo, mitä tämän pankin nimeävä [luodun tilin pyyntö](/fi/integration/issue-bank-account#choose-the-bank) tekee nyt:
+
+- `now`: pyyntö hyväksytään ja tili luodaan.
+- `after_approval`: pyyntö hyväksytään `allowPending: true` -arvolla, ja se odottaa pankin hyväksyntää.
+- `application`: pyydä ensin kyky niin, että tämä pankki on `institutions`-kentässä.
+- `none`: tässä pankissa ei nyt hyväksytä tilipyyntöjä.
+
+Arvoilla `now` ja `after_approval` `currencies` luettelee vain valuutat, joissa pyyntö hyväksytään. Siksi valuutta, jossa asiakkaalla on jo tili tässä pankissa, jätetään pois. Muuten se luettelee jokaisen valuutan, jossa pankki avaa tämän muunnelman. Jokainen kohde nimeää lähetettävän `institution`-arvon, kuten `institutions[].currencies`-kentässä.
+
+Päätä pankin tilinavauksen tarjoamisesta pelkästään `accountOpening`-kentän perusteella. `institutions` vastaa eri kysymykseen: minne uusi kykypyyntö voi mennä. Se voi luetella vain yhden oletuspankin, vaikka toinen pankki on jo hyväksynyt asiakkaan.
+
 ### Jaetut ja nimelliset tilityypit {#pooled-vs-named-account-types}
 
 Pankkikykyjä on kahta muunnelmaa, jotka koodataan `accountType`-kenttään ja kyky-ID:n loppuliitteeseen (esimerkiksi `ach_pooled`, `wire_named`):
@@ -370,6 +412,8 @@ Tallenna palautettu `data.id` muuttujaan `DOCUMENT_ID` ennen kuin lähetät siih
 
 Jokainen v3-asiakirjaresurssi sisältää kentän `contentSha256`, tallennetun tiedoston SHA-256-tiivisteen muodossa `sha256:` ja sen perässä heksadesimaalinen tiiviste pienillä kirjaimilla. Kaksi asiakirjaa, joilla on sama tiiviste, ovat tavu tavulta identtisiä. Jos haluat tarkistaa, onko asiakas jo ladannut tiedoston, esimerkiksi tiedoston, jonka tarkistaja pyysi korvaamaan, laske sen SHA-256 ennen lataamista ja vertaa sitä niiden asiakirjojen `contentSha256`-arvoon, joihin aiemman lähetyksen vastaukset viittaavat kentässä `documentIds`. Kenttä on `null` asiakirjoille, jotka tallennettiin ennen kuin Swipelux alkoi tallentaa tiivisteitä.
 
+Asiakirjavastauksen on sisällettävä vähintään yksi tiedosto, jota ei ole jo palautettu kyseiselle pyynnölle. Kun jokainen vastauksen tiedosto on palautettu aiemmassa tarkistuksessa, Swipelux hylkää vastauksen koodilla `documents_already_returned`. Voit lähettää aiemmat tiedostot uudelleen yhdessä uuden kanssa. Jos tiedosto palautettiin vahingossa, lataa se uudelleen saadaksesi uuden asiakirjatunnuksen. Tarkistaja näkee edelleen aiemman päätöksen.
+
 Noutaaksesi tallennetun tiedoston myöhemmin kutsu [`GET /v3/customers/{customerId}/documents/{documentId}/download`](/api-reference/documents/get-v3-customers-by-customer-id-documents-by-document-id-download) -päätepistettä. Swipelux palauttaa `url`-arvon, joka lataa tiedoston liitteenä ja vanhenee tunnin kuluttua. Arkistoidut dokumentit palauttavat `404`-virheen.
 
 ### API-vastaukset {#api-answers}
@@ -402,7 +446,7 @@ Ota jokainen vaatimuksen ID ja vastaustyyppi uusimmasta tehtävästä. Jos API i
 
 #### Säilytä kelvolliset vastaukset `allowPartial`-kentällä {#keep-valid-answers-with-allowpartial}
 
-Oletuksena yksi hylätty vastaus saa koko pyynnön epäonnistumaan, eikä Swipelux tallenna mitään. Vastaus on `400 validation_error`, `400 invalid_document_reference` tai `409 absence_conflicts_with_profile`. Lisää `"allowPartial": true`, kun haluat Swipeluxin tallentavan kelvolliset vastaukset ja hylkäävän vain virheelliset:
+Oletuksena yksi hylätty vastaus saa koko pyynnön epäonnistumaan, eikä Swipelux tallenna mitään. Vastaus on `400 validation_error`, `400 invalid_document_reference`, `400 documents_already_returned` tai `409 absence_conflicts_with_profile`. Lisää `"allowPartial": true`, kun haluat Swipeluxin tallentavan kelvolliset vastaukset ja hylkäävän vain virheelliset:
 
 ```json Partial submission request
 {
@@ -438,6 +482,7 @@ Jokaisella hylätyllä vastauksella on yksi näistä koodeista:
 | `invalid` | Vastaus ei vastaa pyynnön muotoa, formaattia tai rajoituksia, tai asiakasprofiili ei hyväksy arvoa. |
 | `absence_conflicts_with_profile` | Puuttumisvastaus lähetettiin arvolle, joka profiilissa on. |
 | `invalid_document_reference` | Viitattua asiakirjaa ei voi käyttää tälle asiakkaalle ja tälle pyynnölle. |
+| `documents_already_returned` | Jokainen asiakirjavastauksen tiedosto on jo palautettu tälle pyynnölle. Lähetä uusi tiedosto yksin tai aiempien kanssa. |
 | `depends_on_refused_answer` | Vastaus on itsessään kelvollinen, mutta se arvioidaan yhdessä hylätyn vastauksen kanssa. Ehdollinen vastaus ja sitä ohjaava vastaus säilytetään tai hylätään yhdessä. |
 
 Koodeja voidaan lisätä. Käsittele tuntematon koodi arvona `invalid`. `message` ei koskaan toista lähetettyä arvoa.
