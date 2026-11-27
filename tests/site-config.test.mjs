@@ -65,6 +65,20 @@ const INTEGRATION_GROUPS = [
     ],
   },
   {
+    group: "Payment methods",
+    pages: [
+      "integration/payment-methods/overview",
+      "integration/payment-methods/usd",
+      "integration/payment-methods/eur",
+      "integration/payment-methods/gbp",
+      "integration/payment-methods/aed",
+      "integration/payment-methods/brl",
+      "integration/payment-methods/aud",
+      "integration/payment-methods/mxn",
+      "integration/payment-methods/ngn",
+    ],
+  },
+  {
     group: "Launch",
     pages: [
       "integration/webhooks",
@@ -272,9 +286,12 @@ const ENGLISH_NAVIGATION = {
 const LOCALIZED_INTEGRATION_GROUPS = INTEGRATION_GROUPS.map((group) => ({
   ...group,
   pages: group.pages.filter(
-    (page) => page !== "integration/errors" && page !== "integration/ai-agents",
+    (page) =>
+      page !== "integration/errors" &&
+      page !== "integration/ai-agents" &&
+      !page.startsWith("integration/payment-methods/"),
   ),
-}));
+})).filter(({ pages }) => pages.length > 0);
 
 const LOCALIZED_KNOWLEDGE_BASE_GROUPS = KNOWLEDGE_BASE_GROUPS.map((group) => ({
   ...group,
