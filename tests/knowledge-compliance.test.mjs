@@ -190,7 +190,7 @@ const JURISDICTION_TABLES = [
     ["EUR SEPA, named", "ClearBank Europe", "No country list. The Bank decides on each application"],
     ["GBP Faster Payments, named", "Banking Circle", "Countries on List D"],
     ["AED IPP and FTS, named", "Zand", "Individuals who live in the UAE, and companies registered in mainland UAE. The Bank reviews free-zone companies one by one"],
-    ["AUD NPP, pooled", "The AUD Bank", "Countries on List D"],
+    ["AUD NPP, pooled", "BC Payments Australia", "Countries on List D"],
     ["MXN SPEI, pooled", "NVIO Pagos", "Countries on List A"],
     ["MXN SPEI, pooled", "The second MXN Bank", "No country list"],
     ["BRL Pix, named", "The BRL Bank", "Customers outside Brazil"],
@@ -249,7 +249,7 @@ const JURISDICTION_EXACT_LINES = [
   "**List A** (JPMorgan Chase, Citi, CFSB, NVIO Pagos, Stark Bank): Afghanistan (`AF`), Belarus (`BY`), Central African Republic (`CF`), Cuba (`CU`), Democratic Republic of the Congo (`CD`), Guinea (`GN`), Iran (`IR`), Iraq (`IQ`), Libya (`LY`), Mali (`ML`), Myanmar (`MM`), Nigeria (`NG`), North Korea (`KP`), Palestinian territories (`PS`), Qatar (`QA`), Republic of the Congo (`CG`), Russia (`RU`), Somalia (`SO`), South Sudan (`SS`), Sudan (`SD`), Ukraine (`UA`), Venezuela (`VE`), Yemen (`YE`).",
   "**List B** (Lead Bank): Afghanistan (`AF`), Algeria (`DZ`), Bangladesh (`BD`), Belarus (`BY`), Bhutan (`BT`), Burundi (`BI`), China (`CN`), Cuba (`CU`), Democratic Republic of the Congo (`CD`), Guinea-Bissau (`GW`), Haiti (`HT`), Iran (`IR`), Iraq (`IQ`), Kenya (`KE`), Kosovo (`XK`), Lebanon (`LB`), Libya (`LY`), Morocco (`MA`), Mozambique (`MZ`), Myanmar (`MM`), Nepal (`NP`), North Korea (`KP`), Pakistan (`PK`), Palestinian territories (`PS`), Qatar (`QA`), Russia (`RU`), Somalia (`SO`), South Sudan (`SS`), Sudan (`SD`), Syria (`SY`), Ukraine (`UA`), Venezuela (`VE`), Yemen (`YE`), Zimbabwe (`ZW`).",
   "**List C** (Zenus Bank): Afghanistan (`AF`), Belarus (`BY`), Burundi (`BI`), Central African Republic (`CF`), Côte d'Ivoire (`CI`), Cuba (`CU`), Democratic Republic of the Congo (`CD`), Iran (`IR`), Iraq (`IQ`), Kazakhstan (`KZ`), Kosovo (`XK`), Kyrgyzstan (`KG`), Lebanon (`LB`), Libya (`LY`), Mali (`ML`), Nicaragua (`NI`), North Korea (`KP`), Pakistan (`PK`), Puerto Rico (`PR`), Russia (`RU`), Somalia (`SO`), South Sudan (`SS`), Sudan (`SD`), Syria (`SY`), Tajikistan (`TJ`), Turkmenistan (`TM`), Ukraine (`UA`), United States (`US`), Uzbekistan (`UZ`), Venezuela (`VE`), Yemen (`YE`), Zimbabwe (`ZW`). For individuals, also Antarctica (`AQ`).",
-  "**List D** (Banking Circle and the AUD Bank): Algeria (`DZ`), Bangladesh (`BD`), Egypt (`EG`), India (`IN`), Indonesia (`ID`), Kenya (`KE`), Morocco (`MA`), Nigeria (`NG`), Pakistan (`PK`).",
+  "**List D** (Banking Circle and BC Payments Australia): Algeria (`DZ`), Bangladesh (`BD`), Egypt (`EG`), India (`IN`), Indonesia (`ID`), Kenya (`KE`), Morocco (`MA`), Nigeria (`NG`), Pakistan (`PK`).",
 ];
 
 const MONITORING_ITEMS = [
